@@ -1,0 +1,33 @@
+spring:
+  application:
+    name: flight-tracker
+  datasource:
+    url: jdbc:postgresql://localhost:5432/flighttracker
+    username: flighttracker
+    password: flighttracker
+  jpa:
+    hibernate:
+      ddl-auto: none        # schema.sql owns the schema, not Hibernate
+    show-sql: false
+  sql:
+    init:
+      mode: always           # runs schema.sql on startup
+
+server:
+  port: 8080
+
+flighttracker:
+  agents:
+    # Each entry becomes one polling agent. Point this at whatever live
+    # flight-data source you have access to (OpenSky Network's free REST
+    # API is the easiest to start with — no key needed for anonymous,
+    # rate-limited use).
+    poll-interval-seconds: 15
+    opensky:
+      enabled: true
+      base-url: https://opensky-network.org/api
+      bbox: # roughly the Stockholm / Baltic area, tune to taste
+        lat-min: 54.0
+        lat-max: 66.0
+        lon-min: 10.0
+        lon-max: 25.0
