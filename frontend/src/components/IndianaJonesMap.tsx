@@ -14,7 +14,12 @@ import "./IndianaJonesMap.css";
 const PLANE_GLYPH_OFFSET_DEG = 45;
 
 function planeIcon(headingDeg: number | null) {
-  const rotation = (headingDeg ?? 0) + PLANE_GLYPH_OFFSET_DEG;
+  // Unknown heading gets no rotation at all (the glyph's raw native
+  // orientation) rather than defaulting to 0° and then applying the
+  // offset — otherwise "we don't know the heading" would render
+  // indistinguishably from "heading is roughly NE", which is worse than
+  // the pre-fix behavior it would otherwise silently replace.
+  const rotation = headingDeg === null ? 0 : headingDeg + PLANE_GLYPH_OFFSET_DEG;
   return L.divIcon({
     className: "plane-icon",
     html: `<div class="plane-glyph" style="transform: rotate(${rotation}deg)">&#9992;</div>`,
@@ -96,9 +101,9 @@ export default function IndianaJonesMap() {
               <div className="dossier-card">
                 <div className="dossier-callsign">{p.callsign?.trim() || p.icao24.toUpperCase()}</div>
                 <dl>
-                  <dt>Altitude</dt><dd>{p.altitudeM ? Math.round(p.altitudeM) + " m" : "—"}</dd>
-                  <dt>Speed</dt><dd>{p.velocityMs ? Math.round(p.velocityMs * 3.6) + " km/h" : "—"}</dd>
-                  <dt>Heading</dt><dd>{p.headingDeg ? Math.round(p.headingDeg) + "°" : "—"}</dd>
+                  <dt>Altitude</dt><dd>{p.altitudeM != null ? Math.round(p.altitudeM) + " m" : "—"}</dd>
+                  <dt>Speed</dt><dd>{p.velocityMs != null ? Math.round(p.velocityMs * 3.6) + " km/h" : "—"}</dd>
+                  <dt>Heading</dt><dd>{p.headingDeg != null ? Math.round(p.headingDeg) + "°" : "—"}</dd>
                   <dt>Source</dt><dd>{p.agentSource}</dd>
                 </dl>
               </div>
