@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { apiUrl } from "./support/config.js";
-import { assertFlightPositionShape } from "./support/assertions.js";
+import { assertFlightPositionShape, assertRequiresFromTo } from "./support/assertions.js";
 
 const NOW = new Date();
 const SIX_HOURS_AGO = new Date(NOW.getTime() - 6 * 60 * 60 * 1000);
@@ -28,14 +28,7 @@ test("GET /api/flights/{icao24}/history for an aircraft with no history returns 
 });
 
 test("GET /api/flights/{icao24}/history requires both from and to", async () => {
-  const missingBoth = await fetch(apiUrl("/api/flights/aaaaaa/history"));
-  assert.equal(missingBoth.status, 400);
-
-  const missingTo = await fetch(apiUrl(`/api/flights/aaaaaa/history?from=${SIX_HOURS_AGO.toISOString()}`));
-  assert.equal(missingTo.status, 400);
-
-  const missingFrom = await fetch(apiUrl(`/api/flights/aaaaaa/history?to=${NOW.toISOString()}`));
-  assert.equal(missingFrom.status, 400);
+  await assertRequiresFromTo("/api/flights/aaaaaa/history", SIX_HOURS_AGO.toISOString(), NOW.toISOString());
 });
 
 test("GET /api/flights/{icao24}/history rejects a malformed timestamp", async () => {

@@ -26,7 +26,7 @@ test("GET /api/flights/live?withinMinutes=0 returns an empty (or near-empty) arr
   const res = await fetch(apiUrl("/api/flights/live?withinMinutes=0"));
   assert.equal(res.status, 200);
   const body = await res.json();
-  assert.ok(Array.isArray(body));
+  assert.deepEqual(body, []);
 });
 
 test("GET /api/flights/live rejects a non-numeric withinMinutes", async () => {

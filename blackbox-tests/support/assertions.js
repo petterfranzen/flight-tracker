@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { apiUrl } from "./config.js";
 
 // Shape-checks a single FlightPosition as returned by /api/flights/*.
 // Deliberately loose on nullable numeric fields (altitude/velocity/heading
@@ -38,4 +39,18 @@ export function assertAircraftUsageShape(usage) {
   assert.ok(usage.distanceFlownKm >= 0, "distance flown cannot be negative");
   assert.ok(usage.airborneHours >= 0, "airborne hours cannot be negative");
   assert.ok(usage.averageGroundSpeedKmh >= 0, "average ground speed cannot be negative");
+}
+
+// Shared by every endpoint that takes required `from`/`to` query params:
+// asserts all three combinations of a missing one 400, without each test
+// file re-implementing the same three fetches.
+export async function assertRequiresFromTo(path, sampleFrom, sampleTo) {
+  const missingBoth = await fetch(apiUrl(path));
+  assert.equal(missingBoth.status, 400, `${path} with neither from nor to should 400`);
+
+  const missingTo = await fetch(apiUrl(`${path}?from=${sampleFrom}`));
+  assert.equal(missingTo.status, 400, `${path} with only from should 400`);
+
+  const missingFrom = await fetch(apiUrl(`${path}?to=${sampleTo}`));
+  assert.equal(missingFrom.status, 400, `${path} with only to should 400`);
 }

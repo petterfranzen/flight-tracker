@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { apiUrl } from "./support/config.js";
-import { assertAircraftUsageShape } from "./support/assertions.js";
+import { assertAircraftUsageShape, assertRequiresFromTo } from "./support/assertions.js";
 
 const NOW = new Date();
 const THIRTY_DAYS_AGO = new Date(NOW.getTime() - 30 * 24 * 60 * 60 * 1000);
@@ -16,14 +16,7 @@ test("GET /api/usage returns a well-shaped array over a wide window", async () =
 });
 
 test("GET /api/usage requires both from and to", async () => {
-  const missingBoth = await fetch(apiUrl("/api/usage"));
-  assert.equal(missingBoth.status, 400);
-
-  const missingTo = await fetch(apiUrl(`/api/usage?from=${THIRTY_DAYS_AGO.toISOString()}`));
-  assert.equal(missingTo.status, 400);
-
-  const missingFrom = await fetch(apiUrl(`/api/usage?to=${NOW.toISOString()}`));
-  assert.equal(missingFrom.status, 400);
+  await assertRequiresFromTo("/api/usage", THIRTY_DAYS_AGO.toISOString(), NOW.toISOString());
 });
 
 test("GET /api/usage rejects a malformed timestamp", async () => {
@@ -46,5 +39,5 @@ test("GET /api/usage over a zero-width window returns an empty array", async () 
   const res = await fetch(url);
   assert.equal(res.status, 200);
   const body = await res.json();
-  assert.ok(Array.isArray(body));
+  assert.deepEqual(body, []);
 });

@@ -45,10 +45,16 @@ test("GET /ws/live upgrades and accepts a connection", { timeout: FRAME_WAIT_MS 
   } finally {
     // Must run even if the shape assertion above throws, or the socket
     // stays open and node:test hangs waiting for the event loop to drain.
-    await new Promise((resolve) => {
-      socket.addEventListener("close", resolve, { once: true });
-      socket.close();
-    });
+    // Guard on readyState first: if the connection already closed on its
+    // own during the wait above (server restart, idle drop — the backend
+    // sends no ping/keepalive), the "close" event already fired and never
+    // fires again, so awaiting a fresh listener here would hang forever.
+    if (socket.readyState !== WebSocket.CLOSED) {
+      await new Promise((resolve) => {
+        socket.addEventListener("close", resolve, { once: true });
+        socket.close();
+      });
+    }
   }
   assert.equal(socket.readyState, WebSocket.CLOSED);
 });
