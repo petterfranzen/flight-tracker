@@ -1,0 +1,83 @@
+# Three independent services on one bridge network:
+#   db       — Postgres, its own image/container/volume, addressed only by
+#              service name (never localhost) so it can be moved to a
+#              managed/clustered instance later by changing SPRING_DATASOURCE_URL
+#              alone. Note: Postgres itself is a stateful singleton here —
+#              `--scale db=N` would just start N containers pointed at the
+#              same volume, which corrupts data, not a working replica set.
+#              Real DB scaling means read replicas / a managed HA service,
+#              swapped in behind the same connection string.
+#   backend  — Spring Boot API + WebSocket + the OpenSky poller. NOT safe to
+#              scale horizontally as written (`--scale backend=N` is a bad
+#              idea today): each replica runs its own AgentOrchestrator, so
+#              N replicas means N independent pollers hitting OpenSky and
+#              writing to the same table (multiplying upstream load, though
+#              the unique index prevents duplicate rows), and each
+#              replica's LiveFeedBroadcaster only knows about the WebSocket
+#              clients connected to *that* replica — a client connected to
+#              replica A never sees a position written by replica B. Scaling
+#              this for real needs poller leader election (or moving the
+#              polling out of the request-serving replicas entirely) plus a
+#              shared pub/sub layer (e.g. Redis) behind LiveFeedBroadcaster.
+#   frontend — static bundle behind nginx, proxying /api and /ws to backend.
+#
+# Usage:
+#   docker compose up --build
+#   docker compose up -d --build   # detached
+#   docker compose down            # stop (add -v to also drop the db volume)
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: flighttracker
+      POSTGRES_USER: flighttracker
+      POSTGRES_PASSWORD: flighttracker
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    # Not published to the host by default — this repo's own README has you
+    # install Postgres locally on the standard 5432 for non-Docker
+    # development, and that instance would otherwise collide with this one
+    # the moment both are running. Services on the compose network still
+    # reach this over "db:5432" regardless. Uncomment to reach it from the
+    # host (psql, a GUI client, etc.) once you're not also running a local
+    # Postgres — or remap to a free port, e.g. "5433:5432".
+    # ports:
+    #   - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flighttracker -d flighttracker"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/flighttracker
+      SPRING_DATASOURCE_USERNAME: flighttracker
+      SPRING_DATASOURCE_PASSWORD: flighttracker
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    healthcheck:
+      # No actuator dependency in the app, so this just confirms the JVM is
+      # up and serving requests through to the database — enough to know
+      # nginx won't be proxying to a backend that isn't ready yet.
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/api/flights/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  frontend:
+    build: ./frontend
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "5173:80"
+
+volumes:
+  db-data:

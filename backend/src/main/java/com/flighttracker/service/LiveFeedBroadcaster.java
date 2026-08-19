@@ -16,7 +16,17 @@ import java.util.concurrent.ConcurrentHashMap;
 public class LiveFeedBroadcaster extends TextWebSocketHandler {
 
     private final Map<String, WebSocketSession> sessions = new ConcurrentHashMap<>();
-    private final ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
+
+    // Inject Spring Boot's autoconfigured ObjectMapper bean — the exact same
+    // one the REST controllers serialize through — rather than building a
+    // second one by hand. A hand-built mapper has to be kept in sync flag by
+    // flag with whatever Jackson customization Spring applies; the shared
+    // bean makes WS and REST serialize identically by construction instead.
+    private final ObjectMapper mapper;
+
+    public LiveFeedBroadcaster(ObjectMapper mapper) {
+        this.mapper = mapper;
+    }
 
     @Override
     public void afterConnectionEstablished(WebSocketSession session) {
