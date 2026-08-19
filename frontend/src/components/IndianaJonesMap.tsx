@@ -6,9 +6,15 @@ import { fetchHistory, fetchLivePositions, subscribeLiveFeed } from "../api/flig
 import "./IndianaJonesMap.css";
 
 // A small rotated biplane glyph stands in for the transponder icon —
-// heading comes straight off the state vector.
+// heading comes straight off the state vector. The ✈ glyph itself renders
+// nose-up-and-to-the-left (pointing roughly NW, i.e. -45°) in the fonts
+// this actually gets rendered in, not north, so a bare rotate(headingDeg)
+// leaves every plane pointing 45° off its true heading. Correct for the
+// glyph's native orientation before applying the compass heading.
+const PLANE_GLYPH_OFFSET_DEG = 45;
+
 function planeIcon(headingDeg: number | null) {
-  const rotation = headingDeg ?? 0;
+  const rotation = (headingDeg ?? 0) + PLANE_GLYPH_OFFSET_DEG;
   return L.divIcon({
     className: "plane-icon",
     html: `<div class="plane-glyph" style="transform: rotate(${rotation}deg)">&#9992;</div>`,
