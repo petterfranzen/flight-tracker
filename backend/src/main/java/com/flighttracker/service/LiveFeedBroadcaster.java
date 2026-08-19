@@ -17,15 +17,16 @@ public class LiveFeedBroadcaster extends TextWebSocketHandler {
 
     private final Map<String, WebSocketSession> sessions = new ConcurrentHashMap<>();
 
-    // Deliberately the same shape as Spring's autoconfigured REST ObjectMapper
-    // (which disables WRITE_DATES_AS_TIMESTAMPS by default) rather than
-    // Jackson's raw default — otherwise Instant fields like observedAt come
-    // out as a numeric epoch over the WebSocket while /api/flights/* renders
-    // the exact same FlightPosition's observedAt as an ISO-8601 string, and
-    // any client trusting one shape breaks the moment it reads the other.
-    private final ObjectMapper mapper = new ObjectMapper()
-            .findAndRegisterModules()
-            .disable(com.fasterxml.jackson.databind.SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+    // Inject Spring Boot's autoconfigured ObjectMapper bean — the exact same
+    // one the REST controllers serialize through — rather than building a
+    // second one by hand. A hand-built mapper has to be kept in sync flag by
+    // flag with whatever Jackson customization Spring applies; the shared
+    // bean makes WS and REST serialize identically by construction instead.
+    private final ObjectMapper mapper;
+
+    public LiveFeedBroadcaster(ObjectMapper mapper) {
+        this.mapper = mapper;
+    }
 
     @Override
     public void afterConnectionEstablished(WebSocketSession session) {
