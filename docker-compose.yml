@@ -1,0 +1,57 @@
+# Three independent services on one bridge network:
+#   db       — Postgres, its own image/container/volume, addressed only by
+#              service name (never localhost) so it can be moved to a
+#              managed/clustered instance later by changing SPRING_DATASOURCE_URL
+#              alone. Note: Postgres itself is a stateful singleton here —
+#              `--scale db=N` would just start N containers pointed at the
+#              same volume, which corrupts data, not a working replica set.
+#              Real DB scaling means read replicas / a managed HA service,
+#              swapped in behind the same connection string.
+#   backend  — Spring Boot API + WebSocket + the OpenSky poller. Stateless,
+#              safe to scale horizontally (`--scale backend=N`) once behind
+#              a load balancer.
+#   frontend — static bundle behind nginx, proxying /api and /ws to backend.
+#
+# Usage:
+#   docker compose up --build
+#   docker compose up -d --build   # detached
+#   docker compose down            # stop (add -v to also drop the db volume)
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: flighttracker
+      POSTGRES_USER: flighttracker
+      POSTGRES_PASSWORD: flighttracker
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432" # optional: only needed to reach the db from the host (psql, a GUI client, etc.)
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flighttracker -d flighttracker"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/flighttracker
+      SPRING_DATASOURCE_USERNAME: flighttracker
+      SPRING_DATASOURCE_PASSWORD: flighttracker
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+
+  frontend:
+    build: ./frontend
+    depends_on:
+      - backend
+    ports:
+      - "5173:80"
+
+volumes:
+  db-data:
