@@ -81,10 +81,32 @@
 }
 
 .plane-glyph {
-  font-size: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
   color: var(--route-red);
-  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.4);
   transition: transform 0.4s ease;
+}
+
+.plane-glyph svg {
+  width: 20px;
+  height: 20px;
+  fill: currentColor;
+  stroke: rgba(0, 0, 0, 0.4);
+  stroke-width: 1;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.4));
+}
+
+/* No rotation angle can read as "unknown" on its own — whatever we pick
+   coincides with some real heading. Mark it unmistakably instead. */
+.plane-glyph--unknown-heading svg {
+  fill: none;
+  stroke: var(--route-red);
+  stroke-dasharray: 2 2;
+  opacity: 0.6;
 }
 
 .dossier-popup .leaflet-popup-content-wrapper {

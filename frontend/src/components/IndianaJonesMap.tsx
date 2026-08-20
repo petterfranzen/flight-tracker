@@ -5,24 +5,31 @@ import type { FlightPosition } from "../types/flight";
 import { fetchHistory, fetchLivePositions, subscribeLiveFeed } from "../api/flightApi";
 import "./IndianaJonesMap.css";
 
-// A small rotated biplane glyph stands in for the transponder icon —
-// heading comes straight off the state vector. The ✈ glyph itself renders
-// nose-up-and-to-the-left (pointing roughly NW, i.e. -45°) in the fonts
-// this actually gets rendered in, not north, so a bare rotate(headingDeg)
-// leaves every plane pointing 45° off its true heading. Correct for the
-// glyph's native orientation before applying the compass heading.
-const PLANE_GLYPH_OFFSET_DEG = 45;
+// A small rotated dart stands in for the transponder icon — heading comes
+// straight off the state vector. This used to be the Unicode ✈ glyph
+// (U+2708) rotated by a fixed offset to correct for its assumed native
+// orientation, but that orientation isn't a fixed, portable fact — it
+// depends on whatever font/platform ends up rendering the emoji fallback
+// (the element has no font-family of its own), so the "right" offset on
+// one machine was visibly wrong on another. An inline SVG path has no such
+// ambiguity: authored pointing straight up (north), so rotate(headingDeg)
+// with no correction term is always correct by construction.
+const PLANE_SVG = `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+  <path d="M12 2 L19 20 L12 16 L5 20 Z" />
+</svg>`;
 
 function planeIcon(headingDeg: number | null) {
-  // Unknown heading gets no rotation at all (the glyph's raw native
-  // orientation) rather than defaulting to 0° and then applying the
-  // offset — otherwise "we don't know the heading" would render
-  // indistinguishably from "heading is roughly NE", which is worse than
-  // the pre-fix behavior it would otherwise silently replace.
-  const rotation = headingDeg === null ? 0 : headingDeg + PLANE_GLYPH_OFFSET_DEG;
+  // Every rotation angle coincides with some real heading, so "just don't
+  // rotate it" (or default to any other fixed angle) still misrepresents
+  // an unknown heading as a specific real reading. Give unknown headings
+  // a distinct outline style instead, independent of rotation, so they
+  // can't be mistaken for a confident reading at any angle.
+  const known = headingDeg != null;
+  const rotation = known ? headingDeg : 0;
+  const glyphClass = known ? "plane-glyph" : "plane-glyph plane-glyph--unknown-heading";
   return L.divIcon({
     className: "plane-icon",
-    html: `<div class="plane-glyph" style="transform: rotate(${rotation}deg)">&#9992;</div>`,
+    html: `<div class="${glyphClass}" style="transform: rotate(${rotation}deg)">${PLANE_SVG}</div>`,
     iconSize: [22, 22],
     iconAnchor: [11, 11],
   });
