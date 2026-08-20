@@ -1,14 +1,12 @@
 package com.flighttracker.service.agent;
 
 import com.flighttracker.model.Aircraft;
-import com.flighttracker.model.FlightPosition;
 import com.flighttracker.repository.AircraftRepository;
 import com.flighttracker.repository.FlightPositionRepository;
 import com.flighttracker.service.LiveFeedBroadcaster;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -63,18 +61,16 @@ public class AgentOrchestrator {
                     Aircraft::touch,
                     () -> aircraftRepository.save(new Aircraft(r.icao24()))
             );
-            try {
-                FlightPosition pos = new FlightPosition(
-                        r.icao24(), r.callsign(), r.observedAt(),
-                        r.latitude(), r.longitude(), r.altitudeM(),
-                        r.velocityMs(), r.headingDeg(), r.verticalRateMs(),
-                        r.onGround(), sourceName);
-                positionRepository.save(pos);
-                broadcaster.publish(pos);
+            var inserted = positionRepository.insertIgnoringDuplicate(
+                    r.icao24(), r.callsign(), r.observedAt(),
+                    r.latitude(), r.longitude(), r.altitudeM(),
+                    r.velocityMs(), r.headingDeg(), r.verticalRateMs(),
+                    r.onGround(), sourceName);
+            if (inserted.isPresent()) {
+                broadcaster.publish(inserted.get());
                 written++;
-            } catch (DataIntegrityViolationException dup) {
-                // another agent already reported this exact (icao24, observed_at) tick — expected, skip
             }
+            // else: another agent already reported this exact (icao24, observed_at) tick — expected, skip
         }
         log.info("{}: wrote {} of {} position reports", sourceName, written, reports.size());
     }
