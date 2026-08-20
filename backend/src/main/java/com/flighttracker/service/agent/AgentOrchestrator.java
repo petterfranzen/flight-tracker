@@ -4,6 +4,7 @@ import com.flighttracker.model.Aircraft;
 import com.flighttracker.repository.AircraftRepository;
 import com.flighttracker.repository.FlightPositionRepository;
 import com.flighttracker.service.LiveFeedBroadcaster;
+import com.flighttracker.service.enrichment.AircraftEnrichmentService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -11,6 +12,7 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -28,15 +30,18 @@ public class AgentOrchestrator {
     private final AircraftRepository aircraftRepository;
     private final FlightPositionRepository positionRepository;
     private final LiveFeedBroadcaster broadcaster;
+    private final AircraftEnrichmentService enrichmentService;
 
     public AgentOrchestrator(List<FlightDataAgent> agents,
                               AircraftRepository aircraftRepository,
                               FlightPositionRepository positionRepository,
-                              LiveFeedBroadcaster broadcaster) {
+                              LiveFeedBroadcaster broadcaster,
+                              AircraftEnrichmentService enrichmentService) {
         this.agents = agents;
         this.aircraftRepository = aircraftRepository;
         this.positionRepository = positionRepository;
         this.broadcaster = broadcaster;
+        this.enrichmentService = enrichmentService;
     }
 
     @Scheduled(fixedDelayString = "#{${flighttracker.agents.poll-interval-seconds} * 1000}")
@@ -45,7 +50,13 @@ public class AgentOrchestrator {
             try {
                 List<RawPositionReport> reports = agent.poll();
                 if (!reports.isEmpty()) {
-                    persist(agent.sourceName(), reports);
+                    List<String> newAircraft = persist(agent.sourceName(), reports);
+                    // Fired after persist()'s transaction has committed (we're back
+                    // on the caller now), not from inside it — the enrichment lookup
+                    // runs on a separate @Async thread, so kicking it off mid-transaction
+                    // risks that thread querying for the aircraft row before this
+                    // transaction has actually committed it.
+                    newAircraft.forEach(enrichmentService::enrichNewAircraft);
                 }
             } catch (Exception e) {
                 log.warn("Agent {} failed this cycle: {}", agent.sourceName(), e.toString());
@@ -53,13 +64,18 @@ public class AgentOrchestrator {
         }
     }
 
+    /** Returns the icao24s that were newly seen this cycle (not already known aircraft). */
     @Transactional
-    protected void persist(String sourceName, List<RawPositionReport> reports) {
+    protected List<String> persist(String sourceName, List<RawPositionReport> reports) {
         int written = 0;
+        List<String> newAircraft = new ArrayList<>();
         for (RawPositionReport r : reports) {
             aircraftRepository.findById(r.icao24()).ifPresentOrElse(
                     Aircraft::touch,
-                    () -> aircraftRepository.save(new Aircraft(r.icao24()))
+                    () -> {
+                        aircraftRepository.save(new Aircraft(r.icao24()));
+                        newAircraft.add(r.icao24());
+                    }
             );
             var inserted = positionRepository.insertIgnoringDuplicate(
                     r.icao24(), r.callsign(), r.observedAt(),
@@ -73,5 +89,6 @@ public class AgentOrchestrator {
             // else: another agent already reported this exact (icao24, observed_at) tick — expected, skip
         }
         log.info("{}: wrote {} of {} position reports", sourceName, written, reports.size());
+        return newAircraft;
     }
 }

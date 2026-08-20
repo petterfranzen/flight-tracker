@@ -1,4 +1,4 @@
-import type { AircraftUsage, FlightPosition } from "../types/flight";
+import type { AircraftDossier, AircraftUsage, FlightPosition } from "../types/flight";
 
 export async function fetchLivePositions(withinMinutes = 10): Promise<FlightPosition[]> {
   const res = await fetch(`/api/flights/live?withinMinutes=${withinMinutes}`);
@@ -9,6 +9,13 @@ export async function fetchLivePositions(withinMinutes = 10): Promise<FlightPosi
 export async function fetchHistory(icao24: string, from: string, to: string): Promise<FlightPosition[]> {
   const res = await fetch(`/api/flights/${icao24}/history?from=${from}&to=${to}`);
   if (!res.ok) throw new Error(`history fetch failed: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchAircraftDossier(icao24: string): Promise<AircraftDossier | null> {
+  const res = await fetch(`/api/aircraft/${icao24}`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`aircraft fetch failed: ${res.status}`);
   return res.json();
 }
 

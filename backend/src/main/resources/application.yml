@@ -31,3 +31,12 @@ flighttracker:
         lat-max: 66.0
         lon-min: 10.0
         lon-max: 25.0
+      # Origin/destination enrichment needs an authenticated call
+      # (anonymous /flights/aircraft returns 403) — register a free
+      # OAuth2 client-credentials app at https://opensky-network.org/login
+      # and set these via env vars. Left blank, that lookup is skipped
+      # and the dossier just shows "—" for origin/destination.
+      oauth:
+        client-id: ${OPENSKY_CLIENT_ID:}
+        client-secret: ${OPENSKY_CLIENT_SECRET:}
+        token-url: https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token
