@@ -33,6 +33,12 @@ Open http://localhost:5173 — the map centres on the bounding box configured
 in `application.yml` (`flighttracker.agents.opensky.bbox`, defaults to the
 Baltic/Stockholm area).
 
+## Deploying
+
+`docker compose up --build` (repo root) covers local/dev use. For running
+this unattended on a NAS via prebuilt images from CI, see
+[`deploy/README.md`](deploy/README.md).
+
 ## Where things live
 - `backend/.../service/agent/` — the agent interface + orchestrator + the OpenSky implementation. Add a new source by adding one `@Component`.
 - `backend/.../service/UsageService.java` — turns historic positions into distance/airtime figures.
