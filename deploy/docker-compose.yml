@@ -5,10 +5,15 @@
 # deploy/README.md for the full walkthrough.
 #
 # Unlike the repo-root docker-compose.yml (dev use, builds from source,
-# publishes backend's 8080 for direct API poking), this only publishes the
-# frontend port: nginx already proxies /api and /ws to the backend
+# publishes backend-api's 8080 for direct API poking), this only publishes
+# the frontend port: nginx already proxies /api and /ws to backend-api
 # internally, so there's no need to expose the backend or db ports on an
 # unattended NAS.
+#
+# backend-api and backend-agent are the same image (one Maven build split
+# by Spring profile — see the backend's @Profile("api")/@Profile("agent")),
+# not two separate images to publish/pull. backend-agent is the one that
+# needs the OpenSky credentials; backend-api never calls OpenSky itself.
 
 name: flight-tracker
 
@@ -29,11 +34,31 @@ services:
       timeout: 5s
       retries: 10
 
-  backend:
-    container_name: flight_tracker_backend
+  backend-api:
+    container_name: flight_tracker_backend_api
     image: ghcr.io/petterfranzen/flight-tracker-backend:${IMAGE_TAG:-latest}
     restart: always
     environment:
+      SPRING_PROFILES_ACTIVE: api
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/flighttracker
+      SPRING_DATASOURCE_USERNAME: flighttracker
+      SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD:-flighttracker}
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/api/flights/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  backend-agent:
+    container_name: flight_tracker_backend_agent
+    image: ghcr.io/petterfranzen/flight-tracker-backend:${IMAGE_TAG:-latest}
+    restart: always
+    environment:
+      SPRING_PROFILES_ACTIVE: agent
       SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/flighttracker
       SPRING_DATASOURCE_USERNAME: flighttracker
       SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD:-flighttracker}
@@ -46,19 +71,15 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/api/flights/live"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 20s
+    # No healthcheck: headless (no embedded web server in the "agent"
+    # profile), so there's no port to probe — check `docker logs` instead.
 
   frontend:
     container_name: flight_tracker_frontend
     image: ghcr.io/petterfranzen/flight-tracker-frontend:${IMAGE_TAG:-latest}
     restart: always
     depends_on:
-      backend:
+      backend-api:
         condition: service_healthy
     ports:
       - "${FRONTEND_PORT:-8090}:80"

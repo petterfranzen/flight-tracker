@@ -1,29 +1,31 @@
 package com.flighttracker.controller;
 
 import com.flighttracker.dto.PollingStatus;
-import com.flighttracker.service.agent.AgentOrchestrator;
+import com.flighttracker.service.PollWindowService;
+import org.springframework.context.annotation.Profile;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
 @RequestMapping("/api/agents")
+@Profile("api")
 public class AgentController {
 
-    private final AgentOrchestrator orchestrator;
+    private final PollWindowService pollWindowService;
 
-    public AgentController(AgentOrchestrator orchestrator) {
-        this.orchestrator = orchestrator;
+    public AgentController(PollWindowService pollWindowService) {
+        this.pollWindowService = pollWindowService;
     }
 
     /** Whether the poll window is currently open, and how long until it closes — for a UI countdown. */
     @GetMapping("/status")
     public PollingStatus status() {
-        return orchestrator.status();
+        return pollWindowService.status();
     }
 
-    /** Reopens the poll window (see AgentOrchestrator's poll-window comment) — wired to the frontend's restart button. */
+    /** Reopens the poll window (see PollWindowService) — wired to the frontend's restart button. */
     @PostMapping("/restart")
     public PollingStatus restart() {
-        orchestrator.restartPolling();
-        return orchestrator.status();
+        pollWindowService.restart();
+        return pollWindowService.status();
     }
 }

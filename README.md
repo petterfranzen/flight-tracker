@@ -9,19 +9,22 @@ time window straight from the position history — no separate "usage"
 table to keep in sync.
 
 ## Stack
-- **Backend**: Java 21 / Spring Boot, scheduled `FlightDataAgent` pollers, WebSocket push
+- **Backend**: Java 21 / Spring Boot, split into two roles by `SPRING_PROFILES_ACTIVE` from one build — `api` (REST + WebSocket) and `agent` (the scheduled `FlightDataAgent` pollers). They coordinate only through Postgres: `PollWindowService` (bounded-polling state) and `LISTEN`/`NOTIFY` (live position feed — see `PositionNotificationListener`), not a broker or a direct call, since they're separate processes/containers.
 - **Database**: PostgreSQL, one append-only `flight_position` table
 - **Frontend**: React + TypeScript + Leaflet, Vite
 
 ## Run it locally
 
+Needs both backend roles running — neither does anything useful alone (`api` has nothing to show without `agent` writing positions; `agent` has no UI without `api`).
+
 ```bash
 # 1. Environment (Neovim, Claude Code, Codex, Gemini CLI, Postgres) — see setup-cachyos.sh
 ./setup-cachyos.sh
 
-# 2. Backend
+# 2. Backend — two processes, two terminals
 cd backend
-mvn spring-boot:run
+SPRING_PROFILES_ACTIVE=api mvn spring-boot:run      # terminal A: REST + WebSocket on :8080
+SPRING_PROFILES_ACTIVE=agent mvn spring-boot:run    # terminal B: headless poller, no port
 
 # 3. Frontend
 cd frontend

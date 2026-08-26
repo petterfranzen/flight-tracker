@@ -1,25 +1,34 @@
-# Three independent services on one bridge network:
-#   db       — Postgres, its own image/container/volume, addressed only by
-#              service name (never localhost) so it can be moved to a
-#              managed/clustered instance later by changing SPRING_DATASOURCE_URL
-#              alone. Note: Postgres itself is a stateful singleton here —
-#              `--scale db=N` would just start N containers pointed at the
-#              same volume, which corrupts data, not a working replica set.
-#              Real DB scaling means read replicas / a managed HA service,
-#              swapped in behind the same connection string.
-#   backend  — Spring Boot API + WebSocket + the OpenSky poller. NOT safe to
-#              scale horizontally as written (`--scale backend=N` is a bad
-#              idea today): each replica runs its own AgentOrchestrator, so
-#              N replicas means N independent pollers hitting OpenSky and
-#              writing to the same table (multiplying upstream load, though
-#              the unique index prevents duplicate rows), and each
-#              replica's LiveFeedBroadcaster only knows about the WebSocket
-#              clients connected to *that* replica — a client connected to
-#              replica A never sees a position written by replica B. Scaling
-#              this for real needs poller leader election (or moving the
-#              polling out of the request-serving replicas entirely) plus a
-#              shared pub/sub layer (e.g. Redis) behind LiveFeedBroadcaster.
-#   frontend — static bundle behind nginx, proxying /api and /ws to backend.
+# Four independent services on one bridge network:
+#   db           — Postgres, its own image/container/volume, addressed only
+#                  by service name (never localhost) so it can be moved to a
+#                  managed/clustered instance later by changing
+#                  SPRING_DATASOURCE_URL alone. Note: Postgres itself is a
+#                  stateful singleton here — `--scale db=N` would just start
+#                  N containers pointed at the same volume, which corrupts
+#                  data, not a working replica set. Real DB scaling means
+#                  read replicas / a managed HA service, swapped in behind
+#                  the same connection string.
+#   backend-api  — Spring Boot REST + WebSocket, SPRING_PROFILES_ACTIVE=api.
+#                  Same image as backend-agent (one Maven build, split by
+#                  Spring profile — see @Profile("api")/@Profile("agent")
+#                  throughout the backend) rather than two codebases, since
+#                  both share the same JPA entities/domain code. Holds no
+#                  OpenSky credentials — it never calls OpenSky itself.
+#   backend-agent — the scheduled OpenSky poller + enrichment,
+#                  SPRING_PROFILES_ACTIVE=agent. No exposed port (headless,
+#                  see application-agent.yml) and NOT safe to scale
+#                  horizontally as written (`--scale backend-agent=N` is a
+#                  bad idea today): each replica runs its own
+#                  AgentOrchestrator, so N replicas means N independent
+#                  pollers hitting OpenSky and writing to the same table
+#                  (multiplying upstream load, though the unique index
+#                  prevents duplicate rows). Coordinates with backend-api
+#                  only through Postgres — PollWindowService (bounded-polling
+#                  state) and LISTEN/NOTIFY (live position feed, see
+#                  PositionNotificationListener) — deliberately not a new
+#                  broker like Redis, since the data volume here is small.
+#   frontend     — static bundle behind nginx, proxying /api and /ws to
+#                  backend-api.
 #
 # Usage:
 #   docker compose up --build
@@ -50,18 +59,13 @@ services:
       timeout: 5s
       retries: 10
 
-  backend:
+  backend-api:
     build: ./backend
     environment:
+      SPRING_PROFILES_ACTIVE: api
       SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/flighttracker
       SPRING_DATASOURCE_USERNAME: flighttracker
       SPRING_DATASOURCE_PASSWORD: flighttracker
-      # OpenSky OAuth2 client-credentials app, for the authenticated
-      # /flights/aircraft lookup (origin/destination). Read from the
-      # repo-root .env file (gitignored, not committed) — leave unset to
-      # disable that lookup, it degrades to showing "—" in the dossier.
-      OPENSKY_CLIENT_ID: ${OPENSKY_CLIENT_ID:-}
-      OPENSKY_CLIENT_SECRET: ${OPENSKY_CLIENT_SECRET:-}
     depends_on:
       db:
         condition: service_healthy
@@ -77,10 +81,31 @@ services:
       retries: 10
       start_period: 20s
 
+  backend-agent:
+    build: ./backend
+    environment:
+      SPRING_PROFILES_ACTIVE: agent
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/flighttracker
+      SPRING_DATASOURCE_USERNAME: flighttracker
+      SPRING_DATASOURCE_PASSWORD: flighttracker
+      # OpenSky OAuth2 client-credentials app, for the authenticated
+      # /flights/aircraft origin/destination fallback lookup. Read from the
+      # repo-root .env file (gitignored, not committed) — leave unset to
+      # disable that lookup, it degrades to showing "—" in the dossier.
+      OPENSKY_CLIENT_ID: ${OPENSKY_CLIENT_ID:-}
+      OPENSKY_CLIENT_SECRET: ${OPENSKY_CLIENT_SECRET:-}
+    depends_on:
+      db:
+        condition: service_healthy
+    # No healthcheck: headless (spring.main.web-application-type: none in
+    # application-agent.yml), so there's no port to probe the way
+    # backend-api's wget check does. `docker compose ps`/logs are the way
+    # to check on it instead.
+
   frontend:
     build: ./frontend
     depends_on:
-      backend:
+      backend-api:
         condition: service_healthy
     ports:
       - "5173:80"

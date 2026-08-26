@@ -2,6 +2,7 @@ package com.flighttracker.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.flighttracker.model.FlightPosition;
+import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
@@ -11,8 +12,13 @@ import java.io.IOException;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
-/** Fans out each newly-persisted position to every connected map client. */
+/**
+ * Fans out each newly-persisted position to every connected map client.
+ * "api"-only: positions are written by the "agent" container, which
+ * reaches this one via PositionNotificationListener, not a direct call.
+ */
 @Component
+@Profile("api")
 public class LiveFeedBroadcaster extends TextWebSocketHandler {
 
     private final Map<String, WebSocketSession> sessions = new ConcurrentHashMap<>();

@@ -51,3 +51,17 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_position_icao_time_source
 
 COMMENT ON TABLE flight_position IS
     'Append-only. Rows are never updated or deleted by the app; usage metrics are computed from this history.';
+
+-- Bounded-polling state (see PollWindowService). Now that the API and the
+-- polling agent are separate containers/processes, they can no longer
+-- share an in-memory AtomicReference for "is the poll window open" — this
+-- single-row table is the shared state instead. Both processes run this
+-- schema on startup, so the insert is ON CONFLICT DO NOTHING to avoid
+-- resetting an already-running agent's window if the api container
+-- restarts later.
+CREATE TABLE IF NOT EXISTS poll_window (
+    id           SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    active_until TIMESTAMPTZ NOT NULL
+);
+INSERT INTO poll_window (id, active_until) VALUES (1, now())
+ON CONFLICT (id) DO NOTHING;

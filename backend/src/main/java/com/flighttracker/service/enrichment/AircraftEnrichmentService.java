@@ -5,6 +5,7 @@ import com.flighttracker.repository.AircraftRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Async;
+import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -27,6 +28,7 @@ import java.util.Optional;
  * practice — not done here to stay within OpenSky's daily credit budget.
  */
 @Service
+@Profile("agent")
 public class AircraftEnrichmentService {
 
     private static final Logger log = LoggerFactory.getLogger(AircraftEnrichmentService.class);

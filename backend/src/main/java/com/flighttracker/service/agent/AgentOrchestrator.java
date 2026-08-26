@@ -1,75 +1,83 @@
 package com.flighttracker.service.agent;
 
-import com.flighttracker.dto.PollingStatus;
 import com.flighttracker.model.Aircraft;
 import com.flighttracker.repository.AircraftRepository;
 import com.flighttracker.repository.FlightPositionRepository;
-import com.flighttracker.service.LiveFeedBroadcaster;
+import com.flighttracker.service.PollWindowService;
 import com.flighttracker.service.enrichment.AircraftEnrichmentService;
+import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Profile;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.Duration;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Spring auto-injects every FlightDataAgent bean here — registering a new
  * agent is just adding a @Component that implements the interface, nothing
  * to wire up by hand. Each poll cycle fans out to all agents, normalises
  * their reports, and writes to the append-only flight_position table.
+ *
+ * Only runs in the "agent" container — see PollWindowService and
+ * PositionNotificationListener for how it coordinates with the "api"
+ * container (poll-window state and the live WebSocket feed respectively)
+ * now that they're separate processes.
  */
 @Service
+@Profile("agent")
 public class AgentOrchestrator {
 
     private static final Logger log = LoggerFactory.getLogger(AgentOrchestrator.class);
+    private static final String POSITION_NOTIFY_CHANNEL = "flight_position";
 
     private final List<FlightDataAgent> agents;
     private final AircraftRepository aircraftRepository;
     private final FlightPositionRepository positionRepository;
-    private final LiveFeedBroadcaster broadcaster;
     private final AircraftEnrichmentService enrichmentService;
-    private final Duration pollWindow;
+    private final PollWindowService pollWindowService;
+    private final JdbcTemplate jdbcTemplate;
 
-    // Bounds how long polling stays active per activation, so this doesn't
-    // run unattended 24/7 and burn through OpenSky's daily anonymous credit
-    // budget (we've exhausted it before — see OpenSkyAgent/OpenSkyFlightsClient)
-    // on a NAS deployment nobody's watching. Starts open on boot so the app
-    // shows live traffic immediately; once it elapses, /api/agents/restart
-    // (wired to a UI button) is the only way to reopen it.
-    private final AtomicReference<Instant> activeUntil;
-    private final AtomicBoolean windowOpen = new AtomicBoolean(true);
+    // Local-only, just to avoid a log line every poll cycle while the
+    // window stays closed — the authoritative state is PollWindowService.
+    private final AtomicBoolean windowOpenLastCycle = new AtomicBoolean(true);
 
     public AgentOrchestrator(List<FlightDataAgent> agents,
                               AircraftRepository aircraftRepository,
                               FlightPositionRepository positionRepository,
-                              LiveFeedBroadcaster broadcaster,
                               AircraftEnrichmentService enrichmentService,
-                              @Value("${flighttracker.agents.poll-window-seconds}") long pollWindowSeconds) {
+                              PollWindowService pollWindowService,
+                              JdbcTemplate jdbcTemplate) {
         this.agents = agents;
         this.aircraftRepository = aircraftRepository;
         this.positionRepository = positionRepository;
-        this.broadcaster = broadcaster;
         this.enrichmentService = enrichmentService;
-        this.pollWindow = Duration.ofSeconds(pollWindowSeconds);
-        this.activeUntil = new AtomicReference<>(Instant.now().plus(pollWindow));
+        this.pollWindowService = pollWindowService;
+        this.jdbcTemplate = jdbcTemplate;
+    }
+
+    // Opens the window on every container boot, same as the old in-memory
+    // default did — so a fresh deployment shows live traffic immediately
+    // without needing the UI's restart button first.
+    @PostConstruct
+    void openWindowOnStartup() {
+        pollWindowService.restart();
     }
 
     @Scheduled(fixedDelayString = "#{${flighttracker.agents.poll-interval-seconds} * 1000}")
     public void pollAll() {
-        if (Instant.now().isAfter(activeUntil.get())) {
-            if (windowOpen.compareAndSet(true, false)) {
-                log.info("Polling window elapsed after {} — stopped until restarted via POST /api/agents/restart", pollWindow);
+        if (!pollWindowService.isActive()) {
+            if (windowOpenLastCycle.compareAndSet(true, false)) {
+                log.info("Polling window elapsed — stopped until restarted via POST /api/agents/restart");
             }
             return;
         }
+        windowOpenLastCycle.set(true);
         for (FlightDataAgent agent : agents) {
             try {
                 List<RawPositionReport> reports = agent.poll();
@@ -86,21 +94,6 @@ public class AgentOrchestrator {
                 log.warn("Agent {} failed this cycle: {}", agent.sourceName(), e.toString());
             }
         }
-    }
-
-    /** Reopens the polling window for another {@code pollWindow} from now. */
-    public void restartPolling() {
-        activeUntil.set(Instant.now().plus(pollWindow));
-        windowOpen.set(true);
-        log.info("Polling restarted — active for {}", pollWindow);
-    }
-
-    public PollingStatus status() {
-        Instant now = Instant.now();
-        Instant until = activeUntil.get();
-        boolean active = now.isBefore(until);
-        long secondsRemaining = active ? Duration.between(now, until).toSeconds() : 0;
-        return new PollingStatus(active, secondsRemaining);
     }
 
     /** Returns the reports for icao24s that were newly seen this cycle (not already known aircraft). */
@@ -122,7 +115,15 @@ public class AgentOrchestrator {
                     r.velocityMs(), r.headingDeg(), r.verticalRateMs(),
                     r.onGround(), sourceName);
             if (inserted.isPresent()) {
-                broadcaster.publish(inserted.get());
+                // The "api" container's WebSocket clients live in a separate
+                // process now, so there's no LiveFeedBroadcaster to call
+                // directly here — NOTIFY instead (see
+                // PositionNotificationListener on the api side). Postgres
+                // only delivers this to LISTENers once *this* transaction
+                // commits, and only the row id is sent (LISTEN/NOTIFY has an
+                // 8000-byte payload cap, and the listener can cheaply look
+                // the row up itself).
+                jdbcTemplate.execute("NOTIFY " + POSITION_NOTIFY_CHANNEL + ", '" + inserted.get().getId() + "'");
                 written++;
             }
             // else: another agent already reported this exact (icao24, observed_at) tick — expected, skip

@@ -4,6 +4,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
+import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.HttpServerErrorException;
@@ -35,6 +36,7 @@ import java.util.Optional;
  * future FlightDataAgent doesn't have to reimplement it.
  */
 @Component
+@Profile("agent")
 public class OpenSkyAgent implements FlightDataAgent {
 
     private static final Logger log = LoggerFactory.getLogger(OpenSkyAgent.class);
