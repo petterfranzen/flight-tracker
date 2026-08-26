@@ -56,6 +56,12 @@ services:
       SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/flighttracker
       SPRING_DATASOURCE_USERNAME: flighttracker
       SPRING_DATASOURCE_PASSWORD: flighttracker
+      # OpenSky OAuth2 client-credentials app, for the authenticated
+      # /flights/aircraft lookup (origin/destination). Read from the
+      # repo-root .env file (gitignored, not committed) — leave unset to
+      # disable that lookup, it degrades to showing "—" in the dossier.
+      OPENSKY_CLIENT_ID: ${OPENSKY_CLIENT_ID:-}
+      OPENSKY_CLIENT_SECRET: ${OPENSKY_CLIENT_SECRET:-}
     depends_on:
       db:
         condition: service_healthy

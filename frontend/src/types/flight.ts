@@ -13,6 +13,20 @@ export interface FlightPosition {
   agentSource: string;
 }
 
+export interface AircraftDossier {
+  icao24: string;
+  registration: string | null;
+  model: string | null;
+  operator: string | null;
+  originAirport: string | null;
+  destinationAirport: string | null;
+}
+
+export interface PollingStatus {
+  active: boolean;
+  secondsRemaining: number;
+}
+
 export interface AircraftUsage {
   icao24: string;
   registration: string | null;

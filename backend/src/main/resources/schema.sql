@@ -12,6 +12,16 @@ CREATE TABLE IF NOT EXISTS aircraft (
     last_seen_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Dossier enrichment (registration/model/operator via adsbdb.com,
+-- origin/destination via authenticated OpenSky /flights/aircraft), fetched
+-- lazily once per aircraft the first time we see it — see
+-- AircraftEnrichmentService. No migration framework in this project, so
+-- these are added with IF NOT EXISTS to stay idempotent against a database
+-- that already has the table from before this enrichment existed.
+ALTER TABLE aircraft ADD COLUMN IF NOT EXISTS origin_airport VARCHAR(8);
+ALTER TABLE aircraft ADD COLUMN IF NOT EXISTS destination_airport VARCHAR(8);
+ALTER TABLE aircraft ADD COLUMN IF NOT EXISTS metadata_fetched_at TIMESTAMPTZ;
+
 CREATE TABLE IF NOT EXISTS flight_position (
     id              BIGSERIAL PRIMARY KEY,
     icao24          VARCHAR(6) NOT NULL REFERENCES aircraft(icao24),

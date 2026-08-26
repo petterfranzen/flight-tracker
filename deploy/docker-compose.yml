@@ -1,0 +1,62 @@
+# NAS-facing compose file: pulls prebuilt images from GHCR instead of
+# building locally (see .github/workflows/docker-publish.yml for how those
+# get published). Copy this file + a .env (see .env.example) onto the NAS
+# and run `docker compose pull && docker compose up -d` — see
+# deploy/README.md for the full walkthrough.
+#
+# Unlike the repo-root docker-compose.yml (dev use, builds from source,
+# publishes backend's 8080 for direct API poking), this only publishes the
+# frontend port: nginx already proxies /api and /ws to the backend
+# internally, so there's no need to expose the backend or db ports on an
+# unattended NAS.
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: flighttracker
+      POSTGRES_USER: flighttracker
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-flighttracker}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flighttracker -d flighttracker"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    image: ghcr.io/petterfranzen/flight-tracker-backend:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/flighttracker
+      SPRING_DATASOURCE_USERNAME: flighttracker
+      SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD:-flighttracker}
+      # OpenSky OAuth2 client-credentials app, for the authenticated
+      # /flights/aircraft origin/destination fallback lookup. Leave unset
+      # to disable it (adsbdb's callsign route lookup still works without
+      # it — see AircraftEnrichmentService).
+      OPENSKY_CLIENT_ID: ${OPENSKY_CLIENT_ID:-}
+      OPENSKY_CLIENT_SECRET: ${OPENSKY_CLIENT_SECRET:-}
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/api/flights/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  frontend:
+    image: ghcr.io/petterfranzen/flight-tracker-frontend:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${FRONTEND_PORT:-8090}:80"
+
+volumes:
+  db-data:

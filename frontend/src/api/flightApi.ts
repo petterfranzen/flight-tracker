@@ -1,4 +1,4 @@
-import type { AircraftUsage, FlightPosition } from "../types/flight";
+import type { AircraftDossier, AircraftUsage, FlightPosition, PollingStatus } from "../types/flight";
 
 export async function fetchLivePositions(withinMinutes = 10): Promise<FlightPosition[]> {
   const res = await fetch(`/api/flights/live?withinMinutes=${withinMinutes}`);
@@ -12,9 +12,28 @@ export async function fetchHistory(icao24: string, from: string, to: string): Pr
   return res.json();
 }
 
+export async function fetchAircraftDossier(icao24: string): Promise<AircraftDossier | null> {
+  const res = await fetch(`/api/aircraft/${icao24}`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`aircraft fetch failed: ${res.status}`);
+  return res.json();
+}
+
 export async function fetchUsage(from: string, to: string): Promise<AircraftUsage[]> {
   const res = await fetch(`/api/usage?from=${from}&to=${to}`);
   if (!res.ok) throw new Error(`usage fetch failed: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchPollingStatus(): Promise<PollingStatus> {
+  const res = await fetch("/api/agents/status");
+  if (!res.ok) throw new Error(`polling status fetch failed: ${res.status}`);
+  return res.json();
+}
+
+export async function restartPolling(): Promise<PollingStatus> {
+  const res = await fetch("/api/agents/restart", { method: "POST" });
+  if (!res.ok) throw new Error(`polling restart failed: ${res.status}`);
   return res.json();
 }
 
