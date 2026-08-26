@@ -58,6 +58,36 @@
   color: var(--ink);
 }
 
+.polling-status {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+
+.polling-badge {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border: 1px solid var(--brass);
+}
+.polling-badge--live { color: var(--leather); }
+.polling-badge--stopped { color: var(--route-red); border-color: var(--route-red); }
+
+.polling-restart {
+  background: var(--brass);
+  color: var(--leather-dark);
+  border: none;
+  padding: 4px 10px;
+  font-family: "Special Elite", monospace;
+  font-size: 11px;
+  cursor: pointer;
+}
+.polling-restart:hover:not(:disabled) { filter: brightness(1.1); }
+.polling-restart:disabled { opacity: 0.6; cursor: default; }
+
 .expedition-map {
   width: 100%;
   height: 100%;

@@ -22,6 +22,11 @@ export interface AircraftDossier {
   destinationAirport: string | null;
 }
 
+export interface PollingStatus {
+  active: boolean;
+  secondsRemaining: number;
+}
+
 export interface AircraftUsage {
   icao24: string;
   registration: string | null;

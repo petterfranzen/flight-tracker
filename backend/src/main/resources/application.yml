@@ -23,6 +23,11 @@ flighttracker:
     # API is the easiest to start with — no key needed for anonymous,
     # rate-limited use).
     poll-interval-seconds: 15
+    # Polling auto-stops this long after each start/restart, so an
+    # unattended NAS deployment doesn't run 24/7 and burn through
+    # OpenSky's daily anonymous credit budget. Reopen it via
+    # POST /api/agents/restart (the frontend's restart button).
+    poll-window-seconds: 60
     opensky:
       enabled: true
       base-url: https://opensky-network.org/api

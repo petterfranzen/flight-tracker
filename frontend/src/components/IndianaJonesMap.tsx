@@ -1,9 +1,22 @@
 import { useEffect, useRef, useState } from "react";
 import { MapContainer, TileLayer, Marker, Polyline, Popup, useMap } from "react-leaflet";
 import L from "leaflet";
-import type { AircraftDossier, FlightPosition } from "../types/flight";
-import { fetchAircraftDossier, fetchHistory, fetchLivePositions, subscribeLiveFeed } from "../api/flightApi";
+import type { AircraftDossier, FlightPosition, PollingStatus } from "../types/flight";
+import {
+  fetchAircraftDossier,
+  fetchHistory,
+  fetchLivePositions,
+  fetchPollingStatus,
+  restartPolling,
+  subscribeLiveFeed,
+} from "../api/flightApi";
 import "./IndianaJonesMap.css";
+
+// How often the header badge re-checks the poll window's remaining time.
+// Independent of flighttracker.agents.poll-interval-seconds (that's how
+// often the backend hits OpenSky) — this just keeps the countdown display
+// fresh.
+const STATUS_POLL_MS = 5_000;
 
 // A small rotated dart stands in for the transponder icon — heading comes
 // straight off the state vector. This used to be the Unicode ✈ glyph
@@ -71,6 +84,8 @@ export default function IndianaJonesMap() {
   const [selected, setSelected] = useState<string | null>(null);
   const [route, setRoute] = useState<[number, number][]>([]);
   const [dossier, setDossier] = useState<AircraftDossier | null>(null);
+  const [polling, setPolling] = useState<PollingStatus | null>(null);
+  const [restarting, setRestarting] = useState(false);
 
   // The live feed subscription below is set up once and outlives every
   // selection change, so its closure can't see updates to `selected` —
@@ -101,6 +116,20 @@ export default function IndianaJonesMap() {
   }, []);
 
   useEffect(() => {
+    const check = () => fetchPollingStatus().then(setPolling).catch(() => {});
+    check();
+    const interval = setInterval(check, STATUS_POLL_MS);
+    return () => clearInterval(interval);
+  }, []);
+
+  function handleRestartPolling() {
+    setRestarting(true);
+    restartPolling()
+      .then(setPolling)
+      .finally(() => setRestarting(false));
+  }
+
+  useEffect(() => {
     if (!selected) {
       setRoute([]);
       setDossier(null);
@@ -123,6 +152,18 @@ export default function IndianaJonesMap() {
       <header className="dossier-header">
         <span className="dossier-eyebrow">Aeronautical Survey &amp; Charting Office</span>
         <h1>Live Traffic Chart</h1>
+        <div className="polling-status">
+          {polling?.active ? (
+            <span className="polling-badge polling-badge--live">Watch active · {polling.secondsRemaining}s</span>
+          ) : (
+            <>
+              <span className="polling-badge polling-badge--stopped">Watch stood down</span>
+              <button className="polling-restart" onClick={handleRestartPolling} disabled={restarting}>
+                {restarting ? "Resuming…" : "Resume Watch"}
+              </button>
+            </>
+          )}
+        </div>
       </header>
 
       <MapContainer center={[59.33, 18.06]} zoom={6} className="expedition-map" zoomControl={false}>
