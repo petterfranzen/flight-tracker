@@ -6,6 +6,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
+import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestClient;
@@ -31,6 +32,7 @@ import java.util.Optional;
  * synchronized on the backoff instance itself.
  */
 @Component
+@Profile("agent")
 public class OpenSkyFlightsClient {
 
     private static final Logger log = LoggerFactory.getLogger(OpenSkyFlightsClient.class);

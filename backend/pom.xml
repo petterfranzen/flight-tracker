@@ -42,7 +42,9 @@
         <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
-            <scope>runtime</scope>
+            <!-- Not runtime-only (Spring Boot's default) — PositionNotificationListener
+                 needs compile-time access to PGConnection for LISTEN/NOTIFY, since
+                 that's pgjdbc-specific and has no portable java.sql equivalent. -->
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>

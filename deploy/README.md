@@ -50,15 +50,28 @@ docker compose up -d
 pulls whatever's currently tagged `latest` (or `IMAGE_TAG` in `.env`, if
 pinned to a specific build) and recreates the containers.
 
+## About the two backend containers
+
+`backend-api` and `backend-agent` are the same image, started with
+different `SPRING_PROFILES_ACTIVE` — one Maven build, split at runtime, not
+two separate images to publish. `backend-api` serves the REST/WebSocket
+API and never calls OpenSky itself; `backend-agent` is the headless poller
+that does, which is why it's the one with the OpenSky credentials in the
+compose file and has no published port (nothing listens for inbound
+traffic there). They coordinate only through Postgres — no Redis or other
+broker — since the data volume passing between them (the poll-window
+state, and one small `NOTIFY` payload per new position) is small.
+
 ## About the polling window
 
-The backend only actively polls OpenSky for 1 minute at a time
+The agent only actively polls OpenSky for 1 minute at a time
 (`flighttracker.agents.poll-window-seconds`, default 60) — it doesn't run
 continuously. This is deliberate: OpenSky's anonymous tier has a daily
 credit budget, and a NAS deployment left running would burn through it
 unattended (we've hit this limit before — see project memory).
 
-- On container start, the window opens automatically for one minute.
+- On `backend-agent` container start, the window opens automatically for
+  one minute.
 - Once it elapses, the map stops updating and the header shows "Watch Stood
   Down" with a "Resume Watch" button — click it to reopen the window for
   another minute.

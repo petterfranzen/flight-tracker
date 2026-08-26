@@ -3,6 +3,7 @@ package com.flighttracker.service.enrichment;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
+import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestClient;
@@ -18,6 +19,7 @@ import java.util.Optional;
  * rather than propagating, since this is dossier enrichment, not core data.
  */
 @Component
+@Profile("agent")
 public class AdsbdbClient {
 
     private static final Logger log = LoggerFactory.getLogger(AdsbdbClient.class);

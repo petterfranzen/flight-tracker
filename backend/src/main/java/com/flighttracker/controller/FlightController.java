@@ -2,6 +2,7 @@ package com.flighttracker.controller;
 
 import com.flighttracker.model.FlightPosition;
 import com.flighttracker.repository.FlightPositionRepository;
+import org.springframework.context.annotation.Profile;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.Instant;
@@ -10,6 +11,7 @@ import java.util.List;
 
 @RestController
 @RequestMapping("/api/flights")
+@Profile("api")
 public class FlightController {
 
     private final FlightPositionRepository positionRepository;

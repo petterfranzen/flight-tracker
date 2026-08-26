@@ -38,23 +38,26 @@ BASE_URL=http://localhost:8080 node --test blackbox-tests/flights-live.test.js
 
 ## Running against the docker-compose stack
 
-`docker-compose.yml` at the repo root brings up three containers — `db`
-(Postgres), `backend` (Spring Boot), `frontend` (nginx serving the built
-SPA and proxying `/api` and `/ws` to `backend`). To black-box test the
-*whole* stack as a real client would hit it — through nginx, not straight
-to the JVM — point `BASE_URL` at the frontend's published port rather than
-the backend's:
+`docker-compose.yml` at the repo root brings up four containers — `db`
+(Postgres), `backend-api` (Spring Boot REST + WebSocket), `backend-agent`
+(the headless OpenSky poller — see its own `@Profile("agent")`, no HTTP
+port of its own), and `frontend` (nginx serving the built SPA and proxying
+`/api` and `/ws` to `backend-api`). To black-box test the *whole* stack as
+a real client would hit it — through nginx, not straight to the JVM —
+point `BASE_URL` at the frontend's published port rather than
+`backend-api`'s:
 
 ```bash
 docker compose up --build -d
 BASE_URL=http://localhost:5173 node --test 'blackbox-tests/**/*.test.js'
 ```
 
-This exercises all three containers on every request: nginx's `/api`/`/ws`
-proxy rules, the backend's controllers and WebSocket handler, and Postgres
+This exercises nginx's `/api`/`/ws` proxy rules, `backend-api`'s
+controllers and WebSocket handler, `backend-agent` (indirectly — it's the
+one actually writing the positions these tests read), and Postgres
 underneath. Pointing `BASE_URL` at `http://localhost:8080` instead talks to
-the backend container directly, skipping the nginx hop — useful for
-isolating whether a failure is in the proxy config or the app itself.
+`backend-api` directly, skipping the nginx hop — useful for isolating
+whether a failure is in the proxy config or the app itself.
 
 ## What's covered
 

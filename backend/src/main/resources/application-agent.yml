@@ -1,0 +1,7 @@
+# "agent" role (SPRING_PROFILES_ACTIVE=agent): the headless poller, no
+# inbound traffic of its own (see PollWindowService/PositionNotificationListener
+# for how it coordinates with the "api" role) — no need for an embedded
+# web server or an exposed port at all.
+spring:
+  main:
+    web-application-type: none

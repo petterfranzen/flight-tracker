@@ -1,10 +1,11 @@
 name: Black-box tests
 
-# Builds the actual repo-root docker-compose.yml stack (db + backend +
-# frontend, from source — not the GHCR images docker-publish.yml ships) and
-# runs blackbox-tests/ against it through nginx, exactly as a real client
-# would hit it. See blackbox-tests/README.md for what's covered and why
-# BASE_URL points at the frontend's port rather than the backend's.
+# Builds the actual repo-root docker-compose.yml stack (db + backend-api +
+# backend-agent + frontend, from source — not the GHCR images
+# docker-publish.yml ships) and runs blackbox-tests/ against it through
+# nginx, exactly as a real client would hit it. See blackbox-tests/README.md
+# for what's covered and why BASE_URL points at the frontend's port rather
+# than backend-api's.
 on:
   push:
     branches: [main]
