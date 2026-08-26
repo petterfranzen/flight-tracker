@@ -10,10 +10,13 @@
 # internally, so there's no need to expose the backend or db ports on an
 # unattended NAS.
 
+name: flight-tracker
+
 services:
   db:
+    container_name: flight_tracker_db
     image: postgres:16-alpine
-    restart: unless-stopped
+    restart: always
     environment:
       POSTGRES_DB: flighttracker
       POSTGRES_USER: flighttracker
@@ -27,8 +30,9 @@ services:
       retries: 10
 
   backend:
+    container_name: flight_tracker_backend
     image: ghcr.io/petterfranzen/flight-tracker-backend:${IMAGE_TAG:-latest}
-    restart: unless-stopped
+    restart: always
     environment:
       SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/flighttracker
       SPRING_DATASOURCE_USERNAME: flighttracker
@@ -50,8 +54,9 @@ services:
       start_period: 20s
 
   frontend:
+    container_name: flight_tracker_frontend
     image: ghcr.io/petterfranzen/flight-tracker-frontend:${IMAGE_TAG:-latest}
-    restart: unless-stopped
+    restart: always
     depends_on:
       backend:
         condition: service_healthy
