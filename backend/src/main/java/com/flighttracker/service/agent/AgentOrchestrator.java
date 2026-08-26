@@ -50,13 +50,13 @@ public class AgentOrchestrator {
             try {
                 List<RawPositionReport> reports = agent.poll();
                 if (!reports.isEmpty()) {
-                    List<String> newAircraft = persist(agent.sourceName(), reports);
+                    List<RawPositionReport> newAircraft = persist(agent.sourceName(), reports);
                     // Fired after persist()'s transaction has committed (we're back
                     // on the caller now), not from inside it — the enrichment lookup
                     // runs on a separate @Async thread, so kicking it off mid-transaction
                     // risks that thread querying for the aircraft row before this
                     // transaction has actually committed it.
-                    newAircraft.forEach(enrichmentService::enrichNewAircraft);
+                    newAircraft.forEach(r -> enrichmentService.enrichNewAircraft(r.icao24(), r.callsign()));
                 }
             } catch (Exception e) {
                 log.warn("Agent {} failed this cycle: {}", agent.sourceName(), e.toString());
@@ -64,17 +64,17 @@ public class AgentOrchestrator {
         }
     }
 
-    /** Returns the icao24s that were newly seen this cycle (not already known aircraft). */
+    /** Returns the reports for icao24s that were newly seen this cycle (not already known aircraft). */
     @Transactional
-    protected List<String> persist(String sourceName, List<RawPositionReport> reports) {
+    protected List<RawPositionReport> persist(String sourceName, List<RawPositionReport> reports) {
         int written = 0;
-        List<String> newAircraft = new ArrayList<>();
+        List<RawPositionReport> newAircraft = new ArrayList<>();
         for (RawPositionReport r : reports) {
             aircraftRepository.findById(r.icao24()).ifPresentOrElse(
                     Aircraft::touch,
                     () -> {
                         aircraftRepository.save(new Aircraft(r.icao24()));
-                        newAircraft.add(r.icao24());
+                        newAircraft.add(r);
                     }
             );
             var inserted = positionRepository.insertIgnoringDuplicate(

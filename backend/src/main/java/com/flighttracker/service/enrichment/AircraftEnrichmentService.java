@@ -14,10 +14,10 @@ import java.util.Optional;
  * Fills in the dossier fields (aircraft type/registration/operator,
  * origin/destination) for a newly-seen aircraft. Triggered once per
  * icao24, the first time AgentOrchestrator sees it — not on every poll —
- * both because these facts rarely change and because the OpenSky side is
- * credit-limited (see OpenSkyFlightsClient).
+ * both because these facts rarely change and because the OpenSky fallback
+ * side is credit-limited (see OpenSkyFlightsClient).
  *
- * Runs @Async, off the scheduled-poll thread: these are two outbound HTTP
+ * Runs @Async, off the scheduled-poll thread: these are outbound HTTP
  * calls to third parties, and the poll loop that creates new Aircraft rows
  * must not stall on them.
  *
@@ -44,9 +44,9 @@ public class AircraftEnrichmentService {
     }
 
     @Async("enrichmentExecutor")
-    public void enrichNewAircraft(String icao24) {
+    public void enrichNewAircraft(String icao24, String callsign) {
         Optional<AircraftInfo> info = adsbdbClient.fetchAircraftInfo(icao24);
-        Optional<Route> route = flightsClient.fetchRoute(icao24);
+        Optional<Route> route = fetchRoute(icao24, callsign);
         if (info.isEmpty() && route.isEmpty()) {
             log.debug("No enrichment data found for {}", icao24);
             return;
@@ -68,5 +68,20 @@ public class AircraftEnrichmentService {
             aircraft.setMetadataFetchedAt(Instant.now());
             aircraftRepository.save(aircraft);
         });
+    }
+
+    /**
+     * adsbdb's callsign-keyed flight-route database resolves destination
+     * even for aircraft still airborne (schedule-based, not waiting on the
+     * flight to land), so it's tried first. Falls back to OpenSky's
+     * estimated-arrival-airport lookup for callsigns adsbdb doesn't
+     * recognise — charter/GA/military — or when no callsign was reported.
+     */
+    private Optional<Route> fetchRoute(String icao24, String callsign) {
+        if (callsign != null && !callsign.isBlank()) {
+            Optional<Route> route = adsbdbClient.fetchRoute(callsign);
+            if (route.isPresent()) return route;
+        }
+        return flightsClient.fetchRoute(icao24);
     }
 }

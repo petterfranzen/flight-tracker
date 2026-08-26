@@ -34,6 +34,41 @@ public class AdsbdbClient {
                 .build();
     }
 
+    /**
+     * Looks up origin/destination for a callsign via adsbdb's flight-route
+     * database (schedule-based, keyed by flight number — not live ADS-B
+     * tracking). Unlike OpenSkyFlightsClient's estimated-arrival-airport
+     * approach, this resolves destination even for aircraft still airborne,
+     * since it's not waiting on the flight to actually land. Only handles
+     * scheduled-airline callsigns; charter/GA/military callsigns won't
+     * resolve here (unknown callsign -> 404, malformed -> 400) and should
+     * fall back to OpenSkyFlightsClient.
+     */
+    public Optional<Route> fetchRoute(String callsign) {
+        try {
+            AdsbdbCallsignResponse body = client.get()
+                    .uri("/callsign/{callsign}", callsign)
+                    .retrieve()
+                    .body(AdsbdbCallsignResponse.class);
+
+            if (body == null || body.response() == null || body.response().flightroute() == null) {
+                return Optional.empty();
+            }
+            FlightRoute route = body.response().flightroute();
+            if (route.origin() == null && route.destination() == null) {
+                return Optional.empty();
+            }
+            String origin = route.origin() == null ? null : route.origin().icao_code();
+            String destination = route.destination() == null ? null : route.destination().icao_code();
+            return Optional.of(new Route(origin, destination));
+        } catch (HttpClientErrorException e) {
+            return Optional.empty();
+        } catch (Exception e) {
+            log.debug("adsbdb callsign lookup failed for {}: {}", callsign, e.toString());
+            return Optional.empty();
+        }
+    }
+
     public Optional<AircraftInfo> fetchAircraftInfo(String icao24) {
         try {
             AdsbdbAircraftResponse body = client.get()
@@ -69,5 +104,17 @@ public class AdsbdbClient {
     // Field names match adsbdb's JSON keys directly (snake_case, no
     // camelCase conversion configured on the shared ObjectMapper).
     private record Aircraft(String type, String manufacturer, String registration, String registered_owner) {
+    }
+
+    private record AdsbdbCallsignResponse(AdsbdbCallsignBody response) {
+    }
+
+    private record AdsbdbCallsignBody(FlightRoute flightroute) {
+    }
+
+    private record FlightRoute(String callsign, Airport origin, Airport destination) {
+    }
+
+    private record Airport(String icao_code) {
     }
 }
