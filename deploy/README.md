@@ -62,19 +62,37 @@ traffic there). They coordinate only through Postgres — no Redis or other
 broker — since the data volume passing between them (the poll-window
 state, and one small `NOTIFY` payload per new position) is small.
 
-## About the polling window
+## About the polling window and the global sweep
 
-The agent only actively polls OpenSky for 1 minute at a time
-(`flighttracker.agents.poll-window-seconds`, default 60) — it doesn't run
-continuously. This is deliberate: OpenSky's anonymous tier has a daily
-credit budget, and a NAS deployment left running would burn through it
-unattended (we've hit this limit before — see project memory).
+Two independent poll shapes share the same OpenSky account/credit budget
+(see `OpenSkyAgent`):
 
-- On `backend-agent` container start, the window opens automatically for
-  one minute.
-- Once it elapses, the map stops updating and the header shows "Watch Stood
-  Down" with a "Resume Watch" button — click it to reopen the window for
-  another minute.
-- `POST /api/agents/restart` does the same thing directly, if you'd rather
-  script it (e.g. a cron job on the NAS hitting it right before you plan to
-  check the map) than click the button each time.
+- **"Hot" poll, window-gated** — scoped to whatever's currently on
+  someone's map viewport (`ViewportService`). Only actively polls for 1
+  minute at a time (`flighttracker.agents.poll-window-seconds`, default
+  60) — it doesn't run continuously. This is deliberate: OpenSky's
+  anonymous tier has a daily credit budget, and a NAS deployment left
+  running would burn through it unattended (we've hit this limit before —
+  see project memory).
+  - On `backend-agent` container start, the window opens automatically for
+    one minute.
+  - Once it elapses, the map stops updating and the header shows "Watch
+    Stood Down" with a "Resume Watch" button — click it (or the "Stop
+    Watch" button while it's running) to reopen/close the window.
+  - `POST /api/agents/restart` / `POST /api/agents/stop` do the same thing
+    directly, if you'd rather script it than click the button each time.
+- **Global sweep, always on** — every aircraft OpenSky reports worldwide,
+  regardless of whether anyone's watching, every
+  `flighttracker.agents.global-sweep-interval-seconds` (default 300 = 5
+  minutes), independent of the window above. This is what lets the map
+  show recent data the moment you pan somewhere the hot poll has never
+  targeted. A full-world request costs meaningfully more of OpenSky's
+  per-account credit budget than a bbox-scoped one — on the free anonymous
+  tier this can plausibly exhaust the daily budget on its own well before
+  the day is out, in which case the existing backoff logic just skips
+  cycles until it resets (degraded, not broken). A registered OpenSky
+  account (`OPENSKY_CLIENT_ID`/`OPENSKY_CLIENT_SECRET` in `.env` — see
+  `.env.example`) has a much larger budget if you want reliable global
+  coverage; note that today those credentials only cover the
+  origin/destination enrichment lookup (`OpenSkyFlightsClient`), not the
+  state-vector polling itself.

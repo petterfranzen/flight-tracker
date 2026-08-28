@@ -13,7 +13,13 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Fans out each newly-persisted position to every connected map client.
+ * Fans out each newly-persisted position to every connected map client —
+ * filtered to the current viewport (see ViewportService), since tracking
+ * is now global and a client only wants pushes for what's actually on its
+ * screen. Same single-shared-viewport simplification as ViewportService
+ * itself: every connected session gets the same filter, not a per-session
+ * one.
+ *
  * "api"-only: positions are written by the "agent" container, which
  * reaches this one via PositionNotificationListener, not a direct call.
  */
@@ -22,6 +28,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public class LiveFeedBroadcaster extends TextWebSocketHandler {
 
     private final Map<String, WebSocketSession> sessions = new ConcurrentHashMap<>();
+    private final ViewportService viewportService;
 
     // Inject Spring Boot's autoconfigured ObjectMapper bean — the exact same
     // one the REST controllers serialize through — rather than building a
@@ -30,8 +37,9 @@ public class LiveFeedBroadcaster extends TextWebSocketHandler {
     // bean makes WS and REST serialize identically by construction instead.
     private final ObjectMapper mapper;
 
-    public LiveFeedBroadcaster(ObjectMapper mapper) {
+    public LiveFeedBroadcaster(ObjectMapper mapper, ViewportService viewportService) {
         this.mapper = mapper;
+        this.viewportService = viewportService;
     }
 
     @Override
@@ -46,6 +54,7 @@ public class LiveFeedBroadcaster extends TextWebSocketHandler {
 
     public void publish(FlightPosition position) {
         if (sessions.isEmpty()) return;
+        if (!viewportService.currentCached().contains(position.getLatitude(), position.getLongitude())) return;
         try {
             String json = mapper.writeValueAsString(position);
             TextMessage message = new TextMessage(json);

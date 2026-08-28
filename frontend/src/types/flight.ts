@@ -1,3 +1,11 @@
+/** A lat/lon bounding box — the current map viewport. */
+export interface Bounds {
+  latMin: number;
+  latMax: number;
+  lonMin: number;
+  lonMax: number;
+}
+
 export interface FlightPosition {
   id: number;
   icao24: string;
