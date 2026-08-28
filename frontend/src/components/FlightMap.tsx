@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { MapContainer, TileLayer, Marker, Polyline, Popup, useMap } from "react-leaflet";
+import { MapContainer, TileLayer, Marker, Polyline, Popup, useMap, useMapEvents } from "react-leaflet";
 import L from "leaflet";
-import type { AircraftDossier, FlightPosition, PollingStatus } from "../types/flight";
+import type { AircraftDossier, Bounds, FlightPosition, PollingStatus } from "../types/flight";
 import {
   fetchAircraftDossier,
   fetchHistory,
@@ -21,13 +21,14 @@ import "./FlightMap.css";
 // from other tabs/devices.
 const STATUS_POLL_MS = 5_000;
 
-// How often to re-fetch the full live set and reconcile local state against
-// it. The WebSocket delivers new/updated positions as they land, but never
-// tells the client an aircraft should be *removed* — that only happens by
-// re-asking the server, whose /live query is what actually knows an
-// aircraft has been landed 20+ minutes or gone stale (see FlightController).
-// Without this, a marker would never leave the map during a single open
-// session no matter how long ago its aircraft landed.
+// How often to re-fetch the current viewport's live set and reconcile
+// local state against it. The WebSocket delivers new/updated positions as
+// they land, but never tells the client an aircraft should be *removed* —
+// that only happens by re-asking the server, whose /live query is what
+// actually knows an aircraft has been landed 20+ minutes, gone stale, or
+// panned out of view. Without this, a marker would never leave the map
+// during a single open session no matter how long ago its aircraft landed
+// (or how far the view has moved on).
 const LIVE_RECONCILE_MS = 60_000;
 
 const ROUTE_COLOR = "#4db2ff"; // matches --color-accent in FlightMap.css
@@ -70,16 +71,38 @@ function planeIcon(headingDeg: number | null, selected: boolean) {
   });
 }
 
-function FitOnFirstLoad({ positions }: { positions: FlightPosition[] }) {
-  const map = useMap();
-  const fitted = useRef(false);
+function boundsFromMap(map: L.Map): Bounds {
+  const b = map.getBounds();
+  const lonMin = b.getWest();
+  const lonMax = b.getEast();
+  // At extreme zoom-out (or after panning across wrapped "copies" of the
+  // world), Leaflet's bounds can span or exceed a full 360° of longitude
+  // (e.g. -1290..1307) — that's not a real bbox, it's "the whole world is
+  // visible". Send the actual valid range in that case rather than
+  // nonsensical numbers the backend would just clamp against anyway.
+  const spansWholeWorld = lonMax - lonMin >= 360;
+  return {
+    latMin: Math.max(-90, b.getSouth()),
+    latMax: Math.min(90, b.getNorth()),
+    lonMin: spansWholeWorld ? -180 : lonMin,
+    lonMax: spansWholeWorld ? 180 : lonMax,
+  };
+}
+
+/**
+ * Reports the current map viewport up to the parent — once on mount, and
+ * again every time panning/zooming settles (moveend only fires once
+ * movement has actually stopped, so this is naturally debounced already,
+ * not on every intermediate frame of a drag).
+ */
+function ViewportReporter({ onBoundsChange }: { onBoundsChange: (bounds: Bounds) => void }) {
+  const map = useMapEvents({
+    moveend: () => onBoundsChange(boundsFromMap(map)),
+  });
   useEffect(() => {
-    if (!fitted.current && positions.length > 0) {
-      const bounds = L.latLngBounds(positions.map((p) => [p.latitude, p.longitude]));
-      map.fitBounds(bounds.pad(0.2));
-      fitted.current = true;
-    }
-  }, [positions, map]);
+    onBoundsChange(boundsFromMap(map));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   return null;
 }
 
@@ -128,18 +151,34 @@ export default function FlightMap() {
     selectedRef.current = selected;
   }, [selected]);
 
+  // Tracking is global now, but the map only ever wants what's currently
+  // visible — this is that viewport, kept in a ref (not state) so the
+  // reconcile interval below always reads the latest value from its
+  // closure without needing to be torn down and rebuilt on every pan.
+  const boundsRef = useRef<Bounds | null>(null);
+
+  function applyLiveSnapshot(bounds: Bounds | null) {
+    return fetchLivePositions(bounds ?? undefined).then((list) => {
+      const byId: Record<string, FlightPosition> = {};
+      list.forEach((p) => (byId[p.icao24] = p));
+      setPositions(byId);
+      if (selectedRef.current && byId[selectedRef.current]) {
+        setSelectedPos(byId[selectedRef.current]);
+      }
+    });
+  }
+
+  function handleBoundsChange(bounds: Bounds) {
+    boundsRef.current = bounds;
+    applyLiveSnapshot(bounds);
+  }
+
   useEffect(() => {
-    const reconcile = () =>
-      fetchLivePositions().then((list) => {
-        const byId: Record<string, FlightPosition> = {};
-        list.forEach((p) => (byId[p.icao24] = p));
-        setPositions(byId);
-        if (selectedRef.current && byId[selectedRef.current]) {
-          setSelectedPos(byId[selectedRef.current]);
-        }
-      });
-    reconcile();
-    const reconcileInterval = setInterval(reconcile, LIVE_RECONCILE_MS);
+    // No initial fetch here — ViewportReporter's mount-time report (below,
+    // inside MapContainer) supplies the first bounds and triggers the
+    // first fetch itself, so there's exactly one initial request instead
+    // of a bounds-less one racing a bounds-scoped one.
+    const reconcileInterval = setInterval(() => applyLiveSnapshot(boundsRef.current), LIVE_RECONCILE_MS);
 
     const unsubscribe = subscribeLiveFeed((p) => {
       setPositions((prev) => ({ ...prev, [p.icao24]: p }));
@@ -256,6 +295,13 @@ export default function FlightMap() {
       <MapContainer
         center={[59.33, 18.06]}
         zoom={6}
+        minZoom={2}
+        // Past this, the world starts wrapping into multiple side-by-side
+        // copies — Leaflet's own marker projection gets confused about
+        // which copy a marker belongs to at that point (real aircraft ended
+        // up rendered far outside the visible map), and getBounds() reports
+        // a longitude span that isn't a real bbox at all. minZoom keeps the
+        // view to a single, unambiguous world.
         className="map-container"
         zoomControl={false}
         aria-label="Live aircraft map"
@@ -264,7 +310,7 @@ export default function FlightMap() {
           attribution='&copy; OpenStreetMap contributors'
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
-        <FitOnFirstLoad positions={list} />
+        <ViewportReporter onBoundsChange={handleBoundsChange} />
         <FollowSelected
           selectedId={selected}
           position={selectedPos ? [selectedPos.latitude, selectedPos.longitude] : null}

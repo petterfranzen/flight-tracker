@@ -22,20 +22,29 @@ flighttracker:
     # flight-data source you have access to (OpenSky Network's free REST
     # API is the easiest to start with — no key needed for anonymous,
     # rate-limited use).
+    #
+    # "Hot" poll (poll() — bbox is whatever ViewportService currently
+    # reports, i.e. whichever map viewport a client last asked for; see
+    # FlightController.live and viewport_state in schema.sql):
     poll-interval-seconds: 15
     # Polling auto-stops this long after each start/restart, so an
     # unattended NAS deployment doesn't run 24/7 and burn through
     # OpenSky's daily anonymous credit budget. Reopen it via
     # POST /api/agents/restart (the frontend's restart button).
     poll-window-seconds: 60
+    # Global sweep (pollGlobal() — no bbox, every aircraft worldwide):
+    # always on, independent of the poll window above — see
+    # AgentOrchestrator.pollGlobalSweep. A full-world states/all call costs
+    # meaningfully more of OpenSky's per-account credit budget than a
+    # bbox-scoped one; on the free anonymous tier this can plausibly burn
+    # through the daily budget on its own well before the day is out, in
+    # which case PollBackoff just skips cycles until it resets — degraded,
+    # not broken. A registered OpenSky account (see the oauth block below)
+    # has a much larger budget if you want reliable global coverage.
+    global-sweep-interval-seconds: 300
     opensky:
       enabled: true
       base-url: https://opensky-network.org/api
-      bbox: # roughly the Stockholm / Baltic area, tune to taste
-        lat-min: 54.0
-        lat-max: 66.0
-        lon-min: 10.0
-        lon-max: 25.0
       # Origin/destination enrichment needs an authenticated call
       # (anonymous /flights/aircraft returns 403) — register a free
       # OAuth2 client-credentials app at https://opensky-network.org/login

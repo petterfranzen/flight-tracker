@@ -1,7 +1,16 @@
-import type { AircraftDossier, AircraftUsage, FlightPosition, PollingStatus } from "../types/flight";
+import type { AircraftDossier, AircraftUsage, Bounds, FlightPosition, PollingStatus } from "../types/flight";
 
-export async function fetchLivePositions(): Promise<FlightPosition[]> {
-  const res = await fetch(`/api/flights/live`);
+/**
+ * Tracking is global, but a bounds-less call returns every aircraft being
+ * tracked anywhere — the map always calls this with its current viewport,
+ * which also reports that viewport as what the "hot" backend poll should
+ * target next (see FlightController.live / ViewportService).
+ */
+export async function fetchLivePositions(bounds?: Bounds): Promise<FlightPosition[]> {
+  const query = bounds
+    ? `?latMin=${bounds.latMin}&latMax=${bounds.latMax}&lonMin=${bounds.lonMin}&lonMax=${bounds.lonMax}`
+    : "";
+  const res = await fetch(`/api/flights/live${query}`);
   if (!res.ok) throw new Error(`live fetch failed: ${res.status}`);
   return res.json();
 }

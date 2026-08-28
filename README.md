@@ -1,12 +1,16 @@
 # Flight Tracker
 
 Agents poll live flight-position sources, write every report to an
-append-only Postgres history, and a React map (styled like a well-worn
-1930s aviation survey chart) shows live traffic and lets you trace an
-aircraft's recent route. Because every historic position is kept, the
-`/api/usage` endpoint derives distance flown and airborne hours for any
-time window straight from the position history — no separate "usage"
-table to keep in sync.
+append-only Postgres history, and a React map shows live traffic and lets
+you trace an aircraft's recent route. Tracking is global: an always-on
+sweep (`AgentOrchestrator.pollGlobalSweep`) keeps the database current for
+every aircraft worldwide, while a separate, more frequent poll targets
+whatever's actually on someone's screen (`ViewportService`) — the map only
+ever fetches/renders what's within its current viewport, not the whole
+world at once. Because every historic position is kept, the `/api/usage`
+endpoint derives distance flown and airborne hours for any time window
+straight from the position history — no separate "usage" table to keep in
+sync.
 
 ## Stack
 - **Backend**: Java 21 / Spring Boot, split into two roles by `SPRING_PROFILES_ACTIVE` from one build — `api` (REST + WebSocket) and `agent` (the scheduled `FlightDataAgent` pollers). They coordinate only through Postgres: `PollWindowService` (bounded-polling state) and `LISTEN`/`NOTIFY` (live position feed — see `PositionNotificationListener`), not a broker or a direct call, since they're separate processes/containers.
@@ -32,9 +36,12 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:5173 — the map centres on the bounding box configured
-in `application.yml` (`flighttracker.agents.opensky.bbox`, defaults to the
-Baltic/Stockholm area).
+Open http://localhost:5173 — the map opens centred on the Baltic/Stockholm
+area, then reports its own viewport as you pan/zoom (see `ViewportService`
+and `viewport_state` in `schema.sql`), which is what the frequent "hot"
+poll targets from then on. That's independent of the always-on global
+sweep (`flighttracker.agents.global-sweep-interval-seconds`), which keeps
+the database current everywhere regardless of what anyone's looking at.
 
 ## Deploying
 

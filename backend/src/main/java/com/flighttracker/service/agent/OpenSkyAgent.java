@@ -1,5 +1,7 @@
 package com.flighttracker.service.agent;
 
+import com.flighttracker.dto.Bounds;
+import com.flighttracker.service.ViewportService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -19,11 +21,21 @@ import java.util.Map;
 import java.util.Optional;
 
 /**
- * Polls OpenSky Network's free REST endpoint for state vectors in a bounding
- * box. Anonymous access is rate-limited (roughly one request per 10s, plus a
- * daily credit budget) — fine for a demo, register for a free account and
- * add basic auth via RestClient if you need tighter polling.
+ * Polls OpenSky Network's free REST endpoint for state vectors. Anonymous
+ * access is rate-limited (roughly one request per 10s, plus a daily credit
+ * budget) — fine for a demo, register for a free account and add basic
+ * auth via RestClient if you need tighter polling.
  * Docs: https://openskynetwork.github.io/opensky-api/rest.html
+ *
+ * Two distinct poll shapes share this one class (and its RestClient/
+ * backoff — they hit the same account, so a 429 from one must back off the
+ * other too):
+ *  - poll(): the frequent, poll-window-gated "hot" poll, scoped to
+ *    whatever bounding box ViewportService currently reports — i.e.
+ *    whatever's actually on someone's screen right now.
+ *  - pollGlobal(): AgentOrchestrator's always-on sweep (every
+ *    global-sweep-interval-seconds, regardless of the poll window),
+ *    unbounded — every aircraft OpenSky reports worldwide.
  *
  * Connect/read timeouts keep a hung request from stalling the single
  * scheduled-poll thread forever. On a 429 (throttled), a 5xx (the API
@@ -55,26 +67,24 @@ public class OpenSkyAgent implements FlightDataAgent {
     private static final Duration SEVERE_MAX_BACKOFF = Duration.ofMinutes(10);
 
     private final RestClient client;
-    private final String url;
+    private final String statesUrl;
     private final boolean enabled;
+    private final ViewportService viewportService;
     private final PollBackoff backoff = new PollBackoff();
 
     public OpenSkyAgent(
             @Value("${flighttracker.agents.opensky.enabled:true}") boolean enabled,
             @Value("${flighttracker.agents.opensky.base-url}") String baseUrl,
-            @Value("${flighttracker.agents.opensky.bbox.lat-min}") double latMin,
-            @Value("${flighttracker.agents.opensky.bbox.lat-max}") double latMax,
-            @Value("${flighttracker.agents.opensky.bbox.lon-min}") double lonMin,
-            @Value("${flighttracker.agents.opensky.bbox.lon-max}") double lonMax) {
+            ViewportService viewportService) {
         this.enabled = enabled;
+        this.viewportService = viewportService;
 
         SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
         requestFactory.setConnectTimeout((int) CONNECT_TIMEOUT.toMillis());
         requestFactory.setReadTimeout((int) READ_TIMEOUT.toMillis());
         this.client = RestClient.builder().requestFactory(requestFactory).build();
 
-        this.url = baseUrl + "/states/all?lamin=" + latMin + "&lamax=" + latMax
-                + "&lomin=" + lonMin + "&lomax=" + lonMax;
+        this.statesUrl = baseUrl + "/states/all";
     }
 
     @Override
@@ -82,11 +92,25 @@ public class OpenSkyAgent implements FlightDataAgent {
         return "opensky";
     }
 
+    /** Hot poll: whatever's currently on someone's screen (see ViewportService). */
     @Override
-    @SuppressWarnings("unchecked")
     public List<RawPositionReport> poll() {
         if (!enabled) return List.of();
+        Bounds b = viewportService.current();
+        String url = statesUrl + "?lamin=" + b.latMin() + "&lamax=" + b.latMax()
+                + "&lomin=" + b.lonMin() + "&lomax=" + b.lonMax();
+        return fetchStates(url);
+    }
 
+    /** Global sweep: every aircraft OpenSky currently reports, worldwide — no bbox. */
+    @Override
+    public List<RawPositionReport> pollGlobal() {
+        if (!enabled) return List.of();
+        return fetchStates(statesUrl);
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<RawPositionReport> fetchStates(String url) {
         Instant now = Instant.now();
         if (backoff.isCoolingDown(now)) {
             log.debug("Skipping poll, backing off until {}", backoff.coolingDownUntil());
