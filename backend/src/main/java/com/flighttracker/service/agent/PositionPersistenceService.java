@@ -45,6 +45,11 @@ public class PositionPersistenceService {
         this.jdbcTemplate = jdbcTemplate;
     }
 
+    /** True only on a genuinely fresh database — see AgentOrchestrator.seedOnStartup. */
+    public boolean hasNoPositions() {
+        return positionRepository.countLatestPositions() == 0;
+    }
+
     /** Returns the reports for icao24s that were newly seen this cycle (not already known aircraft). */
     @Transactional
     public List<RawPositionReport> persist(String sourceName, List<RawPositionReport> reports) {

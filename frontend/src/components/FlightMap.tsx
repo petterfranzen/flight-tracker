@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { MapContainer, TileLayer, Marker, Polyline, Popup, useMap, useMapEvents } from "react-leaflet";
+import MarkerClusterGroup from "react-leaflet-cluster";
 import L from "leaflet";
+import "leaflet.markercluster/dist/MarkerCluster.css";
+import "leaflet.markercluster/dist/MarkerCluster.Default.css";
 import type { AircraftDossier, Bounds, FlightPosition, PollingStatus } from "../types/flight";
 import {
   fetchAircraftDossier,
@@ -320,31 +323,49 @@ export default function FlightMap() {
           <Polyline positions={route} className="route-line" pathOptions={{ color: ROUTE_COLOR, weight: 3, dashArray: "6 8" }} />
         )}
 
-        {list.map((p) => (
-          <Marker
-            key={p.icao24}
-            position={[p.latitude, p.longitude]}
-            icon={planeIcon(p.headingDeg, p.icao24 === selected)}
-            eventHandlers={{
-              click: () => {
-                setSelected(p.icao24);
-                setSelectedPos(p);
-              },
-            }}
-          >
-            <Popup className="marker-popup">
-              <div className="popup-card">
-                <div className="popup-callsign">{p.callsign?.trim() || p.icao24.toUpperCase()}</div>
-                <dl>
-                  <dt>Altitude</dt><dd>{p.altitudeM != null ? Math.round(p.altitudeM) + " m" : "—"}</dd>
-                  <dt>Speed</dt><dd>{p.velocityMs != null ? Math.round(p.velocityMs * 3.6) + " km/h" : "—"}</dd>
-                  <dt>Heading</dt><dd>{p.headingDeg != null ? Math.round(p.headingDeg) + "°" : "—"}</dd>
-                  <dt>Source</dt><dd>{p.agentSource}</dd>
-                </dl>
-              </div>
-            </Popup>
-          </Marker>
-        ))}
+        {/* Global tracking means the live set can run into the thousands —
+            rendering that many individual Leaflet markers directly made
+            zooming out to see more than one region unusably laggy (browser
+            struggling to keep up with the DOM/reconciliation, badly enough
+            that the whole map appeared "stuck" showing whatever had
+            already rendered rather than the full current set). Clustering
+            keeps the on-screen marker/DOM count bounded regardless of how
+            many aircraft are actually loaded; disableClusteringAtZoom
+            matches SELECTED_MIN_ZOOM below, so once zoomed in enough for
+            individual aircraft to matter, clustering steps out of the way
+            entirely. */}
+        <MarkerClusterGroup
+          chunkedLoading
+          maxClusterRadius={70}
+          disableClusteringAtZoom={SELECTED_MIN_ZOOM}
+          showCoverageOnHover={false}
+        >
+          {list.map((p) => (
+            <Marker
+              key={p.icao24}
+              position={[p.latitude, p.longitude]}
+              icon={planeIcon(p.headingDeg, p.icao24 === selected)}
+              eventHandlers={{
+                click: () => {
+                  setSelected(p.icao24);
+                  setSelectedPos(p);
+                },
+              }}
+            >
+              <Popup className="marker-popup">
+                <div className="popup-card">
+                  <div className="popup-callsign">{p.callsign?.trim() || p.icao24.toUpperCase()}</div>
+                  <dl>
+                    <dt>Altitude</dt><dd>{p.altitudeM != null ? Math.round(p.altitudeM) + " m" : "—"}</dd>
+                    <dt>Speed</dt><dd>{p.velocityMs != null ? Math.round(p.velocityMs * 3.6) + " km/h" : "—"}</dd>
+                    <dt>Heading</dt><dd>{p.headingDeg != null ? Math.round(p.headingDeg) + "°" : "—"}</dd>
+                    <dt>Source</dt><dd>{p.agentSource}</dd>
+                  </dl>
+                </div>
+              </Popup>
+            </Marker>
+          ))}
+        </MarkerClusterGroup>
       </MapContainer>
 
       {selectedPos && (

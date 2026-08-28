@@ -134,6 +134,20 @@ public interface FlightPositionRepository extends JpaRepository<FlightPosition, 
             @Param("onGround") boolean onGround,
             @Param("agentSource") String agentSource);
 
+    // On-demand enrichment (AircraftController) needs a callsign to key
+    // adsbdb's route lookup by — aircraft_latest_position is the cheap way
+    // to get one without touching flight_position's full history.
+    @Query(value = "SELECT callsign FROM aircraft_latest_position WHERE icao24 = :icao24", nativeQuery = true)
+    Optional<String> findLatestCallsign(@Param("icao24") String icao24);
+
+    // Lets AgentOrchestrator tell a genuinely first-ever boot (empty table,
+    // worth blocking startup on one synchronous global sweep so the map
+    // isn't empty) apart from every later restart (table already has
+    // *some* data, even if a few minutes stale — not worth adding tens of
+    // seconds to every redeploy for).
+    @Query(value = "SELECT count(*) FROM aircraft_latest_position", nativeQuery = true)
+    long countLatestPositions();
+
     // Usage calc: full ordered history for one aircraft in a window.
     List<FlightPosition> findByIcao24AndObservedAtBetweenOrderByObservedAtAsc(
             String icao24, Instant from, Instant to);

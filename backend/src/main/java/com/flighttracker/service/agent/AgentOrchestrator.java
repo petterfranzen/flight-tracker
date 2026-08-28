@@ -51,9 +51,23 @@ public class AgentOrchestrator {
     // Opens the window on every container boot, same as the old in-memory
     // default did — so a fresh deployment shows live traffic immediately
     // without needing the UI's restart button first.
+    //
+    // On a genuinely empty database (first-ever boot, or a fresh volume)
+    // this also runs one global sweep synchronously before startup
+    // completes — otherwise the map would show nothing worldwide until
+    // the first scheduled sweep fires, up to global-sweep-interval-seconds
+    // later. Deliberately skipped when the table already has *some* data
+    // (an ordinary restart/redeploy): that data is still good enough to
+    // show immediately, and blocking every single restart for the ~30s+ a
+    // full-world sweep takes isn't worth it just to shave a few minutes of
+    // staleness off data that already exists.
     @PostConstruct
-    void openWindowOnStartup() {
+    void seedOnStartup() {
         pollWindowService.restart();
+        if (persistenceService.hasNoPositions()) {
+            log.info("Database is empty — seeding with a global sweep before startup completes");
+            runGlobalSweep();
+        }
     }
 
     @Scheduled(fixedDelayString = "#{${flighttracker.agents.poll-interval-seconds} * 1000}")
@@ -88,14 +102,32 @@ public class AgentOrchestrator {
     // database has recent global coverage even for aircraft nobody's
     // viewport has ever hot-polled. Each agent decides for itself whether
     // it supports this (FlightDataAgent.pollGlobal() defaults to empty).
-    @Scheduled(fixedDelayString = "#{${flighttracker.agents.global-sweep-interval-seconds:300} * 1000}")
+    //
+    // Deliberately does NOT trigger enrichment (unlike pollAll above) — one
+    // sweep can surface several thousand aircraft nobody's looking at.
+    // Eagerly enriching all of them overwhelms the 2-worker async queue and
+    // the external APIs' rate limits, so in practice almost none of them
+    // actually get enriched (confirmed live: 92% of all known aircraft
+    // stuck permanently unenriched under this load). Aircraft the global
+    // sweep finds get enriched lazily instead, on demand, the moment
+    // someone actually asks for their dossier — see AircraftController.
+    // initialDelay matches the interval, not 0: without it, @Scheduled's
+    // own default "run once immediately" would fire a second sweep right
+    // on top of seedOnStartup()'s — harmless (upserts are idempotent) but
+    // a wasted API call/credit every single boot.
+    @Scheduled(
+            initialDelayString = "#{${flighttracker.agents.global-sweep-interval-seconds:300} * 1000}",
+            fixedDelayString = "#{${flighttracker.agents.global-sweep-interval-seconds:300} * 1000}")
     public void pollGlobalSweep() {
+        runGlobalSweep();
+    }
+
+    private void runGlobalSweep() {
         for (FlightDataAgent agent : agents) {
             try {
                 List<RawPositionReport> reports = agent.pollGlobal();
                 if (!reports.isEmpty()) {
-                    List<RawPositionReport> newAircraft = persistenceService.persist(agent.sourceName(), reports);
-                    newAircraft.forEach(r -> enrichmentService.enrichNewAircraft(r.icao24(), r.callsign()));
+                    persistenceService.persist(agent.sourceName(), reports);
                 }
             } catch (Exception e) {
                 log.warn("Agent {} global sweep failed", agent.sourceName(), e);

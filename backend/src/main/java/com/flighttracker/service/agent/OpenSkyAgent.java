@@ -66,6 +66,20 @@ public class OpenSkyAgent implements FlightDataAgent {
     private static final Duration SEVERE_MIN_BACKOFF = Duration.ofMinutes(2);
     private static final Duration SEVERE_MAX_BACKOFF = Duration.ofMinutes(10);
 
+    // A viewport this large (e.g. someone zoomed out to see the whole
+    // world) isn't "hot polling a region" any more — it's a second global
+    // sweep, just running 20x more often (every poll-interval-seconds
+    // instead of every global-sweep-interval-seconds). That's exactly the
+    // scenario that exhausted a real account's daily credit budget in
+    // testing: OpenSky started returning a tiny handful of aircraft per
+    // call instead of an error, so it looked like traffic had vanished
+    // rather than like a quota problem. 10,000 sq-degrees is generous —
+    // roughly a 100x100 box, continent-scale — comfortably above any
+    // normal "zoomed into a region" viewport. Above it, skip the hot poll
+    // for this cycle; the always-on global sweep still covers the area,
+    // just on its own slower schedule.
+    private static final double MAX_HOT_POLL_AREA_SQ_DEG = 10_000;
+
     private final RestClient client;
     private final String statesUrl;
     private final boolean enabled;
@@ -97,6 +111,11 @@ public class OpenSkyAgent implements FlightDataAgent {
     public List<RawPositionReport> poll() {
         if (!enabled) return List.of();
         Bounds b = viewportService.current();
+        double area = (b.latMax() - b.latMin()) * (b.lonMax() - b.lonMin());
+        if (area > MAX_HOT_POLL_AREA_SQ_DEG) {
+            log.debug("Viewport too large for the hot poll ({} sq-deg > {}) — relying on the global sweep this cycle", area, MAX_HOT_POLL_AREA_SQ_DEG);
+            return List.of();
+        }
         String url = statesUrl + "?lamin=" + b.latMin() + "&lamax=" + b.latMax()
                 + "&lomin=" + b.lonMin() + "&lomax=" + b.lonMax();
         return fetchStates(url);
