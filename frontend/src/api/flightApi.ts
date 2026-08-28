@@ -37,6 +37,12 @@ export async function restartPolling(): Promise<PollingStatus> {
   return res.json();
 }
 
+export async function stopPolling(): Promise<PollingStatus> {
+  const res = await fetch("/api/agents/stop", { method: "POST" });
+  if (!res.ok) throw new Error(`polling stop failed: ${res.status}`);
+  return res.json();
+}
+
 /** Subscribes to the live push feed; returns an unsubscribe function. */
 export function subscribeLiveFeed(onPosition: (p: FlightPosition) => void): () => void {
   const proto = location.protocol === "https:" ? "wss" : "ws";
