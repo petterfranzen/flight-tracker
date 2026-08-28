@@ -91,6 +91,13 @@ function FollowSelected({ selectedId, position }: { selectedId: string | null; p
 export default function IndianaJonesMap() {
   const [positions, setPositions] = useState<Record<string, FlightPosition>>({});
   const [selected, setSelected] = useState<string | null>(null);
+  // Captured at click time and kept live-updated by the WebSocket feed and
+  // the periodic reconcile below, but — unlike a plain positions[selected]
+  // lookup — never nulled out just because the aircraft momentarily isn't
+  // in the live set. A user looking at one aircraft's dossier is exactly
+  // the wrong moment for it to vanish from under them (e.g. right as it
+  // crosses into "landed" and briefly races the next reconcile).
+  const [selectedPos, setSelectedPos] = useState<FlightPosition | null>(null);
   const [route, setRoute] = useState<[number, number][]>([]);
   const [dossier, setDossier] = useState<AircraftDossier | null>(null);
   const [polling, setPolling] = useState<PollingStatus | null>(null);
@@ -111,6 +118,9 @@ export default function IndianaJonesMap() {
         const byId: Record<string, FlightPosition> = {};
         list.forEach((p) => (byId[p.icao24] = p));
         setPositions(byId);
+        if (selectedRef.current && byId[selectedRef.current]) {
+          setSelectedPos(byId[selectedRef.current]);
+        }
       });
     reconcile();
     const reconcileInterval = setInterval(reconcile, LIVE_RECONCILE_MS);
@@ -118,6 +128,7 @@ export default function IndianaJonesMap() {
     const unsubscribe = subscribeLiveFeed((p) => {
       setPositions((prev) => ({ ...prev, [p.icao24]: p }));
       if (p.icao24 === selectedRef.current) {
+        setSelectedPos(p);
         setRoute((prev) => {
           const last = prev[prev.length - 1];
           if (last && last[0] === p.latitude && last[1] === p.longitude) return prev;
@@ -149,6 +160,7 @@ export default function IndianaJonesMap() {
     if (!selected) {
       setRoute([]);
       setDossier(null);
+      setSelectedPos(null);
       return;
     }
     const to = new Date().toISOString();
@@ -157,11 +169,13 @@ export default function IndianaJonesMap() {
       setRoute(track.map((p) => [p.latitude, p.longitude]));
     });
     setDossier(null); // clear the previous aircraft's fields while the new lookup is in flight
-    fetchAircraftDossier(selected).then(setDossier);
+    // Best-effort: a failed lookup just leaves the dossier fields at their
+    // "—" fallback rather than surfacing an error — this is enrichment,
+    // not core data, and shouldn't block the zoom/panel from working.
+    fetchAircraftDossier(selected).then(setDossier).catch(() => setDossier(null));
   }, [selected]);
 
   const list = Object.values(positions);
-  const selectedPos = selected ? positions[selected] : null;
 
   return (
     <div className="expedition-frame">
@@ -201,7 +215,12 @@ export default function IndianaJonesMap() {
             key={p.icao24}
             position={[p.latitude, p.longitude]}
             icon={planeIcon(p.headingDeg, p.icao24 === selected)}
-            eventHandlers={{ click: () => setSelected(p.icao24) }}
+            eventHandlers={{
+              click: () => {
+                setSelected(p.icao24);
+                setSelectedPos(p);
+              },
+            }}
           >
             <Popup className="dossier-popup">
               <div className="dossier-card">
