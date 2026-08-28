@@ -13,23 +13,14 @@ test("GET /api/flights/live returns an array of well-shaped positions", async ()
   for (const pos of body) assertFlightPositionShape(pos);
 });
 
-test("GET /api/flights/live honors an explicit withinMinutes", async () => {
-  const res = await fetch(apiUrl("/api/flights/live?withinMinutes=60"));
+test("GET /api/flights/live only returns aircraft that are airborne or recently landed", async () => {
+  // No query params anymore — the live/landed-visibility window is fixed
+  // server-side (FlightController.STALE_AIRBORNE_BOUND / LANDED_VISIBILITY),
+  // not caller-tunable. Every returned position should be either airborne
+  // or on the ground (a landed aircraft still qualifies for up to 20min).
+  const res = await fetch(apiUrl("/api/flights/live"));
   assert.equal(res.status, 200);
   const body = await res.json();
   assert.ok(Array.isArray(body));
-});
-
-test("GET /api/flights/live?withinMinutes=0 returns an empty (or near-empty) array, not an error", async () => {
-  // withinMinutes=0 means "since right now" — nothing should qualify as
-  // strictly newer than the request instant.
-  const res = await fetch(apiUrl("/api/flights/live?withinMinutes=0"));
-  assert.equal(res.status, 200);
-  const body = await res.json();
-  assert.deepEqual(body, []);
-});
-
-test("GET /api/flights/live rejects a non-numeric withinMinutes", async () => {
-  const res = await fetch(apiUrl("/api/flights/live?withinMinutes=not-a-number"));
-  assert.equal(res.status, 400);
+  for (const pos of body) assert.equal(typeof pos.onGround, "boolean");
 });

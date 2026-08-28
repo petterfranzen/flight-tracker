@@ -44,6 +44,12 @@ CREATE TABLE IF NOT EXISTS flight_position (
 CREATE INDEX IF NOT EXISTS idx_position_icao_time ON flight_position (icao24, observed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_position_recent ON flight_position (observed_at DESC) WHERE on_ground = false;
 
+-- Serves findLive's "when did this aircraft last fly / start its current
+-- landed streak" lookups: both filter by (icao24, on_ground) and scan
+-- observed_at, which idx_position_icao_time alone doesn't narrow by ground
+-- state.
+CREATE INDEX IF NOT EXISTS idx_position_icao_ground_time ON flight_position (icao24, on_ground, observed_at);
+
 -- Prevents an agent from writing a duplicate report if two agents see the
 -- same broadcast in the same polling window.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_position_icao_time_source

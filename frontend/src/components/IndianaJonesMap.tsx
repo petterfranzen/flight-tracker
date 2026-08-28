@@ -18,6 +18,15 @@ import "./IndianaJonesMap.css";
 // fresh.
 const STATUS_POLL_MS = 5_000;
 
+// How often to re-fetch the full live set and reconcile local state against
+// it. The WebSocket delivers new/updated positions as they land, but never
+// tells the client an aircraft should be *removed* — that only happens by
+// re-asking the server, whose /live query is what actually knows an
+// aircraft has been landed 20+ minutes or gone stale (see FlightController).
+// Without this, a marker would never leave the map during a single open
+// session no matter how long ago its aircraft landed.
+const LIVE_RECONCILE_MS = 60_000;
+
 // A small rotated dart stands in for the transponder icon — heading comes
 // straight off the state vector. This used to be the Unicode ✈ glyph
 // (U+2708) rotated by a fixed offset to correct for its assumed native
@@ -97,11 +106,15 @@ export default function IndianaJonesMap() {
   }, [selected]);
 
   useEffect(() => {
-    fetchLivePositions().then((list) => {
-      const byId: Record<string, FlightPosition> = {};
-      list.forEach((p) => (byId[p.icao24] = p));
-      setPositions(byId);
-    });
+    const reconcile = () =>
+      fetchLivePositions().then((list) => {
+        const byId: Record<string, FlightPosition> = {};
+        list.forEach((p) => (byId[p.icao24] = p));
+        setPositions(byId);
+      });
+    reconcile();
+    const reconcileInterval = setInterval(reconcile, LIVE_RECONCILE_MS);
+
     const unsubscribe = subscribeLiveFeed((p) => {
       setPositions((prev) => ({ ...prev, [p.icao24]: p }));
       if (p.icao24 === selectedRef.current) {
@@ -112,7 +125,10 @@ export default function IndianaJonesMap() {
         });
       }
     });
-    return unsubscribe;
+    return () => {
+      clearInterval(reconcileInterval);
+      unsubscribe();
+    };
   }, []);
 
   useEffect(() => {

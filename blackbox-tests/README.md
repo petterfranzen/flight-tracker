@@ -61,8 +61,8 @@ whether a failure is in the proxy config or the app itself.
 
 ## What's covered
 
-- `flights-live.test.js` — `GET /api/flights/live`: response shape, default
-  and explicit `withinMinutes`, invalid query param handling.
+- `flights-live.test.js` — `GET /api/flights/live`: response shape, and that
+  every returned position is airborne or within the landed-visibility window.
 - `flights-history.test.js` — `GET /api/flights/{icao24}/history`: response
   shape, required `from`/`to` params, unknown aircraft, invalid time range.
 - `usage.test.js` — `GET /api/usage`: response shape, required `from`/`to`

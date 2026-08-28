@@ -1,7 +1,7 @@
 import type { AircraftDossier, AircraftUsage, FlightPosition, PollingStatus } from "../types/flight";
 
-export async function fetchLivePositions(withinMinutes = 10): Promise<FlightPosition[]> {
-  const res = await fetch(`/api/flights/live?withinMinutes=${withinMinutes}`);
+export async function fetchLivePositions(): Promise<FlightPosition[]> {
+  const res = await fetch(`/api/flights/live`);
   if (!res.ok) throw new Error(`live fetch failed: ${res.status}`);
   return res.json();
 }
