@@ -61,8 +61,10 @@ public class AdsbdbClient {
                 return Optional.empty();
             }
             String origin = route.origin() == null ? null : route.origin().icao_code();
+            String originName = route.origin() == null ? null : route.origin().name();
             String destination = route.destination() == null ? null : route.destination().icao_code();
-            return Optional.of(new Route(origin, destination));
+            String destinationName = route.destination() == null ? null : route.destination().name();
+            return Optional.of(new Route(origin, originName, destination, destinationName));
         } catch (HttpClientErrorException e) {
             return Optional.empty();
         } catch (Exception e) {
@@ -117,6 +119,6 @@ public class AdsbdbClient {
     private record FlightRoute(String callsign, Airport origin, Airport destination) {
     }
 
-    private record Airport(String icao_code) {
+    private record Airport(String icao_code, String name) {
     }
 }

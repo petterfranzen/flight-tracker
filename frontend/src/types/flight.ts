@@ -19,7 +19,9 @@ export interface AircraftDossier {
   model: string | null;
   operator: string | null;
   originAirport: string | null;
+  originAirportName: string | null;
   destinationAirport: string | null;
+  destinationAirportName: string | null;
 }
 
 export interface PollingStatus {

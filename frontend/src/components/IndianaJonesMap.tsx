@@ -247,8 +247,8 @@ export default function IndianaJonesMap() {
               <dt>Type</dt><dd>{dossier?.model || "—"}</dd>
               <dt>Registration</dt><dd>{dossier?.registration || "—"}</dd>
               <dt>Operator</dt><dd>{dossier?.operator || "—"}</dd>
-              <dt>Origin</dt><dd>{dossier?.originAirport || "—"}</dd>
-              <dt>Destination</dt><dd>{dossier?.destinationAirport || "—"}</dd>
+              <dt>Origin</dt><dd>{dossier?.originAirportName || dossier?.originAirport || "—"}</dd>
+              <dt>Destination</dt><dd>{dossier?.destinationAirportName || dossier?.destinationAirport || "—"}</dd>
             </dl>
             <button className="expedition-close" onClick={() => setSelected(null)}>Close Dossier</button>
           </div>

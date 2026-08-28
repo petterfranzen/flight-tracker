@@ -65,7 +65,9 @@ public class AircraftEnrichmentService {
             });
             route.ifPresent(r -> {
                 aircraft.setOriginAirport(r.originAirport());
+                aircraft.setOriginAirportName(r.originAirportName());
                 aircraft.setDestinationAirport(r.destinationAirport());
+                aircraft.setDestinationAirportName(r.destinationAirportName());
             });
             aircraft.setMetadataFetchedAt(Instant.now());
             aircraftRepository.save(aircraft);

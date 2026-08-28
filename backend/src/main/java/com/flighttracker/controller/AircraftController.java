@@ -39,6 +39,7 @@ public class AircraftController {
     private static AircraftDossier toDossier(Aircraft a) {
         return new AircraftDossier(
                 a.getIcao24(), a.getRegistration(), a.getModel(), a.getOperator(),
-                a.getOriginAirport(), a.getDestinationAirport());
+                a.getOriginAirport(), a.getOriginAirportName(),
+                a.getDestinationAirport(), a.getDestinationAirportName());
     }
 }

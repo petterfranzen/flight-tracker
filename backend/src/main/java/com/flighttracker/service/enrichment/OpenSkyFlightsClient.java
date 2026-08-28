@@ -86,7 +86,7 @@ public class OpenSkyFlightsClient {
             if (latest == null) return Optional.empty();
             if (latest.estDepartureAirport() == null && latest.estArrivalAirport() == null) return Optional.empty();
 
-            return Optional.of(new Route(latest.estDepartureAirport(), latest.estArrivalAirport()));
+            return Optional.of(new Route(latest.estDepartureAirport(), null, latest.estArrivalAirport(), null));
         } catch (HttpClientErrorException.TooManyRequests e) {
             Duration wait;
             synchronized (backoff) { wait = backoff.recordFailure(MIN_BACKOFF, MAX_BACKOFF); }
