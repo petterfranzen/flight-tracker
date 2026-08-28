@@ -7,5 +7,7 @@ public record AircraftDossier(
         String model,
         String operator,
         String originAirport,
-        String destinationAirport
+        String originAirportName,
+        String destinationAirport,
+        String destinationAirportName
 ) { }

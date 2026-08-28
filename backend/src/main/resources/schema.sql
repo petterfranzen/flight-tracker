@@ -22,6 +22,12 @@ ALTER TABLE aircraft ADD COLUMN IF NOT EXISTS origin_airport VARCHAR(8);
 ALTER TABLE aircraft ADD COLUMN IF NOT EXISTS destination_airport VARCHAR(8);
 ALTER TABLE aircraft ADD COLUMN IF NOT EXISTS metadata_fetched_at TIMESTAMPTZ;
 
+-- Full airport names (only available via adsbdb's callsign route lookup —
+-- the OpenSky-fallback path has no name data, just bare codes). Nullable:
+-- falls back to the ICAO code in the UI when absent.
+ALTER TABLE aircraft ADD COLUMN IF NOT EXISTS origin_airport_name VARCHAR(128);
+ALTER TABLE aircraft ADD COLUMN IF NOT EXISTS destination_airport_name VARCHAR(128);
+
 CREATE TABLE IF NOT EXISTS flight_position (
     id              BIGSERIAL PRIMARY KEY,
     icao24          VARCHAR(6) NOT NULL REFERENCES aircraft(icao24),

@@ -18,8 +18,14 @@ public class Aircraft {
     @Column(name = "origin_airport")
     private String originAirport;
 
+    @Column(name = "origin_airport_name")
+    private String originAirportName;
+
     @Column(name = "destination_airport")
     private String destinationAirport;
+
+    @Column(name = "destination_airport_name")
+    private String destinationAirportName;
 
     @Column(name = "metadata_fetched_at")
     private Instant metadataFetchedAt;
@@ -45,8 +51,12 @@ public class Aircraft {
     public void setOperator(String operator) { this.operator = operator; }
     public String getOriginAirport() { return originAirport; }
     public void setOriginAirport(String originAirport) { this.originAirport = originAirport; }
+    public String getOriginAirportName() { return originAirportName; }
+    public void setOriginAirportName(String originAirportName) { this.originAirportName = originAirportName; }
     public String getDestinationAirport() { return destinationAirport; }
     public void setDestinationAirport(String destinationAirport) { this.destinationAirport = destinationAirport; }
+    public String getDestinationAirportName() { return destinationAirportName; }
+    public void setDestinationAirportName(String destinationAirportName) { this.destinationAirportName = destinationAirportName; }
     public Instant getMetadataFetchedAt() { return metadataFetchedAt; }
     public void setMetadataFetchedAt(Instant metadataFetchedAt) { this.metadataFetchedAt = metadataFetchedAt; }
     public Instant getFirstSeenAt() { return firstSeenAt; }
