@@ -1,0 +1,299 @@
+/*
+  Design tokens — a plain, high-contrast dark UI over unmodified OSM tiles
+  (no sepia wash: the previous theme's filter made some regions of the map
+  hard to read against). Every text/background pairing below meets WCAG AA
+  (>=4.5:1 for body text, >=3:1 for large text and UI components):
+    --color-text on --color-panel      ~15.8:1
+    --color-text-muted on --color-panel ~7.9:1
+    --color-accent on --color-panel     ~6.6:1
+    --color-warn on --color-panel       ~5.2:1
+*/
+
+:root {
+  --color-bg: #0b0f14;
+  --color-panel: #161d27;
+  --color-panel-border: #2c3947;
+  --color-text: #eef2f6;
+  --color-text-muted: #a7b4c2;
+  --color-accent: #4db2ff;
+  --color-warn: #ff6b6b;
+  --color-marker: #ffb020;
+  --color-marker-selected: #4db2ff;
+  --color-focus: #4db2ff;
+}
+
+.app-shell {
+  position: relative;
+  width: 100%;
+  height: 100vh;
+  background: var(--color-bg);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color: var(--color-text);
+  overflow: hidden;
+}
+
+/* A visible, consistent focus ring on every interactive element — several
+   browsers' default outlines are thin or low-contrast against a dark UI. */
+.app-shell a:focus-visible,
+.app-shell button:focus-visible {
+  outline: 3px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+.app-header {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 500;
+  background: var(--color-panel);
+  border: 1px solid var(--color-panel-border);
+  border-radius: 8px;
+  padding: 12px 24px;
+  text-align: center;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+}
+
+.app-header h1 {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: var(--color-text);
+}
+
+.app-header-subtitle {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.polling-status {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+
+.polling-badge {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+}
+.polling-badge--live {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+}
+.polling-badge--stopped {
+  color: var(--color-warn);
+  border-color: var(--color-warn);
+}
+
+.polling-restart {
+  background: var(--color-accent);
+  color: #04121d;
+  border: none;
+  border-radius: 6px;
+  padding: 5px 12px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.polling-restart:hover:not(:disabled) { filter: brightness(1.1); }
+.polling-restart:disabled { opacity: 0.6; cursor: default; }
+
+.map-container {
+  width: 100%;
+  height: 100%;
+  background: var(--color-panel);
+}
+
+.route-line {
+  stroke-linecap: round;
+  animation: dash-travel 2.4s linear forwards;
+}
+
+@keyframes dash-travel {
+  from { stroke-dashoffset: 240; }
+  to { stroke-dashoffset: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .route-line { animation: none; }
+}
+
+.plane-glyph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  color: var(--color-marker);
+  transition: transform 0.4s ease;
+}
+
+.plane-glyph svg {
+  width: 20px;
+  height: 20px;
+  fill: currentColor;
+  /* A dark outline keeps the marker legible over both light and dark map
+     tiles, regardless of what's directly underneath it. */
+  stroke: rgba(0, 0, 0, 0.7);
+  stroke-width: 1;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6));
+}
+
+/* No rotation angle can read as "unknown" on its own — whatever we pick
+   coincides with some real heading. Mark it unmistakably instead. */
+.plane-glyph--unknown-heading svg {
+  fill: none;
+  stroke: var(--color-marker);
+  stroke-dasharray: 2 2;
+  opacity: 0.75;
+}
+
+.plane-icon {
+  position: relative;
+}
+
+/* Sits behind the glyph, unrotated, so it reads as a halo around the
+   marker regardless of which way the plane itself is pointing. */
+.plane-icon-halo {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  opacity: 0;
+}
+
+.plane-icon--selected .plane-glyph {
+  color: var(--color-marker-selected);
+}
+
+.plane-icon--selected .plane-icon-halo {
+  opacity: 1;
+  background: radial-gradient(circle, rgba(77, 178, 255, 0.55) 0%, rgba(77, 178, 255, 0) 72%);
+  animation: halo-pulse 1.6s ease-out infinite;
+}
+
+@keyframes halo-pulse {
+  0% { transform: translate(-50%, -50%) scale(1); opacity: 0.9; }
+  100% { transform: translate(-50%, -50%) scale(2.6); opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .plane-icon--selected .plane-icon-halo { animation: none; opacity: 0.6; }
+}
+
+.marker-popup .leaflet-popup-content-wrapper {
+  background: var(--color-panel);
+  color: var(--color-text);
+  border: 1px solid var(--color-panel-border);
+  border-radius: 6px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+}
+.marker-popup .leaflet-popup-tip {
+  background: var(--color-panel);
+  border: 1px solid var(--color-panel-border);
+  box-shadow: none;
+}
+.marker-popup .leaflet-popup-close-button {
+  color: var(--color-text-muted);
+}
+.marker-popup .leaflet-popup-close-button:hover {
+  color: var(--color-text);
+}
+
+.popup-card { padding: 2px 4px; }
+
+.popup-callsign {
+  font-weight: 700;
+  font-size: 15px;
+  border-bottom: 1px solid var(--color-panel-border);
+  margin-bottom: 6px;
+  padding-bottom: 4px;
+}
+
+.popup-card dl {
+  display: grid;
+  grid-template-columns: auto auto;
+  column-gap: 10px;
+  row-gap: 2px;
+  margin: 0;
+  font-size: 12px;
+}
+.popup-card dt { color: var(--color-text-muted); }
+.popup-card dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+
+.details-panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  height: 100%;
+  width: 300px;
+  z-index: 500;
+  background: var(--color-panel);
+  border-left: 1px solid var(--color-panel-border);
+  box-shadow: -6px 0 18px rgba(0, 0, 0, 0.5);
+}
+
+.details-panel-inner {
+  padding: 28px 22px;
+  color: var(--color-text);
+}
+
+.details-panel-eyebrow {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  margin-bottom: 4px;
+}
+
+.details-panel h2 {
+  margin: 4px 0 10px;
+  font-size: 20px;
+}
+
+.details-panel-meta {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.details-panel-fields {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 12px;
+  row-gap: 8px;
+  margin: 18px 0 0;
+  padding-top: 14px;
+  border-top: 1px solid var(--color-panel-border);
+  font-size: 13px;
+}
+.details-panel-fields dt { color: var(--color-text-muted); }
+.details-panel-fields dd { margin: 0; text-align: right; }
+
+.details-panel-close {
+  margin-top: 20px;
+  background: var(--color-accent);
+  color: #04121d;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 16px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.details-panel-close:hover { filter: brightness(1.1); }
