@@ -75,7 +75,13 @@ services:
       # No actuator dependency in the app, so this just confirms the JVM is
       # up and serving requests through to the database — enough to know
       # nginx won't be proxying to a backend that isn't ready yet.
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/api/flights/live"]
+      #
+      # Not --spider: spider mode doesn't read the response body, so wget
+      # closes the connection before Spring finishes writing the JSON array
+      # — Spring then logs a spurious AsyncRequestNotUsableException
+      # ("Connection reset by peer") on every single check. -O /dev/null
+      # fully drains the body instead.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/api/flights/live"]
       interval: 10s
       timeout: 5s
       retries: 10

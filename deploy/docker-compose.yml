@@ -47,7 +47,11 @@ services:
       db:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/api/flights/live"]
+      # Not --spider: it doesn't read the response body, so wget closes the
+      # connection before Spring finishes writing it — logging a spurious
+      # AsyncRequestNotUsableException on every check. -O /dev/null drains
+      # the body instead. See docker-compose.yml for the full rationale.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/api/flights/live"]
       interval: 10s
       timeout: 5s
       retries: 10
