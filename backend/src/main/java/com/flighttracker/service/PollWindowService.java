@@ -40,6 +40,14 @@ public class PollWindowService {
         repository.save(window);
     }
 
+    /** Closes the window immediately — wired to the frontend's "Stop Watch" button. */
+    @Transactional
+    public void stop() {
+        PollWindow window = repository.findById(ROW_ID).orElseGet(() -> new PollWindow(Instant.now()));
+        window.setActiveUntil(Instant.now());
+        repository.save(window);
+    }
+
     public boolean isActive() {
         return repository.findById(ROW_ID)
                 .map(w -> Instant.now().isBefore(w.getActiveUntil()))

@@ -28,4 +28,11 @@ public class AgentController {
         pollWindowService.restart();
         return pollWindowService.status();
     }
+
+    /** Closes the poll window immediately — wired to the frontend's stop button. */
+    @PostMapping("/stop")
+    public PollingStatus stop() {
+        pollWindowService.stop();
+        return pollWindowService.status();
+    }
 }

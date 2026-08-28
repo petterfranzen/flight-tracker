@@ -8,14 +8,17 @@ import {
   fetchLivePositions,
   fetchPollingStatus,
   restartPolling,
+  stopPolling,
   subscribeLiveFeed,
 } from "../api/flightApi";
 import "./FlightMap.css";
 
-// How often the header badge re-checks the poll window's remaining time.
-// Independent of flighttracker.agents.poll-interval-seconds (that's how
-// often the backend hits OpenSky) — this just keeps the countdown display
-// fresh.
+// How often the header badge re-syncs the poll window's remaining time
+// against the server. Independent of flighttracker.agents.poll-interval-seconds
+// (that's how often the backend hits OpenSky) — the countdown itself ticks
+// locally every second (see the displaySecondsRemaining effect below); this
+// interval just corrects any client-side drift and picks up window changes
+// from other tabs/devices.
 const STATUS_POLL_MS = 5_000;
 
 // How often to re-fetch the full live set and reconcile local state against
@@ -109,7 +112,12 @@ export default function FlightMap() {
   const [route, setRoute] = useState<[number, number][]>([]);
   const [dossier, setDossier] = useState<AircraftDossier | null>(null);
   const [polling, setPolling] = useState<PollingStatus | null>(null);
+  // When `polling` was last fetched, so the countdown can tick locally
+  // between fetches instead of jumping in STATUS_POLL_MS-sized steps.
+  const [pollingSyncedAt, setPollingSyncedAt] = useState(0);
+  const [displaySecondsRemaining, setDisplaySecondsRemaining] = useState(0);
   const [restarting, setRestarting] = useState(false);
+  const [stopping, setStopping] = useState(false);
 
   // The live feed subscription below is set up once and outlives every
   // selection change, so its closure can't see updates to `selected` —
@@ -150,23 +158,59 @@ export default function FlightMap() {
     };
   }, []);
 
+  function applyPollingStatus(status: PollingStatus) {
+    setPolling(status);
+    setPollingSyncedAt(Date.now());
+  }
+
   useEffect(() => {
-    const check = () => fetchPollingStatus().then(setPolling).catch(() => {});
+    const check = () => fetchPollingStatus().then(applyPollingStatus).catch(() => {});
     check();
     const interval = setInterval(check, STATUS_POLL_MS);
     return () => clearInterval(interval);
   }, []);
 
+  // Ticks the displayed countdown down every second, independent of when
+  // the last server sync happened, so it counts down smoothly instead of
+  // jumping in STATUS_POLL_MS-sized steps.
+  useEffect(() => {
+    if (!polling?.active) {
+      setDisplaySecondsRemaining(0);
+      return;
+    }
+    const tick = () => {
+      const elapsedSinceSync = Math.floor((Date.now() - pollingSyncedAt) / 1000);
+      setDisplaySecondsRemaining(Math.max(0, polling.secondsRemaining - elapsedSinceSync));
+    };
+    tick();
+    const interval = setInterval(tick, 1_000);
+    return () => clearInterval(interval);
+  }, [polling, pollingSyncedAt]);
+
   function handleRestartPolling() {
     setRestarting(true);
     restartPolling()
-      .then(setPolling)
+      .then(applyPollingStatus)
       .finally(() => setRestarting(false));
   }
 
+  function handleStopPolling() {
+    setStopping(true);
+    stopPolling()
+      .then(applyPollingStatus)
+      .finally(() => setStopping(false));
+  }
+
   useEffect(() => {
+    // Cleared unconditionally, not just on deselect: switching directly
+    // from aircraft A to B never passes through "selected = null", so
+    // without this the polyline kept showing A's route — and could even
+    // grow a stray point onto it — during the gap before B's history fetch
+    // below resolves (the live-feed effect appends to `route` the moment a
+    // new position for whichever aircraft is now selected arrives, which
+    // can easily win that race).
+    setRoute([]);
     if (!selected) {
-      setRoute([]);
       setDossier(null);
       setSelectedPos(null);
       return;
@@ -192,7 +236,12 @@ export default function FlightMap() {
         <p className="app-header-subtitle">Live aircraft positions</p>
         <div className="polling-status">
           {polling?.active ? (
-            <span className="polling-badge polling-badge--live">Watch active · {polling.secondsRemaining}s</span>
+            <>
+              <span className="polling-badge polling-badge--live">Watch active · {displaySecondsRemaining}s</span>
+              <button className="polling-restart" onClick={handleStopPolling} disabled={stopping}>
+                {stopping ? "Stopping…" : "Stop Watch"}
+              </button>
+            </>
           ) : (
             <>
               <span className="polling-badge polling-badge--stopped">Watch stood down</span>
