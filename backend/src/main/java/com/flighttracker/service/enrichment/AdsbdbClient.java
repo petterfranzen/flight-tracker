@@ -3,7 +3,6 @@ package com.flighttracker.service.enrichment;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
-import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestClient;
@@ -17,9 +16,13 @@ import java.util.Optional;
  * free, no-auth alternative that still serves this. Best-effort: any
  * failure (including "we don't have this aircraft") degrades to empty
  * rather than propagating, since this is dossier enrichment, not core data.
+ *
+ * No @Profile restriction: used by the "agent" container's eager
+ * enrichment of newly hot-polled aircraft, and by the "api" container's
+ * on-demand enrichment (AircraftController) for aircraft the global sweep
+ * found but nobody's looked at yet.
  */
 @Component
-@Profile("agent")
 public class AdsbdbClient {
 
     private static final Logger log = LoggerFactory.getLogger(AdsbdbClient.class);

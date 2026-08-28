@@ -297,3 +297,25 @@
   cursor: pointer;
 }
 .details-panel-close:hover { filter: brightness(1.1); }
+
+/* Cluster bubbles (react-leaflet-cluster / leaflet.markercluster), restyled
+   from their default light-blue look to match the rest of the theme. Text
+   is dark-on-amber rather than the marker's usual light-on-dark — that
+   pairing comfortably clears WCAG AA (amber #ffb020 against #04121d is
+   well over 10:1) and reads clearly as "a count", distinct from the plane
+   glyphs themselves. */
+.marker-cluster {
+  background: rgba(255, 176, 32, 0.25);
+}
+.marker-cluster div {
+  background: var(--color-marker);
+  color: #04121d;
+  font-weight: 700;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.marker-cluster span {
+  line-height: 1;
+}

@@ -6,7 +6,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
-import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestClient;
@@ -27,12 +26,15 @@ import java.util.Optional;
  * failing the caller: origin/destination is enrichment, not core data.
  *
  * This is called concurrently from AircraftEnrichmentService's @Async pool
- * (see AsyncConfig), unlike OpenSkyAgent's single-threaded poll() — so
- * unlike PollBackoff's usual single-thread assumption, every access here is
- * synchronized on the backoff instance itself.
+ * (see AsyncConfig) and from an "api"-container request thread
+ * (AircraftController's on-demand enrichment), unlike OpenSkyAgent's
+ * single-threaded poll() — so unlike PollBackoff's usual single-thread
+ * assumption, every access here is synchronized on the backoff instance
+ * itself. No @Profile restriction: the "api" and "agent" containers each
+ * get their own instance (and therefore their own independent backoff
+ * state) since they're separate processes.
  */
 @Component
-@Profile("agent")
 public class OpenSkyFlightsClient {
 
     private static final Logger log = LoggerFactory.getLogger(OpenSkyFlightsClient.class);

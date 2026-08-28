@@ -4,7 +4,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
-import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
@@ -22,10 +21,11 @@ import java.util.Optional;
  *
  * Tokens expire every 30 minutes; this caches the token and refreshes it a
  * minute early rather than on every call, so a burst of dossier lookups
- * doesn't turn into a burst of token requests.
+ * doesn't turn into a burst of token requests. No @Profile restriction —
+ * the "api" container needs this too, for AircraftController's on-demand
+ * enrichment.
  */
 @Component
-@Profile("agent")
 public class OpenSkyOAuthTokenProvider {
 
     private static final Logger log = LoggerFactory.getLogger(OpenSkyOAuthTokenProvider.class);
