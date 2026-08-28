@@ -18,6 +18,7 @@ npm-debug.log*
 .classpath
 .project
 .settings/
+*.kate-swp
 
 # OS
 .DS_Store
