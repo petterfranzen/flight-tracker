@@ -1,5 +1,5 @@
-import IndianaJonesMap from "./components/IndianaJonesMap";
+import FlightMap from "./components/FlightMap";
 
 export default function App() {
-  return <IndianaJonesMap />;
+  return <FlightMap />;
 }

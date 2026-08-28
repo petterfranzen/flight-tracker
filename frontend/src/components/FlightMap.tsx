@@ -10,7 +10,7 @@ import {
   restartPolling,
   subscribeLiveFeed,
 } from "../api/flightApi";
-import "./IndianaJonesMap.css";
+import "./FlightMap.css";
 
 // How often the header badge re-checks the poll window's remaining time.
 // Independent of flighttracker.agents.poll-interval-seconds (that's how
@@ -26,6 +26,8 @@ const STATUS_POLL_MS = 5_000;
 // Without this, a marker would never leave the map during a single open
 // session no matter how long ago its aircraft landed.
 const LIVE_RECONCILE_MS = 60_000;
+
+const ROUTE_COLOR = "#4db2ff"; // matches --color-accent in FlightMap.css
 
 // A small rotated dart stands in for the transponder icon — heading comes
 // straight off the state vector. This used to be the Unicode ✈ glyph
@@ -51,9 +53,15 @@ function planeIcon(headingDeg: number | null, selected: boolean) {
   const glyphClass = known ? "plane-glyph" : "plane-glyph plane-glyph--unknown-heading";
   // The halo lives on a non-rotated wrapper so it stays a circle regardless
   // of the glyph's own rotation.
+  //
+  // role="img"/aria-label here is deliberately static, not per-aircraft —
+  // Leaflet's divIcon sets this string as raw innerHTML, so interpolating
+  // callsign (external, attacker-influenceable OpenSky data) into it would
+  // be an XSS hole. Per-aircraft detail is only ever rendered through real
+  // React DOM (the popup, the details panel), which escapes it safely.
   return L.divIcon({
     className: `plane-icon${selected ? " plane-icon--selected" : ""}`,
-    html: `<div class="plane-icon-halo"></div><div class="${glyphClass}" style="transform: rotate(${rotation}deg)">${PLANE_SVG}</div>`,
+    html: `<div class="plane-icon-halo" aria-hidden="true"></div><div class="${glyphClass}" style="transform: rotate(${rotation}deg)" role="img" aria-label="Aircraft position marker">${PLANE_SVG}</div>`,
     iconSize: [22, 22],
     iconAnchor: [11, 11],
   });
@@ -88,13 +96,13 @@ function FollowSelected({ selectedId, position }: { selectedId: string | null; p
   return null;
 }
 
-export default function IndianaJonesMap() {
+export default function FlightMap() {
   const [positions, setPositions] = useState<Record<string, FlightPosition>>({});
   const [selected, setSelected] = useState<string | null>(null);
   // Captured at click time and kept live-updated by the WebSocket feed and
   // the periodic reconcile below, but — unlike a plain positions[selected]
   // lookup — never nulled out just because the aircraft momentarily isn't
-  // in the live set. A user looking at one aircraft's dossier is exactly
+  // in the live set. A user looking at one aircraft's details is exactly
   // the wrong moment for it to vanish from under them (e.g. right as it
   // crosses into "landed" and briefly races the next reconcile).
   const [selectedPos, setSelectedPos] = useState<FlightPosition | null>(null);
@@ -178,10 +186,10 @@ export default function IndianaJonesMap() {
   const list = Object.values(positions);
 
   return (
-    <div className="expedition-frame">
-      <header className="dossier-header">
-        <span className="dossier-eyebrow">Aeronautical Survey &amp; Charting Office</span>
-        <h1>Live Traffic Chart</h1>
+    <div className="app-shell">
+      <header className="app-header">
+        <h1>Flight Tracker</h1>
+        <p className="app-header-subtitle">Live aircraft positions</p>
         <div className="polling-status">
           {polling?.active ? (
             <span className="polling-badge polling-badge--live">Watch active · {polling.secondsRemaining}s</span>
@@ -196,9 +204,14 @@ export default function IndianaJonesMap() {
         </div>
       </header>
 
-      <MapContainer center={[59.33, 18.06]} zoom={6} className="expedition-map" zoomControl={false}>
+      <MapContainer
+        center={[59.33, 18.06]}
+        zoom={6}
+        className="map-container"
+        zoomControl={false}
+        aria-label="Live aircraft map"
+      >
         <TileLayer
-          className="parchment-tiles"
           attribution='&copy; OpenStreetMap contributors'
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
@@ -208,7 +221,9 @@ export default function IndianaJonesMap() {
           position={selectedPos ? [selectedPos.latitude, selectedPos.longitude] : null}
         />
 
-        {route.length > 1 && <Polyline positions={route} className="route-line" pathOptions={{ color: "#9c3b2e", weight: 2, dashArray: "6 8" }} />}
+        {route.length > 1 && (
+          <Polyline positions={route} className="route-line" pathOptions={{ color: ROUTE_COLOR, weight: 3, dashArray: "6 8" }} />
+        )}
 
         {list.map((p) => (
           <Marker
@@ -222,9 +237,9 @@ export default function IndianaJonesMap() {
               },
             }}
           >
-            <Popup className="dossier-popup">
-              <div className="dossier-card">
-                <div className="dossier-callsign">{p.callsign?.trim() || p.icao24.toUpperCase()}</div>
+            <Popup className="marker-popup">
+              <div className="popup-card">
+                <div className="popup-callsign">{p.callsign?.trim() || p.icao24.toUpperCase()}</div>
                 <dl>
                   <dt>Altitude</dt><dd>{p.altitudeM != null ? Math.round(p.altitudeM) + " m" : "—"}</dd>
                   <dt>Speed</dt><dd>{p.velocityMs != null ? Math.round(p.velocityMs * 3.6) + " km/h" : "—"}</dd>
@@ -238,19 +253,21 @@ export default function IndianaJonesMap() {
       </MapContainer>
 
       {selectedPos && (
-        <aside className="expedition-log">
-          <div className="expedition-log-inner">
-            <span className="dossier-eyebrow">Field Log</span>
+        <aside className="details-panel" aria-labelledby="details-panel-heading">
+          <div className="details-panel-inner">
+            <span className="details-panel-eyebrow" id="details-panel-heading">Aircraft Details</span>
             <h2>{selectedPos.callsign?.trim() || selectedPos.icao24.toUpperCase()}</h2>
-            <p className="expedition-log-meta">ICAO24 {selectedPos.icao24.toUpperCase()} · last leg traced above</p>
-            <dl className="expedition-log-details">
+            <p className="details-panel-meta">ICAO24 {selectedPos.icao24.toUpperCase()} · last leg traced above</p>
+            <dl className="details-panel-fields">
               <dt>Type</dt><dd>{dossier?.model || "—"}</dd>
               <dt>Registration</dt><dd>{dossier?.registration || "—"}</dd>
               <dt>Operator</dt><dd>{dossier?.operator || "—"}</dd>
               <dt>Origin</dt><dd>{dossier?.originAirportName || dossier?.originAirport || "—"}</dd>
               <dt>Destination</dt><dd>{dossier?.destinationAirportName || dossier?.destinationAirport || "—"}</dd>
             </dl>
-            <button className="expedition-close" onClick={() => setSelected(null)}>Close Dossier</button>
+            <button className="details-panel-close" onClick={() => setSelected(null)} aria-label="Close aircraft details">
+              Close
+            </button>
           </div>
         </aside>
       )}

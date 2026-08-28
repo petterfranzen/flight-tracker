@@ -45,6 +45,6 @@ this unattended on a NAS via prebuilt images from CI, see
 ## Where things live
 - `backend/.../service/agent/` — the agent interface + orchestrator + the OpenSky implementation. Add a new source by adding one `@Component`.
 - `backend/.../service/UsageService.java` — turns historic positions into distance/airtime figures.
-- `frontend/src/components/IndianaJonesMap.tsx` — the map; theme tokens are at the top of the adjacent `.css`.
+- `frontend/src/components/FlightMap.tsx` — the map; design tokens are at the top of the adjacent `.css`.
 - `docs/neovim-basics.md` — Neovim primer for the config in `nvim/init.lua`.
 - `docs/multi-agent-workflow.md` — running Claude Code, Codex, and Gemini CLI on this repo in parallel without them stepping on each other.
