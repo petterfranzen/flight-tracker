@@ -78,8 +78,12 @@ public class AircraftEnrichmentService {
             route.ifPresent(r -> {
                 aircraft.setOriginAirport(r.originAirport());
                 aircraft.setOriginAirportName(r.originAirportName());
+                aircraft.setOriginAirportLat(r.originAirportLat());
+                aircraft.setOriginAirportLon(r.originAirportLon());
                 aircraft.setDestinationAirport(r.destinationAirport());
                 aircraft.setDestinationAirportName(r.destinationAirportName());
+                aircraft.setDestinationAirportLat(r.destinationAirportLat());
+                aircraft.setDestinationAirportLon(r.destinationAirportLon());
             });
             // Set even when nothing was found: marks the lookup as "tried",
             // so a data-less aircraft (no adsbdb record, no route) doesn't

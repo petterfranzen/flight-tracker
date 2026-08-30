@@ -1,0 +1,54 @@
+.scale-bar {
+  background: var(--color-panel);
+  border: 1px solid var(--color-panel-border);
+  border-radius: 6px;
+  /* Extra left/right padding vs. top/bottom — the end labels are centered
+     on the track's own edges (see .scale-bar-label) and need room either
+     side to overflow into without clipping or crowding the "0" / final
+     total label against the panel's own border. */
+  padding: 6px 20px 4px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+  /* Leaflet's default control margin already spaces this from the map
+     edge; nothing else in this corner (zoomControl is disabled), so no
+     extra stacking rules are needed here. */
+}
+
+.scale-bar-track {
+  display: flex;
+  height: 8px;
+  border: 1px solid var(--color-text);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.scale-bar-segment {
+  height: 100%;
+  background: var(--color-panel);
+}
+
+.scale-bar-segment--alt {
+  background: var(--color-text);
+}
+
+.scale-bar-labels {
+  position: relative;
+  height: 14px;
+  margin-top: 3px;
+}
+
+.scale-bar-label {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+  letter-spacing: -0.2px;
+}
+
+/* First/last labels stay centered on the track's own edges too (same
+   translateX(-50%) as every other tick, no special-case anchor) — the
+   extra horizontal padding on .scale-bar above is what keeps them from
+   clipping, and centering keeps every tick label's relationship to its
+   tick mark identical. */

@@ -32,6 +32,16 @@ flighttracker:
     # OpenSky's daily anonymous credit budget. Reopen it via
     # POST /api/agents/restart (the frontend's restart button).
     poll-window-seconds: 60
+    # Hard cap on how many times POST /api/agents/restart can reopen the
+    # poll window within restart-quota-window-minutes — see
+    # PollWindowService.restart(). This app being internet-facing means
+    # this now bounds worst-case OpenSky usage from *anyone* hammering
+    # resume, not just accidental overuse from one honest browser tab.
+    # 3 resumes x poll-window-seconds (60s) = 3 minutes of hot-polling
+    # allowed per 15-minute window; exceeding it means waiting out the
+    # full window from the *first* resume in it, not a rolling cooldown.
+    restart-quota-max: 3
+    restart-quota-window-minutes: 15
     # Global sweep (pollGlobal() — no bbox, every aircraft worldwide):
     # always on, independent of the poll window above — see
     # AgentOrchestrator.pollGlobalSweep. A full-world states/all call costs
@@ -54,3 +64,16 @@ flighttracker:
         client-id: ${OPENSKY_CLIENT_ID:}
         client-secret: ${OPENSKY_CLIENT_SECRET:}
         token-url: https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token
+  # Per-client-IP limits on POST /api/agents/restart specifically — the one
+  # endpoint that costs real OpenSky usage. Separate from (and in addition
+  # to) the global restart-quota-* above: that one protects the shared
+  # OpenSky budget no matter who's asking; this one stops a single caller
+  # from being the reason the shared quota gets exhausted, and catches
+  # sustained abuse spread out *across* a day specifically to dodge the
+  # 15-minute quota window. See RestartRateLimiter. Loopback/private-range
+  # callers (localhost, the docker-compose bridge network nginx proxies
+  # through, and — deliberately — anyone on the same LAN as a home/NAS
+  # deployment) are exempt; see ClientIpResolver.isLocal.
+  rate-limit:
+    restart-per-ip-per-minute: 3
+    restart-per-ip-per-day: 20

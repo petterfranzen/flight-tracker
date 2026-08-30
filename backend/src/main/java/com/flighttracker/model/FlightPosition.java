@@ -75,4 +75,20 @@ public class FlightPosition {
     public Double getVerticalRateMs() { return verticalRateMs; }
     public boolean isOnGround() { return onGround; }
     public String getAgentSource() { return agentSource; }
+
+    /**
+     * A copy of this position with latitude/longitude replaced — used by
+     * EstimatedPositionService to dead-reckon a stale report forward
+     * without ever mutating (or persisting) the original. Every other
+     * field, including observedAt, carries over unchanged: the copy is
+     * indistinguishable in shape from a real report, deliberately — see
+     * EstimatedPositionCache's javadoc for why the frontend is never told
+     * which is which.
+     */
+    public FlightPosition withEstimatedPosition(double latitude, double longitude) {
+        FlightPosition copy = new FlightPosition(icao24, callsign, observedAt, latitude, longitude,
+                altitudeM, velocityMs, headingDeg, verticalRateMs, onGround, agentSource);
+        copy.id = this.id;
+        return copy;
+    }
 }

@@ -63,7 +63,9 @@ public class AgentOrchestrator {
     // staleness off data that already exists.
     @PostConstruct
     void seedOnStartup() {
-        pollWindowService.restart();
+        // bypassQuota: this is a boot-time call, not a request from
+        // anyone — see PollWindowService.restart()'s javadoc.
+        pollWindowService.restart(true);
         if (persistenceService.hasNoPositions()) {
             log.info("Database is empty — seeding with a global sweep before startup completes");
             runGlobalSweep();

@@ -21,6 +21,13 @@ export interface FlightPosition {
   agentSource: string;
 }
 
+/** One server-aggregated grid cell — a zoomed-way-out summary of live traffic. */
+export interface ClusterPoint {
+  lat: number;
+  lon: number;
+  count: number;
+}
+
 export interface AircraftDossier {
   icao24: string;
   registration: string | null;
@@ -30,6 +37,15 @@ export interface AircraftDossier {
   originAirportName: string | null;
   destinationAirport: string | null;
   destinationAirportName: string | null;
+  // All computed server-side from live/historic position data, not stored
+  // — see AircraftDossier.java's javadoc for exactly when each is null.
+  flightMinutes: number | null;
+  etaMinutes: number | null;
+  cruisingAltitudeM: number | null;
+  /** "ON_GROUND" | "TAKING_OFF" | "CLIMBING" | "LEVEL" | "DESCENDING" | "LANDING" */
+  flightPhase: string | null;
+  /** Human-readable guess at what a since-gone-quiet aircraft is doing — only meaningful once the frontend's own staleness check says to show it. */
+  staleExplanation: string | null;
 }
 
 export interface PollingStatus {

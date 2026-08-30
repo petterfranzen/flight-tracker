@@ -27,6 +27,18 @@ public class Aircraft {
     @Column(name = "destination_airport_name")
     private String destinationAirportName;
 
+    @Column(name = "origin_airport_lat")
+    private Double originAirportLat;
+
+    @Column(name = "origin_airport_lon")
+    private Double originAirportLon;
+
+    @Column(name = "destination_airport_lat")
+    private Double destinationAirportLat;
+
+    @Column(name = "destination_airport_lon")
+    private Double destinationAirportLon;
+
     @Column(name = "metadata_fetched_at")
     private Instant metadataFetchedAt;
 
@@ -57,6 +69,14 @@ public class Aircraft {
     public void setDestinationAirport(String destinationAirport) { this.destinationAirport = destinationAirport; }
     public String getDestinationAirportName() { return destinationAirportName; }
     public void setDestinationAirportName(String destinationAirportName) { this.destinationAirportName = destinationAirportName; }
+    public Double getOriginAirportLat() { return originAirportLat; }
+    public void setOriginAirportLat(Double originAirportLat) { this.originAirportLat = originAirportLat; }
+    public Double getOriginAirportLon() { return originAirportLon; }
+    public void setOriginAirportLon(Double originAirportLon) { this.originAirportLon = originAirportLon; }
+    public Double getDestinationAirportLat() { return destinationAirportLat; }
+    public void setDestinationAirportLat(Double destinationAirportLat) { this.destinationAirportLat = destinationAirportLat; }
+    public Double getDestinationAirportLon() { return destinationAirportLon; }
+    public void setDestinationAirportLon(Double destinationAirportLon) { this.destinationAirportLon = destinationAirportLon; }
     public Instant getMetadataFetchedAt() { return metadataFetchedAt; }
     public void setMetadataFetchedAt(Instant metadataFetchedAt) { this.metadataFetchedAt = metadataFetchedAt; }
     public Instant getFirstSeenAt() { return firstSeenAt; }

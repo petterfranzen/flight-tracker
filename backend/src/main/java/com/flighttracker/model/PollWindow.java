@@ -18,6 +18,16 @@ public class PollWindow {
     @Column(name = "active_until", nullable = false)
     private Instant activeUntil;
 
+    // See PollWindowService.restart() for the actual quota logic — this
+    // just persists its state. Null quotaWindowStart means no quota
+    // window has started yet (or the last one has fully expired and been
+    // superseded), equivalent to quotaRestartCount being 0.
+    @Column(name = "quota_window_start")
+    private Instant quotaWindowStart;
+
+    @Column(name = "quota_restart_count", nullable = false)
+    private int quotaRestartCount = 0;
+
     protected PollWindow() { }
 
     public PollWindow(Instant activeUntil) {
@@ -27,4 +37,8 @@ public class PollWindow {
     public Integer getId() { return id; }
     public Instant getActiveUntil() { return activeUntil; }
     public void setActiveUntil(Instant activeUntil) { this.activeUntil = activeUntil; }
+    public Instant getQuotaWindowStart() { return quotaWindowStart; }
+    public void setQuotaWindowStart(Instant quotaWindowStart) { this.quotaWindowStart = quotaWindowStart; }
+    public int getQuotaRestartCount() { return quotaRestartCount; }
+    public void setQuotaRestartCount(int quotaRestartCount) { this.quotaRestartCount = quotaRestartCount; }
 }

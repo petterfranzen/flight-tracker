@@ -65,9 +65,14 @@ public class AdsbdbClient {
             }
             String origin = route.origin() == null ? null : route.origin().icao_code();
             String originName = route.origin() == null ? null : route.origin().name();
+            Double originLat = route.origin() == null ? null : route.origin().latitude();
+            Double originLon = route.origin() == null ? null : route.origin().longitude();
             String destination = route.destination() == null ? null : route.destination().icao_code();
             String destinationName = route.destination() == null ? null : route.destination().name();
-            return Optional.of(new Route(origin, originName, destination, destinationName));
+            Double destinationLat = route.destination() == null ? null : route.destination().latitude();
+            Double destinationLon = route.destination() == null ? null : route.destination().longitude();
+            return Optional.of(new Route(origin, originName, originLat, originLon,
+                    destination, destinationName, destinationLat, destinationLon));
         } catch (HttpClientErrorException e) {
             return Optional.empty();
         } catch (Exception e) {
@@ -122,6 +127,10 @@ public class AdsbdbClient {
     private record FlightRoute(String callsign, Airport origin, Airport destination) {
     }
 
-    private record Airport(String icao_code, String name) {
+    // latitude/longitude were already present in adsbdb's response — just
+    // never parsed out before (nothing used them until ETA needed them —
+    // see AircraftController). Field names match adsbdb's JSON keys as-is,
+    // same as Aircraft above.
+    private record Airport(String icao_code, String name, Double latitude, Double longitude) {
     }
 }

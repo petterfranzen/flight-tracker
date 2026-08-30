@@ -68,44 +68,53 @@
   color: var(--color-text-muted);
 }
 
-.polling-status {
-  margin-top: 10px;
+/* Shown once ESTIMATE_STOP_MS has elapsed since the current fetch/estimate
+   cycle began (see FlightMap.tsx) — replaces the old Watch active/stood
+   down badge and Stop/Resume Watch buttons entirely. */
+.resume-dialog-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 1000;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 10px;
+  background: rgba(4, 8, 13, 0.6);
 }
 
-.polling-badge {
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  padding: 3px 10px;
-  border-radius: 999px;
-  border: 1px solid transparent;
-}
-.polling-badge--live {
-  color: var(--color-accent);
-  border-color: var(--color-accent);
-}
-.polling-badge--stopped {
-  color: var(--color-warn);
-  border-color: var(--color-warn);
+.resume-dialog {
+  width: min(360px, calc(100% - 48px));
+  background: var(--color-panel);
+  border: 1px solid var(--color-panel-border);
+  border-radius: 10px;
+  padding: 24px;
+  text-align: center;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
 }
 
-.polling-restart {
+.resume-dialog h2 {
+  margin: 0 0 8px;
+  font-size: 18px;
+  color: var(--color-text);
+}
+
+.resume-dialog p {
+  margin: 0 0 20px;
+  font-size: 14px;
+  color: var(--color-text-muted);
+}
+
+.resume-dialog-button {
   background: var(--color-accent);
   color: #04121d;
   border: none;
   border-radius: 6px;
-  padding: 5px 12px;
+  padding: 10px 20px;
   font: inherit;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 600;
   cursor: pointer;
 }
-.polling-restart:hover:not(:disabled) { filter: brightness(1.1); }
-.polling-restart:disabled { opacity: 0.6; cursor: default; }
+.resume-dialog-button:hover { filter: brightness(1.1); }
 
 .map-container {
   width: 100%;
@@ -131,15 +140,20 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  /* Percentage, not a fixed px size: fills whatever size Leaflet applies
+     to the marker itself (ICON_SIZE or SELECTED_ICON_SIZE, set via
+     iconSize in planeIcon()), so selected vs. unselected sizing lives in
+     one place instead of needing a duplicate, separately-sized copy of
+     every rule in this file. */
+  width: 100%;
+  height: 100%;
   color: var(--color-marker);
   transition: transform 0.4s ease;
 }
 
 .plane-glyph svg {
-  width: 20px;
-  height: 20px;
+  width: 90%;
+  height: 90%;
   fill: currentColor;
   /* A dark outline keeps the marker legible over both light and dark map
      tiles, regardless of what's directly underneath it. */
@@ -158,9 +172,22 @@
   opacity: 0.75;
 }
 
-.plane-icon {
-  position: relative;
-}
+/* No `position: relative` rule here (deliberately — this class doubles as
+   Leaflet's own marker-icon element): .leaflet-marker-icon in Leaflet's
+   base CSS already sets `position: absolute` on this same element, which
+   Leaflet's marker positioning (transform + negative margin, both applied
+   to this element) depends on completely. Any non-static `position`
+   already gives .plane-icon-halo below a valid positioning context, so
+   overriding it to `relative` here bought nothing — it only sat later in
+   the cascade than leaflet.css and silently won, which took the marker
+   out of the absolute-positioned scheme Leaflet expects entirely.
+   Real-world effect: marker (and trail) position drifted with however
+   many *other* markers happened to be in the DOM at the time, since the
+   element was participating in normal document flow instead of being
+   pinned by transform — the actual mechanism behind aircraft "jumping"
+   and "disappearing" on pan/zoom reported this session. Confirmed via
+   Playwright against captured real API data: this one-line removal is
+   what took the marker-position tests from off by 50-125px to exact. */
 
 /* Sits behind the glyph, unrotated, so it reads as a halo around the
    marker regardless of which way the plane itself is pointing. */
@@ -168,8 +195,8 @@
   position: absolute;
   top: 50%;
   left: 50%;
-  width: 22px;
-  height: 22px;
+  width: 100%;
+  height: 100%;
   border-radius: 50%;
   transform: translate(-50%, -50%);
   pointer-events: none;
@@ -195,45 +222,23 @@
   .plane-icon--selected .plane-icon-halo { animation: none; opacity: 0.6; }
 }
 
-.marker-popup .leaflet-popup-content-wrapper {
-  background: var(--color-panel);
+/* One aggregated grid cell at the zoomed-way-out view (see
+   CLUSTER_FETCH_MAX_ZOOM) — same amber as an ordinary aircraft marker
+   since it represents the same underlying data, just summarized. */
+.cluster-point-bubble {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  background: rgba(255, 176, 32, 0.28);
+  border: 1.5px solid var(--color-marker);
   color: var(--color-text);
-  border: 1px solid var(--color-panel-border);
-  border-radius: 6px;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
-}
-.marker-popup .leaflet-popup-tip {
-  background: var(--color-panel);
-  border: 1px solid var(--color-panel-border);
-  box-shadow: none;
-}
-.marker-popup .leaflet-popup-close-button {
-  color: var(--color-text-muted);
-}
-.marker-popup .leaflet-popup-close-button:hover {
-  color: var(--color-text);
-}
-
-.popup-card { padding: 2px 4px; }
-
-.popup-callsign {
+  font-size: 11px;
   font-weight: 700;
-  font-size: 15px;
-  border-bottom: 1px solid var(--color-panel-border);
-  margin-bottom: 6px;
-  padding-bottom: 4px;
+  font-variant-numeric: tabular-nums;
 }
-
-.popup-card dl {
-  display: grid;
-  grid-template-columns: auto auto;
-  column-gap: 10px;
-  row-gap: 2px;
-  margin: 0;
-  font-size: 12px;
-}
-.popup-card dt { color: var(--color-text-muted); }
-.popup-card dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
 
 .details-panel {
   position: absolute;
@@ -270,6 +275,17 @@
 .details-panel-meta {
   font-size: 12px;
   color: var(--color-text-muted);
+}
+
+.details-panel-updated {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.details-panel-updated--stale {
+  color: var(--color-warn);
+  font-weight: 600;
 }
 
 .details-panel-fields {

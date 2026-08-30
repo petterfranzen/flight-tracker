@@ -28,6 +28,17 @@ ALTER TABLE aircraft ADD COLUMN IF NOT EXISTS metadata_fetched_at TIMESTAMPTZ;
 ALTER TABLE aircraft ADD COLUMN IF NOT EXISTS origin_airport_name VARCHAR(128);
 ALTER TABLE aircraft ADD COLUMN IF NOT EXISTS destination_airport_name VARCHAR(128);
 
+-- Airport coordinates — adsbdb's callsign route lookup returns these
+-- alongside the name/code (AdsbdbClient wasn't parsing them; the data was
+-- there all along). destination_airport_lat/lon is what makes ETA
+-- computable (great-circle distance to current position ÷ current
+-- groundspeed) — see AircraftController. Same lazy-enrichment path and
+-- null-if-unknown fallback as the other dossier columns above.
+ALTER TABLE aircraft ADD COLUMN IF NOT EXISTS origin_airport_lat DOUBLE PRECISION;
+ALTER TABLE aircraft ADD COLUMN IF NOT EXISTS origin_airport_lon DOUBLE PRECISION;
+ALTER TABLE aircraft ADD COLUMN IF NOT EXISTS destination_airport_lat DOUBLE PRECISION;
+ALTER TABLE aircraft ADD COLUMN IF NOT EXISTS destination_airport_lon DOUBLE PRECISION;
+
 CREATE TABLE IF NOT EXISTS flight_position (
     id              BIGSERIAL PRIMARY KEY,
     icao24          VARCHAR(6) NOT NULL REFERENCES aircraft(icao24),
@@ -117,6 +128,18 @@ CREATE TABLE IF NOT EXISTS poll_window (
 );
 INSERT INTO poll_window (id, active_until) VALUES (1, now())
 ON CONFLICT (id) DO NOTHING;
+
+-- Global "Resume Watch" quota — this app is internet-facing and every
+-- resume opens a real OpenSky-polling window, so it's a hard cap on
+-- OpenSky usage, not just a UX nicety. Tracks the start of the current
+-- 15-minute quota window and how many resumes have happened in it — see
+-- PollWindowService.restart(). Deliberately DB-backed like active_until
+-- above, for the same reason: the "agent" and "api" containers are
+-- separate processes and this state has to be visible to both (well,
+-- really just "api", which is the only one that calls restart() — but
+-- consistent with the rest of this table rather than a special case).
+ALTER TABLE poll_window ADD COLUMN IF NOT EXISTS quota_window_start TIMESTAMPTZ;
+ALTER TABLE poll_window ADD COLUMN IF NOT EXISTS quota_restart_count INT NOT NULL DEFAULT 0;
 
 -- Which lat/lon box the "hot" (frequent, poll-window-gated) OpenSky poll
 -- should target — see ViewportService. Reported by the frontend whenever

@@ -10,6 +10,9 @@ frontend/dist/
 frontend/.vite/
 frontend/*.tsbuildinfo
 npm-debug.log*
+frontend/test-results/
+frontend/playwright-report/
+frontend/blob-report/
 
 # IDE
 .idea/
