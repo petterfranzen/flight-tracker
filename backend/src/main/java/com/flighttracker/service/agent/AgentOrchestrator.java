@@ -157,7 +157,11 @@ public class AgentOrchestrator {
             try {
                 List<RawPositionReport> reports = agent.pollGlobal();
                 if (!reports.isEmpty()) {
-                    persistenceService.persist(agent.sourceName(), reports);
+                    // persistBatch, not persist: this list can be ~13k
+                    // reports worldwide, where persist()'s one-row-at-a-time
+                    // approach measured taking ~14 minutes in production —
+                    // see PositionPersistenceService.persistBatch's javadoc.
+                    persistenceService.persistBatch(agent.sourceName(), reports);
                 }
             } catch (Exception e) {
                 log.warn("Agent {} global sweep failed", agent.sourceName(), e);
