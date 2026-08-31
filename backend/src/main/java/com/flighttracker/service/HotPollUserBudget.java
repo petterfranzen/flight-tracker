@@ -14,7 +14,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * from (and in addition to) RestartRateLimiter, which throttles how often
  * an IP may call POST /api/agents/restart at all. That one stops sustained
  * hammering of the endpoint; this one bounds how many seconds of actual
- * 15s hot polling a single caller can rack up across a rolling 24h, since
+ * 18s hot polling a single caller can rack up across a rolling 24h, since
  * a caller well under RestartRateLimiter's request-count limits could
  * still keep re-granting the maximum poll-window-seconds back to back all
  * day otherwise.

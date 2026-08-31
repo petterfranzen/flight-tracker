@@ -42,9 +42,9 @@ flighttracker:
     # "Hot" poll (poll() — bbox is whatever ViewportService currently
     # reports, i.e. whichever map viewport a client last asked for; see
     # FlightController.live and viewport_state in schema.sql):
-    poll-interval-seconds: 15
+    poll-interval-seconds: 18
     # Polling auto-stops this long after each start/restart — 5 minutes of
-    # 15s hot polling, then it falls back to riding on the always-on
+    # 18s hot polling, then it falls back to riding on the always-on
     # global-sweep-interval-seconds sweep below until reopened — so an
     # unattended NAS deployment doesn't run 24/7 and burn through OpenSky's
     # credit budget. Matched to the frontend's own DIALOG_STOP_MS
@@ -69,7 +69,7 @@ flighttracker:
     # always-on sweep alone — a second, independent backstop on top of
     # poll-window-seconds and the per-IP daily cap, sized for the shared
     # OpenSky budget rather than for any one caller's behavior. At the
-    # default 15s cadence, 3000 calls is ~12.5 hours of continuous hot
+    # default 18s cadence, 3000 calls is 15 hours of continuous hot
     # polling per day — comfortably above realistic usage, there purely as
     # a hard ceiling.
     hot-poll-daily-call-budget: 3000
@@ -95,7 +95,7 @@ flighttracker:
     # which case PollBackoff just skips cycles until it resets — degraded,
     # not broken. A registered OpenSky account (see the oauth block below)
     # has a much larger budget if you want reliable global coverage.
-    global-sweep-interval-seconds: 300
+    global-sweep-interval-seconds: 360
     opensky:
       enabled: true
       base-url: https://opensky-network.org/api

@@ -30,7 +30,7 @@ import java.util.stream.Collectors;
  * needs to compute it either — those are internal to this refresh cycle.
  *
  * REFRESH_INTERVAL is independent of any request cadence: this recomputes
- * every 10 seconds regardless of whether zero, one, or a hundred clients
+ * every 12 seconds regardless of whether zero, one, or a hundred clients
  * are currently fetching /live. That's deliberate and stays cheap even
  * across the full 48-hour LiveVisibilityWindows retention window — this
  * makes zero outbound calls (OpenSky or otherwise), just one batched DB
@@ -46,7 +46,7 @@ import java.util.stream.Collectors;
 @Profile("api")
 public class EstimatedPositionCache {
 
-    private static final long REFRESH_INTERVAL_MS = 10_000;
+    private static final long REFRESH_INTERVAL_MS = 12_000;
 
     private final FlightPositionRepository positionRepository;
     private final AircraftRepository aircraftRepository;

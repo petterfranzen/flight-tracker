@@ -146,8 +146,8 @@ public class AgentOrchestrator {
     // on top of seedOnStartup()'s — harmless (upserts are idempotent) but
     // a wasted API call/credit every single boot.
     @Scheduled(
-            initialDelayString = "#{${flighttracker.agents.global-sweep-interval-seconds:300} * 1000}",
-            fixedDelayString = "#{${flighttracker.agents.global-sweep-interval-seconds:300} * 1000}")
+            initialDelayString = "#{${flighttracker.agents.global-sweep-interval-seconds:360} * 1000}",
+            fixedDelayString = "#{${flighttracker.agents.global-sweep-interval-seconds:360} * 1000}")
     public void pollGlobalSweep() {
         runGlobalSweep();
     }
