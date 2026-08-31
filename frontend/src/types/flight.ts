@@ -35,8 +35,10 @@ export interface AircraftDossier {
   operator: string | null;
   originAirport: string | null;
   originAirportName: string | null;
+  originAirportIata: string | null;
   destinationAirport: string | null;
   destinationAirportName: string | null;
+  destinationAirportIata: string | null;
   // All computed server-side from live/historic position data, not stored
   // — see AircraftDossier.java's javadoc for exactly when each is null.
   flightMinutes: number | null;
