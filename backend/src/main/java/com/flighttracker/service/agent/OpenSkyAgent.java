@@ -2,9 +2,11 @@ package com.flighttracker.service.agent;
 
 import com.flighttracker.dto.Bounds;
 import com.flighttracker.service.ViewportService;
+import com.flighttracker.service.enrichment.OpenSkyOAuthTokenProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
@@ -19,12 +21,19 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Polls OpenSky Network's free REST endpoint for state vectors. Anonymous
- * access is rate-limited (roughly one request per 10s, plus a daily credit
- * budget) — fine for a demo, register for a free account and add basic
- * auth via RestClient if you need tighter polling.
+ * access is rate-limited per source IP (roughly one request per 10s, plus a
+ * daily credit budget shared by everyone behind that IP — e.g. a dev machine
+ * and a home-NAS deployment sharing one router). When
+ * {@code OPENSKY_CLIENT_ID}/{@code OPENSKY_CLIENT_SECRET} are configured
+ * (see {@link OpenSkyOAuthTokenProvider}, otherwise only used for dossier
+ * enrichment), every request here is sent with that account's bearer token
+ * instead — a separate, much larger budget that doesn't compete with the
+ * anonymous one. Falls back to anonymous automatically if no credentials
+ * are configured.
  * Docs: https://openskynetwork.github.io/opensky-api/rest.html
  *
  * Two distinct poll shapes share this one class (and its RestClient/
@@ -84,14 +93,21 @@ public class OpenSkyAgent implements FlightDataAgent {
     private final String statesUrl;
     private final boolean enabled;
     private final ViewportService viewportService;
+    private final OpenSkyOAuthTokenProvider tokenProvider;
     private final PollBackoff backoff = new PollBackoff();
+    // Logged once, not every poll cycle — so "why are we getting 429s" is
+    // answerable from the logs immediately instead of requiring a debugging
+    // session to discover polling was running anonymous the whole time.
+    private final AtomicBoolean authModeLogged = new AtomicBoolean(false);
 
     public OpenSkyAgent(
             @Value("${flighttracker.agents.opensky.enabled:true}") boolean enabled,
             @Value("${flighttracker.agents.opensky.base-url}") String baseUrl,
-            ViewportService viewportService) {
+            ViewportService viewportService,
+            OpenSkyOAuthTokenProvider tokenProvider) {
         this.enabled = enabled;
         this.viewportService = viewportService;
+        this.tokenProvider = tokenProvider;
 
         SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
         requestFactory.setConnectTimeout((int) CONNECT_TIMEOUT.toMillis());
@@ -137,7 +153,15 @@ public class OpenSkyAgent implements FlightDataAgent {
         }
 
         try {
-            Map<String, Object> body = client.get().uri(url).retrieve().body(Map.class);
+            RestClient.RequestHeadersSpec<?> request = client.get().uri(url);
+            Optional<String> token = tokenProvider.getAccessToken();
+            if (token.isPresent()) {
+                request = request.header(HttpHeaders.AUTHORIZATION, "Bearer " + token.get());
+            }
+            if (authModeLogged.compareAndSet(false, true)) {
+                log.info("OpenSky polling is {}", token.isPresent() ? "authenticated" : "anonymous (no OPENSKY_CLIENT_ID/SECRET configured)");
+            }
+            Map<String, Object> body = request.retrieve().body(Map.class);
             backoff.recordSuccess();
             if (body == null || body.get("states") == null) return List.of();
 

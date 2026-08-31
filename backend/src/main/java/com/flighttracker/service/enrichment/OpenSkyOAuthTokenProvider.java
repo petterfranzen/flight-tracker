@@ -14,16 +14,19 @@ import java.time.Instant;
 import java.util.Optional;
 
 /**
- * Exchanges the OpenSky client-credentials app for a bearer token, used by
+ * Exchanges the OpenSky client-credentials app for a bearer token. Used by
  * {@link OpenSkyFlightsClient} to call the authenticated /flights/aircraft
- * endpoint (anonymous access to it returns 403 — unlike /states/all, which
- * still works anonymously and is what {@code OpenSkyAgent} polls).
+ * endpoint (anonymous access to it returns 403), and by
+ * {@code OpenSkyAgent} to authenticate its /states/all polling too — that
+ * endpoint works anonymously, but only against a small per-IP daily budget
+ * shared by everyone behind that IP; an authenticated account gets its own,
+ * much larger one.
  *
  * Tokens expire every 30 minutes; this caches the token and refreshes it a
- * minute early rather than on every call, so a burst of dossier lookups
- * doesn't turn into a burst of token requests. No @Profile restriction —
- * the "api" container needs this too, for AircraftController's on-demand
- * enrichment.
+ * minute early rather than on every call, so a burst of callers doesn't
+ * turn into a burst of token requests. No @Profile restriction — both the
+ * "api" container (AircraftController's on-demand enrichment) and the
+ * "agent" container (OpenSkyAgent's polling) need this.
  */
 @Component
 public class OpenSkyOAuthTokenProvider {
