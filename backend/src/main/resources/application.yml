@@ -12,6 +12,22 @@ spring:
   sql:
     init:
       mode: always           # runs schema.sql on startup
+  task:
+    scheduling:
+      pool:
+        # AgentOrchestrator's pollAll() (every poll-interval-seconds) and
+        # pollGlobalSweep() (every global-sweep-interval-seconds, ~13k
+        # worldwide aircraft) are both @Scheduled methods. Spring Boot's
+        # default here is a single-threaded scheduler — meaning without
+        # this, the two share one thread, and a slow sweep (observed
+        # live: ~14 minutes, since PositionPersistenceService.persist()
+        # does several unbatched DB round-trips per report) completely
+        # blocks the hot poll for its entire duration. That looked from
+        # the outside like OpenSky throttling the whole agent; it was
+        # actually this app's own scheduler being monopolized by itself.
+        # 2 is enough for today's two @Scheduled methods in
+        # AgentOrchestrator — bump this if a third one is ever added.
+        size: 2
 
 server:
   port: 8080
