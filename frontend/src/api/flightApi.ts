@@ -54,6 +54,20 @@ export async function searchFlightsByRoute(origin: string, destination: string):
   return res.json();
 }
 
+/**
+ * Priority single-aircraft refresh for whichever aircraft is currently
+ * selected — independent of any viewport, unlike fetchLivePositions. See
+ * FlightController.liveOne for why this exists as its own endpoint rather
+ * than reusing /live. Null on 404 (aircraft has no position on record at
+ * all), same convention as fetchAircraftDossier.
+ */
+export async function fetchFlightLive(icao24: string): Promise<FlightPosition | null> {
+  const res = await fetch(`/api/flights/${icao24}/live`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`flight live fetch failed: ${res.status}`);
+  return res.json();
+}
+
 export async function fetchHistory(icao24: string, from: string, to: string): Promise<FlightPosition[]> {
   const res = await fetch(`/api/flights/${icao24}/history?from=${from}&to=${to}`);
   if (!res.ok) throw new Error(`history fetch failed: ${res.status}`);

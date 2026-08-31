@@ -1,5 +1,7 @@
 package com.flighttracker.dto;
 
+import java.time.Instant;
+
 /**
  * Aircraft type/registration/operator and origin/destination, for the
  * map's Field Log panel. Any field may be null.
@@ -11,6 +13,13 @@ package com.flighttracker.dto;
  *  - flightMinutes: elapsed time since this leg's takeoff (see
  *    FlightPositionRepository.findCurrentLegTakeoffTime). Null if we have
  *    no airborne history at all for this aircraft.
+ *  - legStartAt: the same lookup's raw instant (rather than a duration
+ *    already relative to "now"), for the frontend's flight-trail rendering
+ *    — the trail is drawn from position history, which by itself has no
+ *    notion of "this leg" and would otherwise happily include an earlier
+ *    landing/taxi/takeoff from a previous flight still inside its lookback
+ *    window. Null under the same condition as flightMinutes (no airborne
+ *    history at all for this aircraft).
  *  - etaMinutes: great-circle distance from the current position to the
  *    destination airport, divided by current groundspeed. Null whenever
  *    any input is missing or the estimate wouldn't be meaningful —
@@ -61,5 +70,6 @@ public record AircraftDossier(
         Long etaMinutes,
         Double cruisingAltitudeM,
         String flightPhase,
-        String staleExplanation
+        String staleExplanation,
+        Instant legStartAt
 ) { }

@@ -38,6 +38,17 @@ export async function mockFlightApi(page: Page, opts?: { historyDelayMs?: Record
   await page.route("**/api/flights/live/clusters*", (route: Route) => route.fulfill({ json: [] }));
   await page.route("**/api/flights/live*", (route: Route) => route.fulfill({ json: LIVE_FIXTURE }));
 
+  // FlightMap's dedicated priority poll for the selected aircraft (see
+  // fetchFlightLive/FlightController.liveOne) — distinct from the plain
+  // "**/api/flights/live*" mock above, which never matches this (an
+  // icao24 path segment sits between "flights/" and "live" here).
+  await page.route("**/api/flights/*/live*", (route: Route) => {
+    const url = new URL(route.request().url());
+    const icao24 = url.pathname.split("/")[3];
+    const match = LIVE_FIXTURE.find((p) => p.icao24 === icao24);
+    return match ? route.fulfill({ json: match }) : route.fulfill({ status: 404, json: null });
+  });
+
   await page.route("**/api/flights/*/history*", async (route: Route) => {
     const url = new URL(route.request().url());
     const icao24 = url.pathname.split("/")[3];
