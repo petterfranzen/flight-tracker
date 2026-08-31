@@ -52,6 +52,7 @@ test.describe("mobile layout", () => {
 
     const marker = await findMarkerNear(page, target.latitude, target.longitude);
     await marker.click();
+    await page.waitForTimeout(900); // flyTo's own 800ms animation + invalidateSize/reflow
 
     const panel = page.locator(".details-panel");
     await expect(panel).toBeVisible();
@@ -63,11 +64,44 @@ test.describe("mobile layout", () => {
     // Within 15px, not exact — a scrollbar can shave a few px off the
     // effective viewport, which isn't the thing under test here.
     expect(Math.abs(box!.y + box!.height - MOBILE_VIEWPORT.height)).toBeLessThan(15);
-    expect(box!.height).toBeLessThan(MOBILE_VIEWPORT.height * 0.75); // capped (max-height: 70vh), not full-screen
+    // Collapsed default: bottom 1/3 of the viewport, not the old 70vh cap.
+    expect(Math.abs(box!.height - MOBILE_VIEWPORT.height / 3)).toBeLessThan(15);
+    await expect(page.locator(".details-panel-fields")).toBeHidden();
 
-    await page.screenshot({ path: "/tmp/mobile-layout-dossier-sheet.png" });
+    // The actual regression this whole fix is for: the selected plane must
+    // sit above the sheet, not underneath it (the old absolute-overlay
+    // sheet left the map at full height, so flyTo centered the marker at
+    // the *container's* true center — right behind the sheet).
+    const collapsedMarker = await findMarkerNear(page, target.latitude, target.longitude);
+    const collapsedMarkerBox = await collapsedMarker.boundingBox();
+    expect(collapsedMarkerBox).not.toBeNull();
+    expect(collapsedMarkerBox!.y + collapsedMarkerBox!.height).toBeLessThan(box!.y);
 
-    await page.locator(".details-panel-close").click();
+    await page.screenshot({ path: "/tmp/mobile-layout-dossier-collapsed.png" });
+
+    // Expand: sheet grows to 2/3, map shrinks to 1/3, plane re-centers
+    // within that smaller area and must still clear the (now much taller) sheet.
+    await page.locator(".details-panel-expand-toggle").click();
+    await page.waitForTimeout(800); // CSS height transition (250ms) + panTo's 500ms
+    await expect(page.locator(".details-panel-fields")).toBeVisible();
+    const expandedBox = await panel.boundingBox();
+    expect(Math.abs(expandedBox!.height - (MOBILE_VIEWPORT.height * 2) / 3)).toBeLessThan(15);
+
+    const expandedMarker = await findMarkerNear(page, target.latitude, target.longitude);
+    const expandedMarkerBox = await expandedMarker.boundingBox();
+    expect(expandedMarkerBox).not.toBeNull();
+    expect(expandedMarkerBox!.y + expandedMarkerBox!.height).toBeLessThan(expandedBox!.y);
+
+    await page.screenshot({ path: "/tmp/mobile-layout-dossier-expanded.png" });
+
+    // Collapse back: height and marker position both return to the 1/3 state.
+    await page.locator(".details-panel-expand-toggle").click();
+    await page.waitForTimeout(800);
+    await expect(page.locator(".details-panel-fields")).toBeHidden();
+    const recollapsedBox = await panel.boundingBox();
+    expect(Math.abs(recollapsedBox!.height - MOBILE_VIEWPORT.height / 3)).toBeLessThan(15);
+
+    await page.locator(".details-panel-close-x").click();
     await expect(panel).toBeHidden();
   });
 
