@@ -3,21 +3,28 @@ import L from "leaflet";
 import { useMap } from "react-leaflet";
 import "./ScaleBar.css";
 
-// Fixed number of 1cm ruler segments — a classic surveyor's-scale look
-// (alternating light/dark blocks, each a constant physical size) rather
-// than Leaflet's default ScaleControl, which instead keeps the bar's
-// *pixel width* constant and rounds the *distance* to a "nice" number.
-// 5 reads clearly at the sizes tested; drop to 3 if it ever proves too
-// wide for a narrower target layout.
-const SCALE_SEGMENT_COUNT = 5;
+// Round distances only — picking from this ladder (rather than "whatever
+// distance N px happens to cover") is what keeps the label from looking
+// like meaningless noise (e.g. "141 km") and, combined with only
+// recomputing on zoom (see the "zoomend"-only listener below), is what
+// keeps the bar from visibly changing while panning: Mercator's
+// meters-per-pixel varies with latitude at a fixed zoom, but that
+// variation only rarely crosses a boundary between two of these values,
+// so the label reads as stable across a pan even though the true
+// underlying distance is still drifting slightly underneath it.
+//
+// Extends below 1km too (down to 1m): a flight tracker's normal zoom
+// range never needs that, but Leaflet still allows zooming in close
+// enough that even 1km would overflow the bar's max width — without a
+// smaller rung to fall back to, pickScale's "largest that fits" logic has
+// nothing to pick and the bar overflows the whole screen (seen live while
+// testing this).
+const BREAKPOINTS_KM = [0.001, 0.01, 0.1, 1, 10, 100, 1_000, 10_000];
 
-// CSS's own definition of a physical unit: 96px = 1in (the CSS Pixel
-// spec), so 1cm = 96 / 2.54 px. No browser API can read a display's true
-// DPI, so — like every "cm" ruler on the web — this is nominal: accurate
-// on a standard 96dpi-calibrated display, approximate on anything a
-// browser/OS scales differently (a phone's real pixel density, a
-// non-default OS display-scaling setting, etc.).
-const CSS_PX_PER_CM = 96 / 2.54;
+// Target on-screen width for the bar — the actual width varies with
+// whichever breakpoint above ends up chosen (see pickScale), same as
+// Leaflet's own default ScaleControl.
+const MAX_BAR_WIDTH_PX = 100;
 
 // Sampled this many CSS px apart when reading the map's actual
 // meters-per-pixel at the current zoom/latitude (via map.distance — the
@@ -34,31 +41,36 @@ function metersPerPixel(map: L.Map): number {
   return map.distance(p1, p2) / SAMPLE_PX;
 }
 
-// Labels share one unit across the whole bar (picked from the *total*
-// distance, not per-tick) and only the last one carries the unit suffix —
-// each tick's own CSS_PX_PER_CM (~38px) of horizontal room can't fit
-// "141 km" next to "188 km" next to "235 km" all with their own suffix,
-// but bare "141", "188", "235 km" fits comfortably.
-function formatSegmentLabels(kmPerSegment: number, count: number): string[] {
-  const totalKm = kmPerSegment * count;
-  const useMeters = totalKm < 1;
-  const unit = useMeters ? "m" : "km";
-  const toUnit = (km: number) => (useMeters ? km * 1000 : km);
-  const decimals = !useMeters && totalKm < 10 ? 1 : 0;
-  return Array.from({ length: count + 1 }, (_, i) => {
-    const value = toUnit(kmPerSegment * i);
-    const formatted = decimals > 0 ? value.toFixed(decimals) : String(Math.round(value));
-    return i === count ? `${formatted} ${unit}` : formatted;
-  });
+/**
+ * The largest breakpoint whose bar would fit within MAX_BAR_WIDTH_PX, so
+ * the bar grows as you zoom in until it'd overflow, then snaps to the next
+ * breakpoint down. Falls back to the smallest/largest breakpoint at either
+ * extreme (an undersized bar when even 10,000km fits well within the max)
+ * rather than inventing a value outside the ladder.
+ */
+function pickScale(metersPerPx: number): { km: number; widthPx: number } {
+  let chosen = BREAKPOINTS_KM[0];
+  for (const km of BREAKPOINTS_KM) {
+    const widthPx = (km * 1000) / metersPerPx;
+    if (widthPx > MAX_BAR_WIDTH_PX) break;
+    chosen = km;
+  }
+  return { km: chosen, widthPx: (chosen * 1000) / metersPerPx };
+}
+
+function formatLabel(km: number): string {
+  return km < 1 ? `${Math.round(km * 1000)} m` : `${km.toLocaleString()} km`;
 }
 
 /**
- * A fixed-physical-size ruler — SCALE_SEGMENT_COUNT segments, each
- * CSS_PX_PER_CM wide on screen — replacing Leaflet's default ScaleControl.
- * Segment distances aren't round numbers (a segment is just "whatever
- * distance 1cm covers at this zoom/latitude"), but the bar's physical size
- * answers "how big is Xcm on the map" directly and consistently across
- * zoom levels, which is the point of a ruler.
+ * A single-bar scale indicator — replacing an earlier fixed-physical-size
+ * ruler design that computed "whatever distance 1cm covers" per segment.
+ * That approach recomputed (and visibly changed) on every pan, since
+ * meters-per-pixel depends on latitude under Mercator, not just zoom — and
+ * its segment distances were arbitrary, unrounded numbers. This version
+ * only reacts to "zoomend" (panning to a different latitude no longer
+ * moves the bar at all) and snaps to BREAKPOINTS_KM so the label is always
+ * a clean, recognizable number.
  *
  * Built as an imperative L.Control (like Leaflet's own ScaleControl)
  * rather than plain positioned JSX: that gets correct corner-stacking
@@ -70,33 +82,15 @@ export default function ScaleBar() {
 
   useEffect(() => {
     const control = new L.Control({ position: "bottomleft" });
-    const labels: HTMLSpanElement[] = [];
+    let bar: HTMLDivElement;
+    let label: HTMLSpanElement;
 
     control.onAdd = () => {
       const container = L.DomUtil.create("div", "scale-bar");
       L.DomEvent.disableClickPropagation(container);
 
-      const track = L.DomUtil.create("div", "scale-bar-track", container);
-      track.style.width = `${SCALE_SEGMENT_COUNT * CSS_PX_PER_CM}px`;
-
-      const labelRow = L.DomUtil.create("div", "scale-bar-labels", container);
-      labelRow.style.width = `${SCALE_SEGMENT_COUNT * CSS_PX_PER_CM}px`;
-
-      labels.length = 0;
-      for (let i = 0; i < SCALE_SEGMENT_COUNT; i++) {
-        const seg = L.DomUtil.create(
-          "div",
-          `scale-bar-segment${i % 2 === 0 ? " scale-bar-segment--alt" : ""}`,
-          track,
-        );
-        seg.style.width = `${CSS_PX_PER_CM}px`;
-      }
-
-      for (let i = 0; i <= SCALE_SEGMENT_COUNT; i++) {
-        const label = L.DomUtil.create("span", "scale-bar-label", labelRow);
-        label.style.left = `${i * CSS_PX_PER_CM}px`;
-        labels.push(label);
-      }
+      bar = L.DomUtil.create("div", "scale-bar-track", container);
+      label = L.DomUtil.create("span", "scale-bar-label", container);
 
       return container;
     };
@@ -104,18 +98,16 @@ export default function ScaleBar() {
     control.addTo(map);
 
     function update() {
-      const kmPerSegment = (metersPerPixel(map) * CSS_PX_PER_CM) / 1000;
-      const text = formatSegmentLabels(kmPerSegment, SCALE_SEGMENT_COUNT);
-      labels.forEach((label, i) => {
-        label.textContent = text[i];
-      });
+      const { km, widthPx } = pickScale(metersPerPixel(map));
+      bar.style.width = `${widthPx}px`;
+      label.textContent = formatLabel(km);
     }
 
     update();
-    map.on("move zoom", update);
+    map.on("zoomend", update);
 
     return () => {
-      map.off("move zoom", update);
+      map.off("zoomend", update);
       control.remove();
     };
   }, [map]);
