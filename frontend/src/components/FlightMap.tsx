@@ -78,7 +78,7 @@ import "./FlightMap.css";
 // PollWindowService; past it, restart still succeeds and the window shows
 // as open, but the "agent" container quietly stops actually hot-polling
 // until that budget resets).
-const FETCH_INTERVAL_MS = 60_000;
+const FETCH_INTERVAL_MS = 72_000;
 const FETCH_STOP_MS = 5 * 60_000;
 const DIALOG_STOP_MS = 5 * 60_000;
 
@@ -965,7 +965,7 @@ export default function FlightMap() {
           <div className="resume-dialog" role="dialog" aria-modal="true" aria-labelledby="resume-dialog-heading">
             <h2 id="resume-dialog-heading">Fast updates paused</h2>
             <p>
-              This browser has used up its allowance of fast (15-second)
+              This browser has used up its allowance of fast (18-second)
               live updates for today. The map keeps refreshing every few
               minutes in the meantime — fast updates come back once the
               allowance resets.

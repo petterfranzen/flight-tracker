@@ -76,7 +76,7 @@ public class AircraftController {
 
     // How far back FlightPhaseClassifier's "earlier" altitude reference
     // point looks — long enough that normal report-to-report jitter
-    // averages out (a single ~15s hot-poll tick isn't representative of a
+    // averages out (a single ~18s hot-poll tick isn't representative of a
     // real trend), short enough to still reflect what the aircraft is
     // doing *right now*, not a stale phase from many minutes ago.
     private static final Duration PHASE_TREND_WINDOW = Duration.ofMinutes(3);

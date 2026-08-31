@@ -211,7 +211,7 @@ public class OpenSkyAgent implements FlightDataAgent {
             return List.of();
         } catch (Exception e) {
             // Anything else unexpected: still back off, so an unforeseen
-            // failure mode can't hot-loop the poller every 15s either.
+            // failure mode can't hot-loop the poller every 18s either.
             Duration wait = backoff.recordFailure(MIN_BACKOFF, MAX_BACKOFF);
             log.warn("OpenSky poll failed ({}) — backing off {}s", e.toString(), wait.toSeconds());
             return List.of();
