@@ -36,6 +36,15 @@ package com.flighttracker.dto;
  *    nowhere near its destination going quiet is a coverage gap far more
  *    likely than a landing, and saying otherwise is actively misleading —
  *    see AircraftController.describeLikelyStatus for the actual rule.
+ *
+ * originAirportName/destinationAirportName are resolved live against the
+ * `airport` reference table (AirportLookupService) whenever the cached
+ * Aircraft column is null, rather than only ever reflecting whatever got
+ * backfilled onto that aircraft once — see AircraftController.
+ * resolveAirport. originAirportIata/destinationAirportIata come from that
+ * same live lookup; Aircraft has nowhere to persist an IATA code at all
+ * (adsbdb and OpenSky's fallback route lookup both only ever return the
+ * ICAO code), so these are always resolved fresh, never cached.
  */
 public record AircraftDossier(
         String icao24,
@@ -44,8 +53,10 @@ public record AircraftDossier(
         String operator,
         String originAirport,
         String originAirportName,
+        String originAirportIata,
         String destinationAirport,
         String destinationAirportName,
+        String destinationAirportIata,
         Long flightMinutes,
         Long etaMinutes,
         Double cruisingAltitudeM,

@@ -2,12 +2,14 @@ package com.flighttracker.controller;
 
 import com.flighttracker.dto.AircraftDossier;
 import com.flighttracker.model.Aircraft;
+import com.flighttracker.model.Airport;
 import com.flighttracker.model.FlightPosition;
 import com.flighttracker.repository.AircraftRepository;
 import com.flighttracker.repository.FlightPositionRepository;
 import com.flighttracker.service.FlightPhaseClassifier;
 import com.flighttracker.service.LiveVisibilityWindows;
 import com.flighttracker.service.enrichment.AircraftEnrichmentService;
+import com.flighttracker.service.enrichment.AirportLookupService;
 import org.springframework.context.annotation.Profile;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -27,13 +29,16 @@ public class AircraftController {
     private final AircraftRepository aircraftRepository;
     private final FlightPositionRepository positionRepository;
     private final AircraftEnrichmentService enrichmentService;
+    private final AirportLookupService airportLookupService;
 
     public AircraftController(AircraftRepository aircraftRepository,
                                FlightPositionRepository positionRepository,
-                               AircraftEnrichmentService enrichmentService) {
+                               AircraftEnrichmentService enrichmentService,
+                               AirportLookupService airportLookupService) {
         this.aircraftRepository = aircraftRepository;
         this.positionRepository = positionRepository;
         this.enrichmentService = enrichmentService;
+        this.airportLookupService = airportLookupService;
     }
 
     /**
@@ -160,11 +165,44 @@ public class AircraftController {
 
         String staleExplanation = describeLikelyStatus(current, phase, a, landingConfirmedAt.isPresent());
 
+        AirportDisplay origin = resolveAirport(a.getOriginAirport(), a.getOriginAirportName());
+        AirportDisplay destination = resolveAirport(a.getDestinationAirport(), a.getDestinationAirportName());
+
         return new AircraftDossier(
                 a.getIcao24(), a.getRegistration(), a.getModel(), a.getOperator(),
-                a.getOriginAirport(), a.getOriginAirportName(),
-                a.getDestinationAirport(), a.getDestinationAirportName(),
+                a.getOriginAirport(), origin.name(), origin.iataCode(),
+                a.getDestinationAirport(), destination.name(), destination.iataCode(),
                 flightMinutes, etaMinutes, cruisingAltitudeM, phase == null ? null : phase.name(), staleExplanation);
+    }
+
+    private record AirportDisplay(String name, String iataCode) {
+        private static final AirportDisplay EMPTY = new AirportDisplay(null, null);
+    }
+
+    /**
+     * Resolves a display name and IATA code for one ICAO route code —
+     * always from the `airport` reference table for the IATA code (Aircraft
+     * has nowhere to cache one: neither adsbdb nor OpenSky's fallback route
+     * lookup ever returns one), and from that same table for the name too
+     * whenever cachedName is null. cachedName itself came from
+     * AircraftEnrichmentService.backfillNames, which only ever runs for
+     * routes resolved via OpenSky's fallback (bare codes) — a route adsbdb
+     * resolved directly already has a name and is used as-is here, but an
+     * aircraft enriched before that backfill existed, or via a path that
+     * never populates it, would otherwise show a bare ICAO code forever
+     * despite the name being sitting right there in the reference table for
+     * that code. Doing this live, on every dossier request, instead of
+     * fixing it up in place sidesteps that staleness question entirely: a
+     * cheap indexed local lookup (no external call, unlike the rest of
+     * AircraftEnrichmentService), so there's no real cost to never trusting
+     * a cached absence.
+     */
+    private AirportDisplay resolveAirport(String icaoCode, String cachedName) {
+        if (icaoCode == null) return AirportDisplay.EMPTY;
+        Optional<Airport> airport = airportLookupService.lookup(icaoCode);
+        String name = cachedName != null ? cachedName : airport.map(Airport::getName).orElse(null);
+        String iataCode = airport.map(Airport::getIataCode).orElse(null);
+        return new AirportDisplay(name, iataCode);
     }
 
     // Close enough to the destination, combined with actually descending,

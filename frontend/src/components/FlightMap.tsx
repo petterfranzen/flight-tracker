@@ -305,6 +305,17 @@ function formatFlightPhase(phase: string | null): string {
   return FLIGHT_PHASE_LABELS[phase] ?? phase;
 }
 
+// The dossier's originAirportName/destinationAirportName are resolved
+// live against the airport reference table now (see AircraftController.
+// resolveAirport), so a name is present whenever the ICAO code is known
+// at all — the icao/iata fallback below is for the rare code the
+// reference table itself doesn't have, not the common case.
+function formatAirport(name: string | null, icao: string | null, iata: string | null): string {
+  const codes = [icao, iata].filter((c): c is string => Boolean(c)).join(" / ");
+  if (name) return codes ? `${name} (${codes})` : name;
+  return codes || "—";
+}
+
 function FollowSelected({
   selectedId,
   lat,
@@ -998,8 +1009,10 @@ export default function FlightMap() {
               <dt>Type</dt><dd>{dossier?.model || "—"}</dd>
               <dt>Registration</dt><dd>{dossier?.registration || "—"}</dd>
               <dt>Operator</dt><dd>{dossier?.operator || "—"}</dd>
-              <dt>Origin</dt><dd>{dossier?.originAirportName || dossier?.originAirport || "—"}</dd>
-              <dt>Destination</dt><dd>{dossier?.destinationAirportName || dossier?.destinationAirport || "—"}</dd>
+              <dt>Origin</dt>
+              <dd>{formatAirport(dossier?.originAirportName ?? null, dossier?.originAirport ?? null, dossier?.originAirportIata ?? null)}</dd>
+              <dt>Destination</dt>
+              <dd>{formatAirport(dossier?.destinationAirportName ?? null, dossier?.destinationAirport ?? null, dossier?.destinationAirportIata ?? null)}</dd>
               <dt>Phase</dt><dd>{formatFlightPhase(dossier?.flightPhase ?? null)}</dd>
               <dt>Altitude</dt>
               <dd>{selectedPos.altitudeM != null ? `${Math.round(selectedPos.altitudeM)} m` : "—"}</dd>
