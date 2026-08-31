@@ -35,8 +35,8 @@ import "./FlightMap.css";
 // manually-controlled poll-window UI (Watch active/stood down, Stop/Resume
 // Watch — see startCycle below for the full picture):
 //
-//   0 ── fetch ── fetch ── fetch ── fetch ── (5min: fetching stops)
-//   └──────────────────── 10min: ResumeDialog shown ───────────────────┘
+//   0 ── fetch ── fetch ── fetch ── fetch ── (5min: fetching stops,
+//                                             ResumeDialog shown)
 //
 // A real /live fetch happens immediately (see ViewportReporter/startCycle)
 // and then every FETCH_INTERVAL_MS until FETCH_STOP_MS has elapsed since
@@ -49,15 +49,27 @@ import "./FlightMap.css";
 // restarts both timers from zero.
 //
 // Separately, on mount only, a one-off effect makes sure the backend's own
-// hot-poll window (flighttracker.agents.poll-window-seconds, currently
-// matched to DIALOG_STOP_MS) is actually open — but only if it's currently
-// closed. Someone loading the page while another tab already has it open
-// takes no action, so a steady trickle of new visitors can't keep it
-// pinned open forever; it's only ever (re)started by an actual page load
-// with nothing already running, or an explicit "Resume tracking" click.
+// hot-poll window (flighttracker.agents.poll-window-seconds, currently 5
+// minutes — matched to DIALOG_STOP_MS/FETCH_STOP_MS, which is why all
+// three are the same value here) is actually open — but only if it's
+// currently closed. Someone loading the page while another tab already
+// has it open takes no action, so a steady trickle of new visitors can't
+// keep it pinned open forever; it's only ever (re)started by an actual
+// page load with nothing already running, or an explicit "Resume
+// tracking" click. Two backend caps sit behind all of this, both there to
+// degrade to the always-on global sweep (every
+// flighttracker.agents.global-sweep-interval-seconds) rather than run hot
+// polling unbounded: how much of it this browser's own IP can claim in a
+// day (hot-poll-seconds-per-ip-per-day — see HotPollUserBudget; past it,
+// POST /api/agents/restart itself starts returning 429, same as the
+// existing per-IP restart-request-rate limit) and how much hot polling
+// happens globally across every caller (hot-poll-daily-call-budget — see
+// PollWindowService; past it, restart still succeeds and the window shows
+// as open, but the "agent" container quietly stops actually hot-polling
+// until that budget resets).
 const FETCH_INTERVAL_MS = 60_000;
 const FETCH_STOP_MS = 5 * 60_000;
-const DIALOG_STOP_MS = 10 * 60_000;
+const DIALOG_STOP_MS = 5 * 60_000;
 
 const ROUTE_COLOR = "#4db2ff"; // matches --color-accent in FlightMap.css
 

@@ -66,6 +66,42 @@ public class AircraftEnrichmentService {
         doEnrich(icao24, callsign);
     }
 
+    /**
+     * Confirms via OpenSkyFlightsClient.confirmLanded whether the leg that
+     * produced {@code lastObservedAt} has actually ended at an airport,
+     * rather than trusting AircraftController's own silence+descending
+     * heuristic alone — only worth calling once that heuristic already
+     * presumes landed (see LiveVisibilityWindows.PRESUMED_LANDED_SILENCE).
+     * Blocking, same tradeoff as enrichSynchronously: called from a single
+     * user-triggered dossier request, not in bulk.
+     *
+     * At most one OpenSky call per distinct last-known report:
+     * landingCheckObservedAt records which report this aircraft was last
+     * checked against, so a dossier viewed repeatedly while no new report
+     * has arrived (the aircraft really has gone quiet) doesn't re-hit
+     * OpenSky every time — it only checks again once a genuinely new
+     * report (most likely a new leg entirely) shows up, which also means a
+     * stale confirmation from a previous leg is never returned: the
+     * equality check below fails as soon as observedAt has moved on.
+     *
+     * @return the confirmed landing time, whether just checked or cached
+     *         from checking this same report before; empty if OpenSky
+     *         doesn't (yet) show this leg as landed.
+     */
+    public Optional<Instant> checkLandingIfNeeded(String icao24, Instant lastObservedAt) {
+        Aircraft aircraft = aircraftRepository.findById(icao24).orElse(null);
+        if (aircraft == null) return Optional.empty();
+        if (lastObservedAt.equals(aircraft.getLandingCheckObservedAt())) {
+            return Optional.ofNullable(aircraft.getLandingConfirmedAt());
+        }
+
+        Optional<Instant> confirmedAt = flightsClient.confirmLanded(icao24, lastObservedAt);
+        aircraft.setLandingCheckObservedAt(lastObservedAt);
+        aircraft.setLandingConfirmedAt(confirmedAt.orElse(null));
+        aircraftRepository.save(aircraft);
+        return confirmedAt;
+    }
+
     private void doEnrich(String icao24, String callsign) {
         Optional<AircraftInfo> info = adsbdbClient.fetchAircraftInfo(icao24);
         Optional<Route> route = fetchRoute(icao24, callsign).map(this::backfillNames);

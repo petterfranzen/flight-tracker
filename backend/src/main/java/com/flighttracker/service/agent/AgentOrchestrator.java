@@ -38,6 +38,10 @@ public class AgentOrchestrator {
     // window stays closed — the authoritative state is PollWindowService.
     private final AtomicBoolean windowOpenLastCycle = new AtomicBoolean(true);
 
+    // Same idea as windowOpenLastCycle, for the global hot-poll call
+    // budget — logged once when it's exhausted, not every cycle.
+    private final AtomicBoolean budgetAvailableLastCycle = new AtomicBoolean(true);
+
     public AgentOrchestrator(List<FlightDataAgent> agents,
                               PositionPersistenceService persistenceService,
                               AircraftEnrichmentService enrichmentService,
@@ -81,9 +85,33 @@ public class AgentOrchestrator {
             return;
         }
         windowOpenLastCycle.set(true);
+
+        // Independent of the poll window above: even while it's open, the
+        // global hot-poll-daily-call-budget can still say no — see
+        // PollWindowService.hotPollBudgetAvailable's javadoc. Falls back to
+        // the always-on global sweep alone for the rest of that budget's
+        // rolling 24h, same as if the window itself had simply never been
+        // reopened.
+        if (!pollWindowService.hotPollBudgetAvailable()) {
+            if (budgetAvailableLastCycle.compareAndSet(true, false)) {
+                log.warn("Global hot-poll call budget exhausted for today — falling back to the global sweep alone");
+            }
+            return;
+        }
+        budgetAvailableLastCycle.set(true);
+
         for (FlightDataAgent agent : agents) {
             try {
                 List<RawPositionReport> reports = agent.poll();
+                // Counted per agent, not per cycle: each configured
+                // FlightDataAgent's poll() is its own outbound call to its
+                // own data source. Counted even when poll() itself skipped
+                // the network call (e.g. OpenSkyAgent's own PollBackoff
+                // cooling down) — from here there's no way to tell "no
+                // data" apart from "didn't actually try", and erring
+                // toward exhausting the budget a little early during a
+                // run of failures is the safer side to be wrong on.
+                pollWindowService.recordHotPollCall();
                 if (!reports.isEmpty()) {
                     List<RawPositionReport> newAircraft = persistenceService.persist(agent.sourceName(), reports);
                     // Fired after persist()'s transaction has committed (we're back

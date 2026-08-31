@@ -24,19 +24,35 @@ public class PollWindowService {
 
     private static final Integer ROW_ID = 1;
 
+    // Rolling window the global hot-poll call budget resets over — a
+    // calendar day would let a caller near midnight "reset" the budget
+    // early; a rolling 24h from the first call counted doesn't have that
+    // edge, at the cost of not lining up with a fixed daily boundary
+    // (irrelevant here — nothing displays "today's calls", just whether
+    // the budget is currently available).
+    private static final Duration HOT_POLL_BUDGET_WINDOW = Duration.ofDays(1);
+
     private final PollWindowRepository repository;
     private final Duration pollWindow;
     private final int quotaMax;
     private final Duration quotaWindow;
+    private final int hotPollDailyCallBudget;
 
     public PollWindowService(PollWindowRepository repository,
                               @Value("${flighttracker.agents.poll-window-seconds}") long pollWindowSeconds,
                               @Value("${flighttracker.agents.restart-quota-max}") int quotaMax,
-                              @Value("${flighttracker.agents.restart-quota-window-minutes}") long quotaWindowMinutes) {
+                              @Value("${flighttracker.agents.restart-quota-window-minutes}") long quotaWindowMinutes,
+                              @Value("${flighttracker.agents.hot-poll-daily-call-budget}") int hotPollDailyCallBudget) {
         this.repository = repository;
         this.pollWindow = Duration.ofSeconds(pollWindowSeconds);
         this.quotaMax = quotaMax;
         this.quotaWindow = Duration.ofMinutes(quotaWindowMinutes);
+        this.hotPollDailyCallBudget = hotPollDailyCallBudget;
+    }
+
+    /** How long a single restart()/reopen grants — what a caller "gets" per grant, in seconds. */
+    public long pollWindowSeconds() {
+        return pollWindow.getSeconds();
     }
 
     /**
@@ -111,6 +127,46 @@ public class PollWindowService {
         return repository.findById(ROW_ID)
                 .map(w -> Instant.now().isBefore(w.getActiveUntil()))
                 .orElse(false);
+    }
+
+    /**
+     * Whether the global hot-poll call budget (hot-poll-daily-call-budget,
+     * per rolling 24h, across every caller combined) still has room for
+     * another call — checked by AgentOrchestrator.pollAll() before it
+     * actually polls, independent of whether the poll window itself is
+     * open. Read-only: unlike recordHotPollCall(), this never resets or
+     * advances the window itself, so calling it repeatedly (e.g. once to
+     * decide whether to poll, again for logging) is always safe.
+     */
+    public boolean hotPollBudgetAvailable() {
+        PollWindow window = repository.findById(ROW_ID).orElseGet(() -> new PollWindow(Instant.now()));
+        Instant start = window.getHotPollCountWindowStart();
+        boolean expired = start == null || Duration.between(start, Instant.now()).compareTo(HOT_POLL_BUDGET_WINDOW) >= 0;
+        int count = expired ? 0 : window.getHotPollCallCount();
+        return count < hotPollDailyCallBudget;
+    }
+
+    /**
+     * Records one hot-poll call against the global budget — call exactly
+     * once per actual hot-poll attempt (see AgentOrchestrator.pollAll()),
+     * after confirming hotPollBudgetAvailable() was true. Resets the
+     * rolling window the same way restart()'s quota does: the count starts
+     * over once HOT_POLL_BUDGET_WINDOW has fully elapsed since the first
+     * call counted in the current window, not on a fixed daily boundary.
+     */
+    @Transactional
+    public void recordHotPollCall() {
+        PollWindow window = repository.findById(ROW_ID).orElseGet(() -> new PollWindow(Instant.now()));
+        Instant now = Instant.now();
+        Instant start = window.getHotPollCountWindowStart();
+        boolean expired = start == null || Duration.between(start, now).compareTo(HOT_POLL_BUDGET_WINDOW) >= 0;
+        if (expired) {
+            window.setHotPollCountWindowStart(now);
+            window.setHotPollCallCount(1);
+        } else {
+            window.setHotPollCallCount(window.getHotPollCallCount() + 1);
+        }
+        repository.save(window);
     }
 
     public PollingStatus status() {

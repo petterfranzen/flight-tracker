@@ -28,6 +28,15 @@ public class PollWindow {
     @Column(name = "quota_restart_count", nullable = false)
     private int quotaRestartCount = 0;
 
+    // See PollWindowService.hotPollBudgetAvailable/recordHotPollCall for
+    // the logic — this just persists it, same null-means-not-started
+    // convention as quotaWindowStart above.
+    @Column(name = "hot_poll_count_window_start")
+    private Instant hotPollCountWindowStart;
+
+    @Column(name = "hot_poll_call_count", nullable = false)
+    private int hotPollCallCount = 0;
+
     protected PollWindow() { }
 
     public PollWindow(Instant activeUntil) {
@@ -41,4 +50,8 @@ public class PollWindow {
     public void setQuotaWindowStart(Instant quotaWindowStart) { this.quotaWindowStart = quotaWindowStart; }
     public int getQuotaRestartCount() { return quotaRestartCount; }
     public void setQuotaRestartCount(int quotaRestartCount) { this.quotaRestartCount = quotaRestartCount; }
+    public Instant getHotPollCountWindowStart() { return hotPollCountWindowStart; }
+    public void setHotPollCountWindowStart(Instant hotPollCountWindowStart) { this.hotPollCountWindowStart = hotPollCountWindowStart; }
+    public int getHotPollCallCount() { return hotPollCallCount; }
+    public void setHotPollCallCount(int hotPollCallCount) { this.hotPollCallCount = hotPollCallCount; }
 }

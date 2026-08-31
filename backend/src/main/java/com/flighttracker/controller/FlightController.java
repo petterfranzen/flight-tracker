@@ -60,16 +60,13 @@ public class FlightController {
         Instant now = Instant.now();
         Instant staleAirborneCutoff = now.minus(LiveVisibilityWindows.STALE_AIRBORNE_BOUND);
         Instant landedCutoff = now.minus(LiveVisibilityWindows.LANDED_VISIBILITY);
-        Instant presumedLandedCutoff = now.minus(LiveVisibilityWindows.PRESUMED_LANDED_SILENCE);
 
         if (latMin == null || latMax == null || lonMin == null || lonMax == null) {
-            return estimatedPositionCache.overlay(positionRepository.findLive(staleAirborneCutoff, landedCutoff,
-                    presumedLandedCutoff, LiveVisibilityWindows.DESCENDING_VERTICAL_RATE_MS));
+            return estimatedPositionCache.overlay(positionRepository.findLive(staleAirborneCutoff, landedCutoff));
         }
         Bounds bounds = new Bounds(latMin, latMax, lonMin, lonMax);
         viewportService.report(bounds);
         return estimatedPositionCache.overlay(positionRepository.findLiveInBounds(staleAirborneCutoff, landedCutoff,
-                presumedLandedCutoff, LiveVisibilityWindows.DESCENDING_VERTICAL_RATE_MS,
                 bounds.latMin(), bounds.latMax(), bounds.lonMin(), bounds.lonMax()));
     }
 
@@ -121,7 +118,6 @@ public class FlightController {
         double clampedGridDeg = Math.min(MAX_CLUSTER_GRID_DEG, Math.max(MIN_CLUSTER_GRID_DEG, gridDeg));
         return positionRepository.findLiveClusteredInBounds(
                 now.minus(LiveVisibilityWindows.STALE_AIRBORNE_BOUND), now.minus(LiveVisibilityWindows.LANDED_VISIBILITY),
-                now.minus(LiveVisibilityWindows.PRESUMED_LANDED_SILENCE), LiveVisibilityWindows.DESCENDING_VERTICAL_RATE_MS,
                 bounds.latMin(), bounds.latMax(), bounds.lonMin(), bounds.lonMax(),
                 clampedGridDeg);
     }
@@ -145,7 +141,6 @@ public class FlightController {
         Instant now = Instant.now();
         Instant staleAirborneCutoff = now.minus(LiveVisibilityWindows.STALE_AIRBORNE_BOUND);
         Instant landedCutoff = now.minus(LiveVisibilityWindows.LANDED_VISIBILITY);
-        Instant presumedLandedCutoff = now.minus(LiveVisibilityWindows.PRESUMED_LANDED_SILENCE);
 
         String trimmedOrigin = origin == null ? "" : origin.trim();
         String trimmedDestination = destination == null ? "" : destination.trim();
@@ -153,8 +148,7 @@ public class FlightController {
             return estimatedPositionCache.overlay(positionRepository.searchByRoute(
                     trimmedOrigin.isEmpty() ? null : "%" + escapeLike(trimmedOrigin) + "%",
                     trimmedDestination.isEmpty() ? null : "%" + escapeLike(trimmedDestination) + "%",
-                    staleAirborneCutoff, landedCutoff, presumedLandedCutoff, LiveVisibilityWindows.DESCENDING_VERTICAL_RATE_MS,
-                    SEARCH_RESULT_LIMIT));
+                    staleAirborneCutoff, landedCutoff, SEARCH_RESULT_LIMIT));
         }
 
         String trimmed = q == null ? "" : q.trim();
@@ -166,8 +160,7 @@ public class FlightController {
         // live view will show it at, not a possibly stale fix.
         return estimatedPositionCache.overlay(positionRepository.searchLive(
                 "%" + escaped + "%", escaped + "%",
-                staleAirborneCutoff, landedCutoff, presumedLandedCutoff, LiveVisibilityWindows.DESCENDING_VERTICAL_RATE_MS,
-                SEARCH_RESULT_LIMIT));
+                staleAirborneCutoff, landedCutoff, SEARCH_RESULT_LIMIT));
     }
 
     // So a literal % or _ typed by the user matches itself instead of
