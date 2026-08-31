@@ -152,6 +152,18 @@ public interface FlightPositionRepository extends JpaRepository<FlightPosition, 
     // query even though it can never match a non-null origin/destination
     // filter. Scoped to the same liveness window as findLive.
     //
+    // origin_ap/dest_ap join the airport reference table (~10k rows, seeded
+    // from airports.tsv by AirportSeedService) on the aircraft's own ICAO
+    // route codes, purely so a query can also match that airport's IATA
+    // code or city (e.g. searching "KLR" or "Kalmar" finds a flight whose
+    // destination_airport is the ICAO code "ESMQ") — a.origin_airport_name/
+    // destination_airport_name alone only ever contain whatever free-text
+    // name adsbdb or the OpenSky-fallback backfill happened to produce for
+    // that specific aircraft, which has no IATA code and isn't reliably the
+    // city name. Also LEFT JOIN: an aircraft with no known route (null
+    // origin_airport/destination_airport) must still not be excluded by a
+    // search on the *other* field.
+    //
     // The CAST(... AS text) around each "IS NULL" check isn't decorative:
     // without it, a genuinely-null bind value (searching by destination
     // only, say) makes Postgres unable to infer that parameter's type at
@@ -164,8 +176,20 @@ public interface FlightPositionRepository extends JpaRepository<FlightPosition, 
     @Query(value = "SELECT " + LATEST_COLUMNS_ALP + """
         FROM aircraft_latest_position alp
         LEFT JOIN aircraft a ON a.icao24 = alp.icao24
-        WHERE (CAST(:originPattern AS text) IS NULL OR a.origin_airport ILIKE :originPattern OR a.origin_airport_name ILIKE :originPattern)
-          AND (CAST(:destinationPattern AS text) IS NULL OR a.destination_airport ILIKE :destinationPattern OR a.destination_airport_name ILIKE :destinationPattern)
+        LEFT JOIN airport origin_ap ON origin_ap.icao_code = a.origin_airport
+        LEFT JOIN airport dest_ap ON dest_ap.icao_code = a.destination_airport
+        WHERE (CAST(:originPattern AS text) IS NULL
+                OR a.origin_airport ILIKE :originPattern
+                OR a.origin_airport_name ILIKE :originPattern
+                OR origin_ap.iata_code ILIKE :originPattern
+                OR origin_ap.name ILIKE :originPattern
+                OR origin_ap.municipality ILIKE :originPattern)
+          AND (CAST(:destinationPattern AS text) IS NULL
+                OR a.destination_airport ILIKE :destinationPattern
+                OR a.destination_airport_name ILIKE :destinationPattern
+                OR dest_ap.iata_code ILIKE :destinationPattern
+                OR dest_ap.name ILIKE :destinationPattern
+                OR dest_ap.municipality ILIKE :destinationPattern)
           AND ((alp.on_ground = false AND alp.observed_at > :staleAirborneCutoff)
            OR (alp.on_ground = true AND alp.landed_since > :landedCutoff))
         ORDER BY alp.callsign ASC

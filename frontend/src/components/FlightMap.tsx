@@ -35,8 +35,13 @@ import "./FlightMap.css";
 // manually-controlled poll-window UI (Watch active/stood down, Stop/Resume
 // Watch — see startCycle below for the full picture):
 //
-//   0 ── fetch ── fetch ── fetch ── fetch ── (5min: fetching stops,
-//                                             ResumeDialog shown)
+//   0 ── fetch ── fetch ── fetch ── fetch ── (5min: try a silent renewal)
+//                                              │
+//                                    still has today's allowance? ── yes ── cycle restarts, loop continues
+//                                              │
+//                                              no
+//                                              │
+//                                     ResumeDialog shown
 //
 // A real /live fetch happens immediately (see ViewportReporter/startCycle)
 // and then every FETCH_INTERVAL_MS until FETCH_STOP_MS has elapsed since
@@ -45,8 +50,13 @@ import "./FlightMap.css";
 // own independent schedule (see EstimatedPositionCache.java) regardless
 // of whether this frontend is fetching at all — this cadence is purely
 // about how often *this client* bothers asking, not about when data goes
-// stale. At DIALOG_STOP_MS, ResumeDialog appears; clicking its button
-// restarts both timers from zero.
+// stale. At DIALOG_STOP_MS, this quietly asks the backend to reopen its
+// hot-poll window again rather than assuming anyone's stopped watching —
+// a plain 5-minute gap isn't itself a reason to interrupt someone with a
+// dialog. Only once that renewal is actually rejected (this browser's own
+// daily hot-poll allowance used up — see HotPollUserBudget below) does
+// ResumeDialog appear; clicking its button retries the same way an
+// explicit resume always has.
 //
 // Separately, on mount only, a one-off effect makes sure the backend's own
 // hot-poll window (flighttracker.agents.poll-window-seconds, currently 5
@@ -694,14 +704,44 @@ export default function FlightMap() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cycleGeneration]);
 
-  // ResumeDialog appears once DIALOG_STOP_MS has elapsed since this cycle
-  // began — a single check, not a repeating tick, since nothing here needs
-  // to happen in between.
+  // Every DIALOG_STOP_MS since this cycle began, try to silently keep the
+  // watch going rather than interrupting whoever's still looking at an
+  // open tab — as long as this browser's IP hasn't used up its own daily
+  // hot-poll allowance yet (HotPollUserBudget), there's no reason a plain
+  // 5-minute idle gap should require a manual click. A successful silent
+  // renewal resets the cycle exactly like startCycle() would (so the fetch
+  // effect above keeps going, and this same effect reschedules itself via
+  // the cycleGeneration bump) — the only difference from an explicit
+  // "Resume tracking" click is that nobody had to make it. ResumeDialog
+  // only appears once that renewal is actually rejected (429) — at that
+  // point nothing this component can do automatically will help, so it's
+  // finally worth surfacing to a human. A network error (as opposed to a
+  // real 429) falls back to showing the dialog too, same as before this
+  // silent-renewal behavior existed: better to ask than to assume it's
+  // safe to keep retrying silently against a backend that isn't answering.
   useEffect(() => {
+    let cancelled = false;
     const timeout = setTimeout(() => {
-      setShowResumeDialog(true);
+      restartPolling()
+        .then((outcome) => {
+          if (cancelled) return;
+          if (outcome.rateLimited) {
+            setShowResumeDialog(true);
+          } else {
+            cycleStartRef.current = Date.now();
+            fetchFreshData();
+            setCycleGeneration((g) => g + 1);
+          }
+        })
+        .catch(() => {
+          if (!cancelled) setShowResumeDialog(true);
+        });
     }, DIALOG_STOP_MS - (Date.now() - cycleStartRef.current));
-    return () => clearTimeout(timeout);
+    return () => {
+      cancelled = true;
+      clearTimeout(timeout);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cycleGeneration]);
 
   useEffect(() => {
@@ -825,9 +865,14 @@ export default function FlightMap() {
       {showResumeDialog && (
         <div className="resume-dialog-backdrop" role="presentation">
           <div className="resume-dialog" role="dialog" aria-modal="true" aria-labelledby="resume-dialog-heading">
-            <h2 id="resume-dialog-heading">Tracking paused</h2>
-            <p>Live tracking has been stopped to save bandwidth.</p>
-            <button className="resume-dialog-button" onClick={startCycle}>Resume tracking</button>
+            <h2 id="resume-dialog-heading">Fast updates paused</h2>
+            <p>
+              This browser has used up its allowance of fast (15-second)
+              live updates for today. The map keeps refreshing every few
+              minutes in the meantime — fast updates come back once the
+              allowance resets.
+            </p>
+            <button className="resume-dialog-button" onClick={startCycle}>Try again</button>
           </div>
         </div>
       )}
