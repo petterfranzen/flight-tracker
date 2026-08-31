@@ -19,11 +19,11 @@ jobs:
   blackbox:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: 22 # live-feed.test.js needs the global WebSocket client
+          node-version: 24 # live-feed.test.js needs the global WebSocket client; 24 is current LTS
 
       - name: Build and start the stack
         run: docker compose up -d --build --wait

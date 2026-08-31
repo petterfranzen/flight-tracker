@@ -1,5 +1,5 @@
 # --- Build stage: produce the static Vite bundle ---
-FROM node:20-alpine AS build
+FROM node:24-alpine AS build
 WORKDIR /app
 
 # Cache npm install in its own layer — only re-runs when the lockfile changes.
