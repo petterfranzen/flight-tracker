@@ -283,17 +283,43 @@ function formatFlightPhase(phase: string | null): string {
   return FLIGHT_PHASE_LABELS[phase] ?? phase;
 }
 
-function FollowSelected({ selectedId, lat, lon }: { selectedId: string | null; lat: number | null; lon: number | null }) {
+function FollowSelected({
+  selectedId,
+  lat,
+  lon,
+  sheetExpanded,
+}: {
+  selectedId: string | null;
+  lat: number | null;
+  lon: number | null;
+  // Mobile bottom-sheet collapsed/expanded state (see FlightMap.css's
+  // ≤768px block) — irrelevant to desktop's layout, but on mobile the map
+  // container's actual on-screen height changes when this toggles (the
+  // sheet is a real flex sibling now, not an overlay — see .details-panel),
+  // so this needs to be a dependency here too: without it, toggling the
+  // sheet would leave the map still centered on wherever it was framed for
+  // the *previous* map height, which is exactly the "plane hidden behind
+  // the sheet" bug this replaces.
+  sheetExpanded: boolean;
+}) {
   const map = useMap();
   // Distinguishes "just selected a different aircraft" (zoom in and
-  // center on it) from "the already-selected aircraft moved" (keep it
-  // centered, but leave the user's current zoom alone) — both re-center
-  // the view, but flyTo's zoom bump on every ordinary position tick would
-  // otherwise keep yanking the view back to SELECTED_MIN_ZOOM even after
-  // the user deliberately zoomed out further to see more context around it.
+  // center on it) from "the already-selected aircraft moved, or the
+  // available map area changed" (keep it centered/re-centered, but leave
+  // the user's current zoom alone) — both re-center the view, but flyTo's
+  // zoom bump on every ordinary position tick would otherwise keep
+  // yanking the view back to SELECTED_MIN_ZOOM even after the user
+  // deliberately zoomed out further to see more context around it.
   const lastCenteredIdRef = useRef<string | null>(null);
 
   useEffect(() => {
+    // Leaflet caches the container's last-known size and won't repaint
+    // tiles/markers to fit a new one on its own — needed both when the
+    // sheet just mounted/changed height (map-container shrank or grew as
+    // its flex sibling) and when it just unmounted (map-container grew
+    // back to full height). A no-op when the size genuinely hasn't
+    // changed, so unconditional here is fine.
+    map.invalidateSize();
     if (selectedId == null) {
       lastCenteredIdRef.current = null;
       return;
@@ -303,13 +329,13 @@ function FollowSelected({ selectedId, lat, lon }: { selectedId: string | null; l
       lastCenteredIdRef.current = selectedId;
       map.flyTo([lat, lon], Math.max(map.getZoom(), SELECTED_MIN_ZOOM), { animate: true, duration: 0.8 });
     } else {
-      // lat/lon here are the two dependencies that actually vary tick to
-      // tick (unlike a `[lat, lon]` tuple prop, which would be a fresh
+      // lat/lon here are two of the dependencies that actually vary tick
+      // to tick (unlike a `[lat, lon]` tuple prop, which would be a fresh
       // array reference — and so a "changed" dependency — on every parent
       // render regardless of whether the position itself moved).
       map.panTo([lat, lon], { animate: true, duration: 0.5 });
     }
-  }, [selectedId, lat, lon, map]);
+  }, [selectedId, lat, lon, map, sheetExpanded]);
   return null;
 }
 
@@ -398,6 +424,13 @@ export default function FlightMap() {
   // the wrong moment for it to vanish from under them (e.g. right as it
   // crosses into "landed" and briefly races the next reconcile).
   const [selectedPos, setSelectedPos] = useState<FlightPosition | null>(null);
+  // Mobile-only bottom-sheet state (see the ≤768px block in FlightMap.css):
+  // collapsed shows just the summary + an expand toggle; expanded also
+  // shows the fields grid. Irrelevant above the breakpoint — the CSS driven
+  // by this class only does anything inside that media query. Reset to
+  // collapsed on every new selection (handleSelect below) so a previous
+  // aircraft's expanded state doesn't carry over to the next one.
+  const [dossierExpanded, setDossierExpanded] = useState(false);
   // Ticked every second while an aircraft is selected, purely to force the
   // details panel's "last updated" line to re-render as time passes —
   // selectedPos.observedAt itself doesn't change between real updates, so
@@ -756,6 +789,7 @@ export default function FlightMap() {
   const handleSelect = useCallback((p: FlightPosition) => {
     setSelected(p.icao24);
     setSelectedPos(p);
+    setDossierExpanded(false);
   }, []);
 
   const list = Object.values(positions);
@@ -813,7 +847,12 @@ export default function FlightMap() {
             CSS 96px/in definition), same caveat every such web ruler has. */}
         <ScaleBar />
         <ViewportReporter onViewportChange={handleViewportChange} />
-        <FollowSelected selectedId={selected} lat={selectedPos?.latitude ?? null} lon={selectedPos?.longitude ?? null} />
+        <FollowSelected
+          selectedId={selected}
+          lat={selectedPos?.latitude ?? null}
+          lon={selectedPos?.longitude ?? null}
+          sheetExpanded={dossierExpanded}
+        />
 
         {route.length > 1 && (
           <Polyline positions={route} className="route-line" pathOptions={{ color: ROUTE_COLOR, weight: 3, dashArray: "6 8" }} />
@@ -864,7 +903,17 @@ export default function FlightMap() {
       </MapContainer>
 
       {selectedPos && (
-        <aside className="details-panel" aria-labelledby="details-panel-heading">
+        <aside
+          className={`details-panel${dossierExpanded ? " details-panel--expanded" : ""}`}
+          aria-labelledby="details-panel-heading"
+        >
+          {/* Mobile-only (see FlightMap.css) — replaces the bottom Close
+              button from the sheet's usual corner instead, matching the
+              standard mobile-sheet dismiss pattern; the desktop side panel
+              keeps its existing bottom Close button unchanged. */}
+          <button className="details-panel-close-x" onClick={() => setSelected(null)} aria-label="Close aircraft details">
+            ✕
+          </button>
           <div className="details-panel-inner">
             <span className="details-panel-eyebrow" id="details-panel-heading">Aircraft Details</span>
             <h2>{selectedPos.callsign?.trim() || selectedPos.icao24.toUpperCase()}</h2>
@@ -904,6 +953,20 @@ export default function FlightMap() {
               <dt>ETA</dt>
               <dd>{dossier?.etaMinutes != null ? formatDurationMinutes(dossier.etaMinutes) : "—"}</dd>
             </dl>
+            {/* Mobile-only. Placed after .details-panel-fields deliberately:
+                that keeps this immediately below the visible content in
+                both states — while collapsed the fields grid is display:none
+                (zero height) so this sits right after the summary; while
+                expanded it sits at the true end of the content, below the
+                now-visible fields. */}
+            <button
+              className="details-panel-expand-toggle"
+              onClick={() => setDossierExpanded((v) => !v)}
+              aria-expanded={dossierExpanded}
+              aria-label={dossierExpanded ? "Show less" : "Show more"}
+            >
+              {dossierExpanded ? "▲" : "▼"}
+            </button>
             <button className="details-panel-close" onClick={() => setSelected(null)} aria-label="Close aircraft details">
               Close
             </button>
