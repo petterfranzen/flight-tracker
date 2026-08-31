@@ -1,6 +1,7 @@
 package com.flighttracker.service.enrichment;
 
 import com.flighttracker.model.Aircraft;
+import com.flighttracker.model.Airport;
 import com.flighttracker.repository.AircraftRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -43,13 +44,16 @@ public class AircraftEnrichmentService {
     private final AircraftRepository aircraftRepository;
     private final AdsbdbClient adsbdbClient;
     private final OpenSkyFlightsClient flightsClient;
+    private final AirportLookupService airportLookupService;
 
     public AircraftEnrichmentService(AircraftRepository aircraftRepository,
                                       AdsbdbClient adsbdbClient,
-                                      OpenSkyFlightsClient flightsClient) {
+                                      OpenSkyFlightsClient flightsClient,
+                                      AirportLookupService airportLookupService) {
         this.aircraftRepository = aircraftRepository;
         this.adsbdbClient = adsbdbClient;
         this.flightsClient = flightsClient;
+        this.airportLookupService = airportLookupService;
     }
 
     @Async("enrichmentExecutor")
@@ -64,7 +68,7 @@ public class AircraftEnrichmentService {
 
     private void doEnrich(String icao24, String callsign) {
         Optional<AircraftInfo> info = adsbdbClient.fetchAircraftInfo(icao24);
-        Optional<Route> route = fetchRoute(icao24, callsign);
+        Optional<Route> route = fetchRoute(icao24, callsign).map(this::backfillNames);
         // findById/save each run in their own transaction (Spring Data's
         // SimpleJpaRepository), which is fine here — the mutation in
         // between is plain Java, not a second write needing atomicity
@@ -110,5 +114,32 @@ public class AircraftEnrichmentService {
             if (route.isPresent()) return route;
         }
         return flightsClient.fetchRoute(icao24);
+    }
+
+    /**
+     * Fills in a name/lat/lon for any code that has one but is missing the
+     * other — in practice this only ever means the OpenSkyFlightsClient
+     * fallback path (bare codes, no name/coordinates), since adsbdb always
+     * returns both together or neither, but checking generically here means
+     * this doesn't need to know which path produced the route. Local
+     * static-table lookup (AirportLookupService), not another external
+     * call, so this is cheap enough to always attempt.
+     */
+    private Route backfillNames(Route route) {
+        Airport origin = route.originAirportName() == null
+                ? airportLookupService.lookup(route.originAirport()).orElse(null) : null;
+        Airport destination = route.destinationAirportName() == null
+                ? airportLookupService.lookup(route.destinationAirport()).orElse(null) : null;
+        if (origin == null && destination == null) return route;
+
+        return new Route(
+                route.originAirport(),
+                origin != null ? origin.getName() : route.originAirportName(),
+                origin != null ? origin.getLatitude() : route.originAirportLat(),
+                origin != null ? origin.getLongitude() : route.originAirportLon(),
+                route.destinationAirport(),
+                destination != null ? destination.getName() : route.destinationAirportName(),
+                destination != null ? destination.getLatitude() : route.destinationAirportLat(),
+                destination != null ? destination.getLongitude() : route.destinationAirportLon());
     }
 }

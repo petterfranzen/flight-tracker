@@ -22,9 +22,11 @@ ALTER TABLE aircraft ADD COLUMN IF NOT EXISTS origin_airport VARCHAR(8);
 ALTER TABLE aircraft ADD COLUMN IF NOT EXISTS destination_airport VARCHAR(8);
 ALTER TABLE aircraft ADD COLUMN IF NOT EXISTS metadata_fetched_at TIMESTAMPTZ;
 
--- Full airport names (only available via adsbdb's callsign route lookup —
--- the OpenSky-fallback path has no name data, just bare codes). Nullable:
--- falls back to the ICAO code in the UI when absent.
+-- Full airport names — from adsbdb's callsign route lookup when available,
+-- backfilled from the local `airport` reference table (see
+-- AirportLookupService) when a route only resolved via OpenSky's fallback
+-- path (bare codes, no name/coordinates). Nullable: falls back to the
+-- ICAO code in the UI on the rare code AirportLookupService doesn't cover.
 ALTER TABLE aircraft ADD COLUMN IF NOT EXISTS origin_airport_name VARCHAR(128);
 ALTER TABLE aircraft ADD COLUMN IF NOT EXISTS destination_airport_name VARCHAR(128);
 
@@ -71,6 +73,23 @@ CREATE INDEX IF NOT EXISTS idx_position_icao_ground_time ON flight_position (ica
 -- same broadcast in the same polling window.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_position_icao_time_source
     ON flight_position (icao24, observed_at, agent_source);
+
+-- Static ICAO-code -> name/location reference data (OurAirports, public
+-- domain), seeded once from a bundled CSV — see AirportSeedService. Fills
+-- the gap adsbdb leaves: adsbdb only ever returns an airport's name as
+-- part of a resolved flight-route lookup, with no standalone "look up this
+-- code" endpoint, so a route resolved via OpenSky's fallback path (bare
+-- codes only, see OpenSkyFlightsClient) previously had no way to get a
+-- name at all. See AirportLookupService for how this backfills that gap.
+CREATE TABLE IF NOT EXISTS airport (
+    icao_code    VARCHAR(4) PRIMARY KEY,
+    iata_code    VARCHAR(3),
+    name         VARCHAR(128) NOT NULL,
+    municipality VARCHAR(128),
+    country      VARCHAR(2),
+    latitude     DOUBLE PRECISION,
+    longitude    DOUBLE PRECISION
+);
 
 COMMENT ON TABLE flight_position IS
     'Append-only. Rows are never updated or deleted by the app; usage metrics are computed from this history.';

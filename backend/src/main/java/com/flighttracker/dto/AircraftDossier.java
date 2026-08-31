@@ -14,10 +14,10 @@ package com.flighttracker.dto;
  *  - etaMinutes: great-circle distance from the current position to the
  *    destination airport, divided by current groundspeed. Null whenever
  *    any input is missing or the estimate wouldn't be meaningful —
- *    aircraft already on the ground, destination coordinates unknown
- *    (adsbdb has no route for this callsign, or the OpenSky-estimate
- *    fallback was used, which carries no coordinates), or groundspeed too
- *    low to divide by sanely.
+ *    aircraft already on the ground, destination coordinates unknown (no
+ *    route at all for this callsign, or a destination code neither adsbdb
+ *    nor the local airport reference table — see AirportLookupService —
+ *    has coordinates for), or groundspeed too low to divide by sanely.
  *  - cruisingAltitudeM: highest altitude reached so far in the current leg
  *    (see FlightPositionRepository.findMaxAltitudeSince). Still meaningful
  *    after landing (that flight's peak); null only if there's no airborne
