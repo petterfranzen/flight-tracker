@@ -68,19 +68,19 @@ Two independent poll shapes share the same OpenSky account/credit budget
 (see `OpenSkyAgent`):
 
 - **"Hot" poll, window-gated** — scoped to whatever's currently on
-  someone's map viewport (`ViewportService`). Only actively polls for 1
-  minute at a time (`flighttracker.agents.poll-window-seconds`, default
-  60) — it doesn't run continuously. This is deliberate: OpenSky's
-  anonymous tier has a daily credit budget, and a NAS deployment left
-  running would burn through it unattended (we've hit this limit before —
-  see project memory).
+  someone's map viewport (`ViewportService`). Only actively polls for 10
+  minutes at a time (`flighttracker.agents.poll-window-seconds`, default
+  600) — it doesn't run continuously. This is deliberate: a NAS deployment
+  left running would otherwise burn through OpenSky's credit budget
+  unattended (we've hit this limit before — see project memory).
   - On `backend-agent` container start, the window opens automatically for
-    one minute.
-  - Once it elapses, the map stops updating and the header shows "Watch
-    Stood Down" with a "Resume Watch" button — click it (or the "Stop
-    Watch" button while it's running) to reopen/close the window.
+    ten minutes.
+  - The frontend reopens it automatically on page load if it isn't already
+    open (taking no action if someone else's tab already has it running),
+    and again via its "Resume tracking" dialog once a long-idle tab's
+    window has lapsed — there's no manual Stop/Resume button in the UI.
   - `POST /api/agents/restart` / `POST /api/agents/stop` do the same thing
-    directly, if you'd rather script it than click the button each time.
+    directly, if you'd rather script it.
 - **Global sweep, always on** — every aircraft OpenSky reports worldwide,
   regardless of whether anyone's watching, every
   `flighttracker.agents.global-sweep-interval-seconds` (default 300 = 5

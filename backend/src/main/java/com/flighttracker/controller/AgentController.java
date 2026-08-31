@@ -33,8 +33,10 @@ public class AgentController {
     }
 
     /**
-     * Reopens the poll window (see PollWindowService) — wired to the
-     * frontend's "Resume Watch" button. Two independent things can reject
+     * Reopens the poll window (see PollWindowService) — called by the
+     * frontend on page load if the window isn't already open (see
+     * FlightMap.tsx's mount effect), and by its ResumeDialog's "Resume
+     * tracking" button. Two independent things can reject
      * this for a public caller, both returning 429: the caller's own IP
      * rate limit (RestartRateLimiter), and the global restart quota
      * (PollWindowService — shared across every non-local caller, protects
