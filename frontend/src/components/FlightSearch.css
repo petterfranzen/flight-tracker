@@ -104,3 +104,87 @@
 .flight-search-advanced-input {
   box-shadow: none;
 }
+
+/* Desktop: hidden entirely — the panel below is just always visible there,
+   there's nothing to expand. Mobile shows this instead of the panel by
+   default (see the media query below). */
+.flight-search-fab {
+  display: none;
+}
+
+.flight-search-panel-close {
+  display: none;
+}
+
+/* Mobile layout (see MOBILE_BREAKPOINT_PX in FlightMap.tsx for why this is
+   the same literal, not a shared constant) — hide-by-default/reveal-on-
+   demand: the search UI collapses to a floating button that expands into a
+   full-screen overlay, instead of two boxes permanently sitting over the
+   map. Desktop is untouched: .flight-search-panel carries no styling
+   outside this media query, so on desktop it's an unstyled wrapper div and
+   every child renders exactly as it did before this was introduced. */
+@media (max-width: 768px) {
+  .flight-search {
+    width: auto;
+  }
+
+  .flight-search-fab {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 48px;
+    height: 48px;
+    padding: 0;
+    background: var(--color-panel);
+    color: var(--color-text);
+    border: 1px solid var(--color-panel-border);
+    border-radius: 50%;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+    cursor: pointer;
+  }
+
+  .flight-search-fab svg {
+    width: 22px;
+    height: 22px;
+  }
+
+  /* Covered by the full-screen panel when open (next rule) — hidden
+     outright rather than left to rely on stacking order alone, so it's
+     also out of the keyboard tab order while the sheet is open. */
+  .flight-search:has(.flight-search-panel--open) .flight-search-fab {
+    display: none;
+  }
+
+  .flight-search-panel {
+    display: none;
+  }
+
+  .flight-search-panel--open {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    position: fixed;
+    inset: 0;
+    /* Above Leaflet's own .leaflet-top/.leaflet-bottom control layer
+       (z-index: 1000 in leaflet.css) — otherwise the scale bar control
+       paints through this "full-screen" overlay regardless of DOM order. */
+    z-index: 1001;
+    padding: 16px;
+    padding-top: max(16px, env(safe-area-inset-top));
+    overflow-y: auto;
+    background: var(--color-bg);
+  }
+
+  .flight-search-panel-close {
+    display: block;
+    align-self: flex-end;
+    background: none;
+    border: none;
+    color: var(--color-text-muted);
+    font: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    padding: 8px;
+    cursor: pointer;
+  }
+}

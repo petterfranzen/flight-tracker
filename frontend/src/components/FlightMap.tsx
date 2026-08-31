@@ -82,6 +82,17 @@ const PLANE_SVG = `<svg viewBox="0 0 24 24" aria-hidden="true">
 const ICON_SIZE = 30;
 const SELECTED_ICON_SIZE = 44;
 
+// Below this, layout switches to the mobile treatment throughout this file
+// and FlightMap.css/FlightSearch.css — kept as one shared literal (CSS media
+// queries can't reference a JS constant) rather than three independently
+// drifting numbers.
+const MOBILE_BREAKPOINT_PX = 768;
+// 30px comfortably clears mouse-pointer precision but is well under Apple/
+// Google's ~44px minimum touch-target guidance — bumped for mobile only,
+// so desktop's icon size (and the map's visual density) is untouched.
+const MOBILE_ICON_SIZE = 40;
+const MOBILE_SELECTED_ICON_SIZE = 54;
+
 // A DivIcon that stamps the current rotation onto its glyph the moment
 // Leaflet actually creates the DOM node — which, for a marker inside a
 // MarkerClusterGroup with chunkedLoading on, can happen well after the
@@ -133,7 +144,15 @@ function planeIcon(known: boolean, selected: boolean, headingRef: { current: num
   // their parent as percentages (see FlightMap.css) specifically so they
   // scale automatically with whatever size Leaflet applies here, instead
   // of needing a second, separately-sized copy of every child rule.
-  const size = selected ? SELECTED_ICON_SIZE : ICON_SIZE;
+  // Read directly rather than via a hook: planeIcon is a plain function
+  // (called from useMemo, not itself a component), and re-evaluating this
+  // per marker on every known/selected change — not on every render — is
+  // enough to size correctly for the viewport a marker actually first
+  // appears/gets (re)selected in.
+  const isMobile = window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT_PX}px)`).matches;
+  const size = selected
+    ? (isMobile ? MOBILE_SELECTED_ICON_SIZE : SELECTED_ICON_SIZE)
+    : (isMobile ? MOBILE_ICON_SIZE : ICON_SIZE);
   return new RotatingPlaneIcon(
     {
       className: `plane-icon${selected ? " plane-icon--selected" : ""}`,

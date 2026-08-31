@@ -34,6 +34,12 @@ export default function FlightSearch({ onSelect }: { onSelect: (p: FlightPositio
   const [activeIndex, setActiveIndex] = useState(-1);
   const requestSeqRef = useRef(0);
 
+  // Mobile only (see FlightSearch.css's max-width media query) — desktop
+  // ignores this entirely, the panel is always visible there regardless of
+  // this flag. Starts closed so a phone loads straight to the map, not a
+  // search box covering it.
+  const [mobilePanelOpen, setMobilePanelOpen] = useState(false);
+
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [originQuery, setOriginQuery] = useState("");
   const [destinationQuery, setDestinationQuery] = useState("");
@@ -114,6 +120,7 @@ export default function FlightSearch({ onSelect }: { onSelect: (p: FlightPositio
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
         setOpen(false);
         setRouteOpen(false);
+        setMobilePanelOpen(false);
       }
     }
     document.addEventListener("pointerdown", handlePointerDown);
@@ -131,11 +138,13 @@ export default function FlightSearch({ onSelect }: { onSelect: (p: FlightPositio
     setRouteResults([]);
     setRouteOpen(false);
     setRouteActiveIndex(-1);
+    setMobilePanelOpen(false);
   }
 
   function handleKeyDown(e: KeyboardEvent<HTMLInputElement>) {
     if (e.key === "Escape") {
       setOpen(false);
+      setMobilePanelOpen(false);
       return;
     }
     if (!open || results.length === 0) return;
@@ -155,6 +164,7 @@ export default function FlightSearch({ onSelect }: { onSelect: (p: FlightPositio
   function handleRouteKeyDown(e: KeyboardEvent<HTMLInputElement>) {
     if (e.key === "Escape") {
       setRouteOpen(false);
+      setMobilePanelOpen(false);
       return;
     }
     if (!routeOpen || routeResults.length === 0) return;
@@ -178,6 +188,41 @@ export default function FlightSearch({ onSelect }: { onSelect: (p: FlightPositio
 
   return (
     <div className="flight-search" ref={containerRef}>
+      {/* Mobile only (see FlightSearch.css) — desktop never renders this
+          as visible, the panel below is simply always shown there. An
+          inline SVG magnifying glass, not an emoji: this codebase already
+          rejected emoji glyphs elsewhere (see PLANE_SVG above) since their
+          rendering isn't portable across fonts/platforms. */}
+      <button
+        type="button"
+        className="flight-search-fab"
+        onClick={() => setMobilePanelOpen((v) => !v)}
+        aria-expanded={mobilePanelOpen}
+        aria-controls="flight-search-panel"
+        aria-label={mobilePanelOpen ? "Close search" : "Search flights"}
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path
+            d="M15.5 14h-.79l-.28-.27a6.5 6.5 0 1 0-.7.7l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0a4.5 4.5 0 1 1 0-9 4.5 4.5 0 0 1 0 9z"
+            fill="currentColor"
+          />
+        </svg>
+      </button>
+      <div
+        id="flight-search-panel"
+        className={`flight-search-panel${mobilePanelOpen ? " flight-search-panel--open" : ""}`}
+      >
+      {/* Mobile only — the FAB above already toggles the panel closed too,
+          but a labeled close action inside the sheet itself is a more
+          discoverable affordance than relying on someone finding their way
+          back to a button that's now hidden behind this same overlay. */}
+      <button
+        type="button"
+        className="flight-search-panel-close"
+        onClick={() => setMobilePanelOpen(false)}
+      >
+        Close search ✕
+      </button>
       <input
         type="text"
         inputMode="search"
@@ -294,6 +339,7 @@ export default function FlightSearch({ onSelect }: { onSelect: (p: FlightPositio
           )}
         </div>
       )}
+      </div>
     </div>
   );
 }
