@@ -23,6 +23,7 @@ import {
   fetchHistory,
   fetchLiveClusters,
   fetchLivePositions,
+  fetchPollingStatus,
   restartPolling,
   subscribeLiveFeed,
 } from "../api/flightApi";
@@ -46,6 +47,14 @@ import "./FlightMap.css";
 // about how often *this client* bothers asking, not about when data goes
 // stale. At DIALOG_STOP_MS, ResumeDialog appears; clicking its button
 // restarts both timers from zero.
+//
+// Separately, on mount only, a one-off effect makes sure the backend's own
+// hot-poll window (flighttracker.agents.poll-window-seconds, currently
+// matched to DIALOG_STOP_MS) is actually open — but only if it's currently
+// closed. Someone loading the page while another tab already has it open
+// takes no action, so a steady trickle of new visitors can't keep it
+// pinned open forever; it's only ever (re)started by an actual page load
+// with nothing already running, or an explicit "Resume tracking" click.
 const FETCH_INTERVAL_MS = 60_000;
 const FETCH_STOP_MS = 5 * 60_000;
 const DIALOG_STOP_MS = 10 * 60_000;
@@ -562,21 +571,19 @@ export default function FlightMap() {
    * (Re)starts the whole watch lifecycle: an immediate fresh fetch, then
    * fresh fetches every FETCH_INTERVAL_MS until FETCH_STOP_MS has elapsed
    * (see the cycle effect below), after which ResumeDialog appears at
-   * DIALOG_STOP_MS — this is what its button calls to start over. Also
-   * called once on mount (via the cycleGeneration-keyed effect's initial
-   * run, generation 0), so there's exactly one lifecycle implementation
-   * for both "app just loaded" and "user clicked resume," not two.
+   * DIALOG_STOP_MS — this is what its button calls to start over.
    *
-   * restartPolling() is a best-effort, silent call to reopen the backend
+   * restartPolling() is a best-effort, silent call to (re)open the backend
    * agent's own hot-poll window (see AgentController/PollWindowService) —
    * without it, fresh fetches here would just be re-reading whatever the
-   * multi-minute global sweep last wrote, since nothing else in the
-   * frontend asks the agent to hot-poll anymore (the old Watch button was
-   * the only caller). Failures (including the agent's own independent
-   * rate limit) are deliberately swallowed: there's no status text left
-   * to show them in, and a fetch happens regardless either way — between
-   * real reports, the backend keeps every position looking current on its
-   * own regardless (see EstimatedPositionCache.java).
+   * multi-minute global sweep last wrote. Unconditional here is correct:
+   * this only runs from an explicit "Resume tracking" click, which by
+   * definition means the previous window already lapsed, so there's
+   * nothing live to disturb. Failures (including the agent's own
+   * independent rate limit) are deliberately swallowed: there's no status
+   * text left to show them in, and a fetch happens regardless either way —
+   * between real reports, the backend keeps every position looking current
+   * on its own regardless (see EstimatedPositionCache.java).
    */
   function startCycle() {
     cycleStartRef.current = Date.now();
@@ -585,6 +592,27 @@ export default function FlightMap() {
     fetchFreshData();
     setCycleGeneration((g) => g + 1);
   }
+
+  /**
+   * Mount-only: makes sure the backend's hot-poll window is actually
+   * running, without touching one that already is. A page load isn't the
+   * same as someone asking to (re)start — if another tab already has the
+   * window open, this one loading shouldn't reset its countdown, or every
+   * new visitor arriving while a session is live would keep re-extending
+   * it forever regardless of whether anyone's still watching. Contrast
+   * with startCycle() above, whose unconditional restartPolling() call is
+   * correct there specifically because it only fires on an explicit resume
+   * action. Silent/best-effort for the same reason restartPolling() itself
+   * is: no status text to show a failure in, and the map still works off
+   * the global sweep either way.
+   */
+  useEffect(() => {
+    fetchPollingStatus()
+      .then((status) => {
+        if (!status.active) return restartPolling();
+      })
+      .catch(() => {});
+  }, []);
 
   // Fresh-data fetches: immediately (handled by ViewportReporter's mount
   // report for generation 0; startCycle's own direct call for every later
