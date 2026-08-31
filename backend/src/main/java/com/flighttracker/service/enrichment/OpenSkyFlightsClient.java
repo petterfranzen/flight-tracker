@@ -36,6 +36,20 @@ import java.util.Optional;
  * backoff instance itself. No @Profile restriction: the "api" and "agent"
  * containers each get their own instance (and therefore their own
  * independent backoff state) since they're separate processes.
+ *
+ * PollBackoff alone is purely reactive — it only slows down *after*
+ * OpenSky has already said no. In production this endpoint was hitting
+ * 429s repeatedly (30s/60s/120s escalating backoffs, recurring): the
+ * enrichment pool's 2 workers (see AsyncConfig) can both land on this
+ * endpoint within the same instant, and the "api" container's on-demand
+ * enrichment/landing-check adds a third, completely independent source of
+ * calls with no coordination between any of them. MIN_CALL_INTERVAL below
+ * is a proactive pace limit on top of that reactive backoff — capping how
+ * often *this instance* will even attempt a call, regardless of demand —
+ * specifically to reduce how often we trip the reactive backoff (or worse,
+ * risk a harsher account-level penalty) in the first place, not to replace
+ * it. A skipped-for-pacing call intentionally doesn't touch backoff at all:
+ * it's not a failure, just this instance deliberately not asking yet.
  */
 @Component
 public class OpenSkyFlightsClient {
@@ -45,10 +59,29 @@ public class OpenSkyFlightsClient {
     private static final Duration MIN_BACKOFF = Duration.ofSeconds(30);
     private static final Duration MAX_BACKOFF = Duration.ofMinutes(5);
 
+    // Per-process cap of one real call every 15s to this endpoint,
+    // regardless of how many callers want one at once — route lookups and
+    // landing checks are both enrichment, not core data (see class javadoc),
+    // so a caller waiting an extra few seconds is imperceptible; OpenSky
+    // getting hammered by concurrent/rapid-fire requests to its historical-
+    // flights endpoint isn't worth that trade. Two independent processes
+    // (api + agent) each enforcing this independently means the real
+    // combined worst case is double this — accepted the same way this
+    // class's backoff state is already independent per process; a shared
+    // cross-process limit would need DB-backed coordination (like
+    // PollWindowService's hot-poll budget) for a comparatively minor,
+    // already-gracefully-degrading endpoint. Revisit if 429s persist even
+    // at this pace.
+    private static final Duration MIN_CALL_INTERVAL = Duration.ofSeconds(15);
+
     private final RestClient client;
     private final String baseUrl;
     private final OpenSkyOAuthTokenProvider tokenProvider;
     private final PollBackoff backoff = new PollBackoff();
+    // Guarded by synchronized (backoff) below, same lock as the backoff
+    // state itself — one lock for everything this method needs to check
+    // and update atomically before deciding whether to actually call out.
+    private Instant lastCallAttemptAt = Instant.EPOCH;
 
     public OpenSkyFlightsClient(
             @Value("${flighttracker.agents.opensky.base-url}") String baseUrl,
@@ -106,7 +139,12 @@ public class OpenSkyFlightsClient {
         if (token.isEmpty()) return List.of();
 
         synchronized (backoff) {
-            if (backoff.isCoolingDown(Instant.now())) return List.of();
+            Instant now = Instant.now();
+            if (backoff.isCoolingDown(now)) return List.of();
+            if (Duration.between(lastCallAttemptAt, now).compareTo(MIN_CALL_INTERVAL) < 0) {
+                return List.of();
+            }
+            lastCallAttemptAt = now;
         }
 
         long end = Instant.now().getEpochSecond();
