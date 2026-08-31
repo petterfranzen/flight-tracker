@@ -223,12 +223,12 @@ function gridDegForZoom(zoom: number): number {
 }
 
 // Past this, "last updated" reads as a warning rather than routine network
-// jitter — long enough that a normal ~15s hot-poll cadence (or even a
-// missed cycle or two) never trips it, short enough to flag an aircraft
-// that's genuinely gone quiet (out of ADS-B coverage, landed somewhere
-// without ground receivers, etc.) well before the 4h staleAirborneCutoff
-// that would eventually drop it from the map entirely.
-const STALE_POSITION_WARN_MS = 2 * 60_000;
+// jitter — matches DIALOG_STOP_MS/poll-window-seconds elsewhere, the same
+// "10 minutes of nothing is genuinely notable" threshold — short enough to
+// flag an aircraft that's gone quiet (out of ADS-B coverage, landed
+// somewhere without ground receivers, etc.) well before the 4h
+// staleAirborneCutoff that would eventually drop it from the map entirely.
+const STALE_POSITION_WARN_MS = 10 * 60_000;
 
 function formatAgo(observedAtIso: string, nowMs: number): string {
   const elapsedMs = Math.max(0, nowMs - new Date(observedAtIso).getTime());
