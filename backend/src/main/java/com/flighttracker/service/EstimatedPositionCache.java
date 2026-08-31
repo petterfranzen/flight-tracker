@@ -31,7 +31,11 @@ import java.util.stream.Collectors;
  *
  * REFRESH_INTERVAL is independent of any request cadence: this recomputes
  * every 10 seconds regardless of whether zero, one, or a hundred clients
- * are currently fetching /live. A single in-memory volatile map (not a
+ * are currently fetching /live. That's deliberate and stays cheap even
+ * across the full 48-hour LiveVisibilityWindows retention window — this
+ * makes zero outbound calls (OpenSky or otherwise), just one batched DB
+ * read plus in-memory trig per cycle, so running it continuously costs CPU
+ * only, not API quota. A single in-memory volatile map (not a
  * DB table) is enough — this only ever needs to be read by the same JVM
  * that writes it (the "api" container's own HTTP handlers), unlike
  * PollWindowService's poll_window table, which is DB-backed specifically
@@ -63,9 +67,7 @@ public class EstimatedPositionCache {
         Instant now = Instant.now();
         List<FlightPosition> live = positionRepository.findLive(
                 now.minus(LiveVisibilityWindows.STALE_AIRBORNE_BOUND),
-                now.minus(LiveVisibilityWindows.LANDED_VISIBILITY),
-                now.minus(LiveVisibilityWindows.PRESUMED_LANDED_SILENCE),
-                LiveVisibilityWindows.DESCENDING_VERTICAL_RATE_MS);
+                now.minus(LiveVisibilityWindows.LANDED_VISIBILITY));
 
         if (live.isEmpty()) {
             current = Map.of();

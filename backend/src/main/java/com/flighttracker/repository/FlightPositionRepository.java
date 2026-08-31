@@ -31,38 +31,27 @@ public interface FlightPositionRepository extends JpaRepository<FlightPosition, 
         alp.on_ground, alp.agent_source
         """;
 
-    // An airborne aircraft counts as "presumed landed" (pruned from the
-    // live view well before staleAirborneCutoff would otherwise drop it)
-    // once it's gone silent past presumedLandedCutoff *and* its last report
-    // was descending — silence alone could just be a coverage gap, and
-    // descending alone is just normal approach, but the combination is
-    // strong evidence it actually landed rather than still being airborne
-    // somewhere. NULL vertical_rate_ms (unknown) never counts as descending
-    // — no evidence either way, so it's left alone until staleAirborneCutoff.
-    String NOT_PRESUMED_LANDED = """
-        (observed_at > :presumedLandedCutoff
-            OR vertical_rate_ms IS NULL
-            OR vertical_rate_ms > :descendingVerticalRateMs)
-        """;
-
     // Live map, whole world: every aircraft that's still airborne (bounded
     // by staleAirborneCutoff so a truly dead/never-updating icao24 doesn't
     // linger forever — real ADS-B gaps happen, but an aircraft silent that
-    // long is presumed lost from the feed, not still flying) and not
-    // presumed landed (see NOT_PRESUMED_LANDED above), or landed within the
-    // last landedCutoff window. See aircraft_latest_position's schema.sql
-    // comment for why this reads a maintained summary table instead of
-    // aggregating flight_position's full history on every call.
+    // long is presumed lost from the feed, not still flying), or landed
+    // within the last landedCutoff window. A silent-and-descending aircraft
+    // (see LiveVisibilityWindows.PRESUMED_LANDED_SILENCE) is deliberately
+    // NOT excluded here — it keeps showing under the airborne branch
+    // (dead-reckoned to its destination and parked there by
+    // EstimatedPositionCache) rather than disappearing the moment it's
+    // presumed landed; that presumption only changes how AircraftController
+    // describes it, not whether it's on the map. See
+    // aircraft_latest_position's schema.sql comment for why this reads a
+    // maintained summary table instead of aggregating flight_position's
+    // full history on every call.
     @Query(value = "SELECT " + LATEST_COLUMNS + """
         FROM aircraft_latest_position
-        WHERE (on_ground = false AND observed_at > :staleAirborneCutoff AND """ + NOT_PRESUMED_LANDED + """
-        )
+        WHERE (on_ground = false AND observed_at > :staleAirborneCutoff)
            OR (on_ground = true AND landed_since > :landedCutoff)
         """, nativeQuery = true)
     List<FlightPosition> findLive(@Param("staleAirborneCutoff") Instant staleAirborneCutoff,
-                                   @Param("landedCutoff") Instant landedCutoff,
-                                   @Param("presumedLandedCutoff") Instant presumedLandedCutoff,
-                                   @Param("descendingVerticalRateMs") double descendingVerticalRateMs);
+                                   @Param("landedCutoff") Instant landedCutoff);
 
     // Same as findLive, further filtered to a lat/lon box — what the
     // frontend actually calls with, passing its current map viewport, so
@@ -70,16 +59,13 @@ public interface FlightPositionRepository extends JpaRepository<FlightPosition, 
     // being globally tracked.
     @Query(value = "SELECT " + LATEST_COLUMNS + """
         FROM aircraft_latest_position
-        WHERE ((on_ground = false AND observed_at > :staleAirborneCutoff AND """ + NOT_PRESUMED_LANDED + """
-        )
+        WHERE ((on_ground = false AND observed_at > :staleAirborneCutoff)
            OR (on_ground = true AND landed_since > :landedCutoff))
           AND latitude BETWEEN :latMin AND :latMax
           AND longitude BETWEEN :lonMin AND :lonMax
         """, nativeQuery = true)
     List<FlightPosition> findLiveInBounds(@Param("staleAirborneCutoff") Instant staleAirborneCutoff,
                                            @Param("landedCutoff") Instant landedCutoff,
-                                           @Param("presumedLandedCutoff") Instant presumedLandedCutoff,
-                                           @Param("descendingVerticalRateMs") double descendingVerticalRateMs,
                                            @Param("latMin") double latMin,
                                            @Param("latMax") double latMax,
                                            @Param("lonMin") double lonMin,
@@ -116,8 +102,7 @@ public interface FlightPositionRepository extends JpaRepository<FlightPosition, 
                 floor(longitude / :gridDeg) * :gridDeg AS bucket_lon,
                 count(*) AS count
             FROM aircraft_latest_position
-            WHERE ((on_ground = false AND observed_at > :staleAirborneCutoff AND """ + NOT_PRESUMED_LANDED + """
-            )
+            WHERE ((on_ground = false AND observed_at > :staleAirborneCutoff)
                OR (on_ground = true AND landed_since > :landedCutoff))
               AND latitude BETWEEN :latMin AND :latMax
               AND longitude BETWEEN :lonMin AND :lonMax
@@ -126,8 +111,6 @@ public interface FlightPositionRepository extends JpaRepository<FlightPosition, 
         """, nativeQuery = true)
     List<ClusterPoint> findLiveClusteredInBounds(@Param("staleAirborneCutoff") Instant staleAirborneCutoff,
                                                   @Param("landedCutoff") Instant landedCutoff,
-                                                  @Param("presumedLandedCutoff") Instant presumedLandedCutoff,
-                                                  @Param("descendingVerticalRateMs") double descendingVerticalRateMs,
                                                   @Param("latMin") double latMin,
                                                   @Param("latMax") double latMax,
                                                   @Param("lonMin") double lonMin,
@@ -148,8 +131,7 @@ public interface FlightPositionRepository extends JpaRepository<FlightPosition, 
     @Query(value = "SELECT " + LATEST_COLUMNS + """
         FROM aircraft_latest_position
         WHERE callsign ILIKE :containsPattern
-          AND ((on_ground = false AND observed_at > :staleAirborneCutoff AND """ + NOT_PRESUMED_LANDED + """
-          )
+          AND ((on_ground = false AND observed_at > :staleAirborneCutoff)
            OR (on_ground = true AND landed_since > :landedCutoff))
         ORDER BY (callsign ILIKE :prefixPattern) DESC, callsign ASC
         LIMIT :limit
@@ -158,8 +140,6 @@ public interface FlightPositionRepository extends JpaRepository<FlightPosition, 
                                      @Param("prefixPattern") String prefixPattern,
                                      @Param("staleAirborneCutoff") Instant staleAirborneCutoff,
                                      @Param("landedCutoff") Instant landedCutoff,
-                                     @Param("presumedLandedCutoff") Instant presumedLandedCutoff,
-                                     @Param("descendingVerticalRateMs") double descendingVerticalRateMs,
                                      @Param("limit") int limit);
 
     // Backs the "advanced search" panel's separate origin/destination
@@ -186,11 +166,7 @@ public interface FlightPositionRepository extends JpaRepository<FlightPosition, 
         LEFT JOIN aircraft a ON a.icao24 = alp.icao24
         WHERE (CAST(:originPattern AS text) IS NULL OR a.origin_airport ILIKE :originPattern OR a.origin_airport_name ILIKE :originPattern)
           AND (CAST(:destinationPattern AS text) IS NULL OR a.destination_airport ILIKE :destinationPattern OR a.destination_airport_name ILIKE :destinationPattern)
-          AND ((alp.on_ground = false AND alp.observed_at > :staleAirborneCutoff AND (
-                alp.observed_at > :presumedLandedCutoff
-                OR alp.vertical_rate_ms IS NULL
-                OR alp.vertical_rate_ms > :descendingVerticalRateMs
-              ))
+          AND ((alp.on_ground = false AND alp.observed_at > :staleAirborneCutoff)
            OR (alp.on_ground = true AND alp.landed_since > :landedCutoff))
         ORDER BY alp.callsign ASC
         LIMIT :limit
@@ -199,8 +175,6 @@ public interface FlightPositionRepository extends JpaRepository<FlightPosition, 
                                         @Param("destinationPattern") String destinationPattern,
                                         @Param("staleAirborneCutoff") Instant staleAirborneCutoff,
                                         @Param("landedCutoff") Instant landedCutoff,
-                                        @Param("presumedLandedCutoff") Instant presumedLandedCutoff,
-                                        @Param("descendingVerticalRateMs") double descendingVerticalRateMs,
                                         @Param("limit") int limit);
 
     // Keeps aircraft_latest_position in sync — called once per accepted

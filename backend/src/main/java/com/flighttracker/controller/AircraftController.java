@@ -69,25 +69,6 @@ public class AircraftController {
     // any real cruise or approach speed.
     private static final double MIN_ETA_GROUNDSPEED_MS = 20;
 
-    // An ETA computed from a stale position isn't a smaller-confidence
-    // version of the real answer, it's actively misleading — extrapolating
-    // "still heading to the filed destination at the last known speed"
-    // from data that's, say, 40 minutes old produces a perfectly
-    // confident-looking number for a flight that may since have diverted,
-    // landed, or gone anywhere.
-    //
-    // 10 minutes, not the frontend's tighter 2-minute staleness-*warning*
-    // threshold (STALE_POSITION_WARN_MS in FlightMap.tsx) — that one's
-    // about flagging a specifically-selected aircraft behaving oddly,
-    // which is normally within someone's viewport and so on the fast
-    // hot-poll cadence. This dossier endpoint gets called for *any*
-    // aircraft, including ones only the global sweep has ever seen —
-    // confirmed live: the vast majority of currently-tracked aircraft are
-    // only as fresh as flighttracker.agents.global-sweep-interval-seconds
-    // (default 300s), not the hot-poll's ~15s. 2 minutes there would have
-    // nulled out ETA for nearly everyone, not just genuinely stale cases.
-    private static final Duration MAX_ETA_POSITION_AGE = Duration.ofMinutes(10);
-
     // How far back FlightPhaseClassifier's "earlier" altitude reference
     // point looks — long enough that normal report-to-report jitter
     // averages out (a single ~15s hot-poll tick isn't representative of a
@@ -105,8 +86,7 @@ public class AircraftController {
     // flight duration. The longest real nonstop commercial flights run
     // under 20 hours; comfortably past that, showing the number at all is
     // actively misleading rather than a smaller-confidence estimate, so it
-    // reads as unknown instead — same reasoning as MAX_ETA_POSITION_AGE
-    // above, just for a different computed field.
+    // reads as unknown instead.
     private static final long MAX_PLAUSIBLE_FLIGHT_MINUTES = 20 * 60;
 
     private AircraftDossier toDossier(Aircraft a) {
@@ -137,10 +117,9 @@ public class AircraftController {
 
         // Flight time stops counting at the last real report once the
         // aircraft is known (on_ground) or presumed (silent this long while
-        // descending — see LiveVisibilityWindows.PRESUMED_LANDED_SILENCE,
-        // shared with FlightController's live-view pruning) to have
-        // landed, rather than running up against `now` indefinitely for a
-        // flight that's actually long over. Still airborne (or too
+        // descending — see LiveVisibilityWindows.PRESUMED_LANDED_SILENCE) to
+        // have landed, rather than running up against `now` indefinitely for
+        // a flight that's actually long over. Still airborne (or too
         // recently silent to presume anything) keeps counting up to `now`
         // as before.
         boolean descendingOrLanding = phase == FlightPhaseClassifier.FlightPhase.DESCENDING
@@ -153,10 +132,14 @@ public class AircraftController {
                 .filter(minutes -> minutes <= MAX_PLAUSIBLE_FLIGHT_MINUTES)
                 .orElse(null);
 
+        // No staleness cutoff here: most flights land within their ETA
+        // window regardless of how long ago the last real report came in,
+        // so an old fix is still a reasonable basis for the estimate rather
+        // than a reason to hide it — same call as EstimatedPositionService
+        // dead-reckoning a stale fix forward instead of giving up on it.
         Long etaMinutes = null;
         if (current != null && a.getDestinationAirportLat() != null && a.getDestinationAirportLon() != null) {
-            boolean fresh = Duration.between(current.getObservedAt(), now).compareTo(MAX_ETA_POSITION_AGE) <= 0;
-            if (fresh && !current.isOnGround() && current.getVelocityMs() != null
+            if (!current.isOnGround() && current.getVelocityMs() != null
                     && current.getVelocityMs() >= MIN_ETA_GROUNDSPEED_MS) {
                 double distanceM = haversineMeters(
                         current.getLatitude(), current.getLongitude(),
@@ -168,7 +151,14 @@ public class AircraftController {
         Double cruisingAltitudeM = legStart.flatMap(ls -> positionRepository.findMaxAltitudeSince(a.getIcao24(), ls))
                 .orElse(null);
 
-        String staleExplanation = describeLikelyStatus(current, phase, a);
+        // Only worth spending an OpenSky call on once our own heuristic
+        // already presumes landed — see AircraftEnrichmentService.
+        // checkLandingIfNeeded for the throttling/caching behind this.
+        Optional<Instant> landingConfirmedAt = presumedLanded
+                ? enrichmentService.checkLandingIfNeeded(a.getIcao24(), current.getObservedAt())
+                : Optional.empty();
+
+        String staleExplanation = describeLikelyStatus(current, phase, a, landingConfirmedAt.isPresent());
 
         return new AircraftDossier(
                 a.getIcao24(), a.getRegistration(), a.getModel(), a.getOperator(),
@@ -188,8 +178,16 @@ public class AircraftController {
      * gone stale (see STALE_POSITION_WARN_MS in FlightMap.tsx) — this just
      * supplies the best guess at *why*, from what the last report actually
      * said, not from how long ago it was.
+     *
+     * @param landingConfirmed whether AircraftEnrichmentService.
+     *                         checkLandingIfNeeded got an actual OpenSky
+     *                         confirmation for this leg — upgrades the
+     *                         wording from a heuristic guess ("likely") to
+     *                         a sourced fact, rather than changing the
+     *                         underlying guess itself.
      */
-    private String describeLikelyStatus(FlightPosition current, FlightPhaseClassifier.FlightPhase phase, Aircraft a) {
+    private String describeLikelyStatus(FlightPosition current, FlightPhaseClassifier.FlightPhase phase, Aircraft a,
+                                         boolean landingConfirmed) {
         if (current == null || phase == null) return null;
 
         if (phase == FlightPhaseClassifier.FlightPhase.ON_GROUND) {
@@ -206,6 +204,10 @@ public class AircraftController {
                     a.getDestinationAirportLat(), a.getDestinationAirportLon()) / 1000.0;
         }
 
+        if (landingConfirmed) {
+            String dest = a.getDestinationAirportName() != null ? a.getDestinationAirportName() : "its destination";
+            return String.format("confirmed landed near %s (OpenSky's own flight record shows this leg ended)", dest);
+        }
         if (descendingOrLanding && distanceToDestKm != null && distanceToDestKm <= NEAR_DESTINATION_KM) {
             String dest = a.getDestinationAirportName() != null ? a.getDestinationAirportName() : "its destination";
             return String.format("likely landed near %s (%.0f km away at last report, and descending)", dest, distanceToDestKm);

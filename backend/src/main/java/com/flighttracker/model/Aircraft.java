@@ -42,6 +42,17 @@ public class Aircraft {
     @Column(name = "metadata_fetched_at")
     private Instant metadataFetchedAt;
 
+    // See AircraftEnrichmentService.checkLandingIfNeeded and
+    // OpenSkyFlightsClient.confirmLanded — landingCheckObservedAt is which
+    // position report this was last checked against (throttles re-checking
+    // and self-invalidates once a new leg's reports arrive); landingConfirmedAt
+    // is OpenSky's own reported arrival time, null unless confirmed.
+    @Column(name = "landing_check_observed_at")
+    private Instant landingCheckObservedAt;
+
+    @Column(name = "landing_confirmed_at")
+    private Instant landingConfirmedAt;
+
     @Column(name = "first_seen_at", nullable = false)
     private Instant firstSeenAt = Instant.now();
 
@@ -79,6 +90,10 @@ public class Aircraft {
     public void setDestinationAirportLon(Double destinationAirportLon) { this.destinationAirportLon = destinationAirportLon; }
     public Instant getMetadataFetchedAt() { return metadataFetchedAt; }
     public void setMetadataFetchedAt(Instant metadataFetchedAt) { this.metadataFetchedAt = metadataFetchedAt; }
+    public Instant getLandingCheckObservedAt() { return landingCheckObservedAt; }
+    public void setLandingCheckObservedAt(Instant landingCheckObservedAt) { this.landingCheckObservedAt = landingCheckObservedAt; }
+    public Instant getLandingConfirmedAt() { return landingConfirmedAt; }
+    public void setLandingConfirmedAt(Instant landingConfirmedAt) { this.landingConfirmedAt = landingConfirmedAt; }
     public Instant getFirstSeenAt() { return firstSeenAt; }
     public Instant getLastSeenAt() { return lastSeenAt; }
     public void touch() { this.lastSeenAt = Instant.now(); }

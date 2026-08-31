@@ -41,6 +41,22 @@ ALTER TABLE aircraft ADD COLUMN IF NOT EXISTS origin_airport_lon DOUBLE PRECISIO
 ALTER TABLE aircraft ADD COLUMN IF NOT EXISTS destination_airport_lat DOUBLE PRECISION;
 ALTER TABLE aircraft ADD COLUMN IF NOT EXISTS destination_airport_lon DOUBLE PRECISION;
 
+-- OpenSky-confirmed landing for the current leg, checked lazily the moment
+-- a dossier request lands on an aircraft AircraftController's own
+-- silence+descending heuristic already presumes landed (see
+-- LiveVisibilityWindows.PRESUMED_LANDED_SILENCE) — see
+-- OpenSkyFlightsClient.confirmLanded and AircraftEnrichmentService.
+-- checkLandingIfNeeded. landing_check_observed_at is the last position
+-- report's observed_at this aircraft was checked against; comparing it to
+-- the *current* latest report's observed_at is what both throttles
+-- re-checking (no new report yet means nothing could have changed) and
+-- invalidates a stale confirmation once a new leg's reports start coming
+-- in, without needing an explicit reset anywhere. landing_confirmed_at is
+-- OpenSky's own reported arrival time (null if never confirmed, including
+-- "not checked yet" and "checked, but OpenSky doesn't show it landed").
+ALTER TABLE aircraft ADD COLUMN IF NOT EXISTS landing_check_observed_at TIMESTAMPTZ;
+ALTER TABLE aircraft ADD COLUMN IF NOT EXISTS landing_confirmed_at TIMESTAMPTZ;
+
 CREATE TABLE IF NOT EXISTS flight_position (
     id              BIGSERIAL PRIMARY KEY,
     icao24          VARCHAR(6) NOT NULL REFERENCES aircraft(icao24),
@@ -159,6 +175,18 @@ ON CONFLICT (id) DO NOTHING;
 -- consistent with the rest of this table rather than a special case).
 ALTER TABLE poll_window ADD COLUMN IF NOT EXISTS quota_window_start TIMESTAMPTZ;
 ALTER TABLE poll_window ADD COLUMN IF NOT EXISTS quota_restart_count INT NOT NULL DEFAULT 0;
+
+-- Global hot-poll call budget — a hard ceiling (flighttracker.agents.
+-- hot-poll-daily-call-budget) on hot-poll HTTP calls per rolling 24h,
+-- across every caller combined, independent of the poll window and quota
+-- above. Same DB-backed reasoning as the rest of this table: the "agent"
+-- container is the one that checks and increments this on every poll
+-- cycle (see PollWindowService.hotPollBudgetAvailable/recordHotPollCall
+-- and AgentOrchestrator.pollAll()), but it's kept alongside the window
+-- state it gates rather than in agent-local memory so a container restart
+-- doesn't quietly reset a budget meant to survive the whole day.
+ALTER TABLE poll_window ADD COLUMN IF NOT EXISTS hot_poll_count_window_start TIMESTAMPTZ;
+ALTER TABLE poll_window ADD COLUMN IF NOT EXISTS hot_poll_call_count INT NOT NULL DEFAULT 0;
 
 -- Which lat/lon box the "hot" (frequent, poll-window-gated) OpenSky poll
 -- should target — see ViewportService. Reported by the frontend whenever
