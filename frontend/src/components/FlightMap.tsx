@@ -20,6 +20,7 @@ import "leaflet.markercluster/dist/MarkerCluster.Default.css";
 import type { AircraftDossier, Bounds, ClusterPoint, FlightPosition } from "../types/flight";
 import {
   fetchAircraftDossier,
+  fetchFlightLive,
   fetchHistory,
   fetchLiveClusters,
   fetchLivePositions,
@@ -565,6 +566,26 @@ export default function FlightMap() {
   // itself in the selection-change effect below.
   const lastRouteObservedAtRef = useRef<string | null>(null);
 
+  // Mirrors `route` synchronously, timestamped — `route` itself is just
+  // [lat, lon] pairs (all Polyline needs), which isn't enough to re-trim
+  // once legStartAtRef (below) becomes known after some points are already
+  // in. Written to directly in appendRoutePoint rather than read back out
+  // of setRoute's updater, for the same reason positionsRef mirrors
+  // `positions` directly: a plain synchronous mutation here, instead of a
+  // side effect tucked inside the updater callback, isn't at risk of
+  // double-applying under React's dev-mode double-invoke.
+  const routePointsRef = useRef<{ lat: number; lon: number; observedAt: string }[]>([]);
+
+  // This leg's actual takeoff time (AircraftDossier.legStartAt), once the
+  // dossier lookup resolves — null until then, or permanently null for an
+  // aircraft with no airborne history for this leg at all. Reset alongside
+  // `route` in the selection-change effect below. Read by both the history
+  // fetch and the dossier fetch (whichever resolves second re-trims/
+  // filters against it — see both below), since a plain fixed lookback
+  // window on its own can't tell "this leg" apart from an earlier landing/
+  // taxi/takeoff still inside that window.
+  const legStartAtRef = useRef<string | null>(null);
+
   // Appends a point to the selected aircraft's trail. Shared between the
   // WebSocket push handler and applyLiveSnapshot's REST reconcile below —
   // both can hand this a fresher position for the selected aircraft, and
@@ -582,11 +603,10 @@ export default function FlightMap() {
     // check right below catches those.
     if (lastRouteObservedAtRef.current != null && p.observedAt < lastRouteObservedAtRef.current) return;
     lastRouteObservedAtRef.current = p.observedAt;
-    setRoute((prev) => {
-      const last = prev[prev.length - 1];
-      if (last && last[0] === p.latitude && last[1] === p.longitude) return prev;
-      return [...prev, [p.latitude, p.longitude]];
-    });
+    const last = routePointsRef.current[routePointsRef.current.length - 1];
+    if (last && last.lat === p.latitude && last.lon === p.longitude) return;
+    routePointsRef.current = [...routePointsRef.current, { lat: p.latitude, lon: p.longitude, observedAt: p.observedAt }];
+    setRoute((prev) => [...prev, [p.latitude, p.longitude]]);
   }
 
   function applyLiveSnapshot(bounds: Bounds | null) {
@@ -781,6 +801,47 @@ export default function FlightMap() {
     return () => clearInterval(interval);
   }, [selected]);
 
+  // Dedicated, viewport-independent priority refresh for whichever
+  // aircraft is currently selected. Both other update paths can silently
+  // stop covering it: applyLiveSnapshot's REST fetch is scoped to the
+  // current map bounds (or, at cluster-summary zoom, doesn't fetch
+  // individual aircraft at all), and the WebSocket feed is filtered
+  // server-side by whatever viewport was last *reported* — see the
+  // comment by the selected marker below. An aircraft someone has
+  // deliberately selected is exactly the wrong one to let go stale just
+  // because it (or the map) moved outside that scope, so this polls it
+  // directly by icao24 instead, unconditionally for as long as it stays
+  // selected — including past FETCH_STOP_MS, unlike the general fetch
+  // cycle above, since bandwidth-saving shouldn't come at the cost of the
+  // one aircraft someone is actively looking at.
+  useEffect(() => {
+    if (!selected) return;
+    const icao24 = selected;
+    let cancelled = false;
+    function poll() {
+      fetchFlightLive(icao24)
+        .then((p) => {
+          if (cancelled || !p || p.icao24 !== selectedRef.current) return;
+          const existing = positionsRef.current[p.icao24];
+          if (existing && !isNewer(p, existing)) return; // superseded by a fresher update already
+          setPositions((prev) => {
+            const next = { ...prev, [p.icao24]: p };
+            positionsRef.current = next;
+            return next;
+          });
+          setSelectedPos(p);
+          appendRoutePoint(p);
+        })
+        .catch(() => {}); // best-effort — the WS feed and the general fetch cycle still cover the common case
+    }
+    poll();
+    const interval = setInterval(poll, FETCH_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [selected]);
+
   useEffect(() => {
     // Neither fetchHistory nor fetchAircraftDossier below was cancelled on
     // a fast second selection change — switch from aircraft A to B, then
@@ -812,6 +873,8 @@ export default function FlightMap() {
     // would wrongly reject the newly-selected aircraft's own points as
     // "stale" just for having an earlier timestamp than the old one.
     lastRouteObservedAtRef.current = null;
+    routePointsRef.current = [];
+    legStartAtRef.current = null;
     if (!selected) {
       setDossier(null);
       setSelectedPos(null);
@@ -821,8 +884,18 @@ export default function FlightMap() {
     const from = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString(); // last 6h of history
     fetchHistory(selected, from, to).then((track) => {
       if (cancelled) return; // superseded by a newer selection since this was requested
-      if (track.length > 0) lastRouteObservedAtRef.current = track[track.length - 1].observedAt;
-      setRoute(track.map((p) => [p.latitude, p.longitude]));
+      // A trail is never longer than this leg's own origin airport — plain
+      // history has no notion of "this leg" and would otherwise happily
+      // include an earlier landing/taxi/takeoff still inside the 6h lookback
+      // above. legStartAtRef is only set here if the dossier fetch below
+      // already resolved first; if it resolves *after* this, that handler
+      // re-filters routePointsRef/route the same way once it knows.
+      const filtered = legStartAtRef.current
+        ? track.filter((p) => p.observedAt >= legStartAtRef.current!)
+        : track;
+      if (filtered.length > 0) lastRouteObservedAtRef.current = filtered[filtered.length - 1].observedAt;
+      routePointsRef.current = filtered.map((p) => ({ lat: p.latitude, lon: p.longitude, observedAt: p.observedAt }));
+      setRoute(filtered.map((p) => [p.latitude, p.longitude]));
       // /history only ever has real reports (see FlightController.history)
       // — it stops at the last one, which can already be well behind
       // wherever this aircraft is actually being shown (selectedPos may
@@ -838,7 +911,21 @@ export default function FlightMap() {
     // "—" fallback rather than surfacing an error — this is enrichment,
     // not core data, and shouldn't block the zoom/panel from working.
     fetchAircraftDossier(selected)
-      .then((d) => { if (!cancelled) setDossier(d); })
+      .then((d) => {
+        if (cancelled) return;
+        setDossier(d);
+        legStartAtRef.current = d?.legStartAt ?? null;
+        // The history fetch above may already have landed first (with
+        // nothing to trim against yet, since this is what sets it) — apply
+        // the trim now if so.
+        if (legStartAtRef.current) {
+          const trimmed = routePointsRef.current.filter((pt) => pt.observedAt >= legStartAtRef.current!);
+          if (trimmed.length !== routePointsRef.current.length) {
+            routePointsRef.current = trimmed;
+            setRoute(trimmed.map((pt) => [pt.lat, pt.lon]));
+          }
+        }
+      })
       .catch(() => { if (!cancelled) setDossier(null); });
 
     return () => {

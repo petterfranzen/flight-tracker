@@ -8,6 +8,7 @@ import com.flighttracker.service.EstimatedPositionCache;
 import com.flighttracker.service.LiveVisibilityWindows;
 import com.flighttracker.service.ViewportService;
 import org.springframework.context.annotation.Profile;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.Instant;
@@ -68,6 +69,36 @@ public class FlightController {
         viewportService.report(bounds);
         return estimatedPositionCache.overlay(positionRepository.findLiveInBounds(staleAirborneCutoff, landedCutoff,
                 bounds.latMin(), bounds.latMax(), bounds.lonMin(), bounds.lonMax()));
+    }
+
+    /**
+     * Single-aircraft counterpart to /live, for the map's priority refresh
+     * of whichever aircraft is currently selected (see the dedicated poll
+     * in FlightMap.tsx). The bbox-scoped /live above — and the WebSocket
+     * feed, which is filtered server-side by whatever bbox /live last
+     * reported (see ViewportService/LiveFeedBroadcaster) — both simply stop
+     * delivering anything for an aircraft once it leaves the last-reported
+     * viewport, or once the map is zoomed out past CLUSTER_FETCH_MAX_ZOOM
+     * and stops reporting a per-aircraft viewport at all. A selected
+     * aircraft shouldn't go stale in the details panel just because of
+     * that — this looks it up directly by icao24, independent of any
+     * viewport. Deliberately does not call viewportService.report(): a
+     * lookup here isn't "what's on screen," and shouldn't perturb what the
+     * hot-poll/broadcast are currently tracking on that basis.
+     *
+     * Not scoped to LiveVisibilityWindows' staleness cutoffs the way /live
+     * is — an aircraft already selected should keep showing its true last-
+     * known position (with the frontend's own staleness warning) rather
+     * than silently disappearing from this endpoint once it ages past a
+     * cutoff meant for deciding what's worth putting on the map in the
+     * first place.
+     */
+    @GetMapping("/{icao24}/live")
+    public ResponseEntity<FlightPosition> liveOne(@PathVariable String icao24) {
+        return positionRepository.findLatestPosition(icao24)
+                .map(p -> estimatedPositionCache.overlay(List.of(p)).get(0))
+                .map(ResponseEntity::ok)
+                .orElseGet(() -> ResponseEntity.notFound().build());
     }
 
     // Below this, a grid cell would be finer than markers are distinguishable

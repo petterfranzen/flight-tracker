@@ -172,7 +172,8 @@ public class AircraftController {
                 a.getIcao24(), a.getRegistration(), a.getModel(), a.getOperator(),
                 a.getOriginAirport(), origin.name(), origin.iataCode(),
                 a.getDestinationAirport(), destination.name(), destination.iataCode(),
-                flightMinutes, etaMinutes, cruisingAltitudeM, phase == null ? null : phase.name(), staleExplanation);
+                flightMinutes, etaMinutes, cruisingAltitudeM, phase == null ? null : phase.name(), staleExplanation,
+                legStart.orElse(null));
     }
 
     private record AirportDisplay(String name, String iataCode) {

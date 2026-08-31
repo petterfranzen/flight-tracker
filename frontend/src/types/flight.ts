@@ -48,6 +48,8 @@ export interface AircraftDossier {
   flightPhase: string | null;
   /** Human-readable guess at what a since-gone-quiet aircraft is doing — only meaningful once the frontend's own staleness check says to show it. */
   staleExplanation: string | null;
+  /** ISO instant this leg took off, or null with no airborne history for it at all — see FlightMap.tsx's trail-trimming use. */
+  legStartAt: string | null;
 }
 
 export interface PollingStatus {
