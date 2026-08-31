@@ -73,6 +73,12 @@ export async function fetchUsage(from: string, to: string): Promise<AircraftUsag
   return res.json();
 }
 
+export async function fetchPollingStatus(): Promise<PollingStatus> {
+  const res = await fetch("/api/agents/status");
+  if (!res.ok) throw new Error(`polling status fetch failed: ${res.status}`);
+  return res.json();
+}
+
 export interface RestartOutcome {
   status: PollingStatus;
   rateLimited: boolean;

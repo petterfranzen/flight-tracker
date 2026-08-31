@@ -29,10 +29,11 @@ jobs:
         run: docker compose up -d --build --wait
 
       - name: Reopen the poll window
-        # Bounded-polling change: the window auto-opens for 60s on boot, but
-        # `--wait` above can eat into that waiting on healthchecks. Restart it
-        # right before testing so live-feed.test.js's optional real-frame
-        # check gets a full window instead of racing an already-closing one.
+        # Bounded-polling change: the window auto-opens for
+        # poll-window-seconds on boot, but `--wait` above can eat into that
+        # waiting on healthchecks. Restart it right before testing so
+        # live-feed.test.js's optional real-frame check gets a full window
+        # instead of racing an already-closing one.
         run: curl -sf -X POST http://localhost:8080/api/agents/restart
 
       - name: Run the black-box suite

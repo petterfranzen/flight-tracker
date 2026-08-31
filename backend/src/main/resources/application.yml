@@ -29,17 +29,31 @@ flighttracker:
     poll-interval-seconds: 15
     # Polling auto-stops this long after each start/restart, so an
     # unattended NAS deployment doesn't run 24/7 and burn through
-    # OpenSky's daily anonymous credit budget. Reopen it via
-    # POST /api/agents/restart (the frontend's restart button).
-    poll-window-seconds: 60
+    # OpenSky's credit budget. Matched to the frontend's own
+    # DIALOG_STOP_MS (FlightMap.tsx) — the point at which a genuinely
+    # idle-but-still-open tab stops being treated as "someone's watching"
+    # and the ResumeDialog appears — so the backend keeps hot-polling for
+    # exactly as long as the frontend is quietly fetching on its behalf,
+    # no longer. Reopened automatically on page load if it isn't already
+    # active (see FlightMap.tsx's mount effect — a page load while a
+    # session is already live takes no action) or via the ResumeDialog's
+    # "Resume tracking" button; POST /api/agents/restart directly works
+    # too, if you'd rather script it.
+    poll-window-seconds: 600
     # Hard cap on how many times POST /api/agents/restart can reopen the
     # poll window within restart-quota-window-minutes — see
     # PollWindowService.restart(). This app being internet-facing means
-    # this now bounds worst-case OpenSky usage from *anyone* hammering
-    # resume, not just accidental overuse from one honest browser tab.
-    # 3 resumes x poll-window-seconds (60s) = 3 minutes of hot-polling
-    # allowed per 15-minute window; exceeding it means waiting out the
-    # full window from the *first* resume in it, not a rolling cooldown.
+    # this bounds worst-case OpenSky usage from *anyone* hammering
+    # restart directly, not just the frontend's own (now much less
+    # frequent) honest calls. Note the ratio this allows is looser than
+    # it was when poll-window-seconds was 60: 3 resumes x 600s can, timed
+    # adjacently, keep the window open almost continuously rather than
+    # the ~20%-duty-cycle "3 minutes per 15" the old 60s window gave —
+    # worth revisiting (lower quota-max, or raise quota-window-minutes)
+    # if that matters more now than it did before OpenSkyAgent started
+    # authenticating its own polling (see OpenSkyAgent's javadoc) and
+    # stopped competing for the small anonymous-tier budget this quota
+    # was originally sized to protect.
     restart-quota-max: 3
     restart-quota-window-minutes: 15
     # Global sweep (pollGlobal() — no bbox, every aircraft worldwide):
