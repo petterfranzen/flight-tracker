@@ -137,7 +137,7 @@ public class AircraftController {
         // as before.
         boolean descendingOrLanding = phase == FlightPhaseClassifier.FlightPhase.DESCENDING
                 || phase == FlightPhaseClassifier.FlightPhase.LANDING;
-        boolean presumedLanded = current != null && (current.isOnGround()
+        boolean presumedLanded = current != null && (phase == FlightPhaseClassifier.FlightPhase.ON_GROUND
                 || (descendingOrLanding
                     && Duration.between(current.getObservedAt(), now).compareTo(LiveVisibilityWindows.PRESUMED_LANDED_SILENCE) > 0));
         Instant flightEnd = presumedLanded ? current.getObservedAt() : now;

@@ -9,6 +9,17 @@
     --color-warn on --color-panel       ~5.2:1
 */
 
+/* Browser default body margin (and Safari's default touch-action) would
+   otherwise leave the viewport's own edges uncovered by .app-shell below,
+   even though .app-shell itself is sized to 100%/100vh — that 100% is of
+   body's already-inset content box, not the viewport. Visible as a cream
+   strip on the top/left and content pushed off the bottom/right, worst on
+   mobile where it forces a pinch-zoom-out to see the rest of the page. */
+html, body {
+  margin: 0;
+  padding: 0;
+}
+
 :root {
   --color-bg: #0b0f14;
   --color-panel: #161d27;

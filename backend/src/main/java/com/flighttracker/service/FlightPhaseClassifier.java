@@ -33,8 +33,11 @@ public final class FlightPhaseClassifier {
     }
 
     /**
-     * @param onGround         current on_ground state — authoritative; every other input is ignored when true.
-     * @param currentAltitudeM current altitude, meters. Null (unknown reading) is treated as insufficient data.
+     * @param onGround         current on_ground state — authoritative when true, but not the only signal for
+     *                         landed: the feed's on_ground flag can lag the real transition by a report or two,
+     *                         so a current altitude reading of zero (or missing entirely, once ADS-B loses the
+     *                         aircraft at ground level) is treated as landed too rather than waiting on the flag.
+     * @param currentAltitudeM current altitude, meters. Null (unknown reading) or <= 0 reads as landed — see above.
      * @param earlierAltitudeM altitude at an earlier reference point (the caller decides how far back — e.g.
      *                         AircraftController uses ~3 minutes, or the start of the current leg if it's
      *                         younger than that), meters. Null when no earlier reference point exists yet
@@ -43,7 +46,8 @@ public final class FlightPhaseClassifier {
      */
     public static FlightPhase classify(boolean onGround, Double currentAltitudeM, Double earlierAltitudeM) {
         if (onGround) return FlightPhase.ON_GROUND;
-        if (currentAltitudeM == null || earlierAltitudeM == null) return FlightPhase.LEVEL;
+        if (currentAltitudeM == null || currentAltitudeM <= 0) return FlightPhase.ON_GROUND;
+        if (earlierAltitudeM == null) return FlightPhase.LEVEL;
 
         double delta = currentAltitudeM - earlierAltitudeM;
         if (Math.abs(delta) < LEVEL_TREND_THRESHOLD_M) return FlightPhase.LEVEL;
