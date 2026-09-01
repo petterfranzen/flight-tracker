@@ -98,6 +98,14 @@ public class AircraftController {
         Instant now = Instant.now();
         Optional<Instant> legStart = positionRepository.findCurrentLegTakeoffTime(a.getIcao24());
         FlightPosition current = positionRepository.findLatestPosition(a.getIcao24()).orElse(null);
+        // Raw (never coalesced with EstimatorAgent's estimate) — needed only
+        // for describeLikelyStatus's "at last report" distance text below,
+        // which is documented as describing the last real report, not a
+        // dead-reckoned projection. `current` itself stays coalesced for
+        // everything else (the ETA calc benefits from the more accurate
+        // live position).
+        FlightPositionRepository.RawLatLon rawPosition =
+                positionRepository.findRawLatestLatLon(a.getIcao24()).orElse(null);
 
         // Skip the lookup entirely when on the ground — FlightPhaseClassifier
         // only needs the earlier-altitude reference to distinguish
@@ -163,7 +171,7 @@ public class AircraftController {
                 ? enrichmentService.checkLandingIfNeeded(a.getIcao24(), current.getObservedAt())
                 : Optional.empty();
 
-        String staleExplanation = describeLikelyStatus(current, phase, a, landingConfirmedAt.isPresent());
+        String staleExplanation = describeLikelyStatus(current, rawPosition, phase, a, landingConfirmedAt.isPresent());
 
         AirportDisplay origin = resolveAirport(a.getOriginAirport(), a.getOriginAirportName());
         AirportDisplay destination = resolveAirport(a.getDestinationAirport(), a.getDestinationAirportName());
@@ -218,6 +226,13 @@ public class AircraftController {
      * supplies the best guess at *why*, from what the last report actually
      * said, not from how long ago it was.
      *
+     * @param raw              the last REAL report's lat/lon, never
+     *                         EstimatorAgent's coalesced estimate — the "N
+     *                         km away at last report" text below would
+     *                         otherwise become a self-fulfilling artifact
+     *                         of EstimatedPositionService's own
+     *                         destination-clipping instead of a genuine
+     *                         last-report fact.
      * @param landingConfirmed whether AircraftEnrichmentService.
      *                         checkLandingIfNeeded got an actual OpenSky
      *                         confirmation for this leg — upgrades the
@@ -225,7 +240,8 @@ public class AircraftController {
      *                         a sourced fact, rather than changing the
      *                         underlying guess itself.
      */
-    private String describeLikelyStatus(FlightPosition current, FlightPhaseClassifier.FlightPhase phase, Aircraft a,
+    private String describeLikelyStatus(FlightPosition current, FlightPositionRepository.RawLatLon raw,
+                                         FlightPhaseClassifier.FlightPhase phase, Aircraft a,
                                          boolean landingConfirmed) {
         if (current == null || phase == null) return null;
 
@@ -237,9 +253,9 @@ public class AircraftController {
                 || phase == FlightPhaseClassifier.FlightPhase.LANDING;
 
         Double distanceToDestKm = null;
-        if (a.getDestinationAirportLat() != null && a.getDestinationAirportLon() != null) {
+        if (raw != null && a.getDestinationAirportLat() != null && a.getDestinationAirportLon() != null) {
             distanceToDestKm = haversineMeters(
-                    current.getLatitude(), current.getLongitude(),
+                    raw.getLatitude(), raw.getLongitude(),
                     a.getDestinationAirportLat(), a.getDestinationAirportLon()) / 1000.0;
         }
 

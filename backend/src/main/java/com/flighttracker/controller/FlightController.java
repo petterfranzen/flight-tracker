@@ -4,7 +4,6 @@ import com.flighttracker.dto.Bounds;
 import com.flighttracker.dto.ClusterPoint;
 import com.flighttracker.model.FlightPosition;
 import com.flighttracker.repository.FlightPositionRepository;
-import com.flighttracker.service.EstimatedPositionCache;
 import com.flighttracker.service.LiveVisibilityWindows;
 import com.flighttracker.service.ViewportService;
 import org.springframework.context.annotation.Profile;
@@ -21,13 +20,10 @@ public class FlightController {
 
     private final FlightPositionRepository positionRepository;
     private final ViewportService viewportService;
-    private final EstimatedPositionCache estimatedPositionCache;
 
-    public FlightController(FlightPositionRepository positionRepository, ViewportService viewportService,
-                             EstimatedPositionCache estimatedPositionCache) {
+    public FlightController(FlightPositionRepository positionRepository, ViewportService viewportService) {
         this.positionRepository = positionRepository;
         this.viewportService = viewportService;
-        this.estimatedPositionCache = estimatedPositionCache;
     }
 
     /**
@@ -43,15 +39,13 @@ public class FlightController {
      * poll, and this container's WebSocket broadcast filtering, what's
      * actually on someone's screen right now.
      *
-     * Every result is run through EstimatedPositionCache.overlay before it
-     * goes out — a no-op for anything fresh, but for a report the agent
-     * hasn't been able to refresh (an ADS-B coverage gap, an aircraft only
-     * covered by the multi-minute global sweep) this substitutes that
-     * cache's dead-reckoned "best current estimate" instead of a stale,
-     * frozen fix. The estimation work itself happens entirely server-side
-     * on its own fixed schedule (see that class), not here and not on the
-     * client — this endpoint just serves whatever the cache currently
-     * holds, indistinguishable in shape from a real report either way.
+     * Every row already carries EstimatorAgent's current best-guess
+     * position where one exists — see FlightPositionRepository.
+     * LATEST_COLUMNS, which COALESCEs estimated_latitude/
+     * estimated_longitude over the raw ones for every reader of this
+     * table, so there's nothing to do here beyond the plain query: no
+     * per-endpoint overlay step to remember, unlike the old
+     * EstimatedPositionCache.overlay() this replaced.
      */
     @GetMapping("/live")
     public List<FlightPosition> live(@RequestParam(required = false) Double latMin,
@@ -63,12 +57,12 @@ public class FlightController {
         Instant landedCutoff = now.minus(LiveVisibilityWindows.LANDED_VISIBILITY);
 
         if (latMin == null || latMax == null || lonMin == null || lonMax == null) {
-            return estimatedPositionCache.overlay(positionRepository.findLive(staleAirborneCutoff, landedCutoff));
+            return positionRepository.findLive(staleAirborneCutoff, landedCutoff);
         }
         Bounds bounds = new Bounds(latMin, latMax, lonMin, lonMax);
         viewportService.report(bounds);
-        return estimatedPositionCache.overlay(positionRepository.findLiveInBounds(staleAirborneCutoff, landedCutoff,
-                bounds.latMin(), bounds.latMax(), bounds.lonMin(), bounds.lonMax()));
+        return positionRepository.findLiveInBounds(staleAirborneCutoff, landedCutoff,
+                bounds.latMin(), bounds.latMax(), bounds.lonMin(), bounds.lonMax());
     }
 
     /**
@@ -96,7 +90,6 @@ public class FlightController {
     @GetMapping("/{icao24}/live")
     public ResponseEntity<FlightPosition> liveOne(@PathVariable String icao24) {
         return positionRepository.findLatestPosition(icao24)
-                .map(p -> estimatedPositionCache.overlay(List.of(p)).get(0))
                 .map(ResponseEntity::ok)
                 .orElseGet(() -> ResponseEntity.notFound().build());
     }
@@ -131,12 +124,13 @@ public class FlightController {
      * means hot-poll/broadcast keep reflecting whatever real, individual-
      * aircraft viewport was last in effect.
      *
-     * Deliberately does NOT overlay EstimatedPositionCache the way /live
-     * does: the whole point of this endpoint is doing the count
-     * aggregation in SQL without ever materializing individual
-     * FlightPosition rows in Java (see the comment above on why that
-     * matters at this scale), and a cluster count has no single aircraft
-     * to substitute an estimate for anyway.
+     * Buckets on the same COALESCE(estimated_latitude, latitude) (and
+     * longitude) expression LATEST_COLUMNS reads elsewhere — see
+     * FlightPositionRepository.findLiveClusteredInBounds — so a dead-
+     * reckoned aircraft lands in the same cell here as its marker would
+     * render at once zoomed in past CLUSTER_FETCH_MAX_ZOOM. No separate
+     * overlay step needed: the aggregation query itself already reads
+     * EstimatorAgent's current estimate directly off the row.
      */
     @GetMapping("/live/clusters")
     public List<ClusterPoint> liveClusters(@RequestParam double latMin,
@@ -175,21 +169,22 @@ public class FlightController {
 
         String trimmedAirport = airport == null ? "" : airport.trim();
         if (!trimmedAirport.isEmpty()) {
-            return estimatedPositionCache.overlay(positionRepository.searchByAirport(
+            return positionRepository.searchByAirport(
                     "%" + escapeLike(trimmedAirport) + "%",
-                    staleAirborneCutoff, landedCutoff, SEARCH_RESULT_LIMIT));
+                    staleAirborneCutoff, landedCutoff, SEARCH_RESULT_LIMIT);
         }
 
         String trimmed = q == null ? "" : q.trim();
         if (trimmed.isEmpty()) return List.of();
         String escaped = escapeLike(trimmed);
-        // Overlaid too, same as /live — picking a search result flies the
-        // map to p.latitude/p.longitude directly (see FlightSearch.tsx),
-        // so it should land on the same best-current-estimate spot the
+        // Picking a search result flies the map to p.latitude/p.longitude
+        // directly (see FlightSearch.tsx) — LATEST_COLUMNS already reads
+        // EstimatorAgent's current estimate for that, same as every other
+        // reader, so it lands on the same best-current-estimate spot the
         // live view will show it at, not a possibly stale fix.
-        return estimatedPositionCache.overlay(positionRepository.searchLive(
+        return positionRepository.searchLive(
                 "%" + escaped + "%", escaped + "%",
-                staleAirborneCutoff, landedCutoff, SEARCH_RESULT_LIMIT));
+                staleAirborneCutoff, landedCutoff, SEARCH_RESULT_LIMIT);
     }
 
     // So a literal % or _ typed by the user matches itself instead of

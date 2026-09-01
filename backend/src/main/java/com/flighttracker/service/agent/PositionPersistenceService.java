@@ -142,6 +142,9 @@ public class PositionPersistenceService {
     // on_ground and observed_at are each bound twice (params 10/12 and
     // 3/13) because the landed_since CASE needs both again, same as the
     // named-parameter version reusing :onGround/:observedAt twice.
+    // estimated_latitude/longitude/at are unconditionally cleared to NULL
+    // for the same reason as the named-parameter version — see that
+    // query's comment.
     private static final String LATEST_POSITION_UPSERT_SQL = """
         INSERT INTO aircraft_latest_position
             (icao24, callsign, observed_at, latitude, longitude, altitude_m,
@@ -163,7 +166,10 @@ public class PositionPersistenceService {
                 WHEN EXCLUDED.on_ground = false THEN NULL
                 WHEN aircraft_latest_position.on_ground = true THEN aircraft_latest_position.landed_since
                 ELSE EXCLUDED.observed_at
-            END
+            END,
+            estimated_latitude = NULL,
+            estimated_longitude = NULL,
+            estimated_at = NULL
         WHERE EXCLUDED.observed_at > aircraft_latest_position.observed_at
         """;
 

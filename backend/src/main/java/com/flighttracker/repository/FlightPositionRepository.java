@@ -15,10 +15,23 @@ public interface FlightPositionRepository extends JpaRepository<FlightPosition, 
 
     // aircraft_latest_position's columns, explicitly listed (not SELECT *)
     // so the extra landed_since column never leaks into FlightPosition's
-    // entity mapping, which doesn't have a field for it.
+    // entity mapping, which doesn't have a field for it. latitude/longitude
+    // are COALESCEd with estimated_latitude/estimated_longitude — EVERY
+    // reader of this constant gets EstimatorAgent's current best-guess
+    // position automatically, with no per-endpoint overlay step to
+    // remember (that used to be EstimatedPositionCache.overlay(), applied
+    // by some endpoints and not others — the actual root cause of aircraft
+    // visibly disagreeing between the individual and clustered map views).
+    // observed_at itself is untouched — every consumer that needs "the
+    // time of the last REAL report" (dedup, the upsert's own monotonicity
+    // guard, the dossier's presumed-landed timer, the frontend's staleness
+    // banner) still gets exactly that, never an estimate's computation
+    // time.
     String LATEST_COLUMNS = """
-        id, icao24, callsign, observed_at, latitude, longitude, altitude_m,
-        velocity_ms, heading_deg, vertical_rate_ms, on_ground, agent_source
+        id, icao24, callsign, observed_at,
+        COALESCE(estimated_latitude, latitude) AS latitude,
+        COALESCE(estimated_longitude, longitude) AS longitude,
+        altitude_m, velocity_ms, heading_deg, vertical_rate_ms, on_ground, agent_source
         """;
 
     // Same columns, `alp.`-qualified — for queries that JOIN
@@ -26,7 +39,9 @@ public interface FlightPositionRepository extends JpaRepository<FlightPosition, 
     // could also have an icao24 (or other overlapping-name) column, where
     // the bare LATEST_COLUMNS list above would be ambiguous.
     String LATEST_COLUMNS_ALP = """
-        alp.id, alp.icao24, alp.callsign, alp.observed_at, alp.latitude, alp.longitude,
+        alp.id, alp.icao24, alp.callsign, alp.observed_at,
+        COALESCE(alp.estimated_latitude, alp.latitude) AS latitude,
+        COALESCE(alp.estimated_longitude, alp.longitude) AS longitude,
         alp.altitude_m, alp.velocity_ms, alp.heading_deg, alp.vertical_rate_ms,
         alp.on_ground, alp.agent_source
         """;
@@ -39,7 +54,7 @@ public interface FlightPositionRepository extends JpaRepository<FlightPosition, 
     // (see LiveVisibilityWindows.PRESUMED_LANDED_SILENCE) is deliberately
     // NOT excluded here — it keeps showing under the airborne branch
     // (dead-reckoned to its destination and parked there by
-    // EstimatedPositionCache) rather than disappearing the moment it's
+    // EstimatorAgent) rather than disappearing the moment it's
     // presumed landed; that presumption only changes how AircraftController
     // describes it, not whether it's on the map. See
     // aircraft_latest_position's schema.sql comment for why this reads a
@@ -56,13 +71,19 @@ public interface FlightPositionRepository extends JpaRepository<FlightPosition, 
     // Same as findLive, further filtered to a lat/lon box — what the
     // frontend actually calls with, passing its current map viewport, so
     // only what's visible is fetched/rendered rather than every aircraft
-    // being globally tracked.
+    // being globally tracked. Filters on the same COALESCE(estimated_*,
+    // ...) expression LATEST_COLUMNS selects — filtering on the raw
+    // columns instead would place an aircraft whose estimated position has
+    // drifted across the viewport edge in the wrong place relative to what
+    // was actually asked for. Matched by idx_latest_position_bbox_estimated
+    // (an expression index on this exact COALESCE pair), not a plain
+    // (latitude, longitude) index.
     @Query(value = "SELECT " + LATEST_COLUMNS + """
         FROM aircraft_latest_position
         WHERE ((on_ground = false AND observed_at > :staleAirborneCutoff)
            OR (on_ground = true AND landed_since > :landedCutoff))
-          AND latitude BETWEEN :latMin AND :latMax
-          AND longitude BETWEEN :lonMin AND :lonMax
+          AND COALESCE(estimated_latitude, latitude) BETWEEN :latMin AND :latMax
+          AND COALESCE(estimated_longitude, longitude) BETWEEN :lonMin AND :lonMax
         """, nativeQuery = true)
     List<FlightPosition> findLiveInBounds(@Param("staleAirborneCutoff") Instant staleAirborneCutoff,
                                            @Param("landedCutoff") Instant landedCutoff,
@@ -94,18 +115,24 @@ public interface FlightPositionRepository extends JpaRepository<FlightPosition, 
     // and GROUP BY on the exact same bucket_lat/bucket_lon expressions,
     // and only the outer query — grouped by nothing, just per aggregated
     // row — offsets each bucket to its center.
+    // Buckets on COALESCE(estimated_latitude, latitude) (and longitude) —
+    // the same expression LATEST_COLUMNS/findLiveInBounds now read — so a
+    // dead-reckoned aircraft lands in the same cluster cell here as the
+    // marker findLiveInBounds would place it at once zoomed in. This is
+    // the literal fix for clusters and the individual view disagreeing
+    // about what's currently visible in a given area.
     @Query(value = """
         SELECT bucket_lat + :gridDeg / 2 AS lat, bucket_lon + :gridDeg / 2 AS lon, count AS count
         FROM (
             SELECT
-                floor(latitude / :gridDeg) * :gridDeg AS bucket_lat,
-                floor(longitude / :gridDeg) * :gridDeg AS bucket_lon,
+                floor(COALESCE(estimated_latitude, latitude) / :gridDeg) * :gridDeg AS bucket_lat,
+                floor(COALESCE(estimated_longitude, longitude) / :gridDeg) * :gridDeg AS bucket_lon,
                 count(*) AS count
             FROM aircraft_latest_position
             WHERE ((on_ground = false AND observed_at > :staleAirborneCutoff)
                OR (on_ground = true AND landed_since > :landedCutoff))
-              AND latitude BETWEEN :latMin AND :latMax
-              AND longitude BETWEEN :lonMin AND :lonMax
+              AND COALESCE(estimated_latitude, latitude) BETWEEN :latMin AND :latMax
+              AND COALESCE(estimated_longitude, longitude) BETWEEN :lonMin AND :lonMax
             GROUP BY bucket_lat, bucket_lon
         ) buckets
         """, nativeQuery = true)
@@ -192,7 +219,12 @@ public interface FlightPositionRepository extends JpaRepository<FlightPosition, 
     // delays) and this must never regress "latest" to something older.
     // landed_since: reset to this report's time the moment on_ground flips
     // true, carried forward unchanged while it stays true, cleared on the
-    // next false.
+    // next false. estimated_latitude/estimated_longitude/estimated_at:
+    // unconditionally cleared to NULL — a genuine new real report always
+    // supersedes any prior dead-reckoned guess immediately, rather than
+    // waiting for EstimatorAgent's next cycle to notice and clear it
+    // itself. Governed by the same observed_at guard as everything else
+    // here, so this never fires out of order either.
     @Modifying
     @Query(value = """
         INSERT INTO aircraft_latest_position
@@ -217,7 +249,10 @@ public interface FlightPositionRepository extends JpaRepository<FlightPosition, 
                 WHEN EXCLUDED.on_ground = false THEN NULL
                 WHEN aircraft_latest_position.on_ground = true THEN aircraft_latest_position.landed_since
                 ELSE EXCLUDED.observed_at
-            END
+            END,
+            estimated_latitude = NULL,
+            estimated_longitude = NULL,
+            estimated_at = NULL
         WHERE EXCLUDED.observed_at > aircraft_latest_position.observed_at
         """, nativeQuery = true)
     void upsertLatestPosition(
@@ -318,9 +353,28 @@ public interface FlightPositionRepository extends JpaRepository<FlightPosition, 
     Optional<String> findLatestCallsign(@Param("icao24") String icao24);
 
     // The dossier's ETA calc (AircraftController) needs this aircraft's
-    // current position/groundspeed, not just its callsign.
+    // current position/groundspeed, not just its callsign. Coalesced with
+    // any current estimate via LATEST_COLUMNS — the ETA benefits from the
+    // more accurate live position, same as every other LATEST_COLUMNS
+    // consumer.
     @Query(value = "SELECT " + LATEST_COLUMNS + " FROM aircraft_latest_position WHERE icao24 = :icao24", nativeQuery = true)
     Optional<FlightPosition> findLatestPosition(@Param("icao24") String icao24);
+
+    // Raw (never coalesced with an estimate) lat/lon for one aircraft's
+    // last real report. Exists for exactly one caller —
+    // AircraftController.describeLikelyStatus's "likely landed near X (N
+    // km away at last report)" text, which is documented as describing
+    // what the last report actually said, not a projection — reading
+    // findLatestPosition's coalesced value there would make that distance
+    // a self-fulfilling artifact of EstimatedPositionService's own
+    // destination-clipping instead of a genuine last-report fact.
+    interface RawLatLon {
+        double getLatitude();
+        double getLongitude();
+    }
+
+    @Query(value = "SELECT latitude, longitude FROM aircraft_latest_position WHERE icao24 = :icao24", nativeQuery = true)
+    Optional<RawLatLon> findRawLatestLatLon(@Param("icao24") String icao24);
 
     // Lets AgentOrchestrator tell a genuinely first-ever boot (empty table,
     // worth blocking startup on one synchronous global sweep so the map
