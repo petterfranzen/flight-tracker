@@ -29,8 +29,11 @@ import {
   subscribeLiveFeed,
 } from "../api/flightApi";
 import FlightSearch from "./FlightSearch";
+import FavoritesPanel from "./FavoritesPanel";
 import ScaleBar from "./ScaleBar";
 import "./FlightMap.css";
+import type { FavoriteAircraft, FavoriteRoute } from "../favorites";
+import { isAircraftFavorited, isRouteFavorited, loadFavoriteAircraft, loadFavoriteRoutes, toggleFavoriteAircraft, toggleFavoriteRoute } from "../favorites";
 
 // The two timers that drive the whole "watch" lifecycle, replacing the old
 // manually-controlled poll-window UI (Watch active/stood down, Stop/Resume
@@ -473,6 +476,14 @@ export default function FlightMap() {
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [route, setRoute] = useState<[number, number][]>([]);
   const [dossier, setDossier] = useState<AircraftDossier | null>(null);
+
+  // Client-side only (see favorites.ts) — loaded once from localStorage on
+  // mount via useState's lazy initializer, kept in React state from then on
+  // so FavoritesPanel/the star toggles below re-render on every change,
+  // and persisted back to localStorage inside the toggle handlers
+  // themselves (toggleFavoriteRoute/toggleFavoriteAircraft do both).
+  const [favoriteRoutes, setFavoriteRoutes] = useState<FavoriteRoute[]>(() => loadFavoriteRoutes());
+  const [favoriteAircraft, setFavoriteAircraft] = useState<FavoriteAircraft[]>(() => loadFavoriteAircraft());
 
   // When the current fetch cycle began — see startCycle below. A ref, not
   // state: read inside setInterval closures, never itself needs to
@@ -942,6 +953,44 @@ export default function FlightMap() {
     setDossierExpanded(false);
   }, []);
 
+  const toggleSelectedAircraftFavorite = useCallback(() => {
+    if (!selectedPos) return;
+    setFavoriteAircraft((prev) =>
+      toggleFavoriteAircraft(prev, {
+        icao24: selectedPos.icao24,
+        registration: dossier?.registration ?? null,
+        callsign: selectedPos.callsign,
+      }),
+    );
+  }, [selectedPos, dossier]);
+
+  const toggleSelectedRouteFavorite = useCallback(() => {
+    if (!dossier?.originAirport || !dossier?.destinationAirport) return;
+    setFavoriteRoutes((prev) =>
+      toggleFavoriteRoute(prev, {
+        origin: dossier.originAirport!,
+        originName: dossier.originAirportName,
+        originIata: dossier.originAirportIata,
+        destination: dossier.destinationAirport!,
+        destinationName: dossier.destinationAirportName,
+        destinationIata: dossier.destinationAirportIata,
+      }),
+    );
+  }, [dossier]);
+
+  // Both callers already have the full favorite object in hand (FavoritesPanel
+  // is just rendering back what it was given), so removal is exactly the
+  // add path's toggle, re-run on something already present — one code path
+  // for both directions, via the functional setState form so this needs no
+  // dependency on the current list at all.
+  const removeFavoriteAircraft = useCallback((entry: FavoriteAircraft) => {
+    setFavoriteAircraft((prev) => toggleFavoriteAircraft(prev, entry));
+  }, []);
+
+  const removeFavoriteRoute = useCallback((route: FavoriteRoute) => {
+    setFavoriteRoutes((prev) => toggleFavoriteRoute(prev, route));
+  }, []);
+
   const list = Object.values(positions);
   // Excluded from whatever feeds MarkerClusterGroup (and, at cluster-summary
   // zoom, never part of clusterPoints in the first place — those are
@@ -952,9 +1001,24 @@ export default function FlightMap() {
   // is trying to keep an eye on it.
   const unselectedList = selected ? list.filter((p) => p.icao24 !== selected) : list;
 
+  const selectedAircraftFavorited = selectedPos ? isAircraftFavorited(favoriteAircraft, selectedPos.icao24) : false;
+  const selectedRouteFavorited =
+    dossier?.originAirport && dossier?.destinationAirport
+      ? isRouteFavorited(favoriteRoutes, dossier.originAirport, dossier.destinationAirport)
+      : false;
+
   return (
     <div className="app-shell">
-      <FlightSearch onSelect={handleSelect} />
+      <div className="left-overlay-stack">
+        <FlightSearch onSelect={handleSelect} />
+        <FavoritesPanel
+          routes={favoriteRoutes}
+          aircraft={favoriteAircraft}
+          onRemoveRoute={removeFavoriteRoute}
+          onRemoveAircraft={removeFavoriteAircraft}
+          onSelect={handleSelect}
+        />
+      </div>
       <header className="app-header">
         <h1>Flight Tracker</h1>
         <p className="app-header-subtitle">Live aircraft positions</p>
@@ -1072,6 +1136,26 @@ export default function FlightMap() {
           <div className="details-panel-inner">
             <span className="details-panel-eyebrow" id="details-panel-heading">Aircraft Details</span>
             <h2>{selectedPos.callsign?.trim() || selectedPos.icao24.toUpperCase()}</h2>
+            <div className="details-panel-favorite-toggles">
+              <button
+                type="button"
+                className={`details-panel-favorite-toggle${selectedAircraftFavorited ? " details-panel-favorite-toggle--active" : ""}`}
+                onClick={toggleSelectedAircraftFavorite}
+                aria-pressed={selectedAircraftFavorited}
+              >
+                {selectedAircraftFavorited ? "★" : "☆"} Aircraft
+              </button>
+              <button
+                type="button"
+                className={`details-panel-favorite-toggle${selectedRouteFavorited ? " details-panel-favorite-toggle--active" : ""}`}
+                onClick={toggleSelectedRouteFavorite}
+                disabled={!dossier?.originAirport || !dossier?.destinationAirport}
+                aria-pressed={selectedRouteFavorited}
+                title={!dossier?.originAirport || !dossier?.destinationAirport ? "Route not known for this aircraft yet" : undefined}
+              >
+                {selectedRouteFavorited ? "★" : "☆"} Route
+              </button>
+            </div>
             <p className="details-panel-meta">ICAO24 {selectedPos.icao24.toUpperCase()} · last leg traced above</p>
             {(() => {
               const stale = nowMs - new Date(selectedPos.observedAt).getTime() > STALE_POSITION_WARN_MS;
