@@ -30,10 +30,14 @@ import {
 } from "../api/flightApi";
 import FlightSearch from "./FlightSearch";
 import FavoritesPanel from "./FavoritesPanel";
+import ThemeToggle from "./ThemeToggle";
+import VectorBasemap from "./VectorBasemap";
 import ScaleBar from "./ScaleBar";
 import "./FlightMap.css";
 import type { FavoriteAircraft, FavoriteRoute } from "../favorites";
 import { isAircraftFavorited, isRouteFavorited, loadFavoriteAircraft, loadFavoriteRoutes, toggleFavoriteAircraft, toggleFavoriteRoute } from "../favorites";
+import type { Theme } from "../theme";
+import { loadTheme, saveTheme } from "../theme";
 
 // The two timers that drive the whole "watch" lifecycle, replacing the old
 // manually-controlled poll-window UI (Watch active/stood down, Stop/Resume
@@ -86,6 +90,20 @@ const FETCH_STOP_MS = 5 * 60_000;
 const DIALOG_STOP_MS = 5 * 60_000;
 
 const ROUTE_COLOR = "#4db2ff"; // matches --color-accent in FlightMap.css
+
+// Cyberpunk theme's TileLayer points here instead of OpenStreetMap — a
+// transparent 1x1 PNG as a data: URI, so Leaflet never makes a real
+// network request for it (no fetch at all; the browser just decodes the
+// inline data), and every tile renders fully invisible. A *real*
+// TileLayer still has to be mounted even so: confirmed by bisection that
+// swapping it out entirely (rendering only VectorBasemap, or a raw
+// L.gridLayer() with no url) makes Leaflet throw inside a passive effect
+// on mount — something in Leaflet/react-leaflet's own internals
+// genuinely depends on a real TileLayer component existing, not just
+// "some layer, any layer." This satisfies that without fetching or
+// showing any real map imagery — VectorBasemap draws over it.
+const BLANK_TILE_URL =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
 
 // A small rotated dart stands in for the transponder icon — heading comes
 // straight off the state vector. This used to be the Unicode ✈ glyph
@@ -484,6 +502,20 @@ export default function FlightMap() {
   // themselves (toggleFavoriteRoute/toggleFavoriteAircraft do both).
   const [favoriteRoutes, setFavoriteRoutes] = useState<FavoriteRoute[]>(() => loadFavoriteRoutes());
   const [favoriteAircraft, setFavoriteAircraft] = useState<FavoriteAircraft[]>(() => loadFavoriteAircraft());
+
+  // Decides which map layer mounts below (TileLayer vs. VectorBasemap),
+  // not just CSS — index.html's own inline script already set the
+  // data-theme DOM attribute before first paint if the stored preference
+  // was "cyberpunk" (see theme.ts), so loadTheme() here just needs to
+  // agree with what's already on screen, not re-apply it.
+  const [theme, setTheme] = useState<Theme>(() => loadTheme());
+  const toggleTheme = useCallback(() => {
+    setTheme((prev) => {
+      const next: Theme = prev === "cyberpunk" ? "default" : "cyberpunk";
+      saveTheme(next);
+      return next;
+    });
+  }, []);
 
   // When the current fetch cycle began — see startCycle below. A ref, not
   // state: read inside setInterval closures, never itself needs to
@@ -1001,6 +1033,14 @@ export default function FlightMap() {
   // is trying to keep an eye on it.
   const unselectedList = selected ? list.filter((p) => p.icao24 !== selected) : list;
 
+  // Cyberpunk theme's "TRACKED" status chip — at cluster-summary zoom
+  // (see CLUSTER_FETCH_MAX_ZOOM) `positions` isn't populated with
+  // individual aircraft at all, only clusterPoints' aggregated counts
+  // are, so the true current total has to come from whichever of the
+  // two is actually active right now rather than always reading list.length.
+  const trackedCount =
+    zoom <= CLUSTER_FETCH_MAX_ZOOM ? clusterPoints.reduce((sum, c) => sum + c.count, 0) : list.length;
+
   const selectedAircraftFavorited = selectedPos ? isAircraftFavorited(favoriteAircraft, selectedPos.icao24) : false;
   const selectedRouteFavorited =
     dossier?.originAirport && dossier?.destinationAirport
@@ -1018,11 +1058,19 @@ export default function FlightMap() {
           onRemoveAircraft={removeFavoriteAircraft}
           onSelect={handleSelect}
         />
+        <ThemeToggle theme={theme} onToggle={toggleTheme} />
       </div>
       <header className="app-header">
         <h1>Flight Tracker</h1>
         <p className="app-header-subtitle">Live aircraft positions</p>
       </header>
+      {theme === "cyberpunk" && (
+        <div className="tracked-chip">
+          <span className="tracked-chip-dot" aria-hidden="true" />
+          <span className="tracked-chip-label">Tracked</span>
+          <span className="tracked-chip-value">{trackedCount.toLocaleString()}</span>
+        </div>
+      )}
 
       {showResumeDialog && (
         <div className="resume-dialog-backdrop" role="presentation">
@@ -1053,10 +1101,14 @@ export default function FlightMap() {
         zoomControl={false}
         aria-label="Live aircraft map"
       >
+        {/* A real, always-mounted TileLayer, not a conditional one — see
+            BLANK_TILE_URL's own comment for why cyberpunk theme still
+            needs one even though VectorBasemap replaces what it shows. */}
         <TileLayer
-          attribution='&copy; OpenStreetMap contributors'
-          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+          attribution={theme === "cyberpunk" ? "" : '&copy; OpenStreetMap contributors'}
+          url={theme === "cyberpunk" ? BLANK_TILE_URL : "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"}
         />
+        {theme === "cyberpunk" && <VectorBasemap />}
         {/* Metric only — every other distance in this app (altitude in m,
             speed in km/h) is metric, so a scale bar switching to miles/ft
             would be the odd one out. A multi-segment physical-cm ruler

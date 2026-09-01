@@ -31,6 +31,50 @@ html, body {
   --color-marker: #ffb020;
   --color-marker-selected: #4db2ff;
   --color-focus: #4db2ff;
+  --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+/* Cyberpunk 2077-styled alternate theme (see ThemeToggle) — every token
+   below is consumed by the *same* rules the default theme already uses
+   (panels, borders, text, the marker colors in plane-icon() below, the
+   route line), so switching themes is one attribute flip for all of
+   this, not a second copy of every component's CSS. The map itself is
+   the one exception: VectorBasemap.tsx replaces OpenStreetMap's raster
+   tiles outright for this theme (real country outlines/borders/major
+   cities/major airports/country names drawn from Natural Earth data),
+   rather than filtering the real tiles — an earlier CSS-filter/blend-
+   mode attempt at tinting the real tiles red was abandoned after real
+   testing surfaced two problems no amount of filter-tuning fixes:
+   Leaflet's tile-loading placeholders (any time a fresh area's tiles
+   haven't finished fetching — notably during the flyTo animation
+   between selecting two different aircraft) showed through the tint as
+   a flashing grid, since a filter over raster tiles can't distinguish
+   "no tile yet" from "tinted tile"; and the colors were only ever an
+   approximation of real tile colors, never an exact match for the
+   reference mockup. Drawing the map ourselves fixes both — see
+   VectorBasemap.tsx's own comment for the fuller account, including two
+   further dead ends (a blend-mode layer above the whole map tinted
+   markers too; a separate Leaflet pane for the tint couldn't blend
+   against tiles in a different pane at all) hit along the way.
+     Marker semantics intentionally flip from the default theme: there,
+   amber is the resting/default marker color and blue marks the selected
+   one; here cyan is the resting color and amber is reserved for
+   selected/tracked — matches the reference material's own restraint of
+   spending amber on exactly one meaning (the one thing being tracked). */
+:root[data-theme="cyberpunk"] {
+  --color-bg: #050608;
+  --color-panel: #0c121c;
+  --color-panel-border: #223244;
+  --color-text: #eaf3fb;
+  --color-text-muted: #7d90a3;
+  --color-accent: #3ce0ff;
+  --color-warn: #ff4d5e;
+  --color-marker: #3ce0ff;
+  --color-marker-selected: #ffb63c;
+  --color-focus: #3ce0ff;
+  --font-ui: "Rajdhani", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-display: "Chakra Petch", "Arial Narrow", sans-serif;
+  --font-data: "JetBrains Mono", "Courier New", monospace;
 }
 
 .app-shell {
@@ -38,9 +82,191 @@ html, body {
   width: 100%;
   height: 100vh;
   background: var(--color-bg);
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-family: var(--font-ui);
   color: var(--color-text);
   overflow: hidden;
+}
+
+/* Matches the earlier approved mockup's top-right status chip, and the
+   earlier UI-review's loading-indicator gap: a live count is at least a
+   first real signal of "is this working," even without the fuller
+   connecting/reconnecting states that review proposed. Cyberpunk-only
+   for now — the default theme has no equivalent chip to match against a
+   reference for, so it stays as a deliberate, scoped addition rather
+   than inventing new default-theme UI nobody asked for. */
+.tracked-chip {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 500;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 18px;
+  background: var(--color-panel);
+  border: 1px solid var(--color-panel-border);
+  clip-path: polygon(10px 0, 100% 0, 100% 100%, 0 100%, 0 10px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+}
+.tracked-chip-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-accent);
+  box-shadow: 0 0 8px var(--color-accent);
+  flex: none;
+}
+.tracked-chip-label {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+.tracked-chip-value {
+  font-family: var(--font-data);
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--color-marker-selected);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Faceted corner (top-left clipped) — the one purely-structural signature
+   of this theme with no default-theme equivalent to swap via tokens.
+   Applied to every major floating panel; each keeps its own background/
+   border, this only reshapes the corner and adds the cyan accent tick
+   the reference material uses on every panel. clip-path alone needs no
+   positioning context, so it's safe to apply to all of these uniformly. */
+[data-theme="cyberpunk"] .app-header,
+[data-theme="cyberpunk"] .details-panel,
+[data-theme="cyberpunk"] .flight-search-input,
+[data-theme="cyberpunk"] .flight-search-advanced-toggle,
+[data-theme="cyberpunk"] .favorites-panel-toggle,
+[data-theme="cyberpunk"] .favorites-panel-content,
+[data-theme="cyberpunk"] .resume-dialog,
+[data-theme="cyberpunk"] .theme-toggle-btn {
+  clip-path: polygon(10px 0, 100% 0, 100% 100%, 0 100%, 0 10px);
+}
+/* position:relative is only for the ::before corner tick below, and only
+   added to elements that don't already have their own explicit position.
+   .app-header and .details-panel are already position:absolute in their
+   base (non-themed) rules — forcing position:relative here overrode that
+   silently: `[data-theme="cyberpunk"] .details-panel` outweighs the base
+   `.details-panel` rule's specificity, so the override wins even though
+   it appears earlier in the file, dropping the whole panel out of its
+   absolute-positioned overlay and into normal document flow instead
+   (visibly: it rendered *below* the viewport, appearing to have vanished
+   entirely). The elements below have no explicit position in their own
+   base rules, so adding position:relative here is purely additive. */
+[data-theme="cyberpunk"] .flight-search-input,
+[data-theme="cyberpunk"] .flight-search-advanced-toggle,
+[data-theme="cyberpunk"] .favorites-panel-toggle,
+[data-theme="cyberpunk"] .favorites-panel-content,
+[data-theme="cyberpunk"] .resume-dialog,
+[data-theme="cyberpunk"] .theme-toggle-btn {
+  position: relative;
+}
+[data-theme="cyberpunk"] .app-header::before,
+[data-theme="cyberpunk"] .details-panel::before,
+[data-theme="cyberpunk"] .resume-dialog::before,
+[data-theme="cyberpunk"] .tracked-chip::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 10px;
+  height: 10px;
+  border-top: 1px solid var(--color-accent);
+  transform: rotate(45deg) translate(-1px, -5px);
+  transform-origin: 0 0;
+  pointer-events: none;
+}
+
+/* Thin cyan-to-transparent bar tracing the top edge of every faceted panel
+   — the reference mockup's `.card-accent`. Purely additive on top of the
+   corner tick above, same panel set. */
+[data-theme="cyberpunk"] .app-header::after,
+[data-theme="cyberpunk"] .details-panel::after,
+[data-theme="cyberpunk"] .resume-dialog::after,
+[data-theme="cyberpunk"] .tracked-chip::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 10px;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, var(--color-accent), transparent 85%);
+  pointer-events: none;
+}
+
+[data-theme="cyberpunk"] .app-header h1,
+[data-theme="cyberpunk"] .details-panel h2,
+[data-theme="cyberpunk"] .resume-dialog h2 {
+  font-family: var(--font-display);
+  letter-spacing: 0.04em;
+}
+
+[data-theme="cyberpunk"] .details-panel-eyebrow,
+[data-theme="cyberpunk"] .favorites-panel-section h3 {
+  color: var(--color-warn);
+}
+
+[data-theme="cyberpunk"] .details-panel-eyebrow {
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+
+/* Favorite-aircraft/favorite-route toggle buttons — reskinned to the
+   reference mockup's block `.toggle` treatment (sharp corners, uppercase,
+   even-width row) rather than the default theme's small rounded pills,
+   which read as a generic form control against the rest of this theme. */
+[data-theme="cyberpunk"] .details-panel-favorite-toggle {
+  flex: 1;
+  background: #060a10;
+  border: 1px solid var(--color-panel-border);
+  color: var(--color-accent);
+  border-radius: 0;
+  font-family: var(--font-ui);
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  padding: 9px 6px;
+  text-align: center;
+  text-transform: uppercase;
+}
+[data-theme="cyberpunk"] .details-panel-favorite-toggle:hover:not(:disabled) {
+  background: rgba(60, 224, 255, 0.08);
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+[data-theme="cyberpunk"] .details-panel-favorite-toggle--active {
+  background: rgba(60, 224, 255, 0.12);
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+[data-theme="cyberpunk"] .details-panel-favorite-toggle:disabled {
+  opacity: 0.4;
+}
+
+/* Aircraft data readouts — the reference mockup sets every field value in
+   its monospace data face (tabular-nums so numbers align column-on-
+   column), reserved elsewhere in this theme for things that read as raw
+   telemetry rather than prose. */
+[data-theme="cyberpunk"] .details-panel-fields dt {
+  font-family: var(--font-ui);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+[data-theme="cyberpunk"] .details-panel-fields dd {
+  font-family: var(--font-data);
+  font-variant-numeric: tabular-nums;
+}
+
+[data-theme="cyberpunk"] .details-panel-close {
+  border-radius: 0;
+  font-family: var(--font-ui);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 /* A visible, consistent focus ring on every interactive element — several
