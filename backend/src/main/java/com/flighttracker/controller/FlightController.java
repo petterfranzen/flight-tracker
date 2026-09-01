@@ -158,27 +158,25 @@ public class FlightController {
     /**
      * Search-box autocomplete: live aircraft whose callsign matches `q`,
      * for "type a flight number, zoom to the plane" (see FlightSearch.tsx).
-     * `origin`/`destination` back the separate "advanced search" panel's
-     * two route fields instead — either or both may be given, and when
-     * they are, they take over from `q` entirely rather than combining
+     * `airport` backs the separate "advanced search" panel's single
+     * airport field instead — matches an aircraft whose origin OR
+     * destination airport matches (name, IATA code, ICAO code, or city);
+     * when given, it takes over from `q` entirely rather than combining
      * with it (the two are presented as distinct search modes in the UI,
      * not one merged query). See FlightPositionRepository.searchLive and
-     * .searchByRoute for ranking/matching details.
+     * .searchByAirport for ranking/matching details.
      */
     @GetMapping("/search")
     public List<FlightPosition> search(@RequestParam(required = false) String q,
-                                        @RequestParam(required = false) String origin,
-                                        @RequestParam(required = false) String destination) {
+                                        @RequestParam(required = false) String airport) {
         Instant now = Instant.now();
         Instant staleAirborneCutoff = now.minus(LiveVisibilityWindows.STALE_AIRBORNE_BOUND);
         Instant landedCutoff = now.minus(LiveVisibilityWindows.LANDED_VISIBILITY);
 
-        String trimmedOrigin = origin == null ? "" : origin.trim();
-        String trimmedDestination = destination == null ? "" : destination.trim();
-        if (!trimmedOrigin.isEmpty() || !trimmedDestination.isEmpty()) {
-            return estimatedPositionCache.overlay(positionRepository.searchByRoute(
-                    trimmedOrigin.isEmpty() ? null : "%" + escapeLike(trimmedOrigin) + "%",
-                    trimmedDestination.isEmpty() ? null : "%" + escapeLike(trimmedDestination) + "%",
+        String trimmedAirport = airport == null ? "" : airport.trim();
+        if (!trimmedAirport.isEmpty()) {
+            return estimatedPositionCache.overlay(positionRepository.searchByAirport(
+                    "%" + escapeLike(trimmedAirport) + "%",
                     staleAirborneCutoff, landedCutoff, SEARCH_RESULT_LIMIT));
         }
 

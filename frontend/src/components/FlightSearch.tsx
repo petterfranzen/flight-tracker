@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import type { FlightPosition } from "../types/flight";
-import { searchFlights, searchFlightsByRoute } from "../api/flightApi";
+import { searchFlights, searchFlightsByAirport } from "../api/flightApi";
 import "./FlightSearch.css";
 
 // Waits this long after the last keystroke before actually searching — a
@@ -17,14 +17,14 @@ function resultLabel(p: FlightPosition): string {
 /**
  * Two independent search modes sharing one component: the primary
  * flight-number/callsign box (always visible), and an "advanced search"
- * panel with separate origin/destination airport fields, expanded on
- * demand — kept apart rather than one merged query per explicit user
- * request. Both funnel into the same `onSelect`, and share the same
- * debounced/guarded-against-out-of-order-response fetch pattern; see
- * FlightMap's liveRequestSeqRef for the same idea applied to position
- * fetches. Selecting a result just hands the matched FlightPosition to
- * `onSelect` (FlightMap's handleSelect) — which already does everything
- * "zoom to where the plane is" needs.
+ * panel with a single airport field, expanded on demand — matches an
+ * aircraft whose origin OR destination airport matches (see
+ * searchFlightsByAirport), not a from/to route pair. Both funnel into the
+ * same `onSelect`, and share the same debounced/guarded-against-out-of-
+ * order-response fetch pattern; see FlightMap's liveRequestSeqRef for the
+ * same idea applied to position fetches. Selecting a result just hands the
+ * matched FlightPosition to `onSelect` (FlightMap's handleSelect) — which
+ * already does everything "zoom to where the plane is" needs.
  */
 export default function FlightSearch({ onSelect }: { onSelect: (p: FlightPosition) => void }) {
   const [query, setQuery] = useState("");
@@ -41,8 +41,7 @@ export default function FlightSearch({ onSelect }: { onSelect: (p: FlightPositio
   const [mobilePanelOpen, setMobilePanelOpen] = useState(false);
 
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [originQuery, setOriginQuery] = useState("");
-  const [destinationQuery, setDestinationQuery] = useState("");
+  const [airportQuery, setAirportQuery] = useState("");
   const [routeResults, setRouteResults] = useState<FlightPosition[]>([]);
   const [routeOpen, setRouteOpen] = useState(false);
   const [routeLoading, setRouteLoading] = useState(false);
@@ -80,15 +79,11 @@ export default function FlightSearch({ onSelect }: { onSelect: (p: FlightPositio
     return () => clearTimeout(timer);
   }, [query]);
 
-  // Advanced (origin/destination) search — same debounce/out-of-order-
-  // response guard as the callsign search above, keyed off either field
-  // changing. Fires once at least one field has real content; both blank
-  // means "no filter" server-side (see FlightController.search), which
-  // isn't a useful call to make.
+  // Advanced (airport) search — same debounce/out-of-order-response guard
+  // as the callsign search above, keyed off the field changing.
   useEffect(() => {
-    const trimmedOrigin = originQuery.trim();
-    const trimmedDestination = destinationQuery.trim();
-    if (trimmedOrigin.length === 0 && trimmedDestination.length === 0) {
+    const trimmedAirport = airportQuery.trim();
+    if (trimmedAirport.length === 0) {
       routeRequestSeqRef.current++;
       setRouteResults([]);
       setRouteLoading(false);
@@ -97,7 +92,7 @@ export default function FlightSearch({ onSelect }: { onSelect: (p: FlightPositio
     const seq = ++routeRequestSeqRef.current;
     setRouteLoading(true);
     const timer = setTimeout(() => {
-      searchFlightsByRoute(trimmedOrigin, trimmedDestination)
+      searchFlightsByAirport(trimmedAirport)
         .then((list) => {
           if (seq !== routeRequestSeqRef.current) return;
           setRouteResults(list);
@@ -113,7 +108,7 @@ export default function FlightSearch({ onSelect }: { onSelect: (p: FlightPositio
         });
     }, DEBOUNCE_MS);
     return () => clearTimeout(timer);
-  }, [originQuery, destinationQuery]);
+  }, [airportQuery]);
 
   useEffect(() => {
     function handlePointerDown(e: PointerEvent) {
@@ -133,8 +128,7 @@ export default function FlightSearch({ onSelect }: { onSelect: (p: FlightPositio
     setResults([]);
     setOpen(false);
     setActiveIndex(-1);
-    setOriginQuery("");
-    setDestinationQuery("");
+    setAirportQuery("");
     setRouteResults([]);
     setRouteOpen(false);
     setRouteActiveIndex(-1);
@@ -182,7 +176,7 @@ export default function FlightSearch({ onSelect }: { onSelect: (p: FlightPositio
   }
 
   const showDropdown = open && query.trim().length > 0;
-  const showRouteDropdown = routeOpen && (originQuery.trim().length > 0 || destinationQuery.trim().length > 0);
+  const showRouteDropdown = routeOpen && airportQuery.trim().length > 0;
   const routeActiveDescendant =
     routeActiveIndex >= 0 && showRouteDropdown ? `flight-search-route-option-${routeActiveIndex}` : undefined;
 
@@ -273,7 +267,7 @@ export default function FlightSearch({ onSelect }: { onSelect: (p: FlightPositio
         aria-expanded={advancedOpen}
         aria-controls="flight-search-advanced-panel"
       >
-        {advancedOpen ? "Hide advanced search ▲" : "Advanced search (route) ▼"}
+        {advancedOpen ? "Hide advanced search ▲" : "Advanced search (airport) ▼"}
       </button>
 
       {advancedOpen && (
@@ -281,10 +275,10 @@ export default function FlightSearch({ onSelect }: { onSelect: (p: FlightPositio
           <input
             type="text"
             className="flight-search-input flight-search-advanced-input"
-            placeholder="Origin airport…"
-            value={originQuery}
+            placeholder="Search by airport (name, IATA, or ICAO)…"
+            value={airportQuery}
             onChange={(e) => {
-              setOriginQuery(e.target.value);
+              setAirportQuery(e.target.value);
               setRouteOpen(true);
             }}
             onFocus={() => setRouteOpen(true)}
@@ -293,25 +287,7 @@ export default function FlightSearch({ onSelect }: { onSelect: (p: FlightPositio
             aria-expanded={showRouteDropdown}
             aria-controls="flight-search-route-listbox"
             aria-autocomplete="list"
-            aria-label="Search by origin airport"
-            aria-activedescendant={routeActiveDescendant}
-          />
-          <input
-            type="text"
-            className="flight-search-input flight-search-advanced-input"
-            placeholder="Destination airport…"
-            value={destinationQuery}
-            onChange={(e) => {
-              setDestinationQuery(e.target.value);
-              setRouteOpen(true);
-            }}
-            onFocus={() => setRouteOpen(true)}
-            onKeyDown={handleRouteKeyDown}
-            role="combobox"
-            aria-expanded={showRouteDropdown}
-            aria-controls="flight-search-route-listbox"
-            aria-autocomplete="list"
-            aria-label="Search by destination airport"
+            aria-label="Search by origin or destination airport"
             aria-activedescendant={routeActiveDescendant}
           />
           {showRouteDropdown && (

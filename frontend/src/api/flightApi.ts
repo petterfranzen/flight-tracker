@@ -39,18 +39,12 @@ export async function searchFlights(query: string): Promise<FlightPosition[]> {
 
 /**
  * The "advanced search" panel's counterpart to searchFlights: live
- * aircraft matching origin and/or destination airport (code or name).
- * Either may be omitted — pass "" for the one that's blank — but at least
- * one non-blank value is expected; the server treats both blank the same
- * as no filter at all (see FlightController.search), which isn't a useful
- * call to make from here.
+ * aircraft whose origin OR destination airport matches `query` (name,
+ * IATA code, ICAO code, or city — see FlightController.search).
  */
-export async function searchFlightsByRoute(origin: string, destination: string): Promise<FlightPosition[]> {
-  const params = new URLSearchParams();
-  if (origin.trim()) params.set("origin", origin.trim());
-  if (destination.trim()) params.set("destination", destination.trim());
-  const res = await fetch(`/api/flights/search?${params.toString()}`);
-  if (!res.ok) throw new Error(`flight route search failed: ${res.status}`);
+export async function searchFlightsByAirport(query: string): Promise<FlightPosition[]> {
+  const res = await fetch(`/api/flights/search?airport=${encodeURIComponent(query)}`);
+  if (!res.ok) throw new Error(`flight airport search failed: ${res.status}`);
   return res.json();
 }
 
