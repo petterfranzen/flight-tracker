@@ -57,6 +57,24 @@ export async function mockFlightApi(page: Page, opts?: { historyDelayMs?: Record
     await route.fulfill({ json: HISTORIES[icao24] ?? [] });
   });
 
+  // FlightSearch's two modes (see FlightController.search): `q` filters
+  // LIVE_FIXTURE by callsign prefix, same rule the server applies; `airport`
+  // can't be matched against this fixture (it carries no route/airport
+  // data) so any non-empty value just returns a single fixed hit — enough
+  // to exercise "type, get a result, select it" without needing that data.
+  await page.route("**/api/flights/search*", (route: Route) => {
+    const url = new URL(route.request().url());
+    const q = url.searchParams.get("q")?.trim();
+    const airport = url.searchParams.get("airport")?.trim();
+    if (airport) {
+      return route.fulfill({ json: LIVE_FIXTURE.filter((p) => p.icao24 === "4aad15") });
+    }
+    if (q) {
+      return route.fulfill({ json: LIVE_FIXTURE.filter((p) => p.callsign?.startsWith(q)) });
+    }
+    return route.fulfill({ json: [] });
+  });
+
   await page.route("**/api/aircraft/*", (route: Route) => route.fulfill({ status: 404, json: null }));
   await page.route("**/api/agents/status", (route: Route) => route.fulfill({ json: { active: false, secondsRemaining: 0 } }));
 

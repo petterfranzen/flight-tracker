@@ -120,9 +120,9 @@ public interface FlightPositionRepository extends JpaRepository<FlightPosition, 
     // Backs the search box's autocomplete: live aircraft whose callsign
     // matches the query — the flight-number/callsign field specifically.
     // Airport-based search (origin/destination) is a separate, explicit
-    // "advanced search" (see searchByRoute below) rather than folded into
-    // this same field, per explicit user request to keep the two inputs
-    // distinct. Ranking: an exact callsign-prefix match (typing a flight
+    // "advanced search" (see searchByAirport below) rather than folded
+    // into this same field, since callsign and airport matching rank
+    // differently. Ranking: an exact callsign-prefix match (typing a flight
     // number's beginning, e.g. "SAS21" — the single most common case)
     // outranks every other kind of match; beyond that, alphabetical.
     // Scoped to the same liveness window as findLive — searching up a
@@ -142,15 +142,13 @@ public interface FlightPositionRepository extends JpaRepository<FlightPosition, 
                                      @Param("landedCutoff") Instant landedCutoff,
                                      @Param("limit") int limit);
 
-    // Backs the "advanced search" panel's separate origin/destination
-    // fields — either or both may be supplied; a null pattern means that
-    // field wasn't filled in and shouldn't filter at all (rather than
-    // requiring the column be non-null, which would wrongly exclude
-    // aircraft whose route just isn't known yet). LEFT JOIN, not INNER, for
-    // the same reason as searchLive's old join: dossier enrichment is
+    // Backs the "advanced search" panel's single airport field — matches
+    // an aircraft whose origin OR destination airport matches the given
+    // pattern (name, IATA code, ICAO code, or city). LEFT JOIN, not INNER,
+    // for the same reason as searchLive's old join: dossier enrichment is
     // lazy/on-demand, so an unenriched aircraft must still not blow up the
-    // query even though it can never match a non-null origin/destination
-    // filter. Scoped to the same liveness window as findLive.
+    // query even though it can never match a non-null route filter.
+    // Scoped to the same liveness window as findLive.
     //
     // origin_ap/dest_ap join the airport reference table (~10k rows, seeded
     // from airports.tsv by AirportSeedService) on the aircraft's own ICAO
@@ -160,46 +158,31 @@ public interface FlightPositionRepository extends JpaRepository<FlightPosition, 
     // destination_airport_name alone only ever contain whatever free-text
     // name adsbdb or the OpenSky-fallback backfill happened to produce for
     // that specific aircraft, which has no IATA code and isn't reliably the
-    // city name. Also LEFT JOIN: an aircraft with no known route (null
-    // origin_airport/destination_airport) must still not be excluded by a
-    // search on the *other* field.
-    //
-    // The CAST(... AS text) around each "IS NULL" check isn't decorative:
-    // without it, a genuinely-null bind value (searching by destination
-    // only, say) makes Postgres unable to infer that parameter's type at
-    // all ("could not determine data type of parameter $N") — nothing else
-    // in an `X IS NULL` clause on its own tells it what X's type is, even
-    // though the *other* branch of the same OR (the ILIKE comparisons)
-    // unambiguously would, at execution time, that's too late for the
-    // driver's prepare/describe step, which happens before any value is
-    // known to be null or not.
+    // city name.
     @Query(value = "SELECT " + LATEST_COLUMNS_ALP + """
         FROM aircraft_latest_position alp
         LEFT JOIN aircraft a ON a.icao24 = alp.icao24
         LEFT JOIN airport origin_ap ON origin_ap.icao_code = a.origin_airport
         LEFT JOIN airport dest_ap ON dest_ap.icao_code = a.destination_airport
-        WHERE (CAST(:originPattern AS text) IS NULL
-                OR a.origin_airport ILIKE :originPattern
-                OR a.origin_airport_name ILIKE :originPattern
-                OR origin_ap.iata_code ILIKE :originPattern
-                OR origin_ap.name ILIKE :originPattern
-                OR origin_ap.municipality ILIKE :originPattern)
-          AND (CAST(:destinationPattern AS text) IS NULL
-                OR a.destination_airport ILIKE :destinationPattern
-                OR a.destination_airport_name ILIKE :destinationPattern
-                OR dest_ap.iata_code ILIKE :destinationPattern
-                OR dest_ap.name ILIKE :destinationPattern
-                OR dest_ap.municipality ILIKE :destinationPattern)
+        WHERE (a.origin_airport ILIKE :pattern
+                OR a.origin_airport_name ILIKE :pattern
+                OR origin_ap.iata_code ILIKE :pattern
+                OR origin_ap.name ILIKE :pattern
+                OR origin_ap.municipality ILIKE :pattern
+                OR a.destination_airport ILIKE :pattern
+                OR a.destination_airport_name ILIKE :pattern
+                OR dest_ap.iata_code ILIKE :pattern
+                OR dest_ap.name ILIKE :pattern
+                OR dest_ap.municipality ILIKE :pattern)
           AND ((alp.on_ground = false AND alp.observed_at > :staleAirborneCutoff)
            OR (alp.on_ground = true AND alp.landed_since > :landedCutoff))
         ORDER BY alp.callsign ASC
         LIMIT :limit
         """, nativeQuery = true)
-    List<FlightPosition> searchByRoute(@Param("originPattern") String originPattern,
-                                        @Param("destinationPattern") String destinationPattern,
-                                        @Param("staleAirborneCutoff") Instant staleAirborneCutoff,
-                                        @Param("landedCutoff") Instant landedCutoff,
-                                        @Param("limit") int limit);
+    List<FlightPosition> searchByAirport(@Param("pattern") String pattern,
+                                          @Param("staleAirborneCutoff") Instant staleAirborneCutoff,
+                                          @Param("landedCutoff") Instant landedCutoff,
+                                          @Param("limit") int limit);
 
     // Keeps aircraft_latest_position in sync — called once per accepted
     // (non-duplicate) flight_position insert, i.e. right after
