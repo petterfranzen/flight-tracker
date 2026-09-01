@@ -54,6 +54,30 @@
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
 }
 
+/* Stacks FlightSearch and FavoritesPanel in the same top-left corner,
+   FlightSearch first — this wrapper now owns the positioning both used to
+   set independently, so FlightSearch's fixed top offset can't overlap a
+   second panel once its own advanced-search panel expands its height.
+   Overrides .flight-search's own position:absolute rather than editing
+   FlightSearch.css directly — its mobile fixed-full-screen-overlay
+   behavior lives on a grandchild (.flight-search-panel--open), which
+   escapes normal flow on its own regardless of this wrapper. */
+.left-overlay-stack {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  z-index: 500;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 220px;
+}
+
+.left-overlay-stack .flight-search {
+  position: static;
+  width: auto;
+}
+
 .app-header h1 {
   margin: 0;
   font-size: 19px;
@@ -270,6 +294,38 @@
 .details-panel h2 {
   margin: 4px 0 10px;
   font-size: 20px;
+}
+
+.details-panel-favorite-toggles {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.details-panel-favorite-toggle {
+  background: none;
+  border: 1px solid var(--color-panel-border);
+  color: var(--color-text-muted);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.details-panel-favorite-toggle:hover:not(:disabled) {
+  border-color: var(--color-text-muted);
+  color: var(--color-text);
+}
+
+.details-panel-favorite-toggle:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.details-panel-favorite-toggle--active {
+  border-color: var(--color-marker);
+  color: var(--color-marker);
 }
 
 .details-panel-meta {

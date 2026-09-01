@@ -1,0 +1,133 @@
+/* Shares the top-left corner with FlightSearch — see .left-overlay-stack
+   in FlightMap.css, which positions this and overrides FlightSearch's own
+   position:absolute to stack the two in normal flow instead, without
+   touching FlightSearch.css itself. */
+.favorites-panel {
+  width: 100%;
+}
+
+.favorites-panel-toggle {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--color-panel);
+  color: var(--color-text);
+  border: 1px solid var(--color-panel-border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+}
+
+.favorites-panel-toggle:hover {
+  background: var(--color-panel-border);
+}
+
+.favorites-panel-content {
+  margin-top: 6px;
+  padding: 8px;
+  background: var(--color-panel);
+  border: 1px solid var(--color-panel-border);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.favorites-panel-empty {
+  margin: 4px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.favorites-panel-section + .favorites-panel-section {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--color-panel-border);
+}
+
+.favorites-panel-section h3 {
+  margin: 0 0 4px;
+  padding: 0 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.favorites-panel-section ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.favorites-panel-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.favorites-panel-item-select {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: none;
+  color: var(--color-text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  padding: 6px 4px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.favorites-panel-item-select:not(:disabled):hover {
+  background: rgba(77, 178, 255, 0.16);
+}
+
+.favorites-panel-item-select:disabled {
+  cursor: default;
+  color: var(--color-text-muted);
+}
+
+.favorites-panel-item-dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--color-text-muted);
+}
+
+.favorites-panel-item--live .favorites-panel-item-dot {
+  background: var(--color-marker, #ffb020);
+}
+
+.favorites-panel-item-status {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+.favorites-panel-item-remove {
+  flex: none;
+  background: none;
+  border: none;
+  color: var(--color-text-muted);
+  font-size: 13px;
+  line-height: 1;
+  padding: 6px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.favorites-panel-item-remove:hover {
+  background: var(--color-panel-border);
+  color: var(--color-text);
+}
