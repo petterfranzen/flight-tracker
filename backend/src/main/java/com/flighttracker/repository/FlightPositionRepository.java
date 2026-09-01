@@ -300,23 +300,48 @@ public interface FlightPositionRepository extends JpaRepository<FlightPosition, 
             @Param("onGround") boolean onGround,
             @Param("agentSource") String agentSource);
 
-    // "Current flight time" for the dossier (AircraftController): the
-    // earliest airborne report since this aircraft was last known to be on
-    // the ground — i.e. this leg's takeoff time, not the first time we
-    // ever saw the aircraft. Falls back to the earliest airborne report
-    // ever (epoch as the COALESCE floor) for an aircraft we've only ever
-    // seen airborne, which likely underestimates flight time a little
-    // (we may have started watching mid-flight) but is the best available
-    // answer rather than none at all.
+    // "Current flight time" for the dossier (AircraftController) — this
+    // leg's takeoff time, not the first time we ever saw the aircraft.
+    // "This leg" means the most recent one, whether still airborne or
+    // already landed again: the takeoff moment immediately following the
+    // last time this aircraft was genuinely on the ground beforehand.
+    //
+    // Found as the most recent ground→air *transition*, via LAG() over
+    // this aircraft's own chronological history: a row is a takeoff moment
+    // when it's airborne and the row immediately before it either doesn't
+    // exist (prev_on_ground IS NULL — the very first report we ever have,
+    // handled the same as the old query's epoch-floor fallback for an
+    // aircraft we've only ever seen airborne) or was on the ground
+    // (prev_on_ground = true). IS DISTINCT FROM is the null-safe way to
+    // ask "prev_on_ground isn't exactly false" — a plain <> would silently
+    // drop the NULL case instead of matching it.
+    //
+    // A prior version of this query instead looked for "the earliest
+    // airborne report after this aircraft's own most recent on-ground
+    // report" — which breaks the instant the aircraft lands again: at that
+    // point its own most-recent report *is* that on-ground one, so
+    // "airborne reports after it" is trivially empty, and the query
+    // silently returned nothing for any landed aircraft. That emptiness
+    // then skipped /history's leg-trimming entirely on the frontend
+    // (FlightMap.tsx's legStartAtRef), so a landed aircraft's route line
+    // showed its full unfiltered 6-hour lookback instead of just this leg
+    // — concatenating in whatever earlier, unrelated flight happened to
+    // fall in that window. The LAG()-based transition search below gives
+    // the same answer whether the aircraft is still airborne or has since
+    // landed, since it isn't self-referential against the aircraft's own
+    // current state.
     @Query(value = """
-        SELECT MIN(observed_at)
-        FROM flight_position
-        WHERE icao24 = :icao24
-          AND on_ground = false
-          AND observed_at > COALESCE(
-              (SELECT MAX(observed_at) FROM flight_position WHERE icao24 = :icao24 AND on_ground = true),
-              to_timestamp(0)
-          )
+        SELECT observed_at
+        FROM (
+            SELECT observed_at, on_ground,
+                   LAG(on_ground) OVER (ORDER BY observed_at) AS prev_on_ground
+            FROM flight_position
+            WHERE icao24 = :icao24
+        ) transitions
+        WHERE on_ground = false
+          AND prev_on_ground IS DISTINCT FROM false
+        ORDER BY observed_at DESC
+        LIMIT 1
         """, nativeQuery = true)
     Optional<Instant> findCurrentLegTakeoffTime(@Param("icao24") String icao24);
 
