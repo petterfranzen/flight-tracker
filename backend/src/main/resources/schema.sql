@@ -144,11 +144,36 @@ CREATE TABLE IF NOT EXISTS aircraft_latest_position (
     -- cheaper than the old findLive's query-time streak lookup.
     landed_since    TIMESTAMPTZ
 );
-CREATE INDEX IF NOT EXISTS idx_latest_position_bbox ON aircraft_latest_position (latitude, longitude);
+-- Dead-reckoned "current best position," written by EstimatorAgent
+-- (@Profile("estimator"), its own container) on its own schedule,
+-- independent of real reports. NULL on all three means "no current
+-- estimate, use latitude/longitude as-is" — the common case for a
+-- just-landed or destination-less aircraft. Deliberately separate columns
+-- rather than overwriting latitude/longitude/observed_at directly: those
+-- three are relied on elsewhere (flight_position's dedup key, this table's
+-- own upsert monotonicity guard, the dossier's presumed-landed timer and
+-- landing-check cache key, the frontend's staleness banner) to mean "the
+-- last REAL report," never an estimate's computation time. Every real-
+-- report upsert clears these back to NULL (see FlightPositionRepository.
+-- upsertLatestPosition and PositionPersistenceService's batched
+-- equivalent) so a fresh report always wins immediately; EstimatorAgent
+-- recomputes on its own next cycle regardless.
+ALTER TABLE aircraft_latest_position ADD COLUMN IF NOT EXISTS estimated_latitude DOUBLE PRECISION;
+ALTER TABLE aircraft_latest_position ADD COLUMN IF NOT EXISTS estimated_longitude DOUBLE PRECISION;
+ALTER TABLE aircraft_latest_position ADD COLUMN IF NOT EXISTS estimated_at TIMESTAMPTZ;
+
+-- Expression index matching what the bbox-filtered queries actually filter
+-- on (COALESCE(estimated_latitude, latitude), same for longitude — see
+-- FlightPositionRepository.findLiveInBounds/findLiveClusteredInBounds) —
+-- a plain (latitude, longitude) index isn't sargable for that expression.
+DROP INDEX IF EXISTS idx_latest_position_bbox;
+CREATE INDEX IF NOT EXISTS idx_latest_position_bbox_estimated ON aircraft_latest_position (
+    (COALESCE(estimated_latitude, latitude)), (COALESCE(estimated_longitude, longitude))
+);
 CREATE INDEX IF NOT EXISTS idx_latest_position_ground_state ON aircraft_latest_position (on_ground, observed_at, landed_since);
 
 COMMENT ON TABLE aircraft_latest_position IS
-    'One row per aircraft: its most recent report. Upserted alongside flight_position, never queried to derive "latest" the expensive way.';
+    'One row per aircraft: its most recent report, plus an optional dead-reckoned estimate (estimated_*) written independently by EstimatorAgent. Upserted alongside flight_position, never queried to derive "latest" the expensive way.';
 
 -- Bounded-polling state (see PollWindowService). Now that the API and the
 -- polling agent are separate containers/processes, they can no longer

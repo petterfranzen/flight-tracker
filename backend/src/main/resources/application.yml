@@ -108,6 +108,13 @@ flighttracker:
         client-id: ${OPENSKY_CLIENT_ID:}
         client-secret: ${OPENSKY_CLIENT_SECRET:}
         token-url: https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token
+  estimator:
+    # EstimatorAgent's (SPRING_PROFILES_ACTIVE=estimator) refresh cadence —
+    # how often it recomputes and persists a dead-reckoned position for
+    # every live aircraft. Same value the old in-memory
+    # EstimatedPositionCache used as a hardcoded constant; externalized
+    # here for the same reason poll-interval-seconds is, above.
+    refresh-interval-seconds: 12
   # Per-client-IP limits on POST /api/agents/restart specifically — the one
   # endpoint that costs real OpenSky usage. Separate from (and in addition
   # to) the global restart-quota-* above: that one protects the shared

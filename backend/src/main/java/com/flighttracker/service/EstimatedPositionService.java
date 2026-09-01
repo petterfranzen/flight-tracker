@@ -22,9 +22,10 @@ import java.time.Instant;
  *
  * A pure function of its inputs and wall-clock time — no scheduling, no
  * state, no extra API calls (it never touches OpenSky/adsbdb or the
- * database itself). EstimatedPositionCache is what actually schedules and
- * caches calls to this on a fixed interval; this class only knows how to
- * answer "where is this aircraft now," not when to ask.
+ * database itself). EstimatorAgent (service/estimator) is what actually
+ * schedules calls to this on a fixed interval and persists the result;
+ * this class only knows how to answer "where is this aircraft now," not
+ * when to ask or where to store it.
  *
  * Deliberately simple: constant heading/speed along the great circle
  * defined by the last known heading (the same *shape* as a real long-haul
@@ -89,8 +90,13 @@ public final class EstimatedPositionService {
      *         continuing on. Every other field (altitude, velocity,
      *         heading, callsign, observedAt, etc.) is carried over
      *         unchanged from {@code last} — only position moves. Never
-     *         mutates {@code last}, and the result is never persisted —
-     *         it's a synthetic value, held only in EstimatedPositionCache.
+     *         mutates {@code last}. The returned object itself is never
+     *         persisted as a row — EstimatorAgent only pulls its
+     *         latitude/longitude back out to write into
+     *         aircraft_latest_position's separate estimated_latitude/
+     *         estimated_longitude columns, leaving latitude/longitude/
+     *         observed_at (the real report this was projected from)
+     *         untouched.
      */
     public static FlightPosition estimate(FlightPosition last, Instant asOf,
                                            Double destinationLat, Double destinationLon) {

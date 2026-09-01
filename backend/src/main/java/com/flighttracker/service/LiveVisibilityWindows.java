@@ -6,11 +6,11 @@ import java.time.Duration;
  * Shared cutoffs for "what counts as live right now" — used by
  * FlightController's /live and /search queries, AircraftController's
  * dossier (to stop the flight-time counter at the same presumed-landed
- * moment), and EstimatedPositionCache's own background refresh (which
- * needs the exact same live set FlightController would otherwise query,
- * so its cache lines up with what a request will actually see). Pulled
- * out to one place once a third consumer needed them — three independent
- * copies of the same tuning values was one refactor past worth it.
+ * moment), and EstimatorAgent's own background refresh (which needs the
+ * exact same live set FlightController would otherwise query, so its
+ * estimates line up with what a request will actually see). Pulled out to
+ * one place once a third consumer needed them — three independent copies
+ * of the same tuning values was one refactor past worth it.
  */
 public final class LiveVisibilityWindows {
 

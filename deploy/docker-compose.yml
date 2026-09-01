@@ -10,10 +10,12 @@
 # internally, so there's no need to expose the backend or db ports on an
 # unattended NAS.
 #
-# backend-api and backend-agent are the same image (one Maven build split
-# by Spring profile — see the backend's @Profile("api")/@Profile("agent")),
-# not two separate images to publish/pull. backend-agent is the one that
-# needs the OpenSky credentials; backend-api never calls OpenSky itself.
+# backend-api, backend-agent, and backend-estimator are the same image (one
+# Maven build split by Spring profile — see the backend's
+# @Profile("api")/@Profile("agent")/@Profile("estimator")), not separate
+# images to publish/pull. backend-agent is the one that needs the OpenSky
+# credentials; backend-api and backend-estimator never call OpenSky
+# themselves.
 
 name: flight-tracker
 
@@ -77,6 +79,20 @@ services:
         condition: service_healthy
     # No healthcheck: headless (no embedded web server in the "agent"
     # profile), so there's no port to probe — check `docker logs` instead.
+
+  backend-estimator:
+    container_name: flight_tracker_backend_estimator
+    image: ghcr.io/petterfranzen/flight-tracker-backend:${IMAGE_TAG:-latest}
+    restart: always
+    environment:
+      SPRING_PROFILES_ACTIVE: estimator
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/flighttracker
+      SPRING_DATASOURCE_USERNAME: flighttracker
+      SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD:-flighttracker}
+    depends_on:
+      db:
+        condition: service_healthy
+    # No healthcheck, same reasoning as backend-agent: headless, no port to probe.
 
   frontend:
     container_name: flight_tracker_frontend

@@ -1,4 +1,4 @@
-# Four independent services on one bridge network:
+# Five independent services on one bridge network:
 #   db           — Postgres, its own image/container/volume, addressed only
 #                  by service name (never localhost) so it can be moved to a
 #                  managed/clustered instance later by changing
@@ -9,11 +9,13 @@
 #                  read replicas / a managed HA service, swapped in behind
 #                  the same connection string.
 #   backend-api  — Spring Boot REST + WebSocket, SPRING_PROFILES_ACTIVE=api.
-#                  Same image as backend-agent (one Maven build, split by
-#                  Spring profile — see @Profile("api")/@Profile("agent")
-#                  throughout the backend) rather than two codebases, since
-#                  both share the same JPA entities/domain code. Holds no
-#                  OpenSky credentials — it never calls OpenSky itself.
+#                  Same image as backend-agent/backend-estimator (one Maven
+#                  build, split by Spring profile — see
+#                  @Profile("api")/@Profile("agent")/@Profile("estimator")
+#                  throughout the backend) rather than separate codebases,
+#                  since all three share the same JPA entities/domain code.
+#                  Holds no OpenSky credentials — it never calls OpenSky
+#                  itself.
 #   backend-agent — the scheduled OpenSky poller + enrichment,
 #                  SPRING_PROFILES_ACTIVE=agent. No exposed port (headless,
 #                  see application-agent.yml) and NOT safe to scale
@@ -27,6 +29,14 @@
 #                  state) and LISTEN/NOTIFY (live position feed, see
 #                  PositionNotificationListener) — deliberately not a new
 #                  broker like Redis, since the data volume here is small.
+#   backend-estimator — EstimatorAgent's dead-reckoning refresh loop,
+#                  SPRING_PROFILES_ACTIVE=estimator. Also headless, also not
+#                  safe to run more than one of (same reasoning as
+#                  backend-agent — N replicas would just mean N redundant
+#                  writers of the same estimate). Coordinates with the other
+#                  two containers purely through the DB (aircraft_latest_
+#                  position's estimated_* columns), same as backend-agent —
+#                  no direct calls between any of these three.
 #   frontend     — static bundle behind nginx, proxying /api and /ws to
 #                  backend-api.
 #
@@ -107,6 +117,19 @@ services:
     # application-agent.yml), so there's no port to probe the way
     # backend-api's wget check does. `docker compose ps`/logs are the way
     # to check on it instead.
+
+  backend-estimator:
+    build: ./backend
+    environment:
+      SPRING_PROFILES_ACTIVE: estimator
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/flighttracker
+      SPRING_DATASOURCE_USERNAME: flighttracker
+      SPRING_DATASOURCE_PASSWORD: flighttracker
+    depends_on:
+      db:
+        condition: service_healthy
+    # No healthcheck, same reasoning as backend-agent: headless (see
+    # application-estimator.yml), nothing to probe over HTTP.
 
   frontend:
     build: ./frontend

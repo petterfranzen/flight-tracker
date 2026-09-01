@@ -1,0 +1,17 @@
+# "estimator" role (SPRING_PROFILES_ACTIVE=estimator): EstimatorAgent's
+# headless dead-reckoning refresh loop, no inbound traffic of its own — same
+# reasoning as application-agent.yml, no need for an embedded web server or
+# an exposed port.
+spring:
+  main:
+    web-application-type: none
+  datasource:
+    hikari:
+      # Modest on purpose: this container does one narrow batched read
+      # (findLive) plus one batched write per refresh-interval-seconds
+      # cycle, not request-driven traffic — it doesn't need Spring Boot's
+      # default pool size (10). Now that three backend containers share
+      # the same Postgres instance's connection budget (api, agent, and
+      # this one), keeping this one small leaves more headroom for
+      # backend-api, which actually serves concurrent requests.
+      maximum-pool-size: 5

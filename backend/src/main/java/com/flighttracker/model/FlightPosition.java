@@ -79,11 +79,14 @@ public class FlightPosition {
     /**
      * A copy of this position with latitude/longitude replaced — used by
      * EstimatedPositionService to dead-reckon a stale report forward
-     * without ever mutating (or persisting) the original. Every other
-     * field, including observedAt, carries over unchanged: the copy is
-     * indistinguishable in shape from a real report, deliberately — see
-     * EstimatedPositionCache's javadoc for why the frontend is never told
-     * which is which.
+     * without ever mutating the original. Every other field, including
+     * observedAt, carries over unchanged: the copy is indistinguishable in
+     * shape from a real report, deliberately — see EstimatorAgent's
+     * javadoc for why the frontend is never told which is which. This
+     * in-memory copy itself is never persisted as a row — EstimatorAgent
+     * only takes its latitude/longitude back out to write into
+     * aircraft_latest_position's separate estimated_latitude/
+     * estimated_longitude columns, never into this entity's own table.
      */
     public FlightPosition withEstimatedPosition(double latitude, double longitude) {
         FlightPosition copy = new FlightPosition(icao24, callsign, observedAt, latitude, longitude,
