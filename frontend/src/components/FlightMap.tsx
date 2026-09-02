@@ -1,6 +1,5 @@
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MapContainer, TileLayer, Marker, Polyline, useMap, useMapEvents } from "react-leaflet";
-import MarkerClusterGroup from "react-leaflet-cluster";
 import L from "leaflet";
 // Leaflet's own base stylesheet — was never imported at all before this.
 // It defines `.leaflet-marker-icon, .leaflet-pane, .leaflet-tile-pane { }`
@@ -15,14 +14,12 @@ import L from "leaflet";
 // changing on every pan, a class toggling on selection, chunked loading
 // adding markers over several frames) reflowed everything around them.
 import "leaflet/dist/leaflet.css";
-import "leaflet.markercluster/dist/MarkerCluster.css";
-import "leaflet.markercluster/dist/MarkerCluster.Default.css";
-import type { AircraftDossier, Bounds, ClusterPoint, FlightPosition } from "../types/flight";
+import type { AircraftDossier, Bounds, FlightPosition } from "../types/flight";
 import {
   fetchAircraftDossier,
   fetchFlightLive,
   fetchHistory,
-  fetchLiveClusters,
+  fetchLiveCount,
   fetchLivePositions,
   fetchPollingStatus,
   restartPolling,
@@ -32,6 +29,7 @@ import FlightSearch from "./FlightSearch";
 import FavoritesPanel from "./FavoritesPanel";
 import Legend from "./Legend";
 import Dock from "./Dock";
+import BootScreen from "./BootScreen";
 import ThemeToggle from "./ThemeToggle";
 // Lazy-loaded so worldMapData.ts's 226KB of embedded Natural Earth
 // geometry — only ever needed for the cyberpunk theme — isolates into
@@ -144,11 +142,9 @@ const MOBILE_ICON_SIZE = 40;
 const MOBILE_SELECTED_ICON_SIZE = 54;
 
 // A DivIcon that stamps the current rotation onto its glyph the moment
-// Leaflet actually creates the DOM node — which, for a marker inside a
-// MarkerClusterGroup with chunkedLoading on, can happen well after the
-// marker is constructed: chunked loading defers real icon creation to a
-// later setTimeout batch rather than doing it synchronously. Reading
-// rotation from a ref (mutated every render, not just on creation) here —
+// Leaflet actually creates the DOM node, rather than baking a rotation
+// value in at construction time. Reading rotation from a ref (mutated
+// every render, not just on creation) here —
 // rather than baking a rotation value into the icon at construction time —
 // means whatever the aircraft's heading is *by the time Leaflet gets
 // around to it* is what gets painted, instead of whatever it was when the
@@ -189,7 +185,7 @@ class RotatingPlaneIcon extends L.DivIcon {
 // updates — see AircraftMarker for why that matters far more than it
 // sounds like it should. Each marker gets its own icon instance (not
 // shared across aircraft) since each needs its own headingRef.
-function planeIcon(known: boolean, selected: boolean, headingRef: { current: number }, callsignRef: { current: string }) {
+function planeIcon(known: boolean, selected: boolean, zoom: number, headingRef: { current: number }, callsignRef: { current: string }) {
   // Every rotation angle coincides with some real heading, so "just don't
   // rotate it" (or default to any other fixed angle) still misrepresents
   // an unknown heading as a specific real reading. Give unknown headings
@@ -214,9 +210,14 @@ function planeIcon(known: boolean, selected: boolean, headingRef: { current: num
   // enough to size correctly for the viewport a marker actually first
   // appears/gets (re)selected in.
   const isMobile = window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT_PX}px)`).matches;
-  const size = selected
+  const baseSize = selected
     ? (isMobile ? MOBILE_SELECTED_ICON_SIZE : SELECTED_ICON_SIZE)
     : (isMobile ? MOBILE_ICON_SIZE : ICON_SIZE);
+  // Selected keeps a higher floor than scaleIconSize's own default — it's
+  // the one aircraft actually being tracked, so it should stay readable
+  // even zoomed all the way out, not shrink to the same speck every
+  // other marker does.
+  const size = selected ? Math.max(scaleIconSize(baseSize, zoom), 16) : scaleIconSize(baseSize, zoom);
   return new RotatingPlaneIcon(
     {
       className: `plane-icon${selected ? " plane-icon--selected" : ""}`,
@@ -253,10 +254,10 @@ function boundsFromMap(map: L.Map): Bounds {
 }
 
 /**
- * Reports the current map viewport (and zoom, which decides fetch
- * strategy — see CLUSTER_FETCH_MAX_ZOOM) up to the parent — once on
- * mount, and again every time panning/zooming settles (moveend only fires
- * once movement has actually stopped, so this is naturally debounced
+ * Reports the current map viewport (and zoom, which feeds
+ * scaleIconSize's marker-size scaling) up to the parent — once on mount,
+ * and again every time panning/zooming settles (moveend only fires once
+ * movement has actually stopped, so this is naturally debounced
  * already, not on every intermediate frame of a drag).
  */
 function ViewportReporter({ onViewportChange }: { onViewportChange: (bounds: Bounds, zoom: number) => void }) {
@@ -272,43 +273,29 @@ function ViewportReporter({ onViewportChange }: { onViewportChange: (bounds: Bou
 
 const SELECTED_MIN_ZOOM = 10;
 
-// At or below this zoom, the map switches from fetching+rendering every
-// individual aircraft to fetching server-aggregated grid cells instead
-// (see fetchLiveClusters). Measured cause for needing this at all: a
-// whole-world viewport can mean 20k+ live aircraft, and turning each one
-// into its own React component plus feeding it through
-// leaflet.markercluster's per-marker spatial-indexing algorithm blocked
-// the main thread for ~2.7s on a single zoom — confirmed via
-// PerformanceObserver long-task entries, not a DOM node count problem
-// (clustering already kept visible DOM small). Aggregating server-side
-// cuts what the client has to fetch *and* render by one to two orders of
-// magnitude. 4 is roughly "several countries to a continent" at typical
-// screen sizes — comfortably past where individual aircraft are
-// distinguishable anyway, and well below where the count becomes a
-// problem (regional/country-scale viewports stayed well under a thousand
-// aircraft in testing).
-const CLUSTER_FETCH_MAX_ZOOM = 4;
+// Aircraft icons shrink toward this floor as you zoom out, rather than
+// switching to a different representation below some threshold (a prior
+// version of this app fetched server-aggregated counts instead of real
+// positions below zoom 4, specifically because rendering every
+// individual aircraft worldwide once blocked the main thread for ~2.7s
+// on a single zoom — confirmed via PerformanceObserver long-task
+// entries. Drawing real markers at every zoom, just smaller, is a
+// deliberate return to the simpler approach; if that measured cost
+// resurfaces, worth knowing this is why the aggregated tier existed).
+const MIN_ICON_SIZE_PX = 9;
+// Zoom at and above which icons render at their full, unscaled size —
+// picked to match SELECTED_MIN_ZOOM, the zoom a selection's flyTo already
+// treats as "close enough" to stop zooming further in.
+const FULL_SIZE_ZOOM = SELECTED_MIN_ZOOM;
 
-// Target minimum on-screen spacing between adjacent grid-cell centers, in
-// pixels — sized relative to clusterPointIcon's largest bubble (40px): a
-// comfortable ~24px gap between two max-size neighboring bubbles instead
-// of them overlapping into an unreadable mass of circles. The previous
-// version of this used a fixed degree-size lookup table (6°/4°/2° by
-// zoom), which gave only ~17-23px of spacing at low zoom against 24-40px
-// bubbles — the overlapping-circles mess reported was that table being
-// wrong, not a rendering bug.
-const CLUSTER_TARGET_SPACING_PX = 64;
-
-// Computed from Web Mercator's actual pixels-per-degree-of-longitude at a
-// given zoom (256 * 2^zoom / 360 — constant across latitude, unlike
-// pixels-per-degree-of-*latitude*, which Mercator stretches near the
-// poles; sizing off longitude's constant scale means cells are *at least*
-// this well-spaced everywhere, not just at the equator) rather than a
-// fixed lookup table: screen density doubles with every zoom step, so a
-// table of fixed degree sizes can only ever be right at one zoom level.
-function gridDegForZoom(zoom: number): number {
-  const pxPerDegree = (256 * 2 ** zoom) / 360;
-  return CLUSTER_TARGET_SPACING_PX / pxPerDegree;
+// Linear falloff from MIN_ICON_SIZE_PX at zoom 0 to `base` at
+// FULL_SIZE_ZOOM and above — simple on purpose (no easing curve): the
+// only requirement is "visibly smaller when zoomed out, never smaller
+// than legible/tappable," not a particular curve shape.
+function scaleIconSize(base: number, zoom: number): number {
+  if (zoom >= FULL_SIZE_ZOOM) return base;
+  const t = Math.max(0, zoom) / FULL_SIZE_ZOOM;
+  return Math.round(MIN_ICON_SIZE_PX + (base - MIN_ICON_SIZE_PX) * t);
 }
 
 // Past this, "last updated" reads as a warning rather than routine network
@@ -430,10 +417,12 @@ function FollowSelected({
 const AircraftMarker = memo(function AircraftMarker({
   position,
   selected,
+  zoom,
   onSelect,
 }: {
   position: FlightPosition;
   selected: boolean;
+  zoom: number;
   onSelect: (p: FlightPosition) => void;
 }) {
   const markerRef = useRef<L.Marker | null>(null);
@@ -441,10 +430,8 @@ const AircraftMarker = memo(function AircraftMarker({
   const rotationDeg = known ? (position.headingDeg as number) : 0;
 
   // Kept current on every render (not just in an effect) so that whenever
-  // RotatingPlaneIcon.createIcon() actually runs — synchronously or, under
-  // MarkerClusterGroup's chunkedLoading, an arbitrary async batch later —
-  // it reads the most recent heading rather than whatever was current when
-  // the icon object was constructed.
+  // RotatingPlaneIcon.createIcon() actually runs, it reads the most recent
+  // heading rather than whatever was current when the icon was constructed.
   const headingRef = useRef(rotationDeg);
   headingRef.current = rotationDeg;
 
@@ -455,7 +442,13 @@ const AircraftMarker = memo(function AircraftMarker({
   // effect re-applying it to an already-mounted icon.
   const callsignRef = useRef(position.callsign?.trim() || position.icao24.toUpperCase());
 
-  const icon = useMemo(() => planeIcon(known, selected, headingRef, callsignRef), [known, selected]);
+  // Rounded before it's a dependency, not just before it's used, so a
+  // fractional zoom change (shouldn't normally happen with the default
+  // zoomSnap, but isn't guaranteed) doesn't recreate every marker's icon
+  // — full DOM teardown/rebuild, per this component's own comments above
+  // — over a change too small to visibly matter.
+  const roundedZoom = Math.round(zoom);
+  const icon = useMemo(() => planeIcon(known, selected, roundedZoom, headingRef, callsignRef), [known, selected, roundedZoom]);
 
   // Handles the ordinary case: an already-mounted marker whose aircraft's
   // heading changes on a later position tick. Applied directly to the
@@ -476,30 +469,6 @@ const AircraftMarker = memo(function AircraftMarker({
       eventHandlers={{ click: () => onSelect(position) }}
     />
   );
-});
-
-// Cell size steps roughly with count so a cell holding hundreds of
-// aircraft doesn't look identical to one holding two — deliberately not
-// precise (three buckets, not a continuous formula), since at the zoom
-// level this renders at that's plenty of visual distinction.
-function clusterPointIcon(count: number) {
-  const size = count >= 100 ? 40 : count >= 15 ? 32 : 24;
-  return L.divIcon({
-    className: "cluster-point-icon",
-    html: `<div class="cluster-point-bubble">${count}</div>`,
-    iconSize: [size, size],
-    iconAnchor: [size / 2, size / 2],
-  });
-}
-
-// One aggregated grid cell at the zoomed-way-out view — see
-// CLUSTER_FETCH_MAX_ZOOM. No click handler: a cell isn't one aircraft,
-// there's nothing meaningful for it to select. Memoized for the same
-// reason as AircraftMarker, though it matters far less here — a few
-// hundred cells is already well within a normal render budget on its own.
-const ClusterPointMarker = memo(function ClusterPointMarker({ point }: { point: ClusterPoint }) {
-  const icon = useMemo(() => clusterPointIcon(point.count), [point.count]);
-  return <Marker position={[point.lat, point.lon]} icon={icon} interactive={false} />;
 });
 
 export default function FlightMap() {
@@ -593,13 +562,23 @@ export default function FlightMap() {
 
   // Current zoom, kept both ways: a ref alongside boundsRef so the
   // reconcile interval can read it without being torn down and rebuilt on
-  // every zoom step, and state so the individual-vs-clustered rendering
-  // choice below re-renders when it crosses CLUSTER_FETCH_MAX_ZOOM.
+  // every zoom step, and state so AircraftMarker's zoom-scaled icon size
+  // (see scaleIconSize) re-renders when it actually changes.
   const zoomRef = useRef(6);
   const [zoom, setZoom] = useState(6);
 
-  const [clusterPoints, setClusterPoints] = useState<ClusterPoint[]>([]);
-  const clusterRequestSeqRef = useRef(0);
+  // Worldwide, independent of viewport/zoom — see fetchLiveCount. Refreshed
+  // alongside every other fetchFreshData tick rather than on its own timer,
+  // so the "TRACKED" chip doesn't drift out of sync with the rest of the
+  // live-data refresh cadence.
+  const [globalTrackedCount, setGlobalTrackedCount] = useState(0);
+
+  // Gates BootScreen's dismissal (cyberpunk theme only) — true once the
+  // first live-position fetch has resolved, success or failure alike
+  // (see applyLiveSnapshot's .finally). A real signal, not a fixed fake
+  // delay: the boot sequence should track how long the app's actual
+  // first load takes, not perform a canned animation regardless of it.
+  const [firstLoadDone, setFirstLoadDone] = useState(false);
 
   // Mirrors `positions` synchronously (state updates aren't readable
   // mid-render, but applyLiveSnapshot below needs the current value the
@@ -712,40 +691,27 @@ export default function FlightMap() {
         setSelectedPos(current);
         appendRoutePoint(current);
       }
-    });
-  }
-
-  // The clustered counterpart to applyLiveSnapshot. No observedAt/recency
-  // guarding here the way positions/route have — a cluster point isn't a
-  // single aircraft with a timeline, it's a fresh count every request, so
-  // there's nothing to regress relative to. Only the request-sequence
-  // guard (same reasoning as liveRequestSeqRef) applies.
-  function applyClusterSnapshot(bounds: Bounds, zoom: number) {
-    const seq = ++clusterRequestSeqRef.current;
-    return fetchLiveClusters(bounds, gridDegForZoom(zoom)).then((points) => {
-      if (seq !== clusterRequestSeqRef.current) return; // superseded by a newer request
-      setClusterPoints(points);
-    });
+    }).finally(() => setFirstLoadDone(true));
+    // .finally, not chained onto success only: BootScreen (cyberpunk
+    // theme only) waits on firstLoadDone to dismiss — a backend that's
+    // down should still let someone past the boot screen into the
+    // (empty/erroring) map, not strand them on "Initializing…" forever.
+    // Harmless to set on every later poll too, not just the first;
+    // firstLoadDone latches true and BootScreen stops watching it once
+    // hidden.
   }
 
   function fetchFreshData() {
+    fetchLiveCount().then(setGlobalTrackedCount).catch(() => {});
     if (!boundsRef.current) return;
-    if (zoomRef.current <= CLUSTER_FETCH_MAX_ZOOM) {
-      applyClusterSnapshot(boundsRef.current, zoomRef.current);
-    } else {
-      applyLiveSnapshot(boundsRef.current);
-    }
+    applyLiveSnapshot(boundsRef.current);
   }
 
   function handleViewportChange(bounds: Bounds, newZoom: number) {
     boundsRef.current = bounds;
     zoomRef.current = newZoom;
     setZoom(newZoom);
-    if (newZoom <= CLUSTER_FETCH_MAX_ZOOM) {
-      applyClusterSnapshot(bounds, newZoom);
-    } else {
-      applyLiveSnapshot(bounds);
-    }
+    applyLiveSnapshot(bounds);
   }
 
   /**
@@ -793,6 +759,14 @@ export default function FlightMap() {
         if (!status.active) return restartPolling();
       })
       .catch(() => {});
+    // The TRACKED chip's own fetch — viewport-independent, so it doesn't
+    // belong on every ViewportReporter pan/zoom report the way
+    // applyLiveSnapshot does. Without this, the chip would sit at its
+    // initial 0 until fetchFreshData's own first tick (FETCH_INTERVAL_MS
+    // after mount, since generation-0 fresh data comes from
+    // ViewportReporter's mount report calling handleViewportChange, not
+    // fetchFreshData — see the comment above the fetch-effect below).
+    fetchLiveCount().then(setGlobalTrackedCount).catch(() => {});
   }, []);
 
   // Fresh-data fetches: immediately (handled by ViewportReporter's mount
@@ -1057,22 +1031,15 @@ export default function FlightMap() {
   }, []);
 
   const list = Object.values(positions);
-  // Excluded from whatever feeds MarkerClusterGroup (and, at cluster-summary
-  // zoom, never part of clusterPoints in the first place — those are
-  // server-aggregated counts, not individual aircraft) — the selected
-  // aircraft always renders as its own standalone marker instead, see
-  // below. Otherwise zooming out could fold it into a cluster bubble, or
-  // at cluster-summary zoom drop it from the map entirely, right as a user
-  // is trying to keep an eye on it.
+  // Rendered separately from the selected aircraft, see below — its
+  // marker is always drawn last (on top) rather than in this list.
   const unselectedList = selected ? list.filter((p) => p.icao24 !== selected) : list;
 
-  // Cyberpunk theme's "TRACKED" status chip — at cluster-summary zoom
-  // (see CLUSTER_FETCH_MAX_ZOOM) `positions` isn't populated with
-  // individual aircraft at all, only clusterPoints' aggregated counts
-  // are, so the true current total has to come from whichever of the
-  // two is actually active right now rather than always reading list.length.
-  const trackedCount =
-    zoom <= CLUSTER_FETCH_MAX_ZOOM ? clusterPoints.reduce((sum, c) => sum + c.count, 0) : list.length;
+  // Cyberpunk theme's "TRACKED" status chip — the worldwide total (see
+  // fetchLiveCount/globalTrackedCount above), not list.length, which only
+  // ever covers the current viewport and used to make this chip read as
+  // "tracked in this section" rather than globally.
+  const trackedCount = globalTrackedCount;
 
   const selectedAircraftFavorited = selectedPos ? isAircraftFavorited(favoriteAircraft, selectedPos.icao24) : false;
   const selectedRouteFavorited =
@@ -1082,6 +1049,7 @@ export default function FlightMap() {
 
   return (
     <div className="app-shell">
+      {theme === "cyberpunk" && <BootScreen ready={firstLoadDone} />}
       {/* Hidden once something's selected: the details panel (desktop
           side panel or mobile bottom sheet, see .details-panel) is a
           real flex sibling on mobile rather than an overlay, sized by
@@ -1099,7 +1067,7 @@ export default function FlightMap() {
             flows as the first card in this column instead, matching the
             earlier approved mockup's own brand-chip placement. */}
         <header className="app-header">
-          <h1>Flight Tracker</h1>
+          <h1>Netwatch Skygrid</h1>
           <p className="app-header-subtitle">Live aircraft positions</p>
         </header>
         <FlightSearch onSelect={handleSelect} />
@@ -1194,48 +1162,14 @@ export default function FlightMap() {
           <Polyline positions={route} className="route-line" pathOptions={{ color: ROUTE_COLOR, weight: 3, dashArray: "6 8" }} />
         )}
 
-        {zoom <= CLUSTER_FETCH_MAX_ZOOM ? (
-          // A continent or the whole world can mean 20k+ live aircraft.
-          // Turning each into its own React component and feeding it
-          // through leaflet.markercluster's per-marker spatial-indexing
-          // algorithm was the actual cost (confirmed: the backend answers
-          // a whole-world bbox in ~60ms; it was 2+ seconds of client-side
-          // work that made zooming out feel stuck, not the visible marker
-          // count — clustering already kept that small). Below
-          // CLUSTER_FETCH_MAX_ZOOM the server aggregates instead (see
-          // fetchLiveClusters), so there are only a few hundred to low
-          // thousands of cells to render here — few enough that plain
-          // markers, no client-side clustering pass needed, are plenty.
-          clusterPoints.map((c) => <ClusterPointMarker key={`${c.lat}:${c.lon}`} point={c} />)
-        ) : (
-          <MarkerClusterGroup
-            chunkedLoading
-            maxClusterRadius={70}
-            disableClusteringAtZoom={SELECTED_MIN_ZOOM}
-            showCoverageOnHover={false}
-          >
-            {unselectedList.map((p) => (
-              <AircraftMarker key={p.icao24} position={p} selected={false} onSelect={handleSelect} />
-            ))}
-          </MarkerClusterGroup>
-        )}
+        {unselectedList.map((p) => (
+          <AircraftMarker key={p.icao24} position={p} selected={false} zoom={zoom} onSelect={handleSelect} />
+        ))}
 
-        {/* Rendered outside both branches above (and outside
-            MarkerClusterGroup specifically) so the selected aircraft is
-            never clustered — not into a bubble by leaflet.markercluster,
-            and not dropped off the map entirely at cluster-summary zoom,
-            where clusterPoints holds only aggregated counts.
-            Caveat: at cluster-summary zoom (zoom <= CLUSTER_FETCH_MAX_ZOOM)
-            selectedPos itself can go stale. applyClusterSnapshot doesn't
-            touch it, and the WebSocket feed is filtered server-side by
-            whatever viewport was last *reported* — which the cluster
-            endpoint deliberately never does (see its controller-side
-            comment) — so a selected aircraft that moves outside the last
-            individual-mode viewport while zoomed out this far stops
-            getting live updates until the user zooms back in. FollowSelected
-            still pans to wherever selectedPos last was; it just won't be
-            the aircraft's true current position in that scenario. */}
-        {selectedPos && <AircraftMarker position={selectedPos} selected onSelect={handleSelect} />}
+        {/* Rendered last (on top) and separately from the list above, so
+            the selected aircraft's marker never ends up underneath a
+            neighbor's regardless of render order. */}
+        {selectedPos && <AircraftMarker position={selectedPos} selected zoom={zoom} onSelect={handleSelect} />}
       </MapContainer>
 
       {selectedPos && (
@@ -1305,7 +1239,12 @@ export default function FlightMap() {
               <dd>{formatAirport(dossier?.destinationAirportName ?? null, dossier?.destinationAirport ?? null, dossier?.destinationAirportIata ?? null)}</dd>
               <dt>Phase</dt><dd>{formatFlightPhase(dossier?.flightPhase ?? null)}</dd>
               <dt>Altitude</dt>
-              <dd>{selectedPos.altitudeM != null ? `${Math.round(selectedPos.altitudeM)} m` : "—"}</dd>
+              {/* Clamped at 0, not shown raw: barometric altitude reads a
+                  few meters negative on the ground fairly often — sensor
+                  noise around the standard-atmosphere reference, not a
+                  real below-sea-level position — and "-23 m" for a parked
+                  aircraft reads as a bug, not as a precision artifact. */}
+              <dd>{selectedPos.altitudeM != null ? `${Math.round(Math.max(0, selectedPos.altitudeM))} m` : "—"}</dd>
               <dt>Cruising altitude</dt>
               <dd>{dossier?.cruisingAltitudeM != null ? `${Math.round(dossier.cruisingAltitudeM)} m` : "—"}</dd>
               <dt>Flight time</dt>

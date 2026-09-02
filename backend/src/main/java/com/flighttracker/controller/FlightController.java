@@ -66,6 +66,21 @@ public class FlightController {
     }
 
     /**
+     * Global counterpart to /live's own bbox-less form, minus the cost of
+     * fetching every row just to measure how many there are — the map's
+     * "TRACKED" chip wants a worldwide total regardless of the current
+     * viewport, refreshed alongside every /live poll, so this stays a
+     * plain count rather than reusing the bbox-less list endpoint.
+     */
+    @GetMapping("/live/count")
+    public long liveCount() {
+        Instant now = Instant.now();
+        return positionRepository.countLive(
+                now.minus(LiveVisibilityWindows.STALE_AIRBORNE_BOUND),
+                now.minus(LiveVisibilityWindows.LANDED_VISIBILITY));
+    }
+
+    /**
      * Single-aircraft counterpart to /live, for the map's priority refresh
      * of whichever aircraft is currently selected (see the dedicated poll
      * in FlightMap.tsx). The bbox-scoped /live above — and the WebSocket

@@ -13,13 +13,11 @@
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
 }
 
+/* Full styling (border, color, spacing) lives in the shared
+   [data-theme="cyberpunk"] eyebrow rule in FlightMap.css — Legend only
+   ever renders for cyberpunk theme (see FlightMap.tsx), so there's no
+   default-theme fallback needed here. */
 .map-legend-eyebrow {
-  display: block;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--color-text-muted);
   margin-bottom: 6px;
 }
 

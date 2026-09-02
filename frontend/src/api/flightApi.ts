@@ -1,5 +1,5 @@
-import type { AircraftDossier, AircraftUsage, Bounds, ClusterPoint, FlightPosition, PollingStatus } from "../types/flight";
-import { clusterMockFleet, filterByBounds, getMockFleet, getMockPlaneCount } from "./mockFleet";
+import type { AircraftDossier, AircraftUsage, Bounds, FlightPosition, PollingStatus } from "../types/flight";
+import { filterByBounds, getMockFleet, getMockPlaneCount } from "./mockFleet";
 
 /**
  * Tracking is global, but a bounds-less call returns every aircraft being
@@ -19,16 +19,18 @@ export async function fetchLivePositions(bounds?: Bounds): Promise<FlightPositio
 }
 
 /**
- * The zoomed-way-out counterpart to fetchLivePositions: server-aggregated
- * counts per gridDeg-sized cell instead of one row per aircraft. See
- * FlightMap's CLUSTER_FETCH_MAX_ZOOM for when the map switches to this.
+ * Worldwide count, independent of viewport — the "TRACKED" chip's own
+ * number, not derived from whatever fetchLivePositions last returned for
+ * the current viewport (that only ever covers what's on screen). A plain
+ * count rather than reusing the bbox-less form of fetchLivePositions,
+ * which would fetch every tracked aircraft's full row just to measure
+ * how many there are.
  */
-export async function fetchLiveClusters(bounds: Bounds, gridDeg: number): Promise<ClusterPoint[]> {
+export async function fetchLiveCount(): Promise<number> {
   const mockCount = getMockPlaneCount();
-  if (mockCount != null) return clusterMockFleet(getMockFleet(mockCount), bounds, gridDeg);
-  const query = `?latMin=${bounds.latMin}&latMax=${bounds.latMax}&lonMin=${bounds.lonMin}&lonMax=${bounds.lonMax}&gridDeg=${gridDeg}`;
-  const res = await fetch(`/api/flights/live/clusters${query}`);
-  if (!res.ok) throw new Error(`live clusters fetch failed: ${res.status}`);
+  if (mockCount != null) return mockCount;
+  const res = await fetch("/api/flights/live/count");
+  if (!res.ok) throw new Error(`live count fetch failed: ${res.status}`);
   return res.json();
 }
 
@@ -133,4 +135,25 @@ export function subscribeLiveFeed(onPosition: (p: FlightPosition) => void): () =
     }
   };
   return () => socket.close();
+}
+
+/**
+ * Real terminal/apron/hangar/gate geometry for one airport, from
+ * OpenStreetMap via the backend's Overpass proxy (see
+ * AirportGatesController/OverpassAirportGatesClient) — a direct browser
+ * call to Overpass itself is blocked by CORS (confirmed: its responses
+ * carry no Access-Control-Allow-Origin header), so this has to be
+ * server-proxied regardless of how the request is shaped. VectorBasemap
+ * only calls this once zoomed in close enough on a specific airport to
+ * actually show this level of detail, and caches results client-side on
+ * top of the backend's own cache.
+ */
+export interface AirportGateFeature {
+  kind: "gate" | "apron" | "terminal" | "hangar";
+  ring: [number, number][];
+}
+export async function fetchAirportGates(code: string, lat: number, lon: number): Promise<AirportGateFeature[]> {
+  const res = await fetch(`/api/airports/gates?code=${encodeURIComponent(code)}&lat=${lat}&lon=${lon}`);
+  if (!res.ok) throw new Error(`airport gates fetch failed: ${res.status}`);
+  return res.json();
 }

@@ -72,8 +72,16 @@ html, body {
   --color-marker: #3ce0ff;
   --color-marker-selected: #ffb63c;
   --color-focus: #3ce0ff;
-  --font-ui: "Rajdhani", system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-display: "Chakra Petch", "Arial Narrow", sans-serif;
+  /* One face for all three roles — heading, body, and tabular data all
+     read as "the same app" this way. Previously Rajdhani/Chakra
+     Petch/JetBrains Mono per role, which is a legitimate pattern in
+     principle but landed as visibly inconsistent in practice here (each
+     component's own CSS picked whichever of the three seemed to fit
+     that one spot, with nothing enforcing they cohere as a system).
+     Variable names kept as three so every existing font-family: var(...)
+     reference stays meaningful, not because the values still differ. */
+  --font-ui: "JetBrains Mono", "Courier New", monospace;
+  --font-display: "JetBrains Mono", "Courier New", monospace;
   --font-data: "JetBrains Mono", "Courier New", monospace;
 }
 
@@ -85,6 +93,19 @@ html, body {
   font-family: var(--font-ui);
   color: var(--color-text);
   overflow: hidden;
+}
+
+/* Raises the floor for this theme's own text, and bumps the base size up
+   a notch — everything here that doesn't set its own weight/size (most
+   incidental/body text) fell through to the browser default (400
+   weight), which reads as thin and small next to JetBrains Mono's own
+   stroke weight at display sizes. Scoped to cyberpunk only: the default
+   theme's system-ui stack doesn't have this problem and shouldn't
+   change just because this theme's text did. Existing 600/700 overrides
+   throughout the theme's CSS still apply on top of this for emphasis. */
+[data-theme="cyberpunk"] .app-shell {
+  font-weight: 500;
+  font-size: 15px;
 }
 
 /* Matches the earlier approved mockup's top-right status chip, and the
@@ -210,14 +231,28 @@ html, body {
   letter-spacing: 0.04em;
 }
 
+/* The one "eyebrow" heading treatment, applied everywhere a small
+   labeled-section heading appears — previously four independent
+   definitions (this file, Legend.css, FlightSearch.css, plus
+   .favorites-panel-section h3's own base rule below), each landing on a
+   slightly different size/weight/spacing, and one (Legend's) even on the
+   wrong color (muted gray instead of the warn-red every other one used).
+   A bordered chip, not just colored text — matches the reference
+   material's own boxed field-label treatment. */
 [data-theme="cyberpunk"] .details-panel-eyebrow,
-[data-theme="cyberpunk"] .favorites-panel-section h3 {
+[data-theme="cyberpunk"] .favorites-panel-section h3,
+[data-theme="cyberpunk"] .map-legend-eyebrow,
+[data-theme="cyberpunk"] .flight-search-eyebrow {
+  display: inline-block;
+  padding: 3px 8px;
+  border: 1px solid var(--color-warn);
+  background: rgba(255, 77, 94, 0.08);
   color: var(--color-warn);
-}
-
-[data-theme="cyberpunk"] .details-panel-eyebrow {
+  font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  margin-bottom: 6px;
 }
 
 /* Favorite-aircraft/favorite-route toggle buttons — reskinned to the
@@ -547,7 +582,13 @@ html, body {
   border-color: var(--color-marker-selected);
   border-width: 2px;
 }
-[data-theme="cyberpunk"] .plane-icon-label {
+/* Selected only, not every marker — real traffic can mean dozens of
+   aircraft close together on screen (a busy airport's approach path),
+   and a label chip per marker there overlaps into unreadable noise (the
+   actual reported bug). Flightradar24's own answer to the same problem
+   is exactly this: drop callsigns rather than try to fit them all, kept
+   for the one aircraft actually being tracked. */
+[data-theme="cyberpunk"] .plane-icon--selected .plane-icon-label {
   display: block;
   position: absolute;
   top: 50%;
@@ -556,50 +597,29 @@ html, body {
   margin-left: 4px;
   padding: 1px 4px;
   background: rgba(5, 6, 8, 0.65);
-  color: var(--color-marker);
+  color: var(--color-marker-selected);
   font-family: var(--font-data);
-  font-size: 9px;
+  font-weight: 700;
+  font-size: 11px;
   letter-spacing: 0.01em;
   white-space: nowrap;
   pointer-events: none;
 }
-[data-theme="cyberpunk"] .plane-icon--selected .plane-icon-label {
-  color: var(--color-marker-selected);
-  font-weight: 700;
-  font-size: 11px;
-}
-
-/* One aggregated grid cell at the zoomed-way-out view (see
-   CLUSTER_FETCH_MAX_ZOOM) — same amber as an ordinary aircraft marker
-   since it represents the same underlying data, just summarized. */
-.cluster-point-bubble {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 100%;
-  height: 100%;
-  border-radius: 50%;
-  background: rgba(255, 176, 32, 0.28);
-  border: 1.5px solid var(--color-marker);
-  color: var(--color-text);
-  font-size: 11px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-}
 
 .details-panel {
   position: absolute;
-  /* A compact card anchored to the bottom-right corner, sized to its
-     content (capped by .details-panel-inner's own max-height below) —
-     not a full-height sidebar. The old height:100% spanned the entire
-     right edge at the same top:16px/right:16px corner .tracked-chip
-     lives in; both share z-index:500, and this panel comes later in the
-     DOM, so it painted directly over the chip the instant anything got
-     selected. Anchoring to the bottom instead, matching the earlier
-     approved mockup's own .detail-card (max-height: calc(100vh - 200px)
-     at the same corner), leaves that whole top strip clear. */
-  bottom: 16px;
+  /* A compact card, sized to its content (capped by .details-panel-
+     inner's own max-height below) — not a full-height sidebar. The old
+     height:100% spanned the entire right edge at the same top:16px
+     corner .tracked-chip lives in; both share z-index:500, and this
+     panel comes later in the DOM, so it painted directly over the chip
+     the instant anything got selected. Vertically centered on the right
+     edge instead — clear of the chip at top and the dock at bottom
+     regardless of the panel's own (content-dependent) height, which a
+     fixed top or bottom anchor isn't. */
+  top: 50%;
   right: 16px;
+  transform: translateY(-50%);
   width: 300px;
   z-index: 500;
   background: var(--color-panel);
@@ -718,28 +738,6 @@ html, body {
   display: none;
 }
 
-/* Cluster bubbles (react-leaflet-cluster / leaflet.markercluster), restyled
-   from their default light-blue look to match the rest of the theme. Text
-   is dark-on-amber rather than the marker's usual light-on-dark — that
-   pairing comfortably clears WCAG AA (amber #ffb020 against #04121d is
-   well over 10:1) and reads clearly as "a count", distinct from the plane
-   glyphs themselves. */
-.marker-cluster {
-  background: rgba(255, 176, 32, 0.25);
-}
-.marker-cluster div {
-  background: var(--color-marker);
-  color: #04121d;
-  font-weight: 700;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.marker-cluster span {
-  line-height: 1;
-}
-
 /* Mobile layout (see MOBILE_BREAKPOINT_PX in FlightMap.tsx — kept as the
    same literal since CSS can't reference a JS constant). Additive only:
    nothing above this breakpoint changes, everything below it is a
@@ -793,6 +791,12 @@ html, body {
     bottom: auto;
     left: auto;
     right: auto;
+    /* Desktop's vertical-centering transform (see the base rule above)
+       doesn't apply to a normal-flow flex sibling — left over here it
+       shifted the whole sheet up by half its own height, which is
+       exactly the "141px off the bottom edge" this mobile layout test
+       caught. */
+    transform: none;
     flex: 0 0 auto;
     width: 100%;
     height: 33.334vh; /* collapsed default: map gets the other 2/3 */

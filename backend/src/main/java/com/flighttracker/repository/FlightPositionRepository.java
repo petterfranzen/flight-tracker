@@ -68,6 +68,19 @@ public interface FlightPositionRepository extends JpaRepository<FlightPosition, 
     List<FlightPosition> findLive(@Param("staleAirborneCutoff") Instant staleAirborneCutoff,
                                    @Param("landedCutoff") Instant landedCutoff);
 
+    // Same liveness window as findLive, but just the count — for the map's
+    // global "TRACKED" chip, which needs how many aircraft are tracked
+    // worldwide regardless of the current viewport, not the full row set
+    // findLive's bbox-less form would otherwise require fetching (and
+    // discarding down to a number) on every refresh.
+    @Query(value = """
+        SELECT COUNT(*) FROM aircraft_latest_position
+        WHERE (on_ground = false AND observed_at > :staleAirborneCutoff)
+           OR (on_ground = true AND landed_since > :landedCutoff)
+        """, nativeQuery = true)
+    long countLive(@Param("staleAirborneCutoff") Instant staleAirborneCutoff,
+                    @Param("landedCutoff") Instant landedCutoff);
+
     // Same as findLive, further filtered to a lat/lon box — what the
     // frontend actually calls with, passing its current map viewport, so
     // only what's visible is fetched/rendered rather than every aircraft

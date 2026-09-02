@@ -21,13 +21,6 @@ export interface FlightPosition {
   agentSource: string;
 }
 
-/** One server-aggregated grid cell — a zoomed-way-out summary of live traffic. */
-export interface ClusterPoint {
-  lat: number;
-  lon: number;
-  count: number;
-}
-
 export interface AircraftDossier {
   icao24: string;
   registration: string | null;
