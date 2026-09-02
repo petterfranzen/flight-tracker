@@ -251,11 +251,11 @@ function paintBuffer(canvas: HTMLCanvasElement, center: L.LatLng, zoom: number, 
 
   ctx.strokeStyle = GRID_COLOR;
   ctx.lineWidth = 1;
-  // Halved from 10 — halving the step in both directions quarters each
-  // cell's area, i.e. fits 4 of the new squares inside one of the old
-  // ones, matching what was actually asked for ("too big, could fit 4
-  // squares in one") rather than just "smaller" by some arbitrary amount.
-  const gridStepDeg = 5;
+  // Halved again, from 5 (itself already halved from an original 10) —
+  // each halving quarters a cell's area, i.e. fits 4 of the new squares
+  // inside one of the old ones (equivalently: split each cell in half
+  // vertically, then split each of those halves into 4 equal squares).
+  const gridStepDeg = 2.5;
   for (let lon = -180; lon <= 180; lon += gridStepDeg) {
     if (lon < bounds.getWest() - gridStepDeg || lon > bounds.getEast() + gridStepDeg) continue;
     const a = project(lon, Math.max(-85, bounds.getSouth()));

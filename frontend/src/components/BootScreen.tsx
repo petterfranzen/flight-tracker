@@ -14,8 +14,8 @@ const STATUS_LINES = [
 // rather than a fixed timer is to track how long loading actually
 // takes, not fake it — but a literal 0ms transition isn't itself
 // informative to look at either.
-const MIN_VISIBLE_MS = 900;
-const STATUS_LINE_INTERVAL_MS = 620;
+const MIN_VISIBLE_MS = 2600;
+const STATUS_LINE_INTERVAL_MS = 700;
 
 /**
  * Cyberpunk theme's boot sequence, shown once per page load. Real
