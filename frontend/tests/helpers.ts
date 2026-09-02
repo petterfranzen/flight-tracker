@@ -216,12 +216,37 @@ export async function findMarkerNear(page: Page, lat: number, lon: number): Prom
   return markers.nth(bestIndex);
 }
 
-/** Parses a Leaflet-rendered SVG path's "M x y L x y ..." into pixel points. */
-export function parsePathPoints(d: string): { x: number; y: number }[] {
-  const nums = d.match(/-?\d+(\.\d+)?/g)?.map(Number) ?? [];
-  const points: { x: number; y: number }[] = [];
-  for (let i = 0; i + 1 < nums.length; i += 2) {
-    points.push({ x: nums[i], y: nums[i + 1] });
-  }
-  return points;
+/**
+ * A Leaflet SVG path's `d` attribute is written in the renderer's own
+ * user-space, not page pixels — its numbers only equal on-screen position
+ * when the map's internal pixel origin and pane offset both happen to be
+ * zero. That's not guaranteed: setView's `{animate: false}` still takes
+ * Leaflet's "quick pan" shortcut for a same-zoom move that's smaller than
+ * the viewport (_tryAnimatedPan → _rawPanBy), which shifts the map pane via
+ * a CSS transform instead of resetting the pixel origin, leaving raw `d`
+ * coordinates offset from the true screen position by exactly that pan
+ * delta — the path itself still renders in the right place on screen
+ * (Leaflet composes the same compensating transform back in via the pane/
+ * renderer container), only a naive read of `d` disagrees with it. Feeding
+ * each parsed vertex through the path element's own screenCTM applies
+ * every ancestor transform Leaflet actually used, so it matches reality
+ * regardless of which internal code path produced it.
+ */
+export async function getRoutePathScreenPoints(page: Page): Promise<{ x: number; y: number }[]> {
+  return page.evaluate(() => {
+    const path = document.querySelector("path.route-line") as SVGPathElement | null;
+    if (!path || !path.ownerSVGElement) return [];
+    const ctm = path.getScreenCTM();
+    if (!ctm) return [];
+    const nums = (path.getAttribute("d") ?? "").match(/-?\d+(\.\d+)?/g)?.map(Number) ?? [];
+    const points: { x: number; y: number }[] = [];
+    for (let i = 0; i + 1 < nums.length; i += 2) {
+      const pt = path.ownerSVGElement.createSVGPoint();
+      pt.x = nums[i];
+      pt.y = nums[i + 1];
+      const screenPt = pt.matrixTransform(ctm);
+      points.push({ x: screenPt.x, y: screenPt.y });
+    }
+    return points;
+  });
 }

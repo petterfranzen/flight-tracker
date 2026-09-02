@@ -435,7 +435,19 @@ function FollowSelected({
     if (lat == null || lon == null) return;
     if (lastCenteredIdRef.current !== selectedId) {
       lastCenteredIdRef.current = selectedId;
-      map.flyTo([lat, lon], Math.max(map.getZoom(), SELECTED_MIN_ZOOM), { animate: true, duration: 0.8 });
+      // Not flyTo: VectorBasemap's whole canvas-buffer cache only swaps
+      // buffers at zoomstart/zoomend (see its own header comment) on the
+      // assumption zoom changes are instant, which is also why this
+      // theme disables Leaflet's own _zoomAnimated. flyTo's animation
+      // path runs independently of that flag though - it drives a real
+      // multi-frame zoom+pan tween regardless - so during its ~0.8s the
+      // buffer stayed exactly where zoomstart left it (the *previous*
+      // zoom/position) while the visible map raced far past it, reading
+      // as the basemap and its red country fill briefly vanishing mid-
+      // flight. setView jumps straight to the destination in one frame,
+      // which is exactly the single zoomstart→zoomend transition the
+      // buffer swap was already built to handle correctly.
+      map.setView([lat, lon], Math.max(map.getZoom(), SELECTED_MIN_ZOOM), { animate: false });
     } else {
       // lat/lon here are two of the dependencies that actually vary tick
       // to tick (unlike a `[lat, lon]` tuple prop, which would be a fresh
