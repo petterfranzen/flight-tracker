@@ -1,4 +1,5 @@
 import type { AircraftDossier, AircraftUsage, Bounds, ClusterPoint, FlightPosition, PollingStatus } from "../types/flight";
+import { clusterMockFleet, filterByBounds, getMockFleet, getMockPlaneCount } from "./mockFleet";
 
 /**
  * Tracking is global, but a bounds-less call returns every aircraft being
@@ -7,6 +8,8 @@ import type { AircraftDossier, AircraftUsage, Bounds, ClusterPoint, FlightPositi
  * target next (see FlightController.live / ViewportService).
  */
 export async function fetchLivePositions(bounds?: Bounds): Promise<FlightPosition[]> {
+  const mockCount = getMockPlaneCount();
+  if (mockCount != null) return filterByBounds(getMockFleet(mockCount), bounds);
   const query = bounds
     ? `?latMin=${bounds.latMin}&latMax=${bounds.latMax}&lonMin=${bounds.lonMin}&lonMax=${bounds.lonMax}`
     : "";
@@ -21,6 +24,8 @@ export async function fetchLivePositions(bounds?: Bounds): Promise<FlightPositio
  * FlightMap's CLUSTER_FETCH_MAX_ZOOM for when the map switches to this.
  */
 export async function fetchLiveClusters(bounds: Bounds, gridDeg: number): Promise<ClusterPoint[]> {
+  const mockCount = getMockPlaneCount();
+  if (mockCount != null) return clusterMockFleet(getMockFleet(mockCount), bounds, gridDeg);
   const query = `?latMin=${bounds.latMin}&latMax=${bounds.latMax}&lonMin=${bounds.lonMin}&lonMax=${bounds.lonMax}&gridDeg=${gridDeg}`;
   const res = await fetch(`/api/flights/live/clusters${query}`);
   if (!res.ok) throw new Error(`live clusters fetch failed: ${res.status}`);

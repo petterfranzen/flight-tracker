@@ -217,6 +217,9 @@ export default function FlightSearch({ onSelect }: { onSelect: (p: FlightPositio
       >
         Close search ✕
       </button>
+      {/* Cyberpunk-only (see FlightSearch.css) — default theme's plain
+          placeholder text already says what the field is for. */}
+      <span className="flight-search-eyebrow">Query // Flight No.</span>
       <input
         type="text"
         inputMode="search"

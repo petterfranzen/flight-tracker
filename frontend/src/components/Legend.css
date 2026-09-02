@@ -1,0 +1,76 @@
+/* Shares the left-overlay-stack column with FlightSearch/FavoritesPanel
+   (see .left-overlay-stack in FlightMap.css) — same card treatment
+   (background/border/shadow) as .favorites-panel-content, just always
+   open rather than a toggle, since there's nothing here to collapse. */
+.map-legend {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 6px;
+  padding: 8px 12px;
+  background: var(--color-panel);
+  border: 1px solid var(--color-panel-border);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+}
+
+.map-legend-eyebrow {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  margin-bottom: 6px;
+}
+
+.map-legend-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.map-legend-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--color-text);
+}
+
+/* Outline square by default, matching the mockup's own .legend-swatch —
+   and the actual marker/mark shape each row stands for: aircraft and
+   selected are both square marks (see planeIcon in FlightMap.tsx), only
+   airport (a circle, see VectorBasemap.tsx's airport mark) and home
+   region (a short bar, not a point mark at all) override the shape. */
+.map-legend-swatch {
+  width: 10px;
+  height: 10px;
+  flex: none;
+  border: 1.5px solid var(--color-marker);
+  background: transparent;
+}
+
+.map-legend-swatch--selected {
+  border-color: var(--color-marker-selected);
+}
+
+/* Circle, not square — matches VectorBasemap.tsx's actual airport mark
+   (a stroked circle, not a square). AIRPORT_COLOR there is #e2ddc9; kept
+   in sync by hand since it's a canvas fill, not a shared CSS token. */
+.map-legend-swatch--airport {
+  border-radius: 50%;
+  border-color: #e2ddc9;
+}
+
+/* A short bar, not a point mark — this one isn't a marker shape at all,
+   it stands for the amber country-outline highlight (see
+   HOME_COUNTRY_COLOR in VectorBasemap.tsx). */
+.map-legend-swatch--home {
+  width: 14px;
+  height: 2px;
+  border: none;
+  background: var(--color-marker-selected);
+}

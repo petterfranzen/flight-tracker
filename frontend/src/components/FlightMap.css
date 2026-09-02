@@ -143,13 +143,16 @@ html, body {
 [data-theme="cyberpunk"] .favorites-panel-toggle,
 [data-theme="cyberpunk"] .favorites-panel-content,
 [data-theme="cyberpunk"] .resume-dialog,
-[data-theme="cyberpunk"] .theme-toggle-btn {
+[data-theme="cyberpunk"] .theme-toggle-btn,
+[data-theme="cyberpunk"] .map-legend,
+[data-theme="cyberpunk"] .dock-tile {
   clip-path: polygon(10px 0, 100% 0, 100% 100%, 0 100%, 0 10px);
 }
 /* position:relative is only for the ::before corner tick below, and only
    added to elements that don't already have their own explicit position.
-   .app-header and .details-panel are already position:absolute in their
-   base (non-themed) rules — forcing position:relative here overrode that
+   .app-header (position:fixed) and .details-panel (position:absolute)
+   already have their own in their base (non-themed) rules — forcing
+   position:relative here overrode that
    silently: `[data-theme="cyberpunk"] .details-panel` outweighs the base
    `.details-panel` rule's specificity, so the override wins even though
    it appears earlier in the file, dropping the whole panel out of its
@@ -162,7 +165,9 @@ html, body {
 [data-theme="cyberpunk"] .favorites-panel-toggle,
 [data-theme="cyberpunk"] .favorites-panel-content,
 [data-theme="cyberpunk"] .resume-dialog,
-[data-theme="cyberpunk"] .theme-toggle-btn {
+[data-theme="cyberpunk"] .theme-toggle-btn,
+[data-theme="cyberpunk"] .map-legend,
+[data-theme="cyberpunk"] .dock-tile {
   position: relative;
 }
 [data-theme="cyberpunk"] .app-header::before,
@@ -278,7 +283,17 @@ html, body {
 }
 
 .app-header {
-  position: absolute;
+  /* fixed, not absolute: .app-header is now a DOM child of
+     .left-overlay-stack (see FlightMap.tsx) so cyberpunk theme can flow
+     it as that column's first card — but .left-overlay-stack is itself
+     position:absolute, so it would become .app-header's containing
+     block too under plain `absolute`, resolving top/left against that
+     220px-wide column instead of the viewport (confirmed live: it
+     landed inside the column, overlapping .favorites-panel-toggle and
+     eating its clicks). `fixed` anchors to the viewport regardless of
+     DOM nesting depth, keeping this theme's placement exactly as before
+     the JSX move. */
+  position: fixed;
   top: 16px;
   left: 50%;
   transform: translateX(-50%);
@@ -313,6 +328,25 @@ html, body {
 .left-overlay-stack .flight-search {
   position: static;
   width: auto;
+}
+
+/* Drops .app-header's own fixed/top/left/transform (its default-theme
+   values keep it floating top-center, unchanged) so it flows as a
+   normal flex child here instead — the first card in the column,
+   matching the mockup's own brand-chip placement, rather than a
+   separate floating title bar. `relative`, not `static`: still needs to
+   be a positioning context of its own for the ::before corner tick
+   below (position:relative participates in flex flow same as static —
+   only absolute/fixed remove an element from it — so this doesn't
+   reintroduce the floating behavior being removed here). */
+[data-theme="cyberpunk"] .app-header {
+  position: relative;
+  top: auto;
+  left: auto;
+  transform: none;
+  text-align: left;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .app-header h1 {
@@ -483,6 +517,58 @@ html, body {
   .plane-icon--selected .plane-icon-halo { animation: none; opacity: 0.6; }
 }
 
+/* Cyberpunk-theme-only: an outline box behind the (still heading-rotated)
+   glyph plus an attached callsign chip, matching the earlier approved
+   mockup's own .blip-mark/.blip-label — while keeping the glyph itself
+   (and its rotation/unknown-heading handling) exactly as-is, rather than
+   replacing it with the mockup's plain non-directional square. Hidden by
+   default: both elements are always in the markup (see planeIcon in
+   FlightMap.tsx) so RotatingPlaneIcon.createIcon() has the same DOM
+   shape regardless of theme, but only cyberpunk actually shows them.
+   Both pointer-events:none, same as .plane-icon-halo above — a marker's
+   click handler lives on its Leaflet-managed root element, not these. */
+.plane-icon-mark,
+.plane-icon-label {
+  display: none;
+}
+[data-theme="cyberpunk"] .plane-icon-mark {
+  display: block;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 70%;
+  height: 70%;
+  transform: translate(-50%, -50%);
+  border: 1.4px solid var(--color-marker);
+  background: rgba(12, 18, 28, 0.55);
+  pointer-events: none;
+}
+[data-theme="cyberpunk"] .plane-icon--selected .plane-icon-mark {
+  border-color: var(--color-marker-selected);
+  border-width: 2px;
+}
+[data-theme="cyberpunk"] .plane-icon-label {
+  display: block;
+  position: absolute;
+  top: 50%;
+  left: 100%;
+  transform: translateY(-50%);
+  margin-left: 4px;
+  padding: 1px 4px;
+  background: rgba(5, 6, 8, 0.65);
+  color: var(--color-marker);
+  font-family: var(--font-data);
+  font-size: 9px;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  pointer-events: none;
+}
+[data-theme="cyberpunk"] .plane-icon--selected .plane-icon-label {
+  color: var(--color-marker-selected);
+  font-weight: 700;
+  font-size: 11px;
+}
+
 /* One aggregated grid cell at the zoomed-way-out view (see
    CLUSTER_FETCH_MAX_ZOOM) — same amber as an ordinary aircraft marker
    since it represents the same underlying data, just summarized. */
@@ -503,19 +589,36 @@ html, body {
 
 .details-panel {
   position: absolute;
-  top: 0;
-  right: 0;
-  height: 100%;
+  /* A compact card anchored to the bottom-right corner, sized to its
+     content (capped by .details-panel-inner's own max-height below) —
+     not a full-height sidebar. The old height:100% spanned the entire
+     right edge at the same top:16px/right:16px corner .tracked-chip
+     lives in; both share z-index:500, and this panel comes later in the
+     DOM, so it painted directly over the chip the instant anything got
+     selected. Anchoring to the bottom instead, matching the earlier
+     approved mockup's own .detail-card (max-height: calc(100vh - 200px)
+     at the same corner), leaves that whole top strip clear. */
+  bottom: 16px;
+  right: 16px;
   width: 300px;
   z-index: 500;
   background: var(--color-panel);
-  border-left: 1px solid var(--color-panel-border);
-  box-shadow: -6px 0 18px rgba(0, 0, 0, 0.5);
+  border: 1px solid var(--color-panel-border);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
 }
 
 .details-panel-inner {
   padding: 28px 22px;
   color: var(--color-text);
+  /* The actual scrolling element, not .details-panel itself — same
+     reason as the mobile bottom-sheet split below: cyberpunk theme's
+     clip-path (faceted corner) on the same element as overflow-y:auto
+     forces a repaint-on-scroll. Matches the mockup's own .detail-card
+     max-height value; .details-panel above has no height of its own, so
+     this is what actually caps the panel's height on desktop. */
+  max-height: calc(100vh - 200px);
+  overflow-y: auto;
 }
 
 .details-panel-eyebrow {

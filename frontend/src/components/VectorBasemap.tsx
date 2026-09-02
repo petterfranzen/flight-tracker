@@ -51,8 +51,16 @@ const WORLD_COUNTRIES: WorldCountry[] = COUNTRIES.map((c) => ({
   labelWorld: c.label ? projectWorld(c.label[0], c.label[1]) : null,
 }));
 
-const WORLD_CITIES = CITIES.map((c) => ({ ...c, world: projectWorld(c.pos[0], c.pos[1]) }));
-const WORLD_AIRPORTS = AIRPORTS.map((a) => ({ ...a, world: projectWorld(a.pos[0], a.pos[1]) }));
+const WORLD_CITIES = CITIES.map((c) => ({
+  ...c,
+  world: projectWorld(c.pos[0], c.pos[1]),
+  worldOutline: c.outline ? c.outline.map(([lon, lat]) => projectWorld(lon, lat)) : null,
+}));
+const WORLD_AIRPORTS = AIRPORTS.map((a) => ({
+  ...a,
+  world: projectWorld(a.pos[0], a.pos[1]),
+  worldRunways: a.runways ? a.runways.map((seg) => seg.map(([lon, lat]) => projectWorld(lon, lat))) : null,
+}));
 
 // Precomputed once at module load, not per paint — cheap bbox rejection
 // for ~180 countries is what keeps a full-canvas paint affordable, since
@@ -118,12 +126,30 @@ const LAND_BOTTOM = "#4c0e17";
 const LAND_OUTLINE = "#ff2d3d";
 const BORDER_COLOR = "rgba(60, 224, 255, 0.4)";
 const HOME_COUNTRY_COLOR = "#ffb63c";
-const GRID_COLOR = "rgba(255, 45, 61, 0.06)";
+// Only ever visible over ocean/unfilled canvas: drawn before the opaque
+// country fill below, which paints over it everywhere there's land —
+// raising the opacity here doesn't need a separate "skip over land"
+// check, the draw order already guarantees that.
+const GRID_COLOR = "rgba(255, 45, 61, 0.16)";
 const BG_COLOR = "#0a0305";
 const CITY_DOT_COLOR = "#e2ddc9";
 const CITY_LABEL_COLOR = "rgba(226, 221, 201, 0.85)";
 const AIRPORT_COLOR = "#e2ddc9";
 const COUNTRY_LABEL_COLOR = "rgba(125, 144, 163, 0.8)";
+const URBAN_FILL_COLOR = "rgba(226, 221, 201, 0.08)";
+const URBAN_OUTLINE_COLOR = "rgba(226, 221, 201, 0.35)";
+const RUNWAY_COLOR = "rgba(226, 221, 201, 0.55)";
+// Below this on-screen size, a city/airport's outline geometry is drawn
+// as one blob of edges no bigger than the dot/mark that already stands
+// for it — the whole point of drawing it is to show real shape once
+// there's room, so a redundant illegible smear isn't worth the paint
+// cost. Falls back to the existing dot/square, same as before either
+// data field existed.
+const MIN_OUTLINE_PX = 8;
+
+const COUNTRY_FONT = "600 11px 'Rajdhani', system-ui, sans-serif";
+const CITY_FONT = "500 10px 'JetBrains Mono', monospace";
+const AIRPORT_FONT = "600 10px 'JetBrains Mono', monospace";
 
 // The app's home country (see FlightMap.css's --color-marker-selected
 // restraint comment) gets the same amber-outline treatment the earlier
@@ -288,14 +314,78 @@ function paintBuffer(canvas: HTMLCanvasElement, center: L.LatLng, zoom: number, 
     ctx.stroke(homePath);
   }
 
-  // Country name labels — skipped below a minimum on-screen ring span,
-  // not a fixed zoom threshold: a tiny country stays unlabeled at a zoom
-  // where it'd only be a few px wide regardless of zoom level number,
-  // while a huge one earns its label even zoomed out.
-  ctx.font = "600 11px 'Rajdhani', system-ui, sans-serif";
-  ctx.fillStyle = COUNTRY_LABEL_COLOR;
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
+  // City urban-area outlines — a subtle filled/stroked shape under the
+  // dot+label (drawn below in the label pass), only once there's enough
+  // on-screen room for a real shape to read as more than a smear
+  // (MIN_OUTLINE_PX); falls back to the plain dot otherwise, the same
+  // way a country stays unlabeled below its own size threshold.
+  WORLD_CITIES.forEach((city) => {
+    if (!city.worldOutline || !bounds.contains([city.pos[1], city.pos[0]])) return;
+    const path = new Path2D();
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    city.worldOutline.forEach((wp, i) => {
+      const [x, y] = projectFast(wp);
+      if (i === 0) path.moveTo(x, y);
+      else path.lineTo(x, y);
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    });
+    path.closePath();
+    if (Math.max(maxX - minX, maxY - minY) < MIN_OUTLINE_PX) return;
+    ctx.fillStyle = URBAN_FILL_COLOR;
+    ctx.fill(path);
+    ctx.strokeStyle = URBAN_OUTLINE_COLOR;
+    ctx.lineWidth = 1;
+    ctx.stroke(path);
+  });
+
+  // Airport runways — real centerlines (see worldMapData.ts's header for
+  // where this comes from), same MIN_OUTLINE_PX-gated fallback to the
+  // plain square mark drawn below in the label pass.
+  WORLD_AIRPORTS.forEach((ap) => {
+    if (!ap.worldRunways || !bounds.contains([ap.pos[1], ap.pos[0]])) return;
+    const segs = ap.worldRunways.map((seg) => seg.map((wp) => projectFast(wp)));
+    const longest = Math.max(...segs.map(([[x1, y1], [x2, y2]]) => Math.hypot(x2 - x1, y2 - y1)));
+    if (longest < MIN_OUTLINE_PX) return;
+    ctx.strokeStyle = RUNWAY_COLOR;
+    ctx.lineWidth = 2;
+    segs.forEach(([[x1, y1], [x2, y2]]) => {
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+    });
+  });
+
+  // Country/city/airport labels all compete for the same screen space at
+  // low zoom (a few hundred cities+airports can land within a few dozen
+  // px of each other), so instead of drawing each group independently —
+  // which is what produced the original overlapping-text bug — every
+  // label is a candidate box in one shared priority queue. Candidates
+  // are sorted highest-priority first (countries > cities-by-population
+  // > airports, capitals ahead of same-tier cities) and placed greedily,
+  // skipping — dropping entirely, dot/mark included — any whose box
+  // collides with one already placed. A smaller/lower-priority city
+  // simply never gets a chance to draw once the space it needed is
+  // taken, rather than drawing anyway and overlapping.
+  interface LabelCandidate {
+    priority: number;
+    x0: number; y0: number; x1: number; y1: number;
+    draw: () => void;
+  }
+  const LABEL_PAD = 2;
+  const candidates: LabelCandidate[] = [];
+
+  // Country labels — skipped below a minimum on-screen ring span, not a
+  // fixed zoom threshold: a tiny country stays unlabeled at a zoom where
+  // it'd only be a few px wide regardless of zoom level number, while a
+  // huge one earns its label even zoomed out. Highest priority tier
+  // (place-name hierarchy: country > city > airport), tie-broken by
+  // on-screen size so bigger countries' names win any rare clash between
+  // two country labels.
+  ctx.font = COUNTRY_FONT;
   visible.forEach(({ c, b }) => {
     if (!c.labelWorld) return;
     const topLeftPx = project(b.minLon, b.maxLat);
@@ -304,38 +394,91 @@ function paintBuffer(canvas: HTMLCanvasElement, center: L.LatLng, zoom: number, 
     const hPx = Math.abs(bottomRightPx[1] - topLeftPx[1]);
     if (wPx < 60 || hPx < 40) return;
     const [x, y] = projectFast(c.labelWorld);
-    ctx.fillText(c.name.toUpperCase(), x, y);
+    const text = c.name.toUpperCase();
+    const tw = ctx.measureText(text).width;
+    const th = 11;
+    candidates.push({
+      priority: 3_000_000_000 + wPx * hPx,
+      x0: x - tw / 2 - LABEL_PAD, y0: y - th / 2 - LABEL_PAD, x1: x + tw / 2 + LABEL_PAD, y1: y + th / 2 + LABEL_PAD,
+      draw: () => {
+        ctx.font = COUNTRY_FONT;
+        ctx.fillStyle = COUNTRY_LABEL_COLOR;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(text, x, y);
+      },
+    });
   });
 
   // Cities — small dot + label, distinct from airport markers below.
-  ctx.font = "500 10px 'JetBrains Mono', monospace";
+  // Priority tier below countries, ordered within itself by capital
+  // status then population — "drop smaller cities first" falls straight
+  // out of that ordering combined with the greedy placement above.
+  ctx.font = CITY_FONT;
   WORLD_CITIES.forEach((city) => {
     if (!bounds.contains([city.pos[1], city.pos[0]])) return;
     const [x, y] = projectFast(city.world);
-    ctx.beginPath();
-    ctx.arc(x, y, city.capital ? 2.4 : 1.6, 0, Math.PI * 2);
-    ctx.fillStyle = CITY_DOT_COLOR;
-    ctx.fill();
-    ctx.fillStyle = CITY_LABEL_COLOR;
-    ctx.textAlign = "left";
-    ctx.textBaseline = "middle";
-    ctx.fillText(city.name, x + 5, y);
+    const r = city.capital ? 2.4 : 1.6;
+    const tw = ctx.measureText(city.name).width;
+    const th = 10;
+    candidates.push({
+      priority: 2_000_000_000 + (city.capital ? 100_000_000 : 0) + city.pop,
+      x0: x - r, y0: y - th / 2 - LABEL_PAD, x1: x + 5 + tw + LABEL_PAD, y1: y + th / 2 + LABEL_PAD,
+      draw: () => {
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.fillStyle = CITY_DOT_COLOR;
+        ctx.fill();
+        ctx.font = CITY_FONT;
+        ctx.fillStyle = CITY_LABEL_COLOR;
+        ctx.textAlign = "left";
+        ctx.textBaseline = "middle";
+        ctx.fillText(city.name, x + 5, y);
+      },
+    });
   });
 
-  // Airports — square outline mark + IATA code, matching the earlier
-  // approved mockup's own airport-vs-aircraft visual distinction.
-  ctx.font = "600 10px 'JetBrains Mono', monospace";
-  WORLD_AIRPORTS.forEach((ap) => {
+  // Airports — a small dark-filled circle mark + IATA code, matching the
+  // earlier approved mockup's own .airport-dot exactly (a void-filled
+  // circle with a pale border, not a square — squares are Legend's
+  // "tracked/selected" shape there). Lowest priority tier (no
+  // size/importance data to rank them by, so plain dataset order breaks
+  // ties) — a crowded area's airports are the first to be dropped, after
+  // smaller cities, before any city or country name.
+  ctx.font = AIRPORT_FONT;
+  WORLD_AIRPORTS.forEach((ap, i) => {
     if (!bounds.contains([ap.pos[1], ap.pos[0]])) return;
     const [x, y] = projectFast(ap.world);
-    ctx.strokeStyle = AIRPORT_COLOR;
-    ctx.lineWidth = 1.3;
-    ctx.strokeRect(x - 3, y - 3, 6, 6);
-    ctx.fillStyle = CITY_LABEL_COLOR;
-    ctx.textAlign = "left";
-    ctx.textBaseline = "middle";
-    ctx.fillText(ap.code, x + 6, y);
+    const tw = ctx.measureText(ap.code).width;
+    const th = 10;
+    candidates.push({
+      priority: 1_000_000_000 - i,
+      x0: x - 3, y0: y - th / 2 - LABEL_PAD, x1: x + 6 + tw + LABEL_PAD, y1: y + th / 2 + LABEL_PAD,
+      draw: () => {
+        ctx.beginPath();
+        ctx.arc(x, y, 3, 0, Math.PI * 2);
+        ctx.fillStyle = BG_COLOR;
+        ctx.fill();
+        ctx.strokeStyle = AIRPORT_COLOR;
+        ctx.lineWidth = 1.4;
+        ctx.stroke();
+        ctx.font = AIRPORT_FONT;
+        ctx.fillStyle = CITY_LABEL_COLOR;
+        ctx.textAlign = "left";
+        ctx.textBaseline = "middle";
+        ctx.fillText(ap.code, x + 6, y);
+      },
+    });
   });
+
+  candidates.sort((a, b) => b.priority - a.priority);
+  const placed: { x0: number; y0: number; x1: number; y1: number }[] = [];
+  for (const cand of candidates) {
+    const collides = placed.some((p) => cand.x0 < p.x1 && cand.x1 > p.x0 && cand.y0 < p.y1 && cand.y1 > p.y0);
+    if (collides) continue;
+    cand.draw();
+    placed.push(cand);
+  }
 
   return { canvas, zoom, topLeftWorldPx, canvasW, canvasH };
 }

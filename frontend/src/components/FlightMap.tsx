@@ -30,6 +30,8 @@ import {
 } from "../api/flightApi";
 import FlightSearch from "./FlightSearch";
 import FavoritesPanel from "./FavoritesPanel";
+import Legend from "./Legend";
+import Dock from "./Dock";
 import ThemeToggle from "./ThemeToggle";
 // Lazy-loaded so worldMapData.ts's 226KB of embedded Natural Earth
 // geometry — only ever needed for the cyberpunk theme — isolates into
@@ -153,14 +155,28 @@ const MOBILE_SELECTED_ICON_SIZE = 54;
 // React element was first created.
 class RotatingPlaneIcon extends L.DivIcon {
   headingRef: { current: number };
-  constructor(options: L.DivIconOptions, headingRef: { current: number }) {
+  // Read here (via a safe DOM API, textContent) rather than interpolated
+  // into planeIcon()'s html string the way heading's rotation angle is a
+  // plain numeric transform — callsign is untrusted external OpenSky
+  // data, and Leaflet sets that html string as raw innerHTML, so baking
+  // arbitrary attacker-influenceable text straight into it would be an
+  // XSS hole (see planeIcon's own aria-label comment for the same
+  // reasoning). Unlike heading, callsign never changes after an
+  // aircraft's marker is first created, so — unlike headingRef, which
+  // AircraftMarker also re-applies on every position tick via a direct
+  // effect — this only ever needs to run once, right here.
+  callsignRef: { current: string };
+  constructor(options: L.DivIconOptions, headingRef: { current: number }, callsignRef: { current: string }) {
     super(options);
     this.headingRef = headingRef;
+    this.callsignRef = callsignRef;
   }
   createIcon(oldIcon?: HTMLElement) {
     const el = super.createIcon(oldIcon);
     const glyph = el.querySelector<HTMLElement>(".plane-glyph");
     if (glyph) glyph.style.transform = `rotate(${this.headingRef.current}deg)`;
+    const label = el.querySelector<HTMLElement>(".plane-icon-label");
+    if (label) label.textContent = this.callsignRef.current;
     return el;
   }
 }
@@ -173,7 +189,7 @@ class RotatingPlaneIcon extends L.DivIcon {
 // updates — see AircraftMarker for why that matters far more than it
 // sounds like it should. Each marker gets its own icon instance (not
 // shared across aircraft) since each needs its own headingRef.
-function planeIcon(known: boolean, selected: boolean, headingRef: { current: number }) {
+function planeIcon(known: boolean, selected: boolean, headingRef: { current: number }, callsignRef: { current: string }) {
   // Every rotation angle coincides with some real heading, so "just don't
   // rotate it" (or default to any other fixed angle) still misrepresents
   // an unknown heading as a specific real reading. Give unknown headings
@@ -204,11 +220,17 @@ function planeIcon(known: boolean, selected: boolean, headingRef: { current: num
   return new RotatingPlaneIcon(
     {
       className: `plane-icon${selected ? " plane-icon--selected" : ""}`,
-      html: `<div class="plane-icon-halo" aria-hidden="true"></div><div class="${glyphClass}" role="img" aria-label="Aircraft position marker">${PLANE_SVG}</div>`,
+      // .plane-icon-mark/.plane-icon-label are cyberpunk-theme-only (see
+      // FlightMap.css) — always present in the markup either way so
+      // RotatingPlaneIcon.createIcon() has a consistent DOM shape to fill
+      // in regardless of theme, at the cost of two harmless empty/hidden
+      // elements on the default theme.
+      html: `<div class="plane-icon-halo" aria-hidden="true"></div><div class="plane-icon-mark" aria-hidden="true"></div><div class="${glyphClass}" role="img" aria-label="Aircraft position marker">${PLANE_SVG}</div><div class="plane-icon-label" aria-hidden="true"></div>`,
       iconSize: [size, size],
       iconAnchor: [size / 2, size / 2],
     },
     headingRef,
+    callsignRef,
   );
 }
 
@@ -426,7 +448,14 @@ const AircraftMarker = memo(function AircraftMarker({
   const headingRef = useRef(rotationDeg);
   headingRef.current = rotationDeg;
 
-  const icon = useMemo(() => planeIcon(known, selected, headingRef), [known, selected]);
+  // See RotatingPlaneIcon's own callsignRef comment: read once at icon-
+  // creation time via a safe DOM API, not a per-tick-updated live value
+  // the way heading is — a callsign doesn't change after an aircraft's
+  // marker first exists, so unlike headingRef this has no companion
+  // effect re-applying it to an already-mounted icon.
+  const callsignRef = useRef(position.callsign?.trim() || position.icao24.toUpperCase());
+
+  const icon = useMemo(() => planeIcon(known, selected, headingRef, callsignRef), [known, selected]);
 
   // Handles the ordinary case: an already-mounted marker whose aircraft's
   // heading changes on a later position tick. Applied directly to the
@@ -1053,7 +1082,26 @@ export default function FlightMap() {
 
   return (
     <div className="app-shell">
+      {/* Hidden once something's selected: the details panel (desktop
+          side panel or mobile bottom sheet, see .details-panel) is a
+          real flex sibling on mobile rather than an overlay, sized by
+          collapsed/expanded state — a bottom-anchored dock has no fixed
+          offset that wouldn't either overlap it or leave a gap across
+          both states, so simplest correct rule is the dock is for
+          browsing before a selection, not while the details panel
+          already owns that part of the screen. */}
+      {!selectedPos && <Dock />}
       <div className="left-overlay-stack">
+        {/* Same element, same JSX position, both themes — only its CSS
+            position differs (see [data-theme="cyberpunk"] .app-header):
+            default theme keeps it position:absolute, floating top-center
+            same as always; cyberpunk theme drops that override so it
+            flows as the first card in this column instead, matching the
+            earlier approved mockup's own brand-chip placement. */}
+        <header className="app-header">
+          <h1>Flight Tracker</h1>
+          <p className="app-header-subtitle">Live aircraft positions</p>
+        </header>
         <FlightSearch onSelect={handleSelect} />
         <FavoritesPanel
           routes={favoriteRoutes}
@@ -1062,12 +1110,13 @@ export default function FlightMap() {
           onRemoveAircraft={removeFavoriteAircraft}
           onSelect={handleSelect}
         />
+        {/* Cyberpunk-only: explains marks (airport squares, the
+            home-country amber outline) that only exist on VectorBasemap
+            — the default theme's plain OpenStreetMap tiles don't draw
+            airports at all, so there'd be nothing for a legend to key. */}
+        {theme === "cyberpunk" && <Legend />}
         <ThemeToggle theme={theme} onToggle={toggleTheme} />
       </div>
-      <header className="app-header">
-        <h1>Flight Tracker</h1>
-        <p className="app-header-subtitle">Live aircraft positions</p>
-      </header>
       {theme === "cyberpunk" && (
         <div className="tracked-chip">
           <span className="tracked-chip-dot" aria-hidden="true" />
@@ -1212,7 +1261,7 @@ export default function FlightMap() {
                 aria-pressed={selectedAircraftFavorited}
                 aria-label="Favorite this aircraft"
               >
-                {selectedAircraftFavorited ? "★" : "☆"} Aircraft
+                {selectedAircraftFavorited ? "★" : "☆"} Track Aircraft
               </button>
               <button
                 type="button"
@@ -1223,7 +1272,7 @@ export default function FlightMap() {
                 aria-label="Favorite this route"
                 title={!dossier?.originAirport || !dossier?.destinationAirport ? "Route not known for this aircraft yet" : undefined}
               >
-                {selectedRouteFavorited ? "★" : "☆"} Route
+                {selectedRouteFavorited ? "★" : "☆"} Track Route
               </button>
             </div>
             <p className="details-panel-meta">ICAO24 {selectedPos.icao24.toUpperCase()} · last leg traced above</p>

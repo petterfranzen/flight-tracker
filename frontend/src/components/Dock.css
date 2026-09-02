@@ -1,0 +1,56 @@
+/* Bottom-left persistent icon toolbar, same position style as
+   .left-overlay-stack (see FlightMap.css) — an absolute overlay over the
+   map, not part of document flow, matching every other piece of chrome
+   in this app. */
+.dock-wrap {
+  position: absolute;
+  left: 16px;
+  /* Clears Leaflet's own scale-bar control (ScaleBar.tsx, "bottomleft")
+     — its content is ~33px tall plus Leaflet's own ~10px control margin,
+     so 16px here would sit directly on top of it. Stacked above rather
+     than moved beside it because the scale bar's width varies with
+     whatever round distance is currently showing (see ScaleBar.tsx's
+     BREAKPOINTS_KM) — a fixed height clearance is the stable dimension. */
+  bottom: 56px;
+  z-index: 500;
+}
+
+.dock {
+  display: flex;
+  gap: 10px;
+}
+
+.dock-tile {
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: var(--color-panel);
+  border: 1px solid var(--color-panel-border);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+  cursor: pointer;
+}
+
+.dock-tile:hover:not(:disabled) {
+  background: var(--color-panel-border);
+}
+
+.dock-tile svg {
+  width: 19px;
+  height: 19px;
+  stroke: var(--color-accent);
+  fill: none;
+  stroke-width: 1.6;
+}
+
+.dock-tile:hover:not(:disabled) svg {
+  stroke: var(--color-marker-selected);
+}
+
+.dock-tile:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
