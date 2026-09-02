@@ -53,6 +53,12 @@ test.describe("favorites", () => {
 
     await favoriteItem.locator(".favorites-panel-item-remove").click();
     await expect(page.locator(".favorites-panel-item")).toHaveCount(0);
+
+    // The toggle's label only reflects open/closed state, not the
+    // favorite count (see FavoritesPanel.tsx) — it still reads "Hide
+    // favorites ▲" while open regardless of how many favorites remain.
+    // Close it to see the zero-favorites closed-state label.
+    await favoritesToggle.click();
     await expect(favoritesToggle).toHaveText("★ Favorites ▼");
   });
 });
