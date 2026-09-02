@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MapContainer, TileLayer, Marker, Polyline, useMap, useMapEvents } from "react-leaflet";
 import MarkerClusterGroup from "react-leaflet-cluster";
 import L from "leaflet";
@@ -30,10 +30,20 @@ import {
 } from "../api/flightApi";
 import FlightSearch from "./FlightSearch";
 import FavoritesPanel from "./FavoritesPanel";
+import Legend from "./Legend";
+import Dock from "./Dock";
+import ThemeToggle from "./ThemeToggle";
+// Lazy-loaded so worldMapData.ts's 226KB of embedded Natural Earth
+// geometry — only ever needed for the cyberpunk theme — isolates into
+// its own async chunk instead of bloating the main bundle default-theme
+// users pay for on every load.
+const VectorBasemap = lazy(() => import("./VectorBasemap"));
 import ScaleBar from "./ScaleBar";
 import "./FlightMap.css";
 import type { FavoriteAircraft, FavoriteRoute } from "../favorites";
 import { isAircraftFavorited, isRouteFavorited, loadFavoriteAircraft, loadFavoriteRoutes, toggleFavoriteAircraft, toggleFavoriteRoute } from "../favorites";
+import type { Theme } from "../theme";
+import { loadTheme, saveTheme } from "../theme";
 
 // The two timers that drive the whole "watch" lifecycle, replacing the old
 // manually-controlled poll-window UI (Watch active/stood down, Stop/Resume
@@ -87,6 +97,20 @@ const DIALOG_STOP_MS = 5 * 60_000;
 
 const ROUTE_COLOR = "#4db2ff"; // matches --color-accent in FlightMap.css
 
+// Cyberpunk theme's TileLayer points here instead of OpenStreetMap — a
+// transparent 1x1 PNG as a data: URI, so Leaflet never makes a real
+// network request for it (no fetch at all; the browser just decodes the
+// inline data), and every tile renders fully invisible. A *real*
+// TileLayer still has to be mounted even so: confirmed by bisection that
+// swapping it out entirely (rendering only VectorBasemap, or a raw
+// L.gridLayer() with no url) makes Leaflet throw inside a passive effect
+// on mount — something in Leaflet/react-leaflet's own internals
+// genuinely depends on a real TileLayer component existing, not just
+// "some layer, any layer." This satisfies that without fetching or
+// showing any real map imagery — VectorBasemap draws over it.
+const BLANK_TILE_URL =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+
 // A small rotated dart stands in for the transponder icon — heading comes
 // straight off the state vector. This used to be the Unicode ✈ glyph
 // (U+2708) rotated by a fixed offset to correct for its assumed native
@@ -131,14 +155,28 @@ const MOBILE_SELECTED_ICON_SIZE = 54;
 // React element was first created.
 class RotatingPlaneIcon extends L.DivIcon {
   headingRef: { current: number };
-  constructor(options: L.DivIconOptions, headingRef: { current: number }) {
+  // Read here (via a safe DOM API, textContent) rather than interpolated
+  // into planeIcon()'s html string the way heading's rotation angle is a
+  // plain numeric transform — callsign is untrusted external OpenSky
+  // data, and Leaflet sets that html string as raw innerHTML, so baking
+  // arbitrary attacker-influenceable text straight into it would be an
+  // XSS hole (see planeIcon's own aria-label comment for the same
+  // reasoning). Unlike heading, callsign never changes after an
+  // aircraft's marker is first created, so — unlike headingRef, which
+  // AircraftMarker also re-applies on every position tick via a direct
+  // effect — this only ever needs to run once, right here.
+  callsignRef: { current: string };
+  constructor(options: L.DivIconOptions, headingRef: { current: number }, callsignRef: { current: string }) {
     super(options);
     this.headingRef = headingRef;
+    this.callsignRef = callsignRef;
   }
   createIcon(oldIcon?: HTMLElement) {
     const el = super.createIcon(oldIcon);
     const glyph = el.querySelector<HTMLElement>(".plane-glyph");
     if (glyph) glyph.style.transform = `rotate(${this.headingRef.current}deg)`;
+    const label = el.querySelector<HTMLElement>(".plane-icon-label");
+    if (label) label.textContent = this.callsignRef.current;
     return el;
   }
 }
@@ -151,7 +189,7 @@ class RotatingPlaneIcon extends L.DivIcon {
 // updates — see AircraftMarker for why that matters far more than it
 // sounds like it should. Each marker gets its own icon instance (not
 // shared across aircraft) since each needs its own headingRef.
-function planeIcon(known: boolean, selected: boolean, headingRef: { current: number }) {
+function planeIcon(known: boolean, selected: boolean, headingRef: { current: number }, callsignRef: { current: string }) {
   // Every rotation angle coincides with some real heading, so "just don't
   // rotate it" (or default to any other fixed angle) still misrepresents
   // an unknown heading as a specific real reading. Give unknown headings
@@ -182,11 +220,17 @@ function planeIcon(known: boolean, selected: boolean, headingRef: { current: num
   return new RotatingPlaneIcon(
     {
       className: `plane-icon${selected ? " plane-icon--selected" : ""}`,
-      html: `<div class="plane-icon-halo" aria-hidden="true"></div><div class="${glyphClass}" role="img" aria-label="Aircraft position marker">${PLANE_SVG}</div>`,
+      // .plane-icon-mark/.plane-icon-label are cyberpunk-theme-only (see
+      // FlightMap.css) — always present in the markup either way so
+      // RotatingPlaneIcon.createIcon() has a consistent DOM shape to fill
+      // in regardless of theme, at the cost of two harmless empty/hidden
+      // elements on the default theme.
+      html: `<div class="plane-icon-halo" aria-hidden="true"></div><div class="plane-icon-mark" aria-hidden="true"></div><div class="${glyphClass}" role="img" aria-label="Aircraft position marker">${PLANE_SVG}</div><div class="plane-icon-label" aria-hidden="true"></div>`,
       iconSize: [size, size],
       iconAnchor: [size / 2, size / 2],
     },
     headingRef,
+    callsignRef,
   );
 }
 
@@ -404,7 +448,14 @@ const AircraftMarker = memo(function AircraftMarker({
   const headingRef = useRef(rotationDeg);
   headingRef.current = rotationDeg;
 
-  const icon = useMemo(() => planeIcon(known, selected, headingRef), [known, selected]);
+  // See RotatingPlaneIcon's own callsignRef comment: read once at icon-
+  // creation time via a safe DOM API, not a per-tick-updated live value
+  // the way heading is — a callsign doesn't change after an aircraft's
+  // marker first exists, so unlike headingRef this has no companion
+  // effect re-applying it to an already-mounted icon.
+  const callsignRef = useRef(position.callsign?.trim() || position.icao24.toUpperCase());
+
+  const icon = useMemo(() => planeIcon(known, selected, headingRef, callsignRef), [known, selected]);
 
   // Handles the ordinary case: an already-mounted marker whose aircraft's
   // heading changes on a later position tick. Applied directly to the
@@ -484,6 +535,20 @@ export default function FlightMap() {
   // themselves (toggleFavoriteRoute/toggleFavoriteAircraft do both).
   const [favoriteRoutes, setFavoriteRoutes] = useState<FavoriteRoute[]>(() => loadFavoriteRoutes());
   const [favoriteAircraft, setFavoriteAircraft] = useState<FavoriteAircraft[]>(() => loadFavoriteAircraft());
+
+  // Decides which map layer mounts below (TileLayer vs. VectorBasemap),
+  // not just CSS — index.html's own inline script already set the
+  // data-theme DOM attribute before first paint if the stored preference
+  // was "cyberpunk" (see theme.ts), so loadTheme() here just needs to
+  // agree with what's already on screen, not re-apply it.
+  const [theme, setTheme] = useState<Theme>(() => loadTheme());
+  const toggleTheme = useCallback(() => {
+    setTheme((prev) => {
+      const next: Theme = prev === "cyberpunk" ? "default" : "cyberpunk";
+      saveTheme(next);
+      return next;
+    });
+  }, []);
 
   // When the current fetch cycle began — see startCycle below. A ref, not
   // state: read inside setInterval closures, never itself needs to
@@ -1001,6 +1066,14 @@ export default function FlightMap() {
   // is trying to keep an eye on it.
   const unselectedList = selected ? list.filter((p) => p.icao24 !== selected) : list;
 
+  // Cyberpunk theme's "TRACKED" status chip — at cluster-summary zoom
+  // (see CLUSTER_FETCH_MAX_ZOOM) `positions` isn't populated with
+  // individual aircraft at all, only clusterPoints' aggregated counts
+  // are, so the true current total has to come from whichever of the
+  // two is actually active right now rather than always reading list.length.
+  const trackedCount =
+    zoom <= CLUSTER_FETCH_MAX_ZOOM ? clusterPoints.reduce((sum, c) => sum + c.count, 0) : list.length;
+
   const selectedAircraftFavorited = selectedPos ? isAircraftFavorited(favoriteAircraft, selectedPos.icao24) : false;
   const selectedRouteFavorited =
     dossier?.originAirport && dossier?.destinationAirport
@@ -1009,7 +1082,26 @@ export default function FlightMap() {
 
   return (
     <div className="app-shell">
+      {/* Hidden once something's selected: the details panel (desktop
+          side panel or mobile bottom sheet, see .details-panel) is a
+          real flex sibling on mobile rather than an overlay, sized by
+          collapsed/expanded state — a bottom-anchored dock has no fixed
+          offset that wouldn't either overlap it or leave a gap across
+          both states, so simplest correct rule is the dock is for
+          browsing before a selection, not while the details panel
+          already owns that part of the screen. */}
+      {!selectedPos && <Dock />}
       <div className="left-overlay-stack">
+        {/* Same element, same JSX position, both themes — only its CSS
+            position differs (see [data-theme="cyberpunk"] .app-header):
+            default theme keeps it position:absolute, floating top-center
+            same as always; cyberpunk theme drops that override so it
+            flows as the first card in this column instead, matching the
+            earlier approved mockup's own brand-chip placement. */}
+        <header className="app-header">
+          <h1>Flight Tracker</h1>
+          <p className="app-header-subtitle">Live aircraft positions</p>
+        </header>
         <FlightSearch onSelect={handleSelect} />
         <FavoritesPanel
           routes={favoriteRoutes}
@@ -1018,11 +1110,20 @@ export default function FlightMap() {
           onRemoveAircraft={removeFavoriteAircraft}
           onSelect={handleSelect}
         />
+        {/* Cyberpunk-only: explains marks (airport squares, the
+            home-country amber outline) that only exist on VectorBasemap
+            — the default theme's plain OpenStreetMap tiles don't draw
+            airports at all, so there'd be nothing for a legend to key. */}
+        {theme === "cyberpunk" && <Legend />}
+        <ThemeToggle theme={theme} onToggle={toggleTheme} />
       </div>
-      <header className="app-header">
-        <h1>Flight Tracker</h1>
-        <p className="app-header-subtitle">Live aircraft positions</p>
-      </header>
+      {theme === "cyberpunk" && (
+        <div className="tracked-chip">
+          <span className="tracked-chip-dot" aria-hidden="true" />
+          <span className="tracked-chip-label">Tracked</span>
+          <span className="tracked-chip-value">{trackedCount.toLocaleString()}</span>
+        </div>
+      )}
 
       {showResumeDialog && (
         <div className="resume-dialog-backdrop" role="presentation">
@@ -1052,11 +1153,27 @@ export default function FlightMap() {
         className="map-container"
         zoomControl={false}
         aria-label="Live aircraft map"
+        // Leaflet's default (60) reads as ~3 zoom levels per physical
+        // scroll-wheel tick on at least one real mouse/trackpad — a jump
+        // that size defeats VectorBasemap's cyberpunk-theme zoom cache
+        // (it only pre-renders the immediate neighboring level), forcing
+        // a full synchronous repaint on every tick instead of an instant
+        // cached swap, on top of just feeling like too much per tick on
+        // the default theme too. Raised so one tick tracks ~1 level.
+        wheelPxPerZoomLevel={200}
       >
+        {/* A real, always-mounted TileLayer, not a conditional one — see
+            BLANK_TILE_URL's own comment for why cyberpunk theme still
+            needs one even though VectorBasemap replaces what it shows. */}
         <TileLayer
-          attribution='&copy; OpenStreetMap contributors'
-          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+          attribution={theme === "cyberpunk" ? "" : '&copy; OpenStreetMap contributors'}
+          url={theme === "cyberpunk" ? BLANK_TILE_URL : "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"}
         />
+        {theme === "cyberpunk" && (
+          <Suspense fallback={null}>
+            <VectorBasemap />
+          </Suspense>
+        )}
         {/* Metric only — every other distance in this app (altitude in m,
             speed in km/h) is metric, so a scale bar switching to miles/ft
             would be the odd one out. A multi-segment physical-cm ruler
@@ -1142,8 +1259,9 @@ export default function FlightMap() {
                 className={`details-panel-favorite-toggle${selectedAircraftFavorited ? " details-panel-favorite-toggle--active" : ""}`}
                 onClick={toggleSelectedAircraftFavorite}
                 aria-pressed={selectedAircraftFavorited}
+                aria-label="Favorite this aircraft"
               >
-                {selectedAircraftFavorited ? "★" : "☆"} Aircraft
+                {selectedAircraftFavorited ? "★" : "☆"} Track Aircraft
               </button>
               <button
                 type="button"
@@ -1151,9 +1269,10 @@ export default function FlightMap() {
                 onClick={toggleSelectedRouteFavorite}
                 disabled={!dossier?.originAirport || !dossier?.destinationAirport}
                 aria-pressed={selectedRouteFavorited}
+                aria-label="Favorite this route"
                 title={!dossier?.originAirport || !dossier?.destinationAirport ? "Route not known for this aircraft yet" : undefined}
               >
-                {selectedRouteFavorited ? "★" : "☆"} Route
+                {selectedRouteFavorited ? "★" : "☆"} Track Route
               </button>
             </div>
             <p className="details-panel-meta">ICAO24 {selectedPos.icao24.toUpperCase()} · last leg traced above</p>

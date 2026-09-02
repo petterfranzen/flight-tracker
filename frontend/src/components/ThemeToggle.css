@@ -1,0 +1,33 @@
+/* Same visual language as .favorites-panel-toggle/.flight-search-advanced-toggle
+   (FavoritesPanel.css/FlightSearch.css) — a floating pill button in the
+   left overlay stack, not a new pattern of its own. */
+.theme-toggle-btn {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--color-panel);
+  color: var(--color-text);
+  border: 1px solid var(--color-panel-border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+}
+
+.theme-toggle-btn:hover {
+  background: var(--color-panel-border);
+}
+
+.theme-toggle-btn--active {
+  border-color: var(--color-marker);
+  color: var(--color-marker);
+}
+
+/* [data-theme="cyberpunk"] .theme-toggle-btn gets the faceted corner
+   from the shared block in FlightMap.css — border-radius above is
+   harmless dead weight under that theme (clip-path wins), and is what
+   actually renders in the default theme. */
