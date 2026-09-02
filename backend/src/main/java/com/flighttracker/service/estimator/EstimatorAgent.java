@@ -19,8 +19,10 @@ import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.sql.Types;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -46,14 +48,28 @@ import java.util.stream.Collectors;
  *
  * Every cycle, for every aircraft findLive() currently considers live —
  * not just ones that were eligible for an estimate last cycle — this
- * writes either a freshly-projected estimate or an explicit NULL triple
- * (when EstimatedPositionService.estimate() didn't change anything: on
- * ground, no destination, too slow, too recent). Stateless by design: no
- * cross-cycle bookkeeping of "who was eligible before" is needed, and an
- * aircraft that quietly becomes ineligible without ever leaving the live
- * window (e.g. its destination gets cleared by re-enrichment) still gets
- * its stale estimate cleared on the very next cycle, not left stuck
- * forever.
+ * considers writing either a freshly-projected estimate or an explicit
+ * NULL triple (when EstimatedPositionService.estimate() didn't change
+ * anything: on ground, no destination, too slow, too recent). Stateless
+ * by design: no cross-cycle bookkeeping of "who was eligible before" is
+ * needed, and an aircraft that quietly becomes ineligible without ever
+ * leaving the live window (e.g. its destination gets cleared by
+ * re-enrichment) still gets its stale estimate cleared on the very next
+ * cycle, not left stuck forever.
+ *
+ * "Considers" - not "always does": a NULL-triple write is skipped
+ * entirely when the row's estimated_latitude is already NULL (see
+ * FlightPositionRepository.findIcao24sWithEstimate()), since writing NULL
+ * over NULL changes nothing. This matters because estimated_latitude/
+ * estimated_longitude feed idx_latest_position_bbox_estimated, so every
+ * write here — even a no-op one — is a full B-tree index update, not
+ * just a heap write; at any moment most of the live set is ineligible
+ * (grounded, no filed destination, too slow) and already has no estimate,
+ * so without this check every cycle rewrote that majority for nothing.
+ * Confirmed as the dominant contributor to real write amplification
+ * observed on the production deployment (459GB written against ~1GB of
+ * actual table data). A genuine projection, or clearing a stale non-NULL
+ * estimate, is never skipped - only a NULL-over-already-NULL write is.
  *
  * Each row's UPDATE is guarded by {@code WHERE icao24 = ? AND observed_at
  * = ?}, binding the exact observed_at this cycle's findLive() read for
@@ -115,28 +131,45 @@ public class EstimatorAgent {
         List<String> icao24s = live.stream().map(FlightPosition::getIcao24).distinct().toList();
         Map<String, Aircraft> byIcao24 = aircraftRepository.findAllById(icao24s).stream()
                 .collect(Collectors.toMap(Aircraft::getIcao24, Function.identity()));
+        Set<String> alreadyEstimated = positionRepository.findIcao24sWithEstimate();
 
-        jdbcTemplate.batchUpdate(ESTIMATE_UPDATE_SQL, live, JDBC_BATCH_SIZE,
-                (PreparedStatement ps, FlightPosition p) -> bindEstimateUpdate(ps, p, byIcao24, now));
+        // Decided upfront, not inside the PreparedStatementSetter below —
+        // batchUpdate binds every item in the list it's given, so skipping
+        // a row means never adding it here, not skipping some binding step.
+        List<PendingEstimate> toWrite = new ArrayList<>(live.size());
+        for (FlightPosition p : live) {
+            Aircraft a = byIcao24.get(p.getIcao24());
+            Double destLat = a == null ? null : a.getDestinationAirportLat();
+            Double destLon = a == null ? null : a.getDestinationAirportLon();
 
-        log.debug("estimated positions for {} live aircraft", live.size());
+            // estimate() returns the exact same reference `p` when it
+            // decided not to project (on ground, no destination, too
+            // slow, too recent) and a new object only when it actually
+            // did — cheap, correct way to tell which happened without
+            // re-deriving the eligibility rules here.
+            FlightPosition estimated = EstimatedPositionService.estimate(p, now, destLat, destLon);
+            boolean projected = estimated != p;
+            if (!projected && !alreadyEstimated.contains(p.getIcao24())) continue; // NULL over already-NULL: nothing to do
+            toWrite.add(new PendingEstimate(p, projected ? estimated : null));
+        }
+        if (toWrite.isEmpty()) return;
+
+        jdbcTemplate.batchUpdate(ESTIMATE_UPDATE_SQL, toWrite, JDBC_BATCH_SIZE,
+                (PreparedStatement ps, PendingEstimate pe) -> bindEstimateUpdate(ps, pe, now));
+
+        log.debug("estimated positions for {} of {} live aircraft ({} unchanged, skipped)",
+                toWrite.size(), live.size(), live.size() - toWrite.size());
     }
 
-    private static void bindEstimateUpdate(PreparedStatement ps, FlightPosition p,
-                                            Map<String, Aircraft> byIcao24, Instant now) throws SQLException {
-        Aircraft a = byIcao24.get(p.getIcao24());
-        Double destLat = a == null ? null : a.getDestinationAirportLat();
-        Double destLon = a == null ? null : a.getDestinationAirportLon();
+    /** estimated is null when this cycle resolved to "clear to NULL" (a real write, unlike the already-NULL case skipped above). */
+    private record PendingEstimate(FlightPosition original, FlightPosition estimated) {
+    }
 
-        // estimate() returns the exact same reference `p` when it decided
-        // not to project (on ground, no destination, too slow, too
-        // recent) and a new object only when it actually did — cheap,
-        // correct way to tell which happened without re-deriving the
-        // eligibility rules here.
-        FlightPosition estimated = EstimatedPositionService.estimate(p, now, destLat, destLon);
-        if (estimated != p) {
-            ps.setDouble(1, estimated.getLatitude());
-            ps.setDouble(2, estimated.getLongitude());
+    private static void bindEstimateUpdate(PreparedStatement ps, PendingEstimate pe, Instant now) throws SQLException {
+        FlightPosition p = pe.original();
+        if (pe.estimated() != null) {
+            ps.setDouble(1, pe.estimated().getLatitude());
+            ps.setDouble(2, pe.estimated().getLongitude());
             ps.setTimestamp(3, Timestamp.from(now));
         } else {
             ps.setNull(1, Types.DOUBLE);
