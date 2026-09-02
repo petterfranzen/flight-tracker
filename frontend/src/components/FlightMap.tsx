@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MapContainer, TileLayer, Marker, Polyline, useMap, useMapEvents } from "react-leaflet";
 import MarkerClusterGroup from "react-leaflet-cluster";
 import L from "leaflet";
@@ -31,7 +31,11 @@ import {
 import FlightSearch from "./FlightSearch";
 import FavoritesPanel from "./FavoritesPanel";
 import ThemeToggle from "./ThemeToggle";
-import VectorBasemap from "./VectorBasemap";
+// Lazy-loaded so worldMapData.ts's 226KB of embedded Natural Earth
+// geometry — only ever needed for the cyberpunk theme — isolates into
+// its own async chunk instead of bloating the main bundle default-theme
+// users pay for on every load.
+const VectorBasemap = lazy(() => import("./VectorBasemap"));
 import ScaleBar from "./ScaleBar";
 import "./FlightMap.css";
 import type { FavoriteAircraft, FavoriteRoute } from "../favorites";
@@ -1100,6 +1104,14 @@ export default function FlightMap() {
         className="map-container"
         zoomControl={false}
         aria-label="Live aircraft map"
+        // Leaflet's default (60) reads as ~3 zoom levels per physical
+        // scroll-wheel tick on at least one real mouse/trackpad — a jump
+        // that size defeats VectorBasemap's cyberpunk-theme zoom cache
+        // (it only pre-renders the immediate neighboring level), forcing
+        // a full synchronous repaint on every tick instead of an instant
+        // cached swap, on top of just feeling like too much per tick on
+        // the default theme too. Raised so one tick tracks ~1 level.
+        wheelPxPerZoomLevel={200}
       >
         {/* A real, always-mounted TileLayer, not a conditional one — see
             BLANK_TILE_URL's own comment for why cyberpunk theme still
@@ -1108,7 +1120,11 @@ export default function FlightMap() {
           attribution={theme === "cyberpunk" ? "" : '&copy; OpenStreetMap contributors'}
           url={theme === "cyberpunk" ? BLANK_TILE_URL : "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"}
         />
-        {theme === "cyberpunk" && <VectorBasemap />}
+        {theme === "cyberpunk" && (
+          <Suspense fallback={null}>
+            <VectorBasemap />
+          </Suspense>
+        )}
         {/* Metric only — every other distance in this app (altitude in m,
             speed in km/h) is metric, so a scale bar switching to miles/ft
             would be the odd one out. A multi-segment physical-cm ruler
@@ -1194,6 +1210,7 @@ export default function FlightMap() {
                 className={`details-panel-favorite-toggle${selectedAircraftFavorited ? " details-panel-favorite-toggle--active" : ""}`}
                 onClick={toggleSelectedAircraftFavorite}
                 aria-pressed={selectedAircraftFavorited}
+                aria-label="Favorite this aircraft"
               >
                 {selectedAircraftFavorited ? "★" : "☆"} Aircraft
               </button>
@@ -1203,6 +1220,7 @@ export default function FlightMap() {
                 onClick={toggleSelectedRouteFavorite}
                 disabled={!dossier?.originAirport || !dossier?.destinationAirport}
                 aria-pressed={selectedRouteFavorited}
+                aria-label="Favorite this route"
                 title={!dossier?.originAirport || !dossier?.destinationAirport ? "Route not known for this aircraft yet" : undefined}
               >
                 {selectedRouteFavorited ? "★" : "☆"} Route
