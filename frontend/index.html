@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Flight Tracker</title>
+    <title>Netwatch Skygrid</title>
     <!-- Sets the theme attribute before any stylesheet paints, so a
          stored "cyberpunk" preference never flashes the default theme
          for a frame on load. Synchronous and blocking on purpose — must
@@ -20,8 +20,11 @@
       })();
     </script>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <!-- Cyberpunk theme's display/body/data faces. Harmless to load
-         unconditionally: this stylesheet only defines @font-face rules,
+    <!-- Cyberpunk theme's one face, used everywhere (heading, body, and
+         data text alike — a three-typeface display/body/data split read
+         as visually inconsistent across the theme, not intentional
+         variety). Harmless to load unconditionally: this stylesheet only
+         defines @font-face rules,
          and browsers fetch the actual font files lazily, only once a
          matching font-family is actually used by matched content — the
          default theme never references these names, so it costs
@@ -31,7 +34,7 @@
          moment cyberpunk theme first needs a glyph. -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=Rajdhani:wght@500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600;700&display=swap" />
   </head>
   <body>
     <div id="root"></div>

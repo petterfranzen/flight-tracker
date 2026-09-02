@@ -18,18 +18,9 @@ test.describe("aircraft marker positions", () => {
     await page.goto("/");
     await page.waitForSelector(".leaflet-container", { timeout: 10_000 });
 
-    // Zoom in tight on one specific fixture aircraft — past
-    // disableClusteringAtZoom, so it's guaranteed to render as its own
-    // individual marker rather than being folded into a cluster bubble
-    // (at the default zoom, all 30 fixture aircraft land in one bubble).
     const target = LIVE_FIXTURE.find((p) => p.icao24 === "4aad15")!;
     await setMapView(page, target.latitude, target.longitude, 11);
     await page.waitForSelector(".plane-icon", { timeout: 10_000 });
-    // MarkerClusterGroup's chunkedLoading places markers over several
-    // setTimeout batches rather than all at once — waiting for the first
-    // .plane-icon to exist doesn't mean every marker has reached its
-    // final position yet.
-    await page.waitForTimeout(500);
 
     const expected = await getMapLatLngToContainerPoint(page, target.latitude, target.longitude);
     const marker = await findMarkerNear(page, target.latitude, target.longitude);
@@ -83,14 +74,11 @@ test.describe("aircraft marker positions", () => {
 
     await setMapView(page, aircraftA.latitude, aircraftA.longitude, 11);
     await page.waitForSelector(".plane-icon", { timeout: 10_000 });
-    await page.waitForTimeout(500); // let chunkedLoading finish placing every marker
     await (await findMarkerNear(page, aircraftA.latitude, aircraftA.longitude)).click();
     await page.getByText("ICAO24 4AAD15").waitFor({ timeout: 2000 });
 
     // Before A's (slow) history resolves, select B — zoom out first so both
-    // markers are reachable without waiting on FollowSelected's flyTo. Stays
-    // at exactly disableClusteringAtZoom (10): below it the two would
-    // cluster into one bubble with nothing individually clickable.
+    // markers are reachable without waiting on FollowSelected's flyTo.
     await setMapView(page, (aircraftA.latitude + aircraftB.latitude) / 2, (aircraftA.longitude + aircraftB.longitude) / 2, 10);
     await page.waitForTimeout(500);
 

@@ -193,16 +193,8 @@
   display: none;
 }
 
-/* Matches the app-wide eyebrow-label convention (see
-   .details-panel-eyebrow in FlightMap.css) — default theme's plain
+/* Full styling lives in the shared [data-theme="cyberpunk"] eyebrow rule
+   in FlightMap.css (display included — inline-block there overrides
+   this element's display:none above) — default theme's plain
    placeholder text already says what the field is for, so this only
-   shows up for cyberpunk theme's own labeled-field look. */
-[data-theme="cyberpunk"] .flight-search-eyebrow {
-  display: block;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--color-warn);
-  margin-bottom: 6px;
-}
+   ever shows up for cyberpunk theme's own labeled-field look. */

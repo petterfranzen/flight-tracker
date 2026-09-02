@@ -1,10 +1,10 @@
-import type { Bounds, ClusterPoint, FlightPosition } from "../types/flight";
+import type { Bounds, FlightPosition } from "../types/flight";
 
 /**
  * Client-side synthetic fleet for stress-testing map/marker rendering
  * performance without a real backend — enabled via ?mockPlanes=N in the
  * URL (e.g. http://localhost:5183/?mockPlanes=1500), read by
- * fetchLivePositions/fetchLiveClusters in flightApi.ts. Not wired into
+ * fetchLivePositions/fetchLiveCount in flightApi.ts. Not wired into
  * any UI control; a deliberate, URL-triggered dev tool, off by default.
  * Only seeds positions — a mock aircraft's dossier/history endpoints
  * aren't faked, so selecting one won't show real details, just an empty
@@ -97,18 +97,4 @@ export function filterByBounds(positions: FlightPosition[], bounds?: Bounds): Fl
   return positions.filter(
     (p) => p.latitude >= bounds.latMin && p.latitude <= bounds.latMax && p.longitude >= bounds.lonMin && p.longitude <= bounds.lonMax,
   );
-}
-
-export function clusterMockFleet(positions: FlightPosition[], bounds: Bounds, gridDeg: number): ClusterPoint[] {
-  const cells = new Map<string, ClusterPoint>();
-  for (const p of positions) {
-    if (p.latitude < bounds.latMin || p.latitude > bounds.latMax || p.longitude < bounds.lonMin || p.longitude > bounds.lonMax) continue;
-    const cellLat = Math.floor(p.latitude / gridDeg) * gridDeg;
-    const cellLon = Math.floor(p.longitude / gridDeg) * gridDeg;
-    const key = `${cellLat},${cellLon}`;
-    const existing = cells.get(key);
-    if (existing) existing.count++;
-    else cells.set(key, { lat: cellLat + gridDeg / 2, lon: cellLon + gridDeg / 2, count: 1 });
-  }
-  return Array.from(cells.values());
 }

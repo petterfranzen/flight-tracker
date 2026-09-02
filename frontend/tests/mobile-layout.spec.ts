@@ -126,14 +126,15 @@ test.describe("mobile layout", () => {
     await expect(panel).toBeVisible();
     const box = await panel.boundingBox();
     expect(box).not.toBeNull();
-    // Compact card anchored ~16px from the bottom-right corner, sized to
-    // its content and capped well under the viewport height — not a
-    // full-height sidebar (see FlightMap.css's .details-panel comment:
-    // that used to paint directly over .tracked-chip, which shares the
-    // same top-right corner).
+    // Compact card anchored ~16px from the right edge, vertically
+    // centered, sized to its content and capped well under the viewport
+    // height — not a full-height sidebar (see FlightMap.css's
+    // .details-panel comment: that used to paint directly over
+    // .tracked-chip, which shares the same top-right corner).
     expect(box!.width).toBeLessThan(320);
     expect(Math.abs(box!.x + box!.width - (DESKTOP_VIEWPORT.width - 16))).toBeLessThan(5);
-    expect(Math.abs(box!.y + box!.height - (DESKTOP_VIEWPORT.height - 16))).toBeLessThan(5);
+    const verticalCenter = box!.y + box!.height / 2;
+    expect(Math.abs(verticalCenter - DESKTOP_VIEWPORT.height / 2)).toBeLessThan(5);
     expect(box!.height).toBeLessThan(DESKTOP_VIEWPORT.height - 150);
 
     await page.screenshot({ path: "/tmp/desktop-layout-dossier-panel.png" });

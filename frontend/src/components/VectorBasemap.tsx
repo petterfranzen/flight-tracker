@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef } from "react";
 import { useMap, useMapEvents } from "react-leaflet";
 import L from "leaflet";
 import { AIRPORTS, CITIES, COUNTRIES } from "../worldMapData";
+import { fetchAirportGates, type AirportGateFeature } from "../api/flightApi";
 
 // Leaflet's own default CRS — used directly (not map.options.crs, which
 // is the same object here, but this makes the precompute step below,
@@ -147,6 +148,21 @@ const RUNWAY_COLOR = "rgba(226, 221, 201, 0.55)";
 // data field existed.
 const MIN_OUTLINE_PX = 8;
 
+// Terminal/hangar buildings and parking aprons (filled polygons), and
+// individual gate positions (points) — real OpenStreetMap infrastructure
+// via the backend's Overpass proxy (see fetchAirportGates), not bundled
+// data like the country/city/runway geometry above: no dataset at that
+// scale has this, it only exists per-airport. Only fetched (see
+// scheduleGateFetch below) and drawn once zoomed in this close — showing
+// gate-level detail at anything wider would be both invisible and a
+// waste of the request.
+const GATES_MIN_ZOOM = 14;
+const APRON_FILL_COLOR = "rgba(125, 144, 163, 0.10)";
+const APRON_OUTLINE_COLOR = "rgba(125, 144, 163, 0.4)";
+const TERMINAL_FILL_COLOR = "rgba(226, 221, 201, 0.14)";
+const TERMINAL_OUTLINE_COLOR = "rgba(226, 221, 201, 0.6)";
+const GATE_COLOR = "#e2ddc9";
+
 const COUNTRY_FONT = "600 11px 'Rajdhani', system-ui, sans-serif";
 const CITY_FONT = "500 10px 'JetBrains Mono', monospace";
 const AIRPORT_FONT = "600 10px 'JetBrains Mono', monospace";
@@ -174,9 +190,12 @@ interface ZoomBuffer {
  * Pure with respect to any live Leaflet map instance — everything here
  * is real CRS math against an arbitrary (center, zoom), which is what
  * lets this run for zoom levels the map isn't even currently at, ahead
- * of time, for the pre-rendered cache below.
+ * of time, for the pre-rendered cache below. Also pure with respect to
+ * `gateCache` — a read-only snapshot, keyed by airport code, of whatever
+ * Overpass gate data has arrived so far (see scheduleGateFetch); this
+ * function never fetches, it only draws whatever's already there.
  */
-function paintBuffer(canvas: HTMLCanvasElement, center: L.LatLng, zoom: number, size: L.Point): ZoomBuffer {
+function paintBuffer(canvas: HTMLCanvasElement, center: L.LatLng, zoom: number, size: L.Point, gateCache: Map<string, AirportGateFeature[]>): ZoomBuffer {
   const pad = BASEMAP_PADDING_VIEWPORTS;
   const canvasW = size.x * (1 + 2 * pad);
   const canvasH = size.y * (1 + 2 * pad);
@@ -232,7 +251,11 @@ function paintBuffer(canvas: HTMLCanvasElement, center: L.LatLng, zoom: number, 
 
   ctx.strokeStyle = GRID_COLOR;
   ctx.lineWidth = 1;
-  const gridStepDeg = 10;
+  // Halved from 10 — halving the step in both directions quarters each
+  // cell's area, i.e. fits 4 of the new squares inside one of the old
+  // ones, matching what was actually asked for ("too big, could fit 4
+  // squares in one") rather than just "smaller" by some arbitrary amount.
+  const gridStepDeg = 5;
   for (let lon = -180; lon <= 180; lon += gridStepDeg) {
     if (lon < bounds.getWest() - gridStepDeg || lon > bounds.getEast() + gridStepDeg) continue;
     const a = project(lon, Math.max(-85, bounds.getSouth()));
@@ -358,6 +381,62 @@ function paintBuffer(canvas: HTMLCanvasElement, center: L.LatLng, zoom: number, 
       ctx.stroke();
     });
   });
+
+  // Real terminal/apron/hangar/gate geometry (see GATES_MIN_ZOOM's own
+  // comment) — drawn straight from gateCache, whatever's arrived so far;
+  // scheduleGateFetch is what actually populates it and triggers a
+  // repaint once a fetch lands, this only ever reads. Raw lon/lat pairs
+  // from the API, not part of the module-load precompute (WORLD_CITIES
+  // etc.) the way bundled data is — projected fresh here via
+  // projectWorld, cheap enough at the point counts a single airport's
+  // infrastructure actually has.
+  if (zoom >= GATES_MIN_ZOOM) {
+    for (const [, features] of gateCache) {
+      for (const feature of features) {
+        if (feature.kind === "gate") {
+          const [lon, lat] = feature.ring[0];
+          if (!bounds.contains([lat, lon])) continue;
+          const [x, y] = projectFast(projectWorld(lon, lat));
+          ctx.beginPath();
+          ctx.arc(x, y, 1.8, 0, Math.PI * 2);
+          ctx.fillStyle = GATE_COLOR;
+          ctx.fill();
+          continue;
+        }
+        // Cheap reject on the ring's first point before doing real path
+        // work — good enough here (unlike countries, a single airport's
+        // buildings/aprons are all clustered in one small area, so "is
+        // any part of this feature's own airport in view" already
+        // answered by the outer bounds check most of this loop is
+        // filtered by in practice).
+        const [lon0, lat0] = feature.ring[0];
+        if (!bounds.contains([lat0, lon0])) continue;
+        const path = new Path2D();
+        feature.ring.forEach(([lon, lat], i) => {
+          const [x, y] = projectFast(projectWorld(lon, lat));
+          if (i === 0) path.moveTo(x, y);
+          else path.lineTo(x, y);
+        });
+        path.closePath();
+        if (feature.kind === "apron") {
+          ctx.fillStyle = APRON_FILL_COLOR;
+          ctx.fill(path);
+          ctx.strokeStyle = APRON_OUTLINE_COLOR;
+          ctx.lineWidth = 1;
+          ctx.stroke(path);
+        } else {
+          // terminal and hangar share a look — both are buildings, the
+          // distinction matters for what they *are* more than how a
+          // basemap at this scale should render them differently.
+          ctx.fillStyle = TERMINAL_FILL_COLOR;
+          ctx.fill(path);
+          ctx.strokeStyle = TERMINAL_OUTLINE_COLOR;
+          ctx.lineWidth = 1.2;
+          ctx.stroke(path);
+        }
+      }
+    }
+  }
 
   // Country/city/airport labels all compete for the same screen space at
   // low zoom (a few hundred cities+airports can land within a few dozen
@@ -540,6 +619,12 @@ export default function VectorBasemap() {
   const cacheRef = useRef<Map<number, ZoomBuffer>>(new Map());
   const panThrottleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fillHandleRef = useRef<IdleHandle | null>(null);
+  // Keyed by airport code — see GATES_MIN_ZOOM/scheduleGateFetch below.
+  // Grows for the lifetime of this component; never evicted, same
+  // reasoning as the zoom-level cache above (bounded in practice by how
+  // many distinct airports someone actually zooms in on in one session).
+  const gateCacheRef = useRef<Map<string, AirportGateFeature[]>>(new Map());
+  const gateFetchingRef = useRef<Set<string>>(new Set());
 
   const positionBuffer = useCallback((buf: ZoomBuffer) => {
     const origin = map.getPixelOrigin();
@@ -561,10 +646,61 @@ export default function VectorBasemap() {
   const paintZoomLevel = useCallback((zoom: number, center: L.LatLng, size: L.Point): ZoomBuffer => {
     const existing = cacheRef.current.get(zoom);
     const canvas = existing?.canvas ?? document.createElement("canvas");
-    const buf = paintBuffer(canvas, center, zoom, size);
+    const buf = paintBuffer(canvas, center, zoom, size, gateCacheRef.current);
     cacheRef.current.set(zoom, buf);
     return buf;
   }, []);
+
+  // Set right after refreshCurrent itself is defined below — a plain ref
+  // rather than a direct reference, which would make scheduleGateFetch
+  // (and everything that depends on it) get recreated on every
+  // refreshCurrent identity change.
+  const refreshCurrentRef = useRef<(() => void) | null>(null);
+
+  // Only once zoomed in past GATES_MIN_ZOOM — real gate/apron/terminal
+  // data is both invisible and pointless to fetch any wider than that.
+  // map.getBounds() (not the padded buffer bounds paintBuffer itself
+  // uses) is deliberate here: fetching a little past what's drawn is
+  // fine, fetching for an airport nobody's actually looking at yet
+  // isn't worth a real network request to OpenStreetMap's shared
+  // Overpass instance.
+  const scheduleGateFetch = useCallback((zoom: number) => {
+    if (zoom < GATES_MIN_ZOOM) return;
+    const bounds = map.getBounds();
+    for (const ap of WORLD_AIRPORTS) {
+      if (!bounds.contains([ap.pos[1], ap.pos[0]])) continue;
+      if (gateCacheRef.current.has(ap.code) || gateFetchingRef.current.has(ap.code)) continue;
+      gateFetchingRef.current.add(ap.code);
+      fetchAirportGates(ap.code, ap.pos[1], ap.pos[0])
+        .then((features) => {
+          gateCacheRef.current.set(ap.code, features);
+          // Every gate-eligible zoom level currently cached, not just the
+          // live one — the background fill (scheduleFill) can have
+          // already pre-rendered a neighboring zoom level (e.g. 14 while
+          // this fetch was for 15) before this data existed, and
+          // showZoomLevel trusts a cache hit as a free swap with no
+          // repaint. Left alone, zooming to that neighbor later would
+          // silently show the gate-less bitmap from before this fetch
+          // landed — content missing, not just stale in place. Purging
+          // (not repainting each one directly) is enough: showZoomLevel's
+          // own cache-miss path repaints on next visit, and scheduleFill
+          // — called by every zoomend — backfills the rest.
+          for (const [z] of cacheRef.current) {
+            if (z >= GATES_MIN_ZOOM) cacheRef.current.delete(z);
+          }
+          // The zoom level this fetch was originally for might not be
+          // current anymore by the time it resolves — repainting
+          // whatever's current now is still correct either way (a no-op
+          // paint if this airport isn't even in view there), just
+          // occasionally repaints a level that didn't need it, which is
+          // cheap enough not to be worth tracking "is this still
+          // relevant" for.
+          refreshCurrentRef.current?.();
+        })
+        .catch(() => {})
+        .finally(() => gateFetchingRef.current.delete(ap.code));
+    }
+  }, [map]);
 
   // Refreshes/attaches whatever the map's current zoom level is, right
   // now — used for the initial paint, every pan refresh, and the
@@ -572,9 +708,12 @@ export default function VectorBasemap() {
   // hit) since "current zoom" is exactly the one level whose center is
   // continuously moving.
   const refreshCurrent = useCallback(() => {
-    const buf = paintZoomLevel(Math.round(map.getZoom()), map.getCenter(), map.getSize());
+    const zoom = Math.round(map.getZoom());
+    const buf = paintZoomLevel(zoom, map.getCenter(), map.getSize());
     attachBuffer(buf);
-  }, [map, paintZoomLevel, attachBuffer]);
+    scheduleGateFetch(zoom);
+  }, [map, paintZoomLevel, attachBuffer, scheduleGateFetch]);
+  refreshCurrentRef.current = refreshCurrent;
 
   // Attaches `zoom`'s buffer, painting it on the spot only on a cache
   // miss — the path a zoomstart/zoomend takes, where a hit should be a
@@ -583,7 +722,8 @@ export default function VectorBasemap() {
   const showZoomLevel = useCallback((zoom: number) => {
     const cached = cacheRef.current.get(zoom);
     attachBuffer(cached ?? paintZoomLevel(zoom, map.getCenter(), map.getSize()));
-  }, [map, attachBuffer, paintZoomLevel]);
+    scheduleGateFetch(zoom);
+  }, [map, attachBuffer, paintZoomLevel, scheduleGateFetch]);
 
   // Background-fills every missing zoom level in the map's real range
   // (minZoom..maxZoom, capped defensively by ZOOM_CACHE_MAX_LEVELS), one
