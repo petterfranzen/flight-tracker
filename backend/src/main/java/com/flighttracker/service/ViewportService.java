@@ -3,6 +3,7 @@ package com.flighttracker.service;
 import com.flighttracker.dto.Bounds;
 import com.flighttracker.model.ViewportState;
 import com.flighttracker.repository.ViewportStateRepository;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -35,6 +36,22 @@ public class ViewportService {
         this.repository = repository;
     }
 
+    /**
+     * Fire-and-forget from FlightController's point of view: this write
+     * only matters to *other* processes (the agent container's next hot
+     * poll, this process's own WebSocket broadcast filtering) — nothing
+     * about the /live response the caller is waiting on depends on it
+     * landing before that response goes out. Originally ran synchronously
+     * on the request thread; under real NAS load this row's commit was
+     * observed queuing behind heavy concurrent write I/O from the global
+     * sweep for 20+ seconds, and every /live call was paying that wait for
+     * a write it never needed to wait on in the first place. @Async moves
+     * it off the request thread entirely — correct only because this is
+     * called from FlightController, a different bean, not self-invoked
+     * (a same-class call would silently bypass the proxy @Async needs,
+     * the same pitfall AgentOrchestrator.persist() hit with @Transactional).
+     */
+    @Async("viewportReportExecutor")
     @Transactional
     public void report(Bounds bounds) {
         ViewportState state = repository.findById(ROW_ID)
