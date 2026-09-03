@@ -54,3 +54,18 @@
   cursor: default;
   opacity: 0.4;
 }
+
+/* Mobile layout (see MOBILE_BREAKPOINT_PX in FlightMap.tsx for why this
+   is the same literal, not a shared constant) — real feedback: once
+   Search/Favorites/Legend/theme all collapse to their own FABs in
+   .left-overlay-stack on a phone (see FlightSearch.css/FavoritesPanel.css/
+   Legend.css/ThemeToggle.css), this bottom dock became a second,
+   redundant set of icons for the exact same actions. Desktop is
+   untouched — there the left column is full-width cards, not icons, so
+   this dock is still a real quick-access shortcut rather than a
+   duplicate. */
+@media (max-width: 768px) {
+  .dock-wrap {
+    display: none;
+  }
+}

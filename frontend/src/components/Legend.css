@@ -39,6 +39,97 @@
   margin-right: 2px;
 }
 
+/* Desktop: hidden entirely — .map-legend-body below is just always
+   visible there, nothing to expand from an icon. Mobile shows this
+   instead by default (see the media query below) — same collapse-to-FAB
+   pattern as FlightSearch/FavoritesPanel's own FAB. */
+.map-legend-fab {
+  display: none;
+}
+
+.map-legend-body-close {
+  display: none;
+}
+
+/* Mobile layout (see MOBILE_BREAKPOINT_PX in FlightMap.tsx for why this
+   is the same literal, not a shared constant) — mirrors FavoritesPanel.css's
+   own mobile block almost exactly: collapses to a floating info-icon
+   button that expands into a full-screen overlay, instead of a
+   permanently-visible text button + card. Desktop is untouched:
+   .map-legend-body carries no styling outside this media query, so on
+   desktop it's an unstyled wrapper and every child renders exactly as it
+   did before this was introduced. */
+@media (max-width: 768px) {
+  .map-legend-fab {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 48px;
+    height: 48px;
+    padding: 0;
+    background: var(--color-panel);
+    color: var(--color-text);
+    border: 1px solid var(--color-panel-border);
+    border-radius: 50%;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+    cursor: pointer;
+  }
+
+  .map-legend-fab .map-legend-toggle-icon {
+    width: 20px;
+    height: 20px;
+    margin-right: 0;
+  }
+
+  /* Covered by the full-screen body when open (next rule) — hidden
+     outright rather than left to rely on stacking order alone, so it's
+     also out of the keyboard tab order while the sheet is open. */
+  .map-legend:has(.map-legend-body--open) .map-legend-fab {
+    display: none;
+  }
+
+  .map-legend-body {
+    display: none;
+  }
+
+  .map-legend-body--open {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    position: fixed;
+    inset: 0;
+    /* Above Leaflet's own .leaflet-top/.leaflet-bottom control layer
+       (z-index: 1000 in leaflet.css), same reasoning as FlightSearch's
+       identical rule. */
+    z-index: 1001;
+    padding: 16px;
+    padding-top: max(16px, env(safe-area-inset-top));
+    overflow-y: auto;
+    background: var(--color-bg);
+  }
+
+  .map-legend-body-close {
+    display: block;
+    align-self: flex-end;
+    background: none;
+    border: none;
+    color: var(--color-text-muted);
+    font: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    padding: 8px;
+    cursor: pointer;
+  }
+
+  /* Redundant once the FAB opens straight to this content and the close
+     button above can dismiss it again — this toggle's only reachable
+     state on mobile *is* "already open", same reasoning as
+     FavoritesPanel.css's identical rule. */
+  .map-legend-body .map-legend-toggle {
+    display: none;
+  }
+}
+
 .map-legend-list {
   list-style: none;
   margin: 6px 0 0;

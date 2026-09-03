@@ -165,7 +165,6 @@ const LAKE_OUTLINE_COLOR = "rgba(60, 224, 255, 0.5)";
 const RIVER_COLOR = "rgba(60, 224, 255, 0.4)";
 const CITY_DOT_COLOR = "#e2ddc9";
 const CITY_LABEL_COLOR = "rgba(226, 221, 201, 0.85)";
-const AIRPORT_COLOR = "#e2ddc9";
 const COUNTRY_LABEL_COLOR = "rgba(125, 144, 163, 0.8)";
 const URBAN_FILL_COLOR = "rgba(226, 221, 201, 0.08)";
 const URBAN_OUTLINE_COLOR = "rgba(226, 221, 201, 0.35)";
@@ -184,14 +183,18 @@ const MIN_OUTLINE_PX = 8;
 // data like the country/city/runway geometry above: no dataset at that
 // scale has this, it only exists per-airport. Only fetched (see
 // scheduleGateFetch below) and drawn once zoomed in this close.
-// Originally 14 (needing to zoom in past individual-street scale before
-// any of this showed at all, per live user feedback); 12 still keeps
-// this well clear of GATES_MIN_ZOOM's own reason to exist (invisible at
-// anything wider than a single airport's footprint) while surfacing the
-// terminal/apron shapes - the parts big enough to read as real geometry
-// even before you're zoomed in enough to make out individual gate dots -
-// noticeably sooner.
-const GATES_MIN_ZOOM = 12;
+// History: originally 14 (needing to zoom in past individual-street scale
+// before any of this showed at all); raised to 12, still "per live
+// feedback, too late — should already be visible around the ~10km-scale-
+// bar zoom level" (roughly zoom 9-10 at most latitudes this app's home
+// region sits at, per ScaleBar.tsx's own meters-per-pixel math), landing
+// here at 10. Lower than this trades away real cost, not just "why not
+// lower still": below GATES_MIN_ZOOM, scheduleGateFetch fires an Overpass
+// request per airport newly in view, and the *area* in view at a given
+// zoom roughly quadruples each level you go down — every step lower here
+// is a real, nonlinear jump in how many concurrent requests a wide
+// viewport can trigger against a shared public Overpass instance.
+const GATES_MIN_ZOOM = 10;
 
 // How close (on-screen px) a click needs to land to an airport's dot to
 // count as "clicked that airport" — generous enough for a real tap/click on
@@ -221,19 +224,12 @@ const TERMINAL_FILL_COLOR = "rgba(226, 221, 201, 0.14)";
 const TERMINAL_OUTLINE_COLOR = "rgba(226, 221, 201, 0.6)";
 const GATE_COLOR = "#e2ddc9";
 
-// Bumped from 11/10/13px and a 6px airport dot (real feedback: labels and
-// marks read as "too small" once there was more of everything else on
-// screen to compete with — see CITY_MIN_POP/AIRPORT_TYPES in
-// generate_world_map_data.py for the "more information" half of that).
+// Bumped from 11/10px (real feedback: labels read as "too small" once
+// there was more of everything else on screen to compete with — see
+// CITY_MIN_POP/AIRPORT_TYPES in generate_world_map_data.py for the "more
+// information" half of that).
 const COUNTRY_FONT = "600 13px 'Rajdhani', system-ui, sans-serif";
 const CITY_FONT = "500 11px 'JetBrains Mono', monospace";
-// Bumped from 10px/radius-3 (real user feedback: "cannot see it") — this
-// mark is the only thing showing where an airport is below GATES_MIN_ZOOM,
-// and it's also the click target the airport click-to-zoom handler hit-
-// tests against (see AIRPORT_CLICK_RADIUS_PX, sized to comfortably exceed
-// this radius).
-const AIRPORT_FONT = "700 14px 'JetBrains Mono', monospace";
-const AIRPORT_DOT_RADIUS = 7;
 
 // The app's home country (see FlightMap.css's --color-marker-selected
 // restraint comment) gets the same amber-outline treatment the earlier
@@ -627,49 +623,15 @@ function paintBuffer(canvas: HTMLCanvasElement, center: L.LatLng, zoom: number, 
     });
   });
 
-  // Airports — a small dark-filled circle mark + IATA code, matching the
-  // earlier approved mockup's own .airport-dot exactly (a void-filled
-  // circle with a pale border, not a square — squares are Legend's
-  // "tracked/selected" shape there). Lowest priority tier (no
-  // size/importance data to rank them by, so plain dataset order breaks
-  // ties) — a crowded area's airports are the first to be dropped, after
-  // smaller cities, before any city or country name.
-  //
-  // TODO(known limitation): this shares a canvas/pane (z-index 200) with
-  // land/cities/grid, which sits *under* markerPane (z-index 600) — a
-  // plane or cluster mark can end up drawn on top of an airport's dot or
-  // label. Fixing that for real means moving airport marks to their own
-  // always-on-top pane, which is real new surface area (a second canvas,
-  // its own redraw loop, losing this shared declutter queue) — started
-  // and reverted here rather than shipped half-finished under time
-  // pressure; airports disappearing entirely would be a worse regression
-  // than the current "sometimes covered" issue.
-  ctx.font = AIRPORT_FONT;
-  WORLD_AIRPORTS.forEach((ap, i) => {
-    if (!bounds.contains([ap.pos[1], ap.pos[0]])) return;
-    const [x, y] = projectFast(ap.world);
-    const tw = ctx.measureText(ap.code).width;
-    const th = 14;
-    const labelGap = AIRPORT_DOT_RADIUS + 3;
-    candidates.push({
-      priority: 1_000_000_000 - i,
-      x0: x - AIRPORT_DOT_RADIUS, y0: y - th / 2 - LABEL_PAD, x1: x + labelGap + tw + LABEL_PAD, y1: y + th / 2 + LABEL_PAD,
-      draw: () => {
-        ctx.beginPath();
-        ctx.arc(x, y, AIRPORT_DOT_RADIUS, 0, Math.PI * 2);
-        ctx.fillStyle = BG_COLOR;
-        ctx.fill();
-        ctx.strokeStyle = AIRPORT_COLOR;
-        ctx.lineWidth = 2.5;
-        ctx.stroke();
-        ctx.font = AIRPORT_FONT;
-        ctx.fillStyle = CITY_LABEL_COLOR;
-        ctx.textAlign = "left";
-        ctx.textBaseline = "middle";
-        ctx.fillText(ap.code, x + labelGap, y);
-      },
-    });
-  });
+  // Airport dots/labels used to be drawn here too, sharing this canvas
+  // with land/cities/grid (z-index 200, under markerPane's 600) — moved
+  // to DefaultAirports.tsx's real-Marker overlay in a dedicated
+  // always-on-top pane (see <Pane name="airport-overlay"> in
+  // FlightMap.tsx), rendered for this theme too now, per feedback (with
+  // a screenshot) that a plane or cluster mark could render on top of
+  // and hide an airport. Click/hover hit-testing below is unaffected —
+  // it never depended on anything being drawn here, only on WORLD_AIRPORTS'
+  // own coordinates.
 
   candidates.sort((a, b) => b.priority - a.priority);
   const placed: { x0: number; y0: number; x1: number; y1: number }[] = [];
