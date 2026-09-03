@@ -361,6 +361,24 @@ html, body {
   width: 220px;
 }
 
+/* A mobile drawer's own z-index:1001 (FlightSearch/FavoritesPanel/Legend
+   CSS) only wins stacking comparisons *inside* this wrapper's own
+   stacking context — .left-overlay-stack itself is position:absolute
+   with z-index:500 above, so from a sibling's perspective the whole
+   subtree is capped at 500 regardless of what a descendant sets. Real
+   bug (live screenshot): .tracked-chip is a later DOM sibling at the
+   same z-index:500 (see FlightMap.tsx — it renders right after this
+   wrapper closes), so it wins the tie and visually painted over an open
+   drawer's own close button, which happens to sit in the same top-right
+   corner. Bumping this wrapper's own z-index whenever a child drawer is
+   open — not just the drawer's — lets the whole subtree clear every
+   same-level sibling instead of only what's nested underneath it. */
+.left-overlay-stack:has(.flight-search-panel--open),
+.left-overlay-stack:has(.favorites-panel-body--open),
+.left-overlay-stack:has(.map-legend-body--open) {
+  z-index: 1001;
+}
+
 .left-overlay-stack .flight-search {
   position: static;
   width: auto;
