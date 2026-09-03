@@ -737,6 +737,18 @@ export default function VectorBasemap({ onAirportSelect }: { onAirportSelect?: (
   // many distinct airports someone actually zooms in on in one session).
   const gateCacheRef = useRef<Map<string, AirportGateFeature[]>>(new Map());
   const gateFetchingRef = useRef<Set<string>>(new Set());
+  // Set by smoothZoomTo below, read by the zoomstart handler further
+  // down: while true, zoomstart skips its usual immediate buffer swap so
+  // whichever buffer is already showing keeps riding Leaflet's own CSS
+  // zoom-transition transform for the length of the animation (exactly
+  // like it already does for a plain pan — see this file's own header on
+  // buffers being real children of the pan-transformed pane) instead of
+  // being replaced by the *target* buffer before that transform has even
+  // started, which is what raced-past/vanished under the old animate:
+  // false-only approach (see smoothZoomTo's own comment for the full
+  // reasoning). zoomend always swaps regardless of this flag, landing on
+  // the correct crisp buffer the instant the transition finishes.
+  const deferBufferSwapRef = useRef(false);
 
   const positionBuffer = useCallback((buf: ZoomBuffer) => {
     const origin = map.getPixelOrigin();
@@ -814,6 +826,46 @@ export default function VectorBasemap({ onAirportSelect }: { onAirportSelect?: (
     }
   }, [map]);
 
+  // A real animated zoom compatible with this theme's static pre-rendered
+  // buffers — flyTo (what FollowSelected in FlightMap.tsx uses for the
+  // default theme) can't be reused here: it drives the transition by
+  // continuously changing the map's *actual* fractional zoom frame to
+  // frame, re-deriving every pane position from that changing scale —
+  // fine for a raster TileLayer, which re-renders fresh tiles at whatever
+  // fractional zoom it's asked for, but this theme's buffers are each
+  // pre-rendered for one fixed integer zoom, so flyTo's continuously-
+  // changing scale reference reads as the buffer drifting out of
+  // alignment with where the map now thinks it is — the exact "races
+  // past the swap" glitch documented (and worked around by disabling
+  // animation entirely) further up this file.
+  //
+  // Leaflet's *other* built-in zoom transition — the plain CSS one
+  // setView(...,{animate:true}) normally plays, gated by _zoomAnimated
+  // (disabled theme-wide in the mount effect above) — works completely
+  // differently and *does* fit: it treats the pane's current content as
+  // a static bitmap, CSS-scales/translates that bitmap for ~250ms, then
+  // snaps to real content only once the transition ends. A static canvas
+  // buffer is exactly the kind of content that transform can stretch
+  // correctly, the same way it already stretches old raster tiles on the
+  // default theme. So: re-enable _zoomAnimated for just this one
+  // transition, use setView (not flyTo), and tell zoomstart (via
+  // deferBufferSwapRef) to leave the *current* buffer in place rather
+  // than swapping to the target one immediately — that swap now belongs
+  // at zoomend, once the CSS transition has actually finished and the
+  // map is really sitting at the integer target zoom.
+  const smoothZoomTo = useCallback(
+    (target: L.LatLngExpression, zoom: number) => {
+      const mapInternal = map as unknown as { _zoomAnimated: boolean };
+      deferBufferSwapRef.current = true;
+      mapInternal._zoomAnimated = true;
+      map.setView(target, zoom, { animate: true });
+      map.once("zoomend", () => {
+        mapInternal._zoomAnimated = false;
+      });
+    },
+    [map],
+  );
+
   // Clicking an airport's dot below GATES_MIN_ZOOM (see the click handler
   // in useMapEvents below) jumps straight to it — fetches the same real
   // gate/apron/terminal/hangar geometry scheduleGateFetch would eventually
@@ -824,16 +876,9 @@ export default function VectorBasemap({ onAirportSelect }: { onAirportSelect?: (
   // doesn't refetch it. Falls back to a fixed close zoom, not a
   // deliberately-empty view, when there's nothing to fit bounds to —  a
   // small airport OSM has no gate data for, or the fetch failing outright.
-  //
-  // animate: false for the same reason FollowSelected's own aircraft-
-  // centering setView is: this theme's whole buffer cache only swaps at
-  // zoomstart/zoomend on the assumption a zoom is instant (see this
-  // component's own header comment) — fitBounds' default animated flight
-  // would race past that swap the same way flyTo once did, showing the
-  // background vanish mid-flight.
   const zoomToAirport = useCallback((ap: (typeof WORLD_AIRPORTS)[number]) => {
     const [lon, lat] = ap.pos;
-    const fallback = () => map.setView([lat, lon], AIRPORT_ZOOM_TO_FALLBACK_ZOOM, { animate: false });
+    const fallback = () => smoothZoomTo([lat, lon], AIRPORT_ZOOM_TO_FALLBACK_ZOOM);
     const fitToFeatures = (features: AirportGateFeature[]) => {
       const bounds = L.latLngBounds([]);
       for (const feature of features) {
@@ -842,8 +887,21 @@ export default function VectorBasemap({ onAirportSelect }: { onAirportSelect?: (
       if (ap.runways) {
         for (const seg of ap.runways) for (const [rlon, rlat] of seg) bounds.extend([rlat, rlon]);
       }
-      if (bounds.isValid()) map.fitBounds(bounds, { padding: [40, 40], animate: false });
-      else fallback();
+      if (bounds.isValid()) {
+        // fitBounds computes its own center/zoom then defers to the same
+        // setView internally — animate:true reaches the same _zoomAnimated
+        // CSS path smoothZoomTo does, just via fitBounds' own call rather
+        // than a target [lat,lon]/zoom this callback doesn't have yet.
+        const mapInternal = map as unknown as { _zoomAnimated: boolean };
+        deferBufferSwapRef.current = true;
+        mapInternal._zoomAnimated = true;
+        map.fitBounds(bounds, { padding: [40, 40], animate: true });
+        map.once("zoomend", () => {
+          mapInternal._zoomAnimated = false;
+        });
+      } else {
+        fallback();
+      }
     };
     const cached = gateCacheRef.current.get(ap.code);
     if (cached) {
@@ -856,7 +914,7 @@ export default function VectorBasemap({ onAirportSelect }: { onAirportSelect?: (
         fitToFeatures(features);
       })
       .catch(fallback);
-  }, [map]);
+  }, [map, smoothZoomTo]);
 
   // Shared by the click and hover handlers below: below GATES_MIN_ZOOM an
   // airport's dot is the only thing marking where it is (its real outline
@@ -1070,9 +1128,17 @@ export default function VectorBasemap({ onAirportSelect }: { onAirportSelect?: (
     // gesture starts (before the animation plays) — showing it here
     // rather than at zoomend means the correct content is in place
     // throughout the animation instead of popping in only once it ends.
-    zoomstart: () => showZoomLevel(Math.round(map.getZoom())),
+    // Skipped when deferBufferSwapRef is set (see smoothZoomTo above): a
+    // smooth programmatic zoom wants the *current* buffer left alone
+    // here, riding Leaflet's own CSS transition, with the swap to the
+    // target buffer happening at zoomend instead once that transition's
+    // actually done.
+    zoomstart: () => {
+      if (!deferBufferSwapRef.current) showZoomLevel(Math.round(map.getZoom()));
+    },
     zoomend: () => {
       showZoomLevel(Math.round(map.getZoom()));
+      deferBufferSwapRef.current = false;
       scheduleFill();
     },
     resize: () => {

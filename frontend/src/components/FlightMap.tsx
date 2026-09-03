@@ -350,7 +350,7 @@ const SELECTED_MIN_ZOOM = 10;
 // just below for the second, count-driven backstop this alone wasn't
 // enough on its own (a fixed zoom can't know how busy any given view
 // actually is).
-const CLUSTER_FETCH_MAX_ZOOM = 7;
+const CLUSTER_FETCH_MAX_ZOOM = 8;
 
 // Backstop for individual-marker mode (zoom >= CLUSTER_FETCH_MAX_ZOOM):
 // even a "should be fine" zoom level can land on an unusually dense area
