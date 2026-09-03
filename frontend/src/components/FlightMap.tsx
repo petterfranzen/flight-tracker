@@ -1564,11 +1564,27 @@ export default function FlightMap() {
           noWrap
         />
         <Suspense fallback={null}>
-          {theme === "cyberpunk" ? (
-            <VectorBasemap onAirportSelect={handleAirportSelect} />
-          ) : (
-            <DefaultAirports onAirportSelect={handleAirportSelect} />
-          )}
+          {theme === "cyberpunk" && <VectorBasemap onAirportSelect={handleAirportSelect} />}
+          {/* Rendered on both themes now — on the default theme this is
+              the airport layer, full stop; on cyberpunk it's a second,
+              purely visual copy in a dedicated always-on-top pane
+              (interactive={false}: VectorBasemap's own capture-phase
+              hit-testing still owns clicks/hover there, unchanged) fixing
+              real feedback that a plane or cluster mark could render on
+              top of and hide an airport's dot/label, since VectorBasemap's
+              own canvas-drawn airport dots/labels were removed in favor of
+              this real-Marker overlay, which — unlike a canvas draw call —
+              can live in a pane above markerPane instead of being baked
+              into the same bitmap as land/cities/grid. DefaultAirports
+              creates its own "airport-overlay" pane (z-index 650, above
+              markerPane's 600) synchronously during render rather than via
+              react-leaflet's <Pane> — see its own comment on why a sibling
+              <Pane> raced its 878 Marker children and lost. */}
+          <DefaultAirports
+            onAirportSelect={handleAirportSelect}
+            pane={theme === "cyberpunk" ? "airport-overlay" : undefined}
+            interactive={theme !== "cyberpunk"}
+          />
         </Suspense>
         {/* Metric only — every other distance in this app (altitude in m,
             speed in km/h) is metric, so a scale bar switching to miles/ft

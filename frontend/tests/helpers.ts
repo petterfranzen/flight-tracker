@@ -103,6 +103,17 @@ export async function mockFlightApi(page: Page, opts?: { historyDelayMs?: Record
 // minified and has no stable class name to search for. Injected as a
 // string (see withMap below) so it runs inside the page, not this Node
 // process.
+//
+// depth cap raised 400->2000: this dfs increments depth on *every*
+// sibling step too, not just child steps, and DefaultAirports.tsx renders
+// one <Marker> per AIRPORTS entry (878, and now unconditionally on both
+// themes, not just the default one) as a flat sibling list inside
+// MapContainer. A long enough run of leaf siblings ahead of whatever
+// fiber actually holds the map reference blows through a depth budget
+// sized for a normal component tree before DFS ever reaches it — 2000
+// comfortably covers that plus headroom for AIRPORTS growing further,
+// without raising it so far a genuine infinite-tree bug would hang
+// instead of failing fast.
 const FIND_MAP_SNIPPET = `
   function __findLeafletMap() {
     const rootEl = document.getElementById("root");
@@ -120,7 +131,7 @@ const FIND_MAP_SNIPPET = `
       return null;
     }
     function dfs(node, depth) {
-      if (!node || found || depth > 400 || seen.has(node)) return;
+      if (!node || found || depth > 2000 || seen.has(node)) return;
       seen.add(node);
       const mp = node.memoizedProps;
       if (mp) { const r = tryVal(mp.value); if (r) { found = r; return; } }

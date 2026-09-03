@@ -41,39 +41,63 @@ export default function Legend({ theme }: { theme: Theme }) {
   const [open, setOpen] = useState(false);
   return (
     <div className="map-legend">
+      {/* Mobile only (see Legend.css) — same collapse-to-FAB pattern as
+          FlightSearch/FavoritesPanel: desktop never shows this (the
+          toggle button below is simply always visible there), a phone
+          gets an icon-only button that expands into a full-screen
+          overlay instead of a permanently-visible text button + card. */}
       <button
         type="button"
-        className="map-legend-toggle"
+        className="map-legend-fab"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        aria-controls="map-legend-content"
+        aria-controls="map-legend-body"
+        aria-label={open ? "Close legend" : "Legend"}
       >
-        <InfoIcon /> {open ? "Hide legend ▲" : "Legend ▼"}
+        <InfoIcon />
       </button>
-      {open && (
-        <ul className="map-legend-list" id="map-legend-content">
-          <li className="map-legend-row">
-            <span className="map-legend-swatch map-legend-swatch--aircraft" />
-            Live aircraft
-          </li>
-          <li className="map-legend-row">
-            <span className="map-legend-swatch map-legend-swatch--selected" />
-            Tracked / selected
-          </li>
-          {theme === "cyberpunk" && (
-            <>
-              <li className="map-legend-row">
-                <span className="map-legend-swatch map-legend-swatch--airport" />
-                Airport
-              </li>
-              <li className="map-legend-row">
-                <span className="map-legend-swatch map-legend-swatch--home" />
-                Home region
-              </li>
-            </>
-          )}
-        </ul>
-      )}
+      <div id="map-legend-body" className={`map-legend-body${open ? " map-legend-body--open" : ""}`}>
+        {/* Mobile only — the FAB above already toggles this closed too,
+            but a labeled close action inside the sheet itself is a more
+            discoverable affordance than relying on someone finding their
+            way back to a button now hidden behind this same overlay. */}
+        <button type="button" className="map-legend-body-close" onClick={() => setOpen(false)}>
+          Close legend ✕
+        </button>
+        <button
+          type="button"
+          className="map-legend-toggle"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          aria-controls="map-legend-content"
+        >
+          <InfoIcon /> {open ? "Hide legend ▲" : "Legend ▼"}
+        </button>
+        {open && (
+          <ul className="map-legend-list" id="map-legend-content">
+            <li className="map-legend-row">
+              <span className="map-legend-swatch map-legend-swatch--aircraft" />
+              Live aircraft
+            </li>
+            <li className="map-legend-row">
+              <span className="map-legend-swatch map-legend-swatch--selected" />
+              Tracked / selected
+            </li>
+            {theme === "cyberpunk" && (
+              <>
+                <li className="map-legend-row">
+                  <span className="map-legend-swatch map-legend-swatch--airport" />
+                  Airport
+                </li>
+                <li className="map-legend-row">
+                  <span className="map-legend-swatch map-legend-swatch--home" />
+                  Home region
+                </li>
+              </>
+            )}
+          </ul>
+        )}
+      </div>
     </div>
   );
 }
