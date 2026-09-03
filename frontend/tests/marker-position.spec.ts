@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { findMarkerNear, getMapLatLngToContainerPoint, HISTORIES, LIVE_FIXTURE, mockFlightApi, parsePathPoints, setMapView } from "./helpers";
+import { findMarkerNear, getMapLatLngToContainerPoint, getRoutePathScreenPoints, HISTORIES, LIVE_FIXTURE, mockFlightApi, setMapView } from "./helpers";
 
 // Fixture data captured from the real API (see tests/fixtures/ and the
 // scripts that produced them — a straight `/live` poll and `/history`
@@ -93,8 +93,7 @@ test.describe("aircraft marker positions", () => {
 
     const path = page.locator("path.route-line");
     await expect(path).toBeVisible();
-    const d = await path.getAttribute("d");
-    const points = parsePathPoints(d ?? "");
+    const points = await getRoutePathScreenPoints(page);
     const bHistory = HISTORIES["4d00d9"];
     const aHistory = HISTORIES["4aad15"];
     expect(points.length).toBeGreaterThan(0);

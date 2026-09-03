@@ -10,6 +10,7 @@ import org.springframework.data.repository.query.Param;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 public interface FlightPositionRepository extends JpaRepository<FlightPosition, Long> {
 
@@ -67,6 +68,21 @@ public interface FlightPositionRepository extends JpaRepository<FlightPosition, 
         """, nativeQuery = true)
     List<FlightPosition> findLive(@Param("staleAirborneCutoff") Instant staleAirborneCutoff,
                                    @Param("landedCutoff") Instant landedCutoff);
+
+    // EstimatorAgent's own read, ahead of its batched UPDATE — lets it tell
+    // "this aircraft isn't eligible for an estimate, and already has none
+    // stored" (truly nothing to do) apart from "isn't eligible *now*, but
+    // still has a stale one from before it needs to clear" (a real write).
+    // Without this distinction, every cycle rewrote estimated_latitude/
+    // estimated_longitude to NULL for every live-but-ineligible aircraft
+    // (the majority of the live set at any moment - grounded, no filed
+    // destination, or too slow) even when the column was already NULL -
+    // confirmed as the dominant contributor to real NAS write amplification
+    // (459GB written against ~1GB of actual table data), since those
+    // columns feed idx_latest_position_bbox_estimated: a genuinely
+    // unnecessary write there is a full index update, not just a heap one.
+    @Query(value = "SELECT icao24 FROM aircraft_latest_position WHERE estimated_latitude IS NOT NULL", nativeQuery = true)
+    Set<String> findIcao24sWithEstimate();
 
     // Same liveness window as findLive, but just the count — for the map's
     // global "TRACKED" chip, which needs how many aircraft are tracked

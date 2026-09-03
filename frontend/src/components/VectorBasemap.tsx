@@ -153,10 +153,15 @@ const MIN_OUTLINE_PX = 8;
 // via the backend's Overpass proxy (see fetchAirportGates), not bundled
 // data like the country/city/runway geometry above: no dataset at that
 // scale has this, it only exists per-airport. Only fetched (see
-// scheduleGateFetch below) and drawn once zoomed in this close — showing
-// gate-level detail at anything wider would be both invisible and a
-// waste of the request.
-const GATES_MIN_ZOOM = 14;
+// scheduleGateFetch below) and drawn once zoomed in this close.
+// Originally 14 (needing to zoom in past individual-street scale before
+// any of this showed at all, per live user feedback); 12 still keeps
+// this well clear of GATES_MIN_ZOOM's own reason to exist (invisible at
+// anything wider than a single airport's footprint) while surfacing the
+// terminal/apron shapes - the parts big enough to read as real geometry
+// even before you're zoomed in enough to make out individual gate dots -
+// noticeably sooner.
+const GATES_MIN_ZOOM = 12;
 const APRON_FILL_COLOR = "rgba(125, 144, 163, 0.10)";
 const APRON_OUTLINE_COLOR = "rgba(125, 144, 163, 0.4)";
 const TERMINAL_FILL_COLOR = "rgba(226, 221, 201, 0.14)";

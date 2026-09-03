@@ -111,10 +111,17 @@ flighttracker:
   estimator:
     # EstimatorAgent's (SPRING_PROFILES_ACTIVE=estimator) refresh cadence —
     # how often it recomputes and persists a dead-reckoned position for
-    # every live aircraft. Same value the old in-memory
-    # EstimatedPositionCache used as a hardcoded constant; externalized
-    # here for the same reason poll-interval-seconds is, above.
-    refresh-interval-seconds: 12
+    # every live aircraft. Was 12s (the old in-memory EstimatedPositionCache's
+    # hardcoded constant, carried over when this got externalized) - raised
+    # to 30s after diagnosing real NAS write-amplification (459GB written
+    # against ~1GB of actual table data): every cycle rewrites
+    # estimated_latitude/estimated_longitude for every live aircraft, and
+    # those columns feed an expression index, so each write is a full
+    # B-tree update, not just a heap write. 30s cuts that cycle count by
+    # more than half with no meaningfully worse dead-reckoning freshness -
+    # see EstimatorAgent.refresh() for the other half of this fix (skipping
+    # writes that would just re-set an already-null estimate to null).
+    refresh-interval-seconds: 30
   # Per-client-IP limits on POST /api/agents/restart specifically — the one
   # endpoint that costs real OpenSky usage. Separate from (and in addition
   # to) the global restart-quota-* above: that one protects the shared

@@ -3,6 +3,26 @@
 -- (flight hours, distance flown, utilisation %) can be derived later from
 -- the historic series rather than from a "current state" row.
 
+-- Concurrent-startup guard: the api, agent, and estimator containers all
+-- run this same schema.sql independently at boot (one image, three
+-- profiles, no separate migration step — see docker-compose.yml). Every
+-- statement below is individually idempotent (IF NOT EXISTS / ADD COLUMN
+-- IF NOT EXISTS), but that doesn't make CREATE TABLE safe under real
+-- concurrency: two sessions can both pass Postgres's existence check before
+-- either commits, then race to insert the same row into the pg_type
+-- catalog, and the loser fails with "duplicate key value violates unique
+-- constraint pg_type_typname_nsp_index" — seen on a cold multi-container
+-- start (CI's blackbox job, and the same race on a fresh production
+-- deploy). A session-level advisory lock held for the whole script
+-- serializes the three containers' first-boot runs: whichever gets here
+-- first does the real DDL, the other two block on this call until it
+-- releases (at the very end of the script) and then run through against an
+-- already-current schema — a safe no-op, since every statement here really
+-- is idempotent on its own once there's no longer a race to lose. 727433 is
+-- an arbitrary constant scoped to this app; nothing else here uses
+-- pg_advisory_lock.
+SELECT pg_advisory_lock(727433);
+
 CREATE TABLE IF NOT EXISTS aircraft (
     icao24          VARCHAR(6) PRIMARY KEY,          -- ICAO 24-bit transponder address, hex
     registration    VARCHAR(16),
@@ -233,3 +253,6 @@ CREATE TABLE IF NOT EXISTS viewport_state (
 INSERT INTO viewport_state (id, lat_min, lat_max, lon_min, lon_max)
 VALUES (1, 54.0, 66.0, 10.0, 25.0)
 ON CONFLICT (id) DO NOTHING;
+
+-- Releases the lock taken at the top of this script — see that comment.
+SELECT pg_advisory_unlock(727433);
