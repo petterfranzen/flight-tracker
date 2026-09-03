@@ -1,6 +1,7 @@
 package com.flighttracker.repository;
 
 import com.flighttracker.dto.ClusterPoint;
+import com.flighttracker.dto.LiveMarker;
 import com.flighttracker.model.FlightPosition;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
@@ -45,6 +46,19 @@ public interface FlightPositionRepository extends JpaRepository<FlightPosition, 
         COALESCE(alp.estimated_longitude, alp.longitude) AS longitude,
         alp.altitude_m, alp.velocity_ms, alp.heading_deg, alp.vertical_rate_ms,
         alp.on_ground, alp.agent_source
+        """;
+
+    // LiveMarker's own trimmed projection of LATEST_COLUMNS — see that
+    // interface's javadoc for why: everything the map's bulk /live fetch
+    // renders a marker from, and nothing it doesn't. Same COALESCE(estimated_*,
+    // ...) expressions as LATEST_COLUMNS, for the same reason (a dead-
+    // reckoned aircraft's marker belongs at EstimatorAgent's current
+    // estimate, not its last real report).
+    String LIVE_MARKER_COLUMNS = """
+        icao24, callsign, observed_at,
+        COALESCE(estimated_latitude, latitude) AS latitude,
+        COALESCE(estimated_longitude, longitude) AS longitude,
+        heading_deg
         """;
 
     // Live map, whole world: every aircraft that's still airborne (bounded
@@ -120,6 +134,33 @@ public interface FlightPositionRepository extends JpaRepository<FlightPosition, 
                                            @Param("latMax") double latMax,
                                            @Param("lonMin") double lonMin,
                                            @Param("lonMax") double lonMax);
+
+    // LiveMarker counterparts to findLive/findLiveInBounds above — same
+    // liveness window and (for the bounded form) same bbox filter, just the
+    // trimmed column list. What FlightController.live actually calls now;
+    // findLive/findLiveInBounds themselves stay in use for callers that
+    // genuinely need the full row (EstimatorAgent's own read).
+    @Query(value = "SELECT " + LIVE_MARKER_COLUMNS + """
+        FROM aircraft_latest_position
+        WHERE (on_ground = false AND observed_at > :staleAirborneCutoff)
+           OR (on_ground = true AND landed_since > :landedCutoff)
+        """, nativeQuery = true)
+    List<LiveMarker> findLiveMarkers(@Param("staleAirborneCutoff") Instant staleAirborneCutoff,
+                                      @Param("landedCutoff") Instant landedCutoff);
+
+    @Query(value = "SELECT " + LIVE_MARKER_COLUMNS + """
+        FROM aircraft_latest_position
+        WHERE ((on_ground = false AND observed_at > :staleAirborneCutoff)
+           OR (on_ground = true AND landed_since > :landedCutoff))
+          AND COALESCE(estimated_latitude, latitude) BETWEEN :latMin AND :latMax
+          AND COALESCE(estimated_longitude, longitude) BETWEEN :lonMin AND :lonMax
+        """, nativeQuery = true)
+    List<LiveMarker> findLiveMarkersInBounds(@Param("staleAirborneCutoff") Instant staleAirborneCutoff,
+                                              @Param("landedCutoff") Instant landedCutoff,
+                                              @Param("latMin") double latMin,
+                                              @Param("latMax") double latMax,
+                                              @Param("lonMin") double lonMin,
+                                              @Param("lonMax") double lonMax);
 
     // Zoomed-way-out answer to findLiveInBounds: a client-scoped viewport
     // covering a continent or the whole world can mean tens of thousands

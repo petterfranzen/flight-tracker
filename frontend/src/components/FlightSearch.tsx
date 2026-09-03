@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
-import type { FlightPosition } from "../types/flight";
+import type { FlightPosition, LiveMarker } from "../types/flight";
 import { searchFlights, searchFlightsByAirport } from "../api/flightApi";
 import "./FlightSearch.css";
 
@@ -24,9 +24,12 @@ function resultLabel(p: FlightPosition): string {
  * order-response fetch pattern; see FlightMap's liveRequestSeqRef for the
  * same idea applied to position fetches. Selecting a result just hands the
  * matched FlightPosition to `onSelect` (FlightMap's handleSelect) — which
- * already does everything "zoom to where the plane is" needs.
+ * already does everything "zoom to where the plane is" needs. onSelect
+ * itself only asks for a LiveMarker (the map's own bulk-fetch shape, which
+ * FlightPosition always structurally satisfies) since that's all a
+ * selection actually needs to start with — see LiveMarker's own comment.
  */
-export default function FlightSearch({ onSelect }: { onSelect: (p: FlightPosition) => void }) {
+export default function FlightSearch({ onSelect }: { onSelect: (p: LiveMarker) => void }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<FlightPosition[]>([]);
   const [open, setOpen] = useState(false);
