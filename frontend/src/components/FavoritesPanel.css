@@ -26,6 +26,100 @@
   background: var(--color-panel-border);
 }
 
+/* Desktop: hidden entirely — .favorites-panel-body below is just always
+   visible there, nothing to expand from an icon. Mobile shows this
+   instead by default (see the media query below) — same collapse-to-FAB
+   pattern as FlightSearch.css's own .flight-search-fab. */
+.favorites-panel-fab {
+  display: none;
+}
+
+.favorites-panel-body-close {
+  display: none;
+}
+
+/* Mobile layout (see MOBILE_BREAKPOINT_PX in FlightMap.tsx for why this
+   is the same literal, not a shared constant) — hide-by-default/reveal-
+   on-demand, mirroring FlightSearch.css's own mobile block almost
+   exactly: the favorites UI collapses to a floating star button that
+   expands into a full-screen overlay, instead of a permanently-visible
+   text button + card taking up a share of .left-overlay-stack's own
+   capped height (see FlightMap.css) all the time. Desktop is untouched:
+   .favorites-panel-body carries no styling outside this media query, so
+   on desktop it's an unstyled wrapper and every child renders exactly as
+   it did before this was introduced. */
+@media (max-width: 768px) {
+  .favorites-panel-fab {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 48px;
+    height: 48px;
+    padding: 0;
+    background: var(--color-panel);
+    color: var(--color-text);
+    border: 1px solid var(--color-panel-border);
+    border-radius: 50%;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+    cursor: pointer;
+  }
+
+  .favorites-panel-fab svg {
+    width: 20px;
+    height: 20px;
+    fill: currentColor;
+  }
+
+  /* Covered by the full-screen body when open (next rule) — hidden
+     outright rather than left to rely on stacking order alone, so it's
+     also out of the keyboard tab order while the sheet is open. */
+  .favorites-panel:has(.favorites-panel-body--open) .favorites-panel-fab {
+    display: none;
+  }
+
+  .favorites-panel-body {
+    display: none;
+  }
+
+  .favorites-panel-body--open {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    position: fixed;
+    inset: 0;
+    /* Above Leaflet's own .leaflet-top/.leaflet-bottom control layer
+       (z-index: 1000 in leaflet.css), same reasoning as FlightSearch's
+       identical rule. */
+    z-index: 1001;
+    padding: 16px;
+    padding-top: max(16px, env(safe-area-inset-top));
+    overflow-y: auto;
+    background: var(--color-bg);
+  }
+
+  .favorites-panel-body-close {
+    display: block;
+    align-self: flex-end;
+    background: none;
+    border: none;
+    color: var(--color-text-muted);
+    font: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    padding: 8px;
+    cursor: pointer;
+  }
+
+  /* Redundant once the FAB opens straight to this content and the close
+     button above can dismiss it again — this toggle's only reachable
+     state on mobile *is* "already open", so showing it here just repeats
+     the FAB/close-X's own job with no way to reach the collapsed variant
+     it displays instead. */
+  .favorites-panel-body .favorites-panel-toggle {
+    display: none;
+  }
+}
+
 .favorites-panel-content {
   margin-top: 6px;
   padding: 8px;

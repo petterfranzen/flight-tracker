@@ -31,7 +31,7 @@ export default function ThemeToggle({ theme, onToggle }: { theme: Theme; onToggl
       onClick={onToggle}
       aria-pressed={theme === "cyberpunk"}
     >
-      <LayersIcon /> Cyberpunk theme
+      <LayersIcon /> <span className="theme-toggle-label">Cyberpunk theme</span>
     </button>
   );
 }
