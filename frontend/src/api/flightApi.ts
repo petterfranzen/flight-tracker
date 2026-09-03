@@ -1,5 +1,5 @@
-import type { AircraftDossier, AircraftUsage, Bounds, FlightPosition, LiveMarker, PollingStatus } from "../types/flight";
-import { filterByBounds, getMockFleet, getMockPlaneCount } from "./mockFleet";
+import type { AircraftDossier, AircraftUsage, Bounds, ClusterPoint, FlightPosition, LiveMarker, PollingStatus } from "../types/flight";
+import { clusterMockFleet, filterByBounds, getMockFleet, getMockPlaneCount } from "./mockFleet";
 
 /**
  * Tracking is global, but a bounds-less call returns every aircraft being
@@ -15,6 +15,21 @@ export async function fetchLivePositions(bounds?: Bounds): Promise<LiveMarker[]>
     : "";
   const res = await fetch(`/api/flights/live${query}`);
   if (!res.ok) throw new Error(`live fetch failed: ${res.status}`);
+  return res.json();
+}
+
+/**
+ * Aggregated counterpart to fetchLivePositions, for a viewport too wide to
+ * usefully render individual aircraft — see CLUSTER_FETCH_MAX_ZOOM in
+ * FlightMap.tsx for where the map switches over, and FlightController.
+ * liveClusters for gridDeg's own clamping.
+ */
+export async function fetchLiveClusters(bounds: Bounds, gridDeg: number): Promise<ClusterPoint[]> {
+  const mockCount = getMockPlaneCount();
+  if (mockCount != null) return clusterMockFleet(filterByBounds(getMockFleet(mockCount), bounds), gridDeg);
+  const query = `?latMin=${bounds.latMin}&latMax=${bounds.latMax}&lonMin=${bounds.lonMin}&lonMax=${bounds.lonMax}&gridDeg=${gridDeg}`;
+  const res = await fetch(`/api/flights/live/clusters${query}`);
+  if (!res.ok) throw new Error(`live clusters fetch failed: ${res.status}`);
   return res.json();
 }
 

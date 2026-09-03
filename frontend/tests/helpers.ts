@@ -26,6 +26,13 @@ export interface FlightPositionFixture {
   agentSource: string;
 }
 
+/** One aggregated grid cell, matching backend ClusterPoint — see clustering.spec.ts. */
+export interface ClusterPointFixture {
+  lat: number;
+  lon: number;
+  count: number;
+}
+
 /**
  * Intercepts every network call FlightMap makes and serves fixture data
  * captured once from the real API (see tests/fixtures/) — no docker-compose
@@ -33,9 +40,12 @@ export interface FlightPositionFixture {
  * specific aircraft's /history response be held up artificially, which is
  * how the selection-race regression test (marker-position.spec.ts)
  * reproduces "select A, then B before A's history resolves" on demand.
+ * `clusters` lets a test supply real cluster data instead of the default
+ * empty response — see clustering.spec.ts, which needs a populated cell to
+ * assert against.
  */
-export async function mockFlightApi(page: Page, opts?: { historyDelayMs?: Record<string, number> }) {
-  await page.route("**/api/flights/live/clusters*", (route: Route) => route.fulfill({ json: [] }));
+export async function mockFlightApi(page: Page, opts?: { historyDelayMs?: Record<string, number>; clusters?: ClusterPointFixture[] }) {
+  await page.route("**/api/flights/live/clusters*", (route: Route) => route.fulfill({ json: opts?.clusters ?? [] }));
   await page.route("**/api/flights/live*", (route: Route) => route.fulfill({ json: LIVE_FIXTURE }));
 
   // FlightMap's dedicated priority poll for the selected aircraft (see

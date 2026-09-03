@@ -1,4 +1,4 @@
-import type { Bounds, FlightPosition } from "../types/flight";
+import type { Bounds, ClusterPoint, FlightPosition } from "../types/flight";
 
 /**
  * Client-side synthetic fleet for stress-testing map/marker rendering
@@ -97,4 +97,18 @@ export function filterByBounds(positions: FlightPosition[], bounds?: Bounds): Fl
   return positions.filter(
     (p) => p.latitude >= bounds.latMin && p.latitude <= bounds.latMax && p.longitude >= bounds.lonMin && p.longitude <= bounds.lonMax,
   );
+}
+
+/** Mirrors FlightPositionRepository.findLiveClusteredInBounds's own bucketing so the mock-fleet dev tool (?mockPlanes=N) still has something to show once zoomed out past CLUSTER_FETCH_MAX_ZOOM. */
+export function clusterMockFleet(positions: FlightPosition[], gridDeg: number): ClusterPoint[] {
+  const buckets = new Map<string, ClusterPoint>();
+  for (const p of positions) {
+    const bucketLat = Math.floor(p.latitude / gridDeg) * gridDeg;
+    const bucketLon = Math.floor(p.longitude / gridDeg) * gridDeg;
+    const key = `${bucketLat},${bucketLon}`;
+    const existing = buckets.get(key);
+    if (existing) existing.count++;
+    else buckets.set(key, { lat: bucketLat + gridDeg / 2, lon: bucketLon + gridDeg / 2, count: 1 });
+  }
+  return Array.from(buckets.values());
 }

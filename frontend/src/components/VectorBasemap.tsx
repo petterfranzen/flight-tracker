@@ -169,7 +169,7 @@ const GATES_MIN_ZOOM = 12;
 // something else further away. Only checked below GATES_MIN_ZOOM: past
 // that the real outline is already on screen as the guide, so there's
 // nothing left for a click here to do.
-const AIRPORT_CLICK_RADIUS_PX = 14;
+const AIRPORT_CLICK_RADIUS_PX = 20;
 
 // Where a clicked airport's own zoom-to lands when no real gate/apron/
 // terminal geometry is available to fit bounds to (fetch still in flight,
@@ -187,7 +187,13 @@ const GATE_COLOR = "#e2ddc9";
 
 const COUNTRY_FONT = "600 11px 'Rajdhani', system-ui, sans-serif";
 const CITY_FONT = "500 10px 'JetBrains Mono', monospace";
-const AIRPORT_FONT = "600 10px 'JetBrains Mono', monospace";
+// Bumped from 10px/radius-3 (real user feedback: "cannot see it") — this
+// mark is the only thing showing where an airport is below GATES_MIN_ZOOM,
+// and it's also the click target the airport click-to-zoom handler hit-
+// tests against (see AIRPORT_CLICK_RADIUS_PX, sized to comfortably exceed
+// this radius).
+const AIRPORT_FONT = "700 13px 'JetBrains Mono', monospace";
+const AIRPORT_DOT_RADIUS = 6;
 
 // The app's home country (see FlightMap.css's --color-marker-selected
 // restraint comment) gets the same amber-outline treatment the earlier
@@ -551,23 +557,24 @@ function paintBuffer(canvas: HTMLCanvasElement, center: L.LatLng, zoom: number, 
     if (!bounds.contains([ap.pos[1], ap.pos[0]])) return;
     const [x, y] = projectFast(ap.world);
     const tw = ctx.measureText(ap.code).width;
-    const th = 10;
+    const th = 13;
+    const labelGap = AIRPORT_DOT_RADIUS + 3;
     candidates.push({
       priority: 1_000_000_000 - i,
-      x0: x - 3, y0: y - th / 2 - LABEL_PAD, x1: x + 6 + tw + LABEL_PAD, y1: y + th / 2 + LABEL_PAD,
+      x0: x - AIRPORT_DOT_RADIUS, y0: y - th / 2 - LABEL_PAD, x1: x + labelGap + tw + LABEL_PAD, y1: y + th / 2 + LABEL_PAD,
       draw: () => {
         ctx.beginPath();
-        ctx.arc(x, y, 3, 0, Math.PI * 2);
+        ctx.arc(x, y, AIRPORT_DOT_RADIUS, 0, Math.PI * 2);
         ctx.fillStyle = BG_COLOR;
         ctx.fill();
         ctx.strokeStyle = AIRPORT_COLOR;
-        ctx.lineWidth = 1.4;
+        ctx.lineWidth = 2.5;
         ctx.stroke();
         ctx.font = AIRPORT_FONT;
         ctx.fillStyle = CITY_LABEL_COLOR;
         ctx.textAlign = "left";
         ctx.textBaseline = "middle";
-        ctx.fillText(ap.code, x + 6, y);
+        ctx.fillText(ap.code, x + labelGap, y);
       },
     });
   });

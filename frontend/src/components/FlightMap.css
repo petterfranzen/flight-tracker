@@ -483,8 +483,53 @@ html, body {
   to { opacity: 1; }
 }
 
+/* A real (JS-toggled) transition, not another entering-style animation:
+   unlike a mount, "gone stale because the map zoomed past
+   CLUSTER_FETCH_MAX_ZOOM" isn't a one-shot event tied to element creation
+   — plane-icon--exiting gets added straight to the className FlightMap
+   already computes on every zoom change (see AircraftMarker's exiting
+   prop), so this only needs to smooth that transition, not drive it. */
+.plane-icon {
+  transition: opacity 250ms ease-in;
+}
+
+.plane-icon--exiting {
+  opacity: 0;
+  pointer-events: none;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .plane-icon--entering { animation: none; }
+  .plane-icon { transition: none; }
+}
+
+/* Below CLUSTER_FETCH_MAX_ZOOM (see FlightMap.tsx): one bubble per
+   populated grid cell instead of individual plane-icons. Reuses
+   --color-marker (the same color an ordinary unselected aircraft renders
+   in) rather than inventing a third marker color — these bubbles stand in
+   for exactly that traffic, aggregated. */
+.cluster-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cluster-icon-mark {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--color-marker) 28%, transparent);
+  border: 2px solid var(--color-marker);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--color-marker) 55%, transparent);
+}
+
+.cluster-icon-count {
+  font: 600 12px var(--font-data);
+  color: var(--color-marker);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
 }
 
 .plane-glyph {
