@@ -775,6 +775,52 @@ export default function VectorBasemap() {
       .catch(fallback);
   }, [map]);
 
+  // Below GATES_MIN_ZOOM an airport's dot is the only thing marking where
+  // it is (its real outline isn't drawn/visible yet) — a click near enough
+  // one jumps straight to it instead of leaving someone to hunt for the
+  // right zoom level by hand. Nearest-within-radius, not first-match: a
+  // crowded area can have several dots within AIRPORT_CLICK_RADIUS_PX of
+  // any given click.
+  //
+  // A capture-phase listener on the map's own container, not
+  // useMapEvents' click (a bubble-phase Leaflet event) — this pane sits
+  // under markerPane (see the pane-creation effect below) and is
+  // pointer-events:none itself, so a plane/cluster marker (or any other
+  // real DOM control) visually on or near an airport's dot already gets
+  // the click first and, per Leaflet's own Marker/DomEvent handling,
+  // stops it from ever bubbling up to a plain map 'click' listener at
+  // all — an airport under a busy cluster of traffic (exactly the case
+  // this exists for) was then simply unclickable. Capturing here, ahead
+  // of every bubble-phase listener a marker registers on itself, means
+  // an airport hit is checked before anything else gets a chance to
+  // claim the click, and explicitly stopping propagation on a hit keeps
+  // that marker's own click (select an aircraft, zoom into a cluster)
+  // from *also* firing for the same click.
+  useEffect(() => {
+    const container = map.getContainer();
+    function handleCapture(e: MouseEvent) {
+      if (map.getZoom() >= GATES_MIN_ZOOM) return;
+      const latlng = map.mouseEventToLatLng(e);
+      const clickPt = map.latLngToContainerPoint(latlng);
+      const viewBounds = map.getBounds();
+      let nearest: (typeof WORLD_AIRPORTS)[number] | null = null;
+      let nearestDist = AIRPORT_CLICK_RADIUS_PX;
+      for (const ap of WORLD_AIRPORTS) {
+        if (!viewBounds.contains([ap.pos[1], ap.pos[0]])) continue;
+        const dist = clickPt.distanceTo(map.latLngToContainerPoint([ap.pos[1], ap.pos[0]]));
+        if (dist < nearestDist) {
+          nearestDist = dist;
+          nearest = ap;
+        }
+      }
+      if (!nearest) return;
+      e.stopPropagation();
+      zoomToAirport(nearest);
+    }
+    container.addEventListener("click", handleCapture, true);
+    return () => container.removeEventListener("click", handleCapture, true);
+  }, [map, zoomToAirport]);
+
   // Refreshes/attaches whatever the map's current zoom level is, right
   // now — used for the initial paint, every pan refresh, and the
   // moveend/resize safety nets. Always repaints (never trusts a cache
@@ -895,28 +941,6 @@ export default function VectorBasemap() {
   }, [refreshCurrent]);
 
   useMapEvents({
-    // Below GATES_MIN_ZOOM an airport's dot is the only thing marking
-    // where it is (its real outline isn't drawn/visible yet) — a click
-    // near enough one of them jumps straight to it instead of leaving
-    // someone to hunt for the right zoom level by hand. Nearest-within-
-    // radius, not first-match: a crowded area can have several dots
-    // within AIRPORT_CLICK_RADIUS_PX of any given click.
-    click: (e) => {
-      if (map.getZoom() >= GATES_MIN_ZOOM) return;
-      const clickPt = map.latLngToContainerPoint(e.latlng);
-      const viewBounds = map.getBounds();
-      let nearest: (typeof WORLD_AIRPORTS)[number] | null = null;
-      let nearestDist = AIRPORT_CLICK_RADIUS_PX;
-      for (const ap of WORLD_AIRPORTS) {
-        if (!viewBounds.contains([ap.pos[1], ap.pos[0]])) continue;
-        const dist = clickPt.distanceTo(map.latLngToContainerPoint([ap.pos[1], ap.pos[0]]));
-        if (dist < nearestDist) {
-          nearestDist = dist;
-          nearest = ap;
-        }
-      }
-      if (nearest) zoomToAirport(nearest);
-    },
     move: schedulePanRefresh,
     moveend: () => {
       if (panThrottleRef.current != null) {
