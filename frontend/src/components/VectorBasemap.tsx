@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import { useMap, useMapEvents } from "react-leaflet";
 import L from "leaflet";
-import { AIRPORTS, CITIES, COUNTRIES } from "../worldMapData";
+import { AIRPORTS, CITIES, COUNTRIES, LAKES, RIVERS } from "../worldMapData";
 import { fetchAirportGates, type AirportGateFeature } from "../api/flightApi";
 
 // Leaflet's own default CRS — used directly (not map.options.crs, which
@@ -80,6 +80,29 @@ const COUNTRY_BOUNDS = COUNTRIES.map((c) => {
   return { minLon, maxLon, minLat, maxLat };
 });
 
+// Same idea as WORLD_COUNTRIES/COUNTRY_BOUNDS above, for the two water-
+// feature layers: real topography (rivers, lakes) Natural Earth's admin-0
+// country polygons never carried at all — added per feedback that the
+// basemap read as bare political outlines with nothing else geographic
+// on it. Bounds-of-a-single-ring/path, not per-ring like COUNTRY_BOUNDS,
+// since each river/lake feature here already is one path/ring (see
+// scripts/generate_world_map_data.py — a lake keeps only its outer ring,
+// a river MultiLineString is split into one RiverFeature per part).
+function boundsOfPoints(pts: readonly (readonly [number, number])[]) {
+  let minLon = 180, maxLon = -180, minLat = 90, maxLat = -90;
+  for (const [lon, lat] of pts) {
+    if (lon < minLon) minLon = lon;
+    if (lon > maxLon) maxLon = lon;
+    if (lat < minLat) minLat = lat;
+    if (lat > maxLat) maxLat = lat;
+  }
+  return { minLon, maxLon, minLat, maxLat };
+}
+const WORLD_RIVERS = RIVERS.map((r) => r.path.map(([lon, lat]) => projectWorld(lon, lat)));
+const RIVER_BOUNDS = RIVERS.map((r) => boundsOfPoints(r.path));
+const WORLD_LAKES = LAKES.map((lk) => lk.ring.map(([lon, lat]) => projectWorld(lon, lat)));
+const LAKE_BOUNDS = LAKES.map((lk) => boundsOfPoints(lk.ring));
+
 function bboxIntersects(a: L.LatLngBounds, minLon: number, maxLon: number, minLat: number, maxLat: number) {
   return minLon <= a.getEast() && maxLon >= a.getWest() && minLat <= a.getNorth() && maxLat >= a.getSouth();
 }
@@ -133,6 +156,13 @@ const HOME_COUNTRY_COLOR = "#ffb63c";
 // check, the draw order already guarantees that.
 const GRID_COLOR = "rgba(255, 45, 61, 0.16)";
 const BG_COLOR = "#0a0305";
+// Same cyan family as BORDER_COLOR/the accent tick elsewhere in this
+// theme, not a "realistic" map blue — reads as water against the red
+// land fill without introducing a whole new hue the rest of the palette
+// doesn't otherwise use.
+const LAKE_FILL_COLOR = "#0d2a33";
+const LAKE_OUTLINE_COLOR = "rgba(60, 224, 255, 0.5)";
+const RIVER_COLOR = "rgba(60, 224, 255, 0.4)";
 const CITY_DOT_COLOR = "#e2ddc9";
 const CITY_LABEL_COLOR = "rgba(226, 221, 201, 0.85)";
 const AIRPORT_COLOR = "#e2ddc9";
@@ -185,15 +215,19 @@ const TERMINAL_FILL_COLOR = "rgba(226, 221, 201, 0.14)";
 const TERMINAL_OUTLINE_COLOR = "rgba(226, 221, 201, 0.6)";
 const GATE_COLOR = "#e2ddc9";
 
-const COUNTRY_FONT = "600 11px 'Rajdhani', system-ui, sans-serif";
-const CITY_FONT = "500 10px 'JetBrains Mono', monospace";
+// Bumped from 11/10/13px and a 6px airport dot (real feedback: labels and
+// marks read as "too small" once there was more of everything else on
+// screen to compete with — see CITY_MIN_POP/AIRPORT_TYPES in
+// generate_world_map_data.py for the "more information" half of that).
+const COUNTRY_FONT = "600 13px 'Rajdhani', system-ui, sans-serif";
+const CITY_FONT = "500 11px 'JetBrains Mono', monospace";
 // Bumped from 10px/radius-3 (real user feedback: "cannot see it") — this
 // mark is the only thing showing where an airport is below GATES_MIN_ZOOM,
 // and it's also the click target the airport click-to-zoom handler hit-
 // tests against (see AIRPORT_CLICK_RADIUS_PX, sized to comfortably exceed
 // this radius).
-const AIRPORT_FONT = "700 13px 'JetBrains Mono', monospace";
-const AIRPORT_DOT_RADIUS = 6;
+const AIRPORT_FONT = "700 14px 'JetBrains Mono', monospace";
+const AIRPORT_DOT_RADIUS = 7;
 
 // The app's home country (see FlightMap.css's --color-marker-selected
 // restraint comment) gets the same amber-outline treatment the earlier
@@ -365,6 +399,48 @@ function paintBuffer(canvas: HTMLCanvasElement, center: L.LatLng, zoom: number, 
     ctx.stroke(homePath);
   }
 
+  // Real topography — lakes (filled) and river centerlines (stroked),
+  // both drawn on top of the land fill/outline above (they're geographic
+  // features *within* land, not part of its boundary) but under the
+  // city/airport marks and labels below. Same bbox-precheck-then-one-
+  // combined-Path2D approach as the country fill above, for the same
+  // reason: cheap rejection of the (large majority, at any real zoom)
+  // off-screen features before touching their point data at all.
+  const lakeFillPath = new Path2D();
+  const lakeOutlinePath = new Path2D();
+  LAKES.forEach((_, i) => {
+    const b = LAKE_BOUNDS[i];
+    if (!bboxIntersects(bounds, b.minLon, b.maxLon, b.minLat, b.maxLat)) return;
+    const path = new Path2D();
+    WORLD_LAKES[i].forEach((wp, j) => {
+      const [x, y] = projectFast(wp);
+      if (j === 0) path.moveTo(x, y);
+      else path.lineTo(x, y);
+    });
+    path.closePath();
+    lakeFillPath.addPath(path);
+    lakeOutlinePath.addPath(path);
+  });
+  ctx.fillStyle = LAKE_FILL_COLOR;
+  ctx.fill(lakeFillPath);
+  ctx.strokeStyle = LAKE_OUTLINE_COLOR;
+  ctx.lineWidth = 0.8;
+  ctx.stroke(lakeOutlinePath);
+
+  const riverPath = new Path2D();
+  RIVERS.forEach((_, i) => {
+    const b = RIVER_BOUNDS[i];
+    if (!bboxIntersects(bounds, b.minLon, b.maxLon, b.minLat, b.maxLat)) return;
+    WORLD_RIVERS[i].forEach((wp, j) => {
+      const [x, y] = projectFast(wp);
+      if (j === 0) riverPath.moveTo(x, y);
+      else riverPath.lineTo(x, y);
+    });
+  });
+  ctx.strokeStyle = RIVER_COLOR;
+  ctx.lineWidth = 1;
+  ctx.stroke(riverPath);
+
   // City urban-area outlines — a subtle filled/stroked shape under the
   // dot+label (drawn below in the label pass), only once there's enough
   // on-screen room for a real shape to read as more than a smear
@@ -503,7 +579,7 @@ function paintBuffer(canvas: HTMLCanvasElement, center: L.LatLng, zoom: number, 
     const [x, y] = projectFast(c.labelWorld);
     const text = c.name.toUpperCase();
     const tw = ctx.measureText(text).width;
-    const th = 11;
+    const th = 13;
     candidates.push({
       priority: 3_000_000_000 + wPx * hPx,
       x0: x - tw / 2 - LABEL_PAD, y0: y - th / 2 - LABEL_PAD, x1: x + tw / 2 + LABEL_PAD, y1: y + th / 2 + LABEL_PAD,
@@ -525,9 +601,9 @@ function paintBuffer(canvas: HTMLCanvasElement, center: L.LatLng, zoom: number, 
   WORLD_CITIES.forEach((city) => {
     if (!bounds.contains([city.pos[1], city.pos[0]])) return;
     const [x, y] = projectFast(city.world);
-    const r = city.capital ? 2.4 : 1.6;
+    const r = city.capital ? 3.2 : 2.2;
     const tw = ctx.measureText(city.name).width;
-    const th = 10;
+    const th = 11;
     candidates.push({
       priority: 2_000_000_000 + (city.capital ? 100_000_000 : 0) + city.pop,
       x0: x - r, y0: y - th / 2 - LABEL_PAD, x1: x + 5 + tw + LABEL_PAD, y1: y + th / 2 + LABEL_PAD,
@@ -557,7 +633,7 @@ function paintBuffer(canvas: HTMLCanvasElement, center: L.LatLng, zoom: number, 
     if (!bounds.contains([ap.pos[1], ap.pos[0]])) return;
     const [x, y] = projectFast(ap.world);
     const tw = ctx.measureText(ap.code).width;
-    const th = 13;
+    const th = 14;
     const labelGap = AIRPORT_DOT_RADIUS + 3;
     candidates.push({
       priority: 1_000_000_000 - i,
