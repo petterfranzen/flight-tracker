@@ -58,7 +58,7 @@ public interface FlightPositionRepository extends JpaRepository<FlightPosition, 
         icao24, callsign, observed_at,
         COALESCE(estimated_latitude, latitude) AS latitude,
         COALESCE(estimated_longitude, longitude) AS longitude,
-        heading_deg
+        heading_deg, on_ground
         """;
 
     // Live map, whole world: every aircraft that's still airborne (bounded

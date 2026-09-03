@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { apiUrl } from "./support/config.js";
-import { assertFlightPositionShape } from "./support/assertions.js";
+import { assertLiveMarkerShape } from "./support/assertions.js";
 
 test("GET /api/flights/live returns an array of well-shaped positions", async () => {
   const res = await fetch(apiUrl("/api/flights/live"));
@@ -10,7 +10,7 @@ test("GET /api/flights/live returns an array of well-shaped positions", async ()
 
   const body = await res.json();
   assert.ok(Array.isArray(body), "response body must be an array");
-  for (const pos of body) assertFlightPositionShape(pos);
+  for (const pos of body) assertLiveMarkerShape(pos);
 });
 
 test("GET /api/flights/live only returns aircraft that are airborne or recently landed", async () => {

@@ -24,6 +24,29 @@ export function assertFlightPositionShape(pos) {
   }
 }
 
+// Shape-checks one LiveMarker as returned by GET /api/flights/live — the
+// map's bulk viewport fetch, trimmed to what a marker needs (see
+// LiveMarker.java's own javadoc), not the fuller FlightPosition every
+// other /api/flights/* endpoint still returns. altitudeM/velocityMs/
+// verticalRateMs/agentSource/id are deliberately absent from this
+// endpoint's contract now, so assertFlightPositionShape (which requires
+// them) isn't the right check here anymore — a selected aircraft's own
+// dedicated fetch (assertFlightPositionShape via /{icao24}/live) still
+// gets the full shape, unaffected.
+export function assertLiveMarkerShape(pos) {
+  assert.equal(typeof pos.icao24, "string");
+  assert.ok(pos.icao24.length > 0, "icao24 must not be empty");
+  assert.ok(pos.callsign === null || typeof pos.callsign === "string", "callsign must be null or a string");
+  assert.equal(typeof pos.observedAt, "string");
+  assert.ok(!Number.isNaN(Date.parse(pos.observedAt)), "observedAt must be a parseable timestamp");
+  assert.equal(typeof pos.latitude, "number");
+  assert.equal(typeof pos.longitude, "number");
+  assert.ok(pos.latitude >= -90 && pos.latitude <= 90, "latitude out of range");
+  assert.ok(pos.longitude >= -180 && pos.longitude <= 180, "longitude out of range");
+  assert.ok(pos.headingDeg === null || typeof pos.headingDeg === "number", "headingDeg must be null or a number");
+  assert.equal(typeof pos.onGround, "boolean");
+}
+
 export function assertAircraftUsageShape(usage) {
   assert.equal(typeof usage.icao24, "string");
   assert.ok(usage.icao24.length > 0, "icao24 must not be empty");
