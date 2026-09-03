@@ -661,20 +661,37 @@ function clusterIconSize(count: number): number {
   return Math.round(Math.min(CLUSTER_ICON_MAX_PX, CLUSTER_ICON_MIN_PX + 6 * Math.sqrt(count)));
 }
 
+// How many overlapping plane glyphs a cluster's mark shows — a coarse,
+// 3-bucket read of "how much traffic," not the exact count (see
+// clusterIcon's own comment for why the exact number was dropped
+// entirely rather than kept as a badge). Thresholds are a judgment call,
+// not derived from anything: picked so the three real bucket sizes seen
+// in a live deploy (single digits, tens, and the busiest hubs' hundreds)
+// each land in a visibly different bucket.
+function clusterPlaneCount(count: number): 2 | 3 | 4 {
+  if (count < 10) return 2;
+  if (count < 50) return 3;
+  return 4;
+}
+
 function clusterIcon(count: number, entering: boolean): L.DivIcon {
   const size = clusterIconSize(count);
+  const planes = clusterPlaneCount(count);
   // Reuses plane-icon--entering (see planeIcon's own comment) rather than
   // a second parallel fade-in mechanism — the CSS keyframes/class don't
   // care what kind of marker they're attached to.
   //
-  // Reads as "traffic," not "a statistic": three of the same plane glyph
-  // AircraftMarker itself uses, fanned out (see .cluster-icon-plane in
-  // FlightMap.css), rather than a bare number in a circle — the exact
-  // count is still there as a small corner badge for anyone who wants it,
-  // just no longer the *only* thing the mark communicates.
+  // Reads as "traffic," not "a statistic": 2/3/4 of the same plane glyph
+  // AircraftMarker itself uses, all facing the same way (northeast) in a
+  // flying-V formation — one leader, the rest trailing behind it in two
+  // overlapping arms (see .cluster-icon-mark--N in FlightMap.css) —
+  // rather than a bare number in a circle. No count anywhere on the mark
+  // at all now — per feedback, the circle backing and the exact-count
+  // badge both read as "a statistic," which was exactly what this was
+  // trying to move away from.
   return new L.DivIcon({
     className: `cluster-icon${entering ? " plane-icon--entering" : ""}`,
-    html: `<div class="cluster-icon-mark">${PLANE_SVG}${PLANE_SVG}${PLANE_SVG}<span class="cluster-icon-count">${count}</span></div>`,
+    html: `<div class="cluster-icon-mark cluster-icon-mark--${planes}">${PLANE_SVG.repeat(planes)}</div>`,
     iconSize: [size, size],
     iconAnchor: [size / 2, size / 2],
   });

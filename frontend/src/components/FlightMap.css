@@ -515,52 +515,57 @@ html, body {
   justify-content: center;
 }
 
+/* No circle backing and no count anywhere on the mark (see clusterIcon's
+   own comment) — just the plane glyphs below, positioned by their own
+   .cluster-icon-mark--N rule. */
 .cluster-icon-mark {
   position: relative;
   width: 100%;
   height: 100%;
-  border-radius: 50%;
-  background: color-mix(in srgb, var(--color-marker) 28%, transparent);
-  border: 2px solid var(--color-marker);
-  box-shadow: 0 0 6px color-mix(in srgb, var(--color-marker) 55%, transparent);
 }
 
-/* Three of planeIcon's own PLANE_SVG, fanned out around center rather
-   than stacked exactly on top of one another — reads as "a group of
-   aircraft" at a glance instead of one repeated glyph. Percentage sizes
-   (not fixed px) so this scales with clusterIconSize's own size, same
-   convention as .plane-glyph. */
+/* 2/3/4 of planeIcon's own PLANE_SVG (clusterPlaneCount in FlightMap.tsx
+   picks which), all rotated to the same northeast heading — a flying-V
+   formation (geese, not a scattered fan): one leader at the northeast
+   tip with the rest trailing behind it in two diverging arms, each
+   overlapping its neighbor enough to be partly obscured by it, the way
+   real formation flying reads at a glance. Percentage sizes (not fixed
+   px) so this scales with clusterIconSize's own size, same convention as
+   .plane-glyph. The translate(-50%,-50%) centers each glyph on its own
+   top/left anchor point before the shared rotation. */
 .cluster-icon-mark svg {
   position: absolute;
-  width: 42%;
-  height: 42%;
+  width: 54%;
+  height: 54%;
   fill: var(--color-marker);
   stroke: rgba(0, 0, 0, 0.7);
   stroke-width: 1;
   stroke-linejoin: round;
+  transform: translate(-50%, -50%) rotate(45deg);
 }
-.cluster-icon-mark svg:nth-child(1) { top: 16%; left: 50%; transform: translate(-50%, -50%) rotate(-18deg); }
-.cluster-icon-mark svg:nth-child(2) { top: 58%; left: 30%; transform: translate(-50%, -50%) rotate(210deg); }
-.cluster-icon-mark svg:nth-child(3) { top: 58%; left: 70%; transform: translate(-50%, -50%) rotate(150deg); }
 
-/* The exact count, demoted to a corner badge now that the mark itself
-   reads as "traffic" on its own (see .cluster-icon-mark above) — still
-   available for anyone who wants the precise number, just not the only
-   thing being communicated. */
-.cluster-icon-count {
-  position: absolute;
-  bottom: -2px;
-  right: -2px;
-  min-width: 16px;
-  padding: 1px 4px;
-  border-radius: 999px;
-  background: var(--color-panel);
-  border: 1px solid var(--color-marker);
-  font: 600 10px var(--font-data);
-  line-height: 1.3;
-  text-align: center;
-  color: var(--color-marker);
-}
+/* Source order is back-to-front (trailing arms first, leader last) so
+   the leader — frontmost, at the NE tip — paints on top and partly
+   obscures whichever wingman is directly behind it, same as a real V's
+   lead bird. The two arms diverge from the leader at roughly ±60° off
+   the reverse-of-travel line (one trailing more west, the other more
+   south) rather than both sitting close behind it, so the V actually
+   reads as a V — still close enough for real overlap between neighbors.
+   Each later variant keeps the previous one's positions and only adds a
+   wingman further out along the west arm, rather than recomputing the
+   whole formation, so a bigger cluster reads as the same V one bird
+   longer, not a different shape. */
+.cluster-icon-mark--2 svg:nth-child(1) { top: 51%; left: 60%; } /* wingman (south arm) */
+.cluster-icon-mark--2 svg:nth-child(2) { top: 30%; left: 66%; } /* leader */
+
+.cluster-icon-mark--3 svg:nth-child(1) { top: 36%; left: 45%; } /* wingman (west arm) */
+.cluster-icon-mark--3 svg:nth-child(2) { top: 51%; left: 60%; } /* wingman (south arm) */
+.cluster-icon-mark--3 svg:nth-child(3) { top: 30%; left: 66%; } /* leader */
+
+.cluster-icon-mark--4 svg:nth-child(1) { top: 42%; left: 24%; } /* far wingman (west arm, extended) */
+.cluster-icon-mark--4 svg:nth-child(2) { top: 36%; left: 45%; } /* wingman (west arm) */
+.cluster-icon-mark--4 svg:nth-child(3) { top: 51%; left: 60%; } /* wingman (south arm) */
+.cluster-icon-mark--4 svg:nth-child(4) { top: 30%; left: 66%; } /* leader */
 
 .plane-glyph {
   display: flex;
