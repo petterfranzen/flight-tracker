@@ -6,6 +6,20 @@ export interface Bounds {
   lonMax: number;
 }
 
+/**
+ * One grid cell's worth of aggregated live traffic — FlightController.
+ * liveClusters's own summary tier for a viewport too wide to usefully
+ * render individual aircraft (a continent or the whole world can mean
+ * tens of thousands of them: confirmed to freeze rendering entirely, not
+ * just feel slow, on a real deploy). See CLUSTER_FETCH_MAX_ZOOM in
+ * FlightMap.tsx for where the map switches over.
+ */
+export interface ClusterPoint {
+  lat: number;
+  lon: number;
+  count: number;
+}
+
 export interface FlightPosition {
   id: number;
   icao24: string;
