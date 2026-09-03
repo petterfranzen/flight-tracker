@@ -29,6 +29,16 @@
   background: var(--color-panel-border);
 }
 
+.map-legend-toggle-icon {
+  width: 14px;
+  height: 14px;
+  vertical-align: -2px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.6;
+  margin-right: 2px;
+}
+
 .map-legend-list {
   list-style: none;
   margin: 6px 0 0;

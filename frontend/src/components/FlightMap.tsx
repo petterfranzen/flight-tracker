@@ -39,6 +39,14 @@ import ThemeToggle from "./ThemeToggle";
 // its own async chunk instead of bloating the main bundle default-theme
 // users pay for on every load.
 const VectorBasemap = lazy(() => import("./VectorBasemap"));
+// Same reasoning as VectorBasemap above: this imports AIRPORTS from
+// worldMapData.ts too (2MB+), which must stay out of the main bundle
+// for anyone on the default theme who never even opens the cyberpunk
+// one — a plain top-level import here pulled the *entire* worldMapData
+// module (COUNTRIES/CITIES/RIVERS/LAKES included, not just AIRPORTS)
+// into the main chunk regardless of theme, caught via a real build-size
+// check before shipping.
+const DefaultAirports = lazy(() => import("./DefaultAirports"));
 import ScaleBar from "./ScaleBar";
 import "./FlightMap.css";
 import type { FavoriteAircraft, FavoriteRoute } from "../favorites";
@@ -1482,7 +1490,7 @@ export default function FlightMap() {
             home-country amber outline) that only exist on VectorBasemap
             — the default theme's plain OpenStreetMap tiles don't draw
             airports at all, so there'd be nothing for a legend to key. */}
-        {theme === "cyberpunk" && <Legend />}
+        <Legend theme={theme} />
         <ThemeToggle theme={theme} onToggle={toggleTheme} />
       </div>
       {theme === "cyberpunk" && (
@@ -1555,11 +1563,13 @@ export default function FlightMap() {
           // before Leaflet's bounds correction catches up on drag end.
           noWrap
         />
-        {theme === "cyberpunk" && (
-          <Suspense fallback={null}>
+        <Suspense fallback={null}>
+          {theme === "cyberpunk" ? (
             <VectorBasemap onAirportSelect={handleAirportSelect} />
-          </Suspense>
-        )}
+          ) : (
+            <DefaultAirports onAirportSelect={handleAirportSelect} />
+          )}
+        </Suspense>
         {/* Metric only — every other distance in this app (altitude in m,
             speed in km/h) is metric, so a scale bar switching to miles/ft
             would be the odd one out. A multi-segment physical-cm ruler

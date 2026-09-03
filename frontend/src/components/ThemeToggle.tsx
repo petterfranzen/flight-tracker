@@ -10,6 +10,19 @@ import "./ThemeToggle.css";
  * so FlightMap needs to be the single source of truth for it rather than
  * this button owning its own separate copy of the state.
  */
+// Same path data as Dock's own (currently inert) "Layers" tile — a
+// stacked-plates glyph reads as "switch layer/style" more directly than
+// the star this replaced, which looked like a favorite toggle rather
+// than a theme switch.
+function LayersIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className="theme-toggle-icon">
+      <path d="M12 3 L21 8 L12 13 L3 8 Z" />
+      <path d="M3 13 L12 18 L21 13" />
+    </svg>
+  );
+}
+
 export default function ThemeToggle({ theme, onToggle }: { theme: Theme; onToggle: () => void }) {
   return (
     <button
@@ -18,7 +31,7 @@ export default function ThemeToggle({ theme, onToggle }: { theme: Theme; onToggl
       onClick={onToggle}
       aria-pressed={theme === "cyberpunk"}
     >
-      {theme === "cyberpunk" ? "★" : "☆"} Cyberpunk theme
+      <LayersIcon /> Cyberpunk theme
     </button>
   );
 }

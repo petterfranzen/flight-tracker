@@ -22,6 +22,18 @@
   background: var(--color-panel-border);
 }
 
+/* Same stroke-only treatment as Dock's own icons (Dock.css) — inline
+   with the button's text via vertical-align, not floated/absolute. */
+.theme-toggle-icon {
+  width: 14px;
+  height: 14px;
+  vertical-align: -2px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.6;
+  margin-right: 2px;
+}
+
 .theme-toggle-btn--active {
   border-color: var(--color-marker);
   color: var(--color-marker);
