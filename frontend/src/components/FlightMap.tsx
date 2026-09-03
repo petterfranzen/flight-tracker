@@ -371,8 +371,10 @@ const MAX_INDIVIDUAL_MARKERS = 500;
 // clamps whatever degree value this converts to into its own
 // [MIN_CLUSTER_GRID_DEG, MAX_CLUSTER_GRID_DEG] range regardless (see
 // FlightController.liveClusters), so this only needs to be a reasonable
-// target, not an exact figure.
-const CLUSTER_TARGET_PX = 64;
+// target, not an exact figure. Raised from 64 per request to see fewer,
+// bigger cells each covering more area/aircraft — easy to tune back down
+// if it reads as too coarse.
+const CLUSTER_TARGET_PX = 110;
 
 // Web Mercator tile math (256px tiles, doubling every zoom level) —
 // approximate (real px/degree varies with latitude; this is the equator

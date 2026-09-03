@@ -201,6 +201,12 @@ const GATES_MIN_ZOOM = 12;
 // nothing left for a click here to do.
 const AIRPORT_CLICK_RADIUS_PX = 20;
 
+// How far (px) a mousedown->click pair can drift and still count as a
+// real click rather than a pan that happened to end near an airport —
+// see the mousedown/click handlers below. Comfortably past a shaky-hand
+// stationary click, well short of a real drag.
+const CLICK_DRAG_TOLERANCE_PX = 6;
+
 // Where a clicked airport's own zoom-to lands when no real gate/apron/
 // terminal geometry is available to fit bounds to (fetch still in flight,
 // failed, or OSM genuinely has none for this airport) — comfortably past
@@ -628,6 +634,16 @@ function paintBuffer(canvas: HTMLCanvasElement, center: L.LatLng, zoom: number, 
   // size/importance data to rank them by, so plain dataset order breaks
   // ties) — a crowded area's airports are the first to be dropped, after
   // smaller cities, before any city or country name.
+  //
+  // TODO(known limitation): this shares a canvas/pane (z-index 200) with
+  // land/cities/grid, which sits *under* markerPane (z-index 600) — a
+  // plane or cluster mark can end up drawn on top of an airport's dot or
+  // label. Fixing that for real means moving airport marks to their own
+  // always-on-top pane, which is real new surface area (a second canvas,
+  // its own redraw loop, losing this shared declutter queue) — started
+  // and reverted here rather than shipped half-finished under time
+  // pressure; airports disappearing entirely would be a worse regression
+  // than the current "sometimes covered" issue.
   ctx.font = AIRPORT_FONT;
   WORLD_AIRPORTS.forEach((ap, i) => {
     if (!bounds.contains([ap.pos[1], ap.pos[0]])) return;
@@ -876,6 +892,16 @@ export default function VectorBasemap({ onAirportSelect }: { onAirportSelect?: (
   // doesn't refetch it. Falls back to a fixed close zoom, not a
   // deliberately-empty view, when there's nothing to fit bounds to —  a
   // small airport OSM has no gate data for, or the fetch failing outright.
+  //
+  // Always recenters synchronously, right here, never from the network
+  // callback below — real feedback: a cache-miss used to wait on the
+  // Overpass fetch (which can take seconds) before doing *anything*
+  // visually, so a user who'd since started panning elsewhere on their
+  // own got yanked back the instant that fetch happened to resolve. The
+  // fetch now only ever populates gateCacheRef for whoever looks at this
+  // airport next (a later click, or the ambient scheduleGateFetch/
+  // refreshCurrent redraw once zoomed in this far normally) — it no
+  // longer has any way to move the view itself.
   const zoomToAirport = useCallback((ap: (typeof WORLD_AIRPORTS)[number]) => {
     const [lon, lat] = ap.pos;
     const fallback = () => smoothZoomTo([lat, lon], AIRPORT_ZOOM_TO_FALLBACK_ZOOM);
@@ -908,12 +934,10 @@ export default function VectorBasemap({ onAirportSelect }: { onAirportSelect?: (
       fitToFeatures(cached);
       return;
     }
+    fallback();
     fetchAirportGates(ap.code, lat, lon)
-      .then((features) => {
-        gateCacheRef.current.set(ap.code, features);
-        fitToFeatures(features);
-      })
-      .catch(fallback);
+      .then((features) => gateCacheRef.current.set(ap.code, features))
+      .catch(() => {});
   }, [map, smoothZoomTo]);
 
   // Shared by the click and hover handlers below: below GATES_MIN_ZOOM an
@@ -955,17 +979,37 @@ export default function VectorBasemap({ onAirportSelect }: { onAirportSelect?: (
   // claim the click, and explicitly stopping propagation on a hit keeps
   // that marker's own click (select an aircraft, zoom into a cluster)
   // from *also* firing for the same click.
+  // Real feedback: panning would sometimes "select" a nearby airport on
+  // its own. The browser's native 'click' event doesn't actually require
+  // zero movement between mousedown and mouseup — a short drag (a slow
+  // pan, or the tail end of a longer one) still fires one, and this
+  // handler had no way to tell that apart from an honest stationary
+  // click. mousedownPointRef records where the gesture *started*; a
+  // click is only treated as a real click here if it ended within
+  // CLICK_DRAG_TOLERANCE_PX of that, otherwise it's a pan that happened
+  // to end near an airport, not a click on one.
+  const mousedownPointRef = useRef<L.Point | null>(null);
   useEffect(() => {
     const container = map.getContainer();
+    function handleDown(e: MouseEvent) {
+      mousedownPointRef.current = map.mouseEventToContainerPoint(e);
+    }
     function handleCapture(e: MouseEvent) {
-      const nearest = nearestAirport(map.mouseEventToContainerPoint(e));
+      const point = map.mouseEventToContainerPoint(e);
+      const start = mousedownPointRef.current;
+      if (start && point.distanceTo(start) > CLICK_DRAG_TOLERANCE_PX) return;
+      const nearest = nearestAirport(point);
       if (!nearest) return;
       e.stopPropagation();
       zoomToAirport(nearest);
       onAirportSelect?.({ code: nearest.code, name: nearest.name, lat: nearest.pos[1], lon: nearest.pos[0] });
     }
+    container.addEventListener("mousedown", handleDown, true);
     container.addEventListener("click", handleCapture, true);
-    return () => container.removeEventListener("click", handleCapture, true);
+    return () => {
+      container.removeEventListener("mousedown", handleDown, true);
+      container.removeEventListener("click", handleCapture, true);
+    };
   }, [map, nearestAirport, zoomToAirport, onAirportSelect]);
 
   // Cursor feedback for the same hit-test the click handler above uses —

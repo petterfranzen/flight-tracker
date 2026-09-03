@@ -39,7 +39,13 @@ NE_BASE = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master
 OURAIRPORTS_BASE = "https://davidmegginson.github.io/ourairports-data"
 
 SOURCES = {
-    "countries": f"{NE_BASE}/ne_50m_admin_0_countries.geojson",
+    # 1:10m, not 1:50m: confirmed by direct comparison that 1:50m simply
+    # doesn't carry small islands as separate geometry at all (e.g.
+    # Mayotte's Petite-Terre — where its Dzaoudzi airport actually sits —
+    # only exists as its own ring at 1:10m; 1:50m only has the *other*
+    # Mayotte island, nowhere near the airport). No amount of smarter
+    # simplification fixes geometry the smaller-scale source never had.
+    "countries": f"{NE_BASE}/ne_10m_admin_0_countries.geojson",
     "cities": f"{NE_BASE}/ne_50m_populated_places.geojson",
     "urban_areas": f"{NE_BASE}/ne_50m_urban_areas.geojson",
     "airports": f"{NE_BASE}/ne_10m_airports.geojson",
@@ -107,6 +113,28 @@ def simplify(points, epsilon):
 
 # --- Geometry extraction ----------------------------------------------------
 
+# A single fixed epsilon calibrated for continental coastlines is *way*
+# too coarse for a small island: a several-km-wide island can have every
+# vertex within COUNTRY_SIMPLIFY_DEG of the line between its two furthest
+# points, so Douglas-Peucker (correctly, by its own rule) collapses the
+# whole thing to 2 points — which rings_from_geometry then drops entirely
+# (<3 points isn't a real polygon). This is exactly what happened to
+# Mayotte's Petite-Terre (the island DZA/Dzaoudzi airport is actually on)
+# in a live review: real landmass in the source data, gone after
+# simplification, airport dot left sitting in open ocean. Scaling epsilon
+# down for small rings — a fraction of the ring's own extent, never more
+# than the requested epsilon — keeps a small island's shape roughly
+# proportional to its own size instead of judging it by a continent's
+# ruler.
+SMALL_RING_EPSILON_FRACTION = 0.06
+
+
+def _ring_diagonal_deg(pts):
+    lons = [p[0] for p in pts]
+    lats = [p[1] for p in pts]
+    return math.hypot(max(lons) - min(lons), max(lats) - min(lats))
+
+
 def rings_from_geometry(geom, epsilon):
     """Polygon/MultiPolygon -> flat list of simplified [lon, lat] rings
     (every ring — outer boundaries and holes alike — canvas's default
@@ -122,7 +150,8 @@ def rings_from_geometry(geom, epsilon):
     for poly in polys:
         for ring in poly:
             pts = [(lon, lat) for lon, lat in ring]
-            simplified = simplify(pts, epsilon)
+            ring_epsilon = min(epsilon, _ring_diagonal_deg(pts) * SMALL_RING_EPSILON_FRACTION)
+            simplified = simplify(pts, ring_epsilon)
             if len(simplified) >= 3:
                 rings.append(simplified)
     return rings
