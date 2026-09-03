@@ -15,9 +15,23 @@
    body's already-inset content box, not the viewport. Visible as a cream
    strip on the top/left and content pushed off the bottom/right, worst on
    mobile where it forces a pinch-zoom-out to see the rest of the page. */
+/* overflow: hidden too — .app-shell below is already sized/clipped to
+   the viewport and never intends to scroll, but html/body themselves had
+   no such constraint of their own. Live report (with screenshots): a
+   stray vertical scrollbar during map panning, and the overlay icon
+   stack drifting out of place — both point at the same thing, some
+   transient layout nudge (a font swap, a mobile keyboard, a resize
+   during Leaflet's own touch handling) making body momentarily taller/
+   wider than the viewport, which a page with no overflow constraint of
+   its own is free to scroll. Belt-and-suspenders with .left-overlay-
+   stack's own switch to position:fixed below — either fix alone would
+   likely have been enough, but they address two different halves of the
+   same failure (the page shouldn't be scrollable at all; and even if it
+   somehow were, the overlay chrome shouldn't move with it). */
 html, body {
   margin: 0;
   padding: 0;
+  overflow: hidden;
 }
 
 :root {
@@ -116,7 +130,11 @@ html, body {
    reference for, so it stays as a deliberate, scoped addition rather
    than inventing new default-theme UI nobody asked for. */
 .tracked-chip {
-  position: absolute;
+  /* fixed, not absolute — see .left-overlay-stack's identical rationale
+     just below: floating UI chrome like this should never move because
+     of an incidental page scroll, only because we explicitly reposition
+     it. */
+  position: fixed;
   top: 16px;
   right: 16px;
   z-index: 500;
@@ -351,7 +369,16 @@ html, body {
    behavior lives on a grandchild (.flight-search-panel--open), which
    escapes normal flow on its own regardless of this wrapper. */
 .left-overlay-stack {
-  position: absolute;
+  /* fixed, not absolute — live report (with screenshots): this stack
+     visibly drifted out of place during map panning on a real phone,
+     alongside a stray page scrollbar. absolute here is positioned
+     relative to .app-shell, which never intends to scroll but had
+     nothing actually stopping it if some transient layout nudge (font
+     swap, on-screen keyboard, a resize mid-touch-gesture) made body
+     momentarily taller/wider than the viewport — see the html/body rule
+     above. fixed is positioned relative to the viewport itself and
+     can't drift with a page scroll regardless of what causes it. */
+  position: fixed;
   top: 16px;
   left: 16px;
   z-index: 500;
@@ -363,7 +390,7 @@ html, body {
 
 /* A mobile drawer's own z-index:1001 (FlightSearch/FavoritesPanel/Legend
    CSS) only wins stacking comparisons *inside* this wrapper's own
-   stacking context — .left-overlay-stack itself is position:absolute
+   stacking context — .left-overlay-stack itself is position:fixed
    with z-index:500 above, so from a sibling's perspective the whole
    subtree is capped at 500 regardless of what a descendant sets. Real
    bug (live screenshot): .tracked-chip is a later DOM sibling at the
