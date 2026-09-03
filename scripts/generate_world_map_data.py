@@ -54,9 +54,9 @@ SOURCES = {
 CITY_MIN_POP = 100_000        # OR a national capital regardless of population
 AIRPORT_TYPES = {"major", "major and military", "mid", "mid and military", "military mid", "military major"}
 URBAN_MATCH_MAX_DEG = 0.35    # same threshold the original generation used
-COUNTRY_SIMPLIFY_DEG = 0.045  # ~5km at the equator — real coastline detail, not 1:110m's blob outlines, without countries alone dominating bundle size (0.02 measured ~1.2MB just for this array; this is the size/detail knob to revisit first if more detail is ever worth the weight)
-RIVER_SIMPLIFY_DEG = 0.045
-LAKE_SIMPLIFY_DEG = 0.02
+COUNTRY_SIMPLIFY_DEG = 0.015  # ~1.5km at the equator — real, natural-reading coastline curvature; 0.045 (~1.2MB->765KB tradeoff) read as visibly faceted/"blocky" per feedback, so detail won here over the smaller bundle
+RIVER_SIMPLIFY_DEG = 0.03
+LAKE_SIMPLIFY_DEG = 0.012
 
 
 def fetch(key: str) -> str:
