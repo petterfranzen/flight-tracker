@@ -919,21 +919,29 @@ html, body {
     display: none;
   }
 
-  /* Real-device feedback: with Search/Favorites/Legend all opened at
-     once (a common combination — check a favorite while a route is
-     selected), this column's total height had no cap at all, growing
-     until it collided with Leaflet's own bottom-left scale control and
-     pushed ThemeToggle down near/under the bottom sheet's edge. 33vh is
-     a safe bound even in the worst case: the details-panel bottom sheet
-     below can claim up to 66.667vh of its own (see
-     .details-panel--expanded), leaving this column's own 33vh clear of
-     it regardless of which panels the user has expanded. Scrolls
-     internally past that rather than clipping silently. */
-  .left-overlay-stack {
-    max-height: 33vh;
-    overflow-y: auto;
-    -webkit-overflow-scrolling: touch;
-  }
+  /* No max-height/overflow cap here (a previous version had one,
+     33vh + overflow-y:auto, to stop Search/Favorites/Legend's open
+     content from growing this column tall enough to collide with
+     Leaflet's own bottom-left scale control). That's obsolete now:
+     every one of this column's drawers (.flight-search-panel--open,
+     .favorites-panel-body--open, .map-legend-body--open) is its own
+     position:fixed, inset:0 overlay once open — CSS removes a
+     position:fixed element from normal flow entirely, so open drawer
+     content no longer contributes to this column's own height at all,
+     open or closed. What's actually always in-flow here on mobile is
+     just the collapsed FAB/icon row (.app-header is hidden above), a
+     small, predictable total nothing needs to cap.
+       The cap caused a real bug of its own on short viewports (live
+     report, with screenshot): a flex column's items default to
+     flex-shrink:1, and that shrinking is resolved *before* the browser
+     ever considers scrolling — capping the container's height didn't
+     make it scroll so much as squash the last icon into an oval trying
+     to fit everyone inside 33vh, with an ugly native scrollbar
+     appearing alongside it. Removing the cap fixes both: these buttons
+     are fixed 48px circles (ThemeToggle.css et al.) with nothing to
+     shrink for, and this whole column is already position:fixed (see
+     above) rather than flowing inside anything that would need
+     defending against in the first place. */
 
   /* Smaller than the desktop 320px cap (see FavoritesPanel.css) — on
      mobile this list shares .left-overlay-stack's own 33vh budget above
@@ -1015,6 +1023,20 @@ html, body {
 
   .details-panel--expanded {
     height: 66.667vh; /* map shrinks to the remaining 1/3 */
+  }
+
+  /* Live report (with screenshot): ScaleBar (see ScaleBar.tsx) is a real
+     Leaflet control anchored to the *map's own* bottom-left corner, which
+     is only 33.333vh tall in this state — barely more than
+     .left-overlay-stack's own fixed ~232px (16px top offset + four 48px
+     icons + gaps), which is anchored to the *viewport* instead and
+     doesn't know or care how tall the map beneath it currently is. The
+     two were landing right on top of each other. Collapsed
+     (.details-panel, no --expanded) leaves the map 66.667vh tall — comfortably
+     clear of the icon stack — so this only needs scoping to the
+     expanded state specifically, not sheets in general. */
+  .app-shell:has(.details-panel--expanded) .leaflet-bottom.leaflet-left {
+    display: none;
   }
 
   /* The actual scrolling element (see .details-panel's overflow: hidden
