@@ -1,0 +1,52 @@
+/* Default (non-cyberpunk) theme's airport mark — a small void-filled dot
+   with a pale border, matching the spirit of VectorBasemap's own airport
+   mark on the other theme, plus an always-visible IATA code label so it
+   reads the same way at a glance as that theme's dot+code pairing.
+   Deliberately no `position` override here: this class doubles as
+   Leaflet's own .leaflet-marker-icon element, which Leaflet's base CSS
+   already sets to position:absolute — that's what its transform-based
+   positioning depends on completely (see FlightMap.css's own comment on
+   .plane-icon for the exact same mistake made once before). Setting
+   position:relative here — even though it looks harmless, and even
+   though it's *also* what gives the dot/label spans below their
+   positioning context — silently wins over leaflet.css's rule (loaded
+   earlier) and takes the marker out of Leaflet's absolute-positioned
+   scheme entirely: confirmed live, every airport marker but one ended up
+   stacked in cumulative normal-flow order instead of at its real lat/
+   lng, hundreds to thousands of px off from a fresh page load. Absolute
+   is a non-static position too, so it already gives those children a
+   valid containing block — nothing else needs to change here. */
+.default-airport-icon {
+  cursor: pointer;
+}
+
+.default-airport-icon-dot {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 10px;
+  height: 10px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: #1a1a1a;
+  border: 2px solid #e2ddc9;
+  box-sizing: border-box;
+  display: block;
+}
+
+.default-airport-icon-label {
+  position: absolute;
+  top: 50%;
+  left: 100%;
+  transform: translateY(-50%);
+  margin-left: 4px;
+  padding: 1px 4px;
+  background: rgba(20, 20, 20, 0.75);
+  color: #e2ddc9;
+  font-size: 10px;
+  font-weight: 700;
+  font-family: monospace;
+  white-space: nowrap;
+  border-radius: 2px;
+  pointer-events: none;
+}

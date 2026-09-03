@@ -30,3 +30,7 @@ frontend/blob-report/
 .env
 .env.local
 *.log
+
+# Cached source data for scripts/generate_world_map_data.py — multi-MB
+# GeoJSON/CSV downloads, regenerable from the URLs in that script.
+scripts/.cache/

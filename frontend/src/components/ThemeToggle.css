@@ -22,6 +22,47 @@
   background: var(--color-panel-border);
 }
 
+/* Same stroke-only treatment as Dock's own icons (Dock.css) — inline
+   with the button's text via vertical-align, not floated/absolute. */
+.theme-toggle-icon {
+  width: 14px;
+  height: 14px;
+  vertical-align: -2px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.6;
+  margin-right: 2px;
+}
+
+/* Mobile layout (see MOBILE_BREAKPOINT_PX in FlightMap.tsx for why this
+   is the same literal, not a shared constant) — same collapse-to-icon
+   spirit as FlightSearch/FavoritesPanel's FAB pattern, simplified: this
+   button has no expandable content to reveal, it's a direct action
+   (flip the theme) either way, so there's no separate open/closed sheet
+   to build here — just shrink to a round icon-only button and hide the
+   label, same as the other two end up looking on a phone. */
+@media (max-width: 768px) {
+  .theme-toggle-btn {
+    width: 48px;
+    height: 48px;
+    padding: 0;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .theme-toggle-icon {
+    width: 20px;
+    height: 20px;
+    margin-right: 0;
+  }
+
+  .theme-toggle-label {
+    display: none;
+  }
+}
+
 .theme-toggle-btn--active {
   border-color: var(--color-marker);
   color: var(--color-marker);

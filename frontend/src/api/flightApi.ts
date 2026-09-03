@@ -1,4 +1,4 @@
-import type { AircraftDossier, AircraftUsage, Bounds, ClusterPoint, FlightPosition, LiveMarker, PollingStatus } from "../types/flight";
+import type { AircraftDossier, AirportInfo, AircraftUsage, Bounds, ClusterPoint, FlightPosition, LiveMarker, PollingStatus } from "../types/flight";
 import { clusterMockFleet, filterByBounds, getMockFleet, getMockPlaneCount } from "./mockFleet";
 
 /**
@@ -170,5 +170,18 @@ export interface AirportGateFeature {
 export async function fetchAirportGates(code: string, lat: number, lon: number): Promise<AirportGateFeature[]> {
   const res = await fetch(`/api/airports/gates?code=${encodeURIComponent(code)}&lat=${lat}&lon=${lon}`);
   if (!res.ok) throw new Error(`airport gates fetch failed: ${res.status}`);
+  return res.json();
+}
+
+/**
+ * Static name/municipality/country for the airport dossier panel — see
+ * AirportGatesController.info. Null on 404 (a code VectorBasemap's own
+ * airport data has but the reference table doesn't), same convention as
+ * fetchAircraftDossier.
+ */
+export async function fetchAirportInfo(code: string): Promise<AirportInfo | null> {
+  const res = await fetch(`/api/airports/info?code=${encodeURIComponent(code)}`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`airport info fetch failed: ${res.status}`);
   return res.json();
 }

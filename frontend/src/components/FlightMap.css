@@ -165,7 +165,8 @@ html, body {
 [data-theme="cyberpunk"] .favorites-panel-content,
 [data-theme="cyberpunk"] .resume-dialog,
 [data-theme="cyberpunk"] .theme-toggle-btn,
-[data-theme="cyberpunk"] .map-legend,
+[data-theme="cyberpunk"] .map-legend-toggle,
+[data-theme="cyberpunk"] .map-legend-list,
 [data-theme="cyberpunk"] .dock-tile {
   clip-path: polygon(10px 0, 100% 0, 100% 100%, 0 100%, 0 10px);
 }
@@ -187,7 +188,8 @@ html, body {
 [data-theme="cyberpunk"] .favorites-panel-content,
 [data-theme="cyberpunk"] .resume-dialog,
 [data-theme="cyberpunk"] .theme-toggle-btn,
-[data-theme="cyberpunk"] .map-legend,
+[data-theme="cyberpunk"] .map-legend-toggle,
+[data-theme="cyberpunk"] .map-legend-list,
 [data-theme="cyberpunk"] .dock-tile {
   position: relative;
 }
@@ -241,7 +243,6 @@ html, body {
    material's own boxed field-label treatment. */
 [data-theme="cyberpunk"] .details-panel-eyebrow,
 [data-theme="cyberpunk"] .favorites-panel-section h3,
-[data-theme="cyberpunk"] .map-legend-eyebrow,
 [data-theme="cyberpunk"] .flight-search-eyebrow {
   display: inline-block;
   padding: 3px 8px;
@@ -452,6 +453,18 @@ html, body {
   background: var(--color-panel);
 }
 
+/* Hover feedback for VectorBasemap's airport hit-test (see its
+   nearestAirport/mousemove effect) — below GATES_MIN_ZOOM an airport is
+   just a small dot with nothing else marking it as clickable, same
+   cursor as the rest of the draggable map. Needs real specificity (two
+   classes, not one) to win over Leaflet's own .leaflet-grab/
+   .leaflet-dragging rules, which set cursor via a class on this same
+   element and would otherwise silently override a same-specificity
+   single-class rule depending on which happened to load last. */
+.leaflet-container.leaflet-container--airport-hover {
+  cursor: pointer;
+}
+
 .route-line {
   stroke-linecap: round;
   animation: dash-travel 2.4s linear forwards;
@@ -514,23 +527,57 @@ html, body {
   justify-content: center;
 }
 
+/* No circle backing and no count anywhere on the mark (see clusterIcon's
+   own comment) — just the plane glyphs below, positioned by their own
+   .cluster-icon-mark--N rule. */
 .cluster-icon-mark {
+  position: relative;
   width: 100%;
   height: 100%;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: color-mix(in srgb, var(--color-marker) 28%, transparent);
-  border: 2px solid var(--color-marker);
-  box-shadow: 0 0 6px color-mix(in srgb, var(--color-marker) 55%, transparent);
 }
 
-.cluster-icon-count {
-  font: 600 12px var(--font-data);
-  color: var(--color-marker);
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
+/* 2/3/4 of planeIcon's own PLANE_SVG (clusterPlaneCount in FlightMap.tsx
+   picks which), all rotated to the same northeast heading — a flying-V
+   formation (geese, not a scattered fan): one leader at the northeast
+   tip with the rest trailing behind it in two diverging arms, each
+   overlapping its neighbor enough to be partly obscured by it, the way
+   real formation flying reads at a glance. Percentage sizes (not fixed
+   px) so this scales with clusterIconSize's own size, same convention as
+   .plane-glyph. The translate(-50%,-50%) centers each glyph on its own
+   top/left anchor point before the shared rotation. */
+.cluster-icon-mark svg {
+  position: absolute;
+  width: 54%;
+  height: 54%;
+  fill: var(--color-marker);
+  stroke: rgba(0, 0, 0, 0.7);
+  stroke-width: 1;
+  stroke-linejoin: round;
+  transform: translate(-50%, -50%) rotate(45deg);
 }
+
+/* Source order is back-to-front (trailing arms first, leader last) so
+   the leader — frontmost, at the NE tip — paints on top and partly
+   obscures whichever wingman is directly behind it, same as a real V's
+   lead bird. The two arms diverge from the leader at roughly ±60° off
+   the reverse-of-travel line (one trailing more west, the other more
+   south) rather than both sitting close behind it, so the V actually
+   reads as a V — still close enough for real overlap between neighbors.
+   Each later variant keeps the previous one's positions and only adds a
+   wingman further out along the west arm, rather than recomputing the
+   whole formation, so a bigger cluster reads as the same V one bird
+   longer, not a different shape. */
+.cluster-icon-mark--2 svg:nth-child(1) { top: 51%; left: 60%; } /* wingman (south arm) */
+.cluster-icon-mark--2 svg:nth-child(2) { top: 30%; left: 66%; } /* leader */
+
+.cluster-icon-mark--3 svg:nth-child(1) { top: 36%; left: 45%; } /* wingman (west arm) */
+.cluster-icon-mark--3 svg:nth-child(2) { top: 51%; left: 60%; } /* wingman (south arm) */
+.cluster-icon-mark--3 svg:nth-child(3) { top: 30%; left: 66%; } /* leader */
+
+.cluster-icon-mark--4 svg:nth-child(1) { top: 42%; left: 24%; } /* far wingman (west arm, extended) */
+.cluster-icon-mark--4 svg:nth-child(2) { top: 36%; left: 45%; } /* wingman (west arm) */
+.cluster-icon-mark--4 svg:nth-child(3) { top: 51%; left: 60%; } /* wingman (south arm) */
+.cluster-icon-mark--4 svg:nth-child(4) { top: 30%; left: 66%; } /* leader */
 
 .plane-glyph {
   display: flex;
@@ -618,35 +665,18 @@ html, body {
   .plane-icon--selected .plane-icon-halo { animation: none; opacity: 0.6; }
 }
 
-/* Cyberpunk-theme-only: an outline box behind the (still heading-rotated)
-   glyph plus an attached callsign chip, matching the earlier approved
-   mockup's own .blip-mark/.blip-label — while keeping the glyph itself
-   (and its rotation/unknown-heading handling) exactly as-is, rather than
-   replacing it with the mockup's plain non-directional square. Hidden by
-   default: both elements are always in the markup (see planeIcon in
-   FlightMap.tsx) so RotatingPlaneIcon.createIcon() has the same DOM
-   shape regardless of theme, but only cyberpunk actually shows them.
-   Both pointer-events:none, same as .plane-icon-halo above — a marker's
-   click handler lives on its Leaflet-managed root element, not these. */
+/* .plane-icon-mark used to draw a square outline box behind the glyph on
+   cyberpunk theme (matching an earlier approved mockup's .blip-mark) —
+   dropped per later feedback: at any real traffic density it read as
+   visual clutter rather than the intended blip styling. Left as display:
+   none unconditionally (rather than deleted outright) since the element
+   itself stays in planeIcon's markup either way — see that comment for
+   why RotatingPlaneIcon.createIcon() needs a consistent DOM shape
+   regardless of theme. .plane-icon-label (the selected-aircraft callsign
+   chip) is unrelated and unaffected — see its own rule below. */
 .plane-icon-mark,
 .plane-icon-label {
   display: none;
-}
-[data-theme="cyberpunk"] .plane-icon-mark {
-  display: block;
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  width: 70%;
-  height: 70%;
-  transform: translate(-50%, -50%);
-  border: 1.4px solid var(--color-marker);
-  background: rgba(12, 18, 28, 0.55);
-  pointer-events: none;
-}
-[data-theme="cyberpunk"] .plane-icon--selected .plane-icon-mark {
-  border-color: var(--color-marker-selected);
-  border-width: 2px;
 }
 /* Selected only, not every marker — real traffic can mean dozens of
    aircraft close together on screen (a busy airport's approach path),
@@ -720,6 +750,32 @@ html, body {
 .details-panel h2 {
   margin: 4px 0 10px;
   font-size: 20px;
+}
+
+/* Only ever rendered while the tracked aircraft is actually off-screen
+   (see FlightMap.tsx) — an accent color (not the muted favorite-toggle
+   style right below) since, unlike those, it's asking to be noticed:
+   the whole point is surfacing something the user would otherwise have
+   no way to tell happened (see FollowSelected's own comment on why this
+   replaced auto-recentering). */
+.details-panel-focus-toggle {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin-bottom: 10px;
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  border: 1px solid var(--color-accent);
+  color: var(--color-accent);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.details-panel-focus-toggle:hover {
+  background: color-mix(in srgb, var(--color-accent) 24%, transparent);
 }
 
 .details-panel-favorite-toggles {
@@ -816,6 +872,31 @@ html, body {
      just shrunk. */
   .app-header {
     display: none;
+  }
+
+  /* Real-device feedback: with Search/Favorites/Legend all opened at
+     once (a common combination — check a favorite while a route is
+     selected), this column's total height had no cap at all, growing
+     until it collided with Leaflet's own bottom-left scale control and
+     pushed ThemeToggle down near/under the bottom sheet's edge. 33vh is
+     a safe bound even in the worst case: the details-panel bottom sheet
+     below can claim up to 66.667vh of its own (see
+     .details-panel--expanded), leaving this column's own 33vh clear of
+     it regardless of which panels the user has expanded. Scrolls
+     internally past that rather than clipping silently. */
+  .left-overlay-stack {
+    max-height: 33vh;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Smaller than the desktop 320px cap (see FavoritesPanel.css) — on
+     mobile this list shares .left-overlay-stack's own 33vh budget above
+     with Search and Legend, rather than owning a generous chunk of
+     screen outright. Still independently scrollable past this, same as
+     desktop. */
+  .favorites-panel-content {
+    max-height: 160px;
   }
 
   /* Real layout split, not an overlay: a previous version made the sheet

@@ -90,17 +90,42 @@ export default function FavoritesPanel({ routes, aircraft, onRemoveRoute, onRemo
 
   return (
     <div className="favorites-panel">
+      {/* Mobile only (see FavoritesPanel.css) — same collapse-to-FAB
+          pattern FlightSearch already uses: desktop never shows this
+          (the toggle button below is simply always visible there), a
+          phone gets a small icon button that expands into a full-screen
+          overlay instead of a permanently-visible text button + card. */}
       <button
         type="button"
-        className="favorites-panel-toggle"
+        className="favorites-panel-fab"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        aria-controls="favorites-panel-content"
+        aria-controls="favorites-panel-body"
+        aria-label={open ? "Close favorites" : "Favorites"}
       >
-        {open ? "Hide favorites ▲" : `★ Favorites${totalCount > 0 ? ` (${totalCount})` : ""} ▼`}
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M12 3 L14.6 9 L21 9.7 L16.2 14 L17.6 20.3 L12 17 L6.4 20.3 L7.8 14 L3 9.7 L9.4 9 Z" />
+        </svg>
       </button>
+      <div id="favorites-panel-body" className={`favorites-panel-body${open ? " favorites-panel-body--open" : ""}`}>
+        {/* Mobile only — the FAB above already toggles this closed too,
+            but a labeled close action inside the sheet itself is a more
+            discoverable affordance than relying on someone finding their
+            way back to a button now hidden behind this same overlay. */}
+        <button type="button" className="favorites-panel-body-close" onClick={() => setOpen(false)}>
+          Close favorites ✕
+        </button>
+        <button
+          type="button"
+          className="favorites-panel-toggle"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          aria-controls="favorites-panel-content"
+        >
+          {open ? "Hide favorites ▲" : `★ Favorites${totalCount > 0 ? ` (${totalCount})` : ""} ▼`}
+        </button>
 
-      {open && (
+        {open && (
         <div id="favorites-panel-content" className="favorites-panel-content">
           {totalCount === 0 && (
             <p className="favorites-panel-empty">No favorites yet — star an aircraft or route from its details panel.</p>
@@ -112,7 +137,12 @@ export default function FavoritesPanel({ routes, aircraft, onRemoveRoute, onRemo
               <ul>
                 {aircraft.map((a) => {
                   const live = liveAircraft[a.icao24];
-                  const label = a.registration || a.callsign || a.icao24.toUpperCase();
+                  // Callsign first: it's what a user actually searched/
+                  // selected by, and what the details panel's own <h2>
+                  // shows too (see FlightMap.tsx) — showing the tail
+                  // number instead just because it happens to be known
+                  // left a favorited flight unrecognizable in this list.
+                  const label = a.callsign || a.registration || a.icao24.toUpperCase();
                   return (
                     <li key={a.icao24} className={live ? "favorites-panel-item favorites-panel-item--live" : "favorites-panel-item"}>
                       <button
@@ -175,7 +205,8 @@ export default function FavoritesPanel({ routes, aircraft, onRemoveRoute, onRemo
             </div>
           )}
         </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }
