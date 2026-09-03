@@ -641,7 +641,14 @@ function cancelIdle(handle: IdleHandle | null) {
  *     pan-transformed _mapPane, so between refreshes it moves for free
  *     via the shared CSS transform, the same way tiles do.
  */
-export default function VectorBasemap() {
+export interface AirportSelection {
+  code: string;
+  name: string;
+  lat: number;
+  lon: number;
+}
+
+export default function VectorBasemap({ onAirportSelect }: { onAirportSelect?: (ap: AirportSelection) => void }) {
   const map = useMap();
   const paneRef = useRef<HTMLElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -816,10 +823,11 @@ export default function VectorBasemap() {
       if (!nearest) return;
       e.stopPropagation();
       zoomToAirport(nearest);
+      onAirportSelect?.({ code: nearest.code, name: nearest.name, lat: nearest.pos[1], lon: nearest.pos[0] });
     }
     container.addEventListener("click", handleCapture, true);
     return () => container.removeEventListener("click", handleCapture, true);
-  }, [map, zoomToAirport]);
+  }, [map, zoomToAirport, onAirportSelect]);
 
   // Refreshes/attaches whatever the map's current zoom level is, right
   // now — used for the initial paint, every pan refresh, and the

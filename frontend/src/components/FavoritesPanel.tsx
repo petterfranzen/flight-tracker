@@ -112,7 +112,12 @@ export default function FavoritesPanel({ routes, aircraft, onRemoveRoute, onRemo
               <ul>
                 {aircraft.map((a) => {
                   const live = liveAircraft[a.icao24];
-                  const label = a.registration || a.callsign || a.icao24.toUpperCase();
+                  // Callsign first: it's what a user actually searched/
+                  // selected by, and what the details panel's own <h2>
+                  // shows too (see FlightMap.tsx) — showing the tail
+                  // number instead just because it happens to be known
+                  // left a favorited flight unrecognizable in this list.
+                  const label = a.callsign || a.registration || a.icao24.toUpperCase();
                   return (
                     <li key={a.icao24} className={live ? "favorites-panel-item favorites-panel-item--live" : "favorites-panel-item"}>
                       <button

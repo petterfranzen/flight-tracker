@@ -92,6 +92,17 @@ export interface AircraftDossier {
   legStartAt: string | null;
 }
 
+/** Static reference details for one airport — see AirportInfo.java. */
+export interface AirportInfo {
+  icaoCode: string | null;
+  iataCode: string | null;
+  name: string | null;
+  municipality: string | null;
+  country: string | null;
+  latitude: number | null;
+  longitude: number | null;
+}
+
 export interface PollingStatus {
   active: boolean;
   secondsRemaining: number;

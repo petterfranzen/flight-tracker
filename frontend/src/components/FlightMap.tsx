@@ -14,9 +14,10 @@ import L from "leaflet";
 // changing on every pan, a class toggling on selection, chunked loading
 // adding markers over several frames) reflowed everything around them.
 import "leaflet/dist/leaflet.css";
-import type { AircraftDossier, Bounds, ClusterPoint, FlightPosition, LiveMarker, SelectedPosition } from "../types/flight";
+import type { AircraftDossier, AirportInfo, Bounds, ClusterPoint, FlightPosition, LiveMarker, SelectedPosition } from "../types/flight";
 import {
   fetchAircraftDossier,
+  fetchAirportInfo,
   fetchFlightLive,
   fetchHistory,
   fetchLiveClusters,
@@ -26,6 +27,7 @@ import {
   restartPolling,
   subscribeLiveFeed,
 } from "../api/flightApi";
+import type { AirportSelection } from "./VectorBasemap";
 import FlightSearch from "./FlightSearch";
 import FavoritesPanel from "./FavoritesPanel";
 import Legend from "./Legend";
@@ -484,10 +486,14 @@ function FollowSelected({
   lat,
   lon,
   sheetExpanded,
+  theme,
 }: {
   selectedId: string | null;
   lat: number | null;
   lon: number | null;
+  // Only the default theme's flyTo below is safe to animate — see its own
+  // comment for the cyberpunk-specific reason it still can't be.
+  theme: Theme;
   // Mobile bottom-sheet collapsed/expanded state (see FlightMap.css's
   // ≤768px block) — irrelevant to desktop's layout, but on mobile the map
   // container's actual on-screen height changes when this toggles (the
@@ -523,19 +529,33 @@ function FollowSelected({
     if (lat == null || lon == null) return;
     if (lastCenteredIdRef.current !== selectedId) {
       lastCenteredIdRef.current = selectedId;
-      // Not flyTo: VectorBasemap's whole canvas-buffer cache only swaps
-      // buffers at zoomstart/zoomend (see its own header comment) on the
-      // assumption zoom changes are instant, which is also why this
-      // theme disables Leaflet's own _zoomAnimated. flyTo's animation
-      // path runs independently of that flag though - it drives a real
-      // multi-frame zoom+pan tween regardless - so during its ~0.8s the
-      // buffer stayed exactly where zoomstart left it (the *previous*
-      // zoom/position) while the visible map raced far past it, reading
-      // as the basemap and its red country fill briefly vanishing mid-
-      // flight. setView jumps straight to the destination in one frame,
-      // which is exactly the single zoomstart→zoomend transition the
-      // buffer swap was already built to handle correctly.
-      map.setView([lat, lon], Math.max(map.getZoom(), SELECTED_MIN_ZOOM), { animate: false });
+      const targetZoom = Math.max(map.getZoom(), SELECTED_MIN_ZOOM);
+      if (theme === "cyberpunk") {
+        // Not flyTo here: VectorBasemap's whole canvas-buffer cache only
+        // swaps buffers at zoomstart/zoomend (see its own header comment)
+        // on the assumption zoom changes are instant, which is also why
+        // this theme disables Leaflet's own _zoomAnimated. flyTo's
+        // animation path runs independently of that flag though - it
+        // drives a real multi-frame zoom+pan tween regardless - so during
+        // its ~0.8s the buffer stayed exactly where zoomstart left it
+        // (the *previous* zoom/position) while the visible map raced far
+        // past it, reading as the basemap and its red country fill
+        // briefly vanishing mid-flight. setView jumps straight to the
+        // destination in one frame, which is exactly the single
+        // zoomstart→zoomend transition the buffer swap was already built
+        // to handle correctly. Fixing this properly needs the buffer
+        // swap itself reworked to animate alongside a real flyTo (e.g.
+        // swapping at zoomend instead of zoomstart, letting Leaflet's own
+        // pane transform carry the *old* buffer through the tween) —
+        // real scope, not a one-line change, so left alone here.
+        map.setView([lat, lon], targetZoom, { animate: false });
+      } else {
+        // The default theme's plain raster TileLayer has none of the
+        // above constraint — Leaflet's ordinary zoom animation already
+        // handles a raster tile layer correctly mid-flight, tiles and
+        // all, so a real flyTo is safe here.
+        map.flyTo([lat, lon], targetZoom, { duration: 0.8 });
+      }
     } else {
       // lat/lon here are two of the dependencies that actually vary tick
       // to tick (unlike a `[lat, lon]` tuple prop, which would be a fresh
@@ -543,7 +563,7 @@ function FollowSelected({
       // render regardless of whether the position itself moved).
       map.panTo([lat, lon], { animate: true, duration: 0.5 });
     }
-  }, [selectedId, lat, lon, map, sheetExpanded]);
+  }, [selectedId, lat, lon, map, sheetExpanded, theme]);
   return null;
 }
 
@@ -646,9 +666,15 @@ function clusterIcon(count: number, entering: boolean): L.DivIcon {
   // Reuses plane-icon--entering (see planeIcon's own comment) rather than
   // a second parallel fade-in mechanism — the CSS keyframes/class don't
   // care what kind of marker they're attached to.
+  //
+  // Reads as "traffic," not "a statistic": three of the same plane glyph
+  // AircraftMarker itself uses, fanned out (see .cluster-icon-plane in
+  // FlightMap.css), rather than a bare number in a circle — the exact
+  // count is still there as a small corner badge for anyone who wants it,
+  // just no longer the *only* thing the mark communicates.
   return new L.DivIcon({
     className: `cluster-icon${entering ? " plane-icon--entering" : ""}`,
-    html: `<div class="cluster-icon-mark"><span class="cluster-icon-count">${count}</span></div>`,
+    html: `<div class="cluster-icon-mark">${PLANE_SVG}${PLANE_SVG}${PLANE_SVG}<span class="cluster-icon-count">${count}</span></div>`,
     iconSize: [size, size],
     iconAnchor: [size / 2, size / 2],
   });
@@ -726,6 +752,17 @@ export default function FlightMap() {
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [route, setRoute] = useState<[number, number][]>([]);
   const [dossier, setDossier] = useState<AircraftDossier | null>(null);
+  // The airport dossier's own selection — mutually exclusive with
+  // selected/selectedPos above (picking one clears the other, see
+  // handleSelect and handleAirportSelect) since only one details panel
+  // can occupy the desktop side panel / mobile bottom sheet at a time.
+  // Populated instantly from the click (code/name/lat/lon all come
+  // straight off VectorBasemap's own WORLD_AIRPORTS entry, no fetch
+  // needed), then airportInfo backfills the reference-table fields
+  // (municipality/country/ICAO) moments later, same "—" until loaded
+  // convention as dossier above.
+  const [airportDossier, setAirportDossier] = useState<AirportSelection | null>(null);
+  const [airportInfo, setAirportInfo] = useState<AirportInfo | null>(null);
 
   // Client-side only (see favorites.ts) — loaded once from localStorage on
   // mount via useState's lazy initializer, kept in React state from then on
@@ -1241,6 +1278,8 @@ export default function FlightMap() {
   // change) so it doesn't defeat AircraftMarker's memoization the way a
   // freshly-allocated closure passed as a prop would.
   const handleSelect = useCallback((p: LiveMarker) => {
+    // Mutually exclusive with the airport dossier below.
+    setAirportDossier(null);
     setSelected(p.icao24);
     // altitudeM starts null (see SelectedPosition's own comment) — the
     // dedicated priority poll below fires immediately once `selected`
@@ -1251,6 +1290,22 @@ export default function FlightMap() {
     // out for no reason.
     setSelectedPos((prev) => (prev && prev.icao24 === p.icao24 ? { ...prev, ...p } : { ...p, altitudeM: null }));
     setDossierExpanded(false);
+  }, []);
+
+  // Mirrors handleSelect above: clears any aircraft selection (mutually
+  // exclusive panels) and resets the mobile bottom-sheet to collapsed.
+  // airportInfo is fetched fresh on every click rather than cached by
+  // code client-side — the reference-table lookup is cheap (a single
+  // indexed read) and airports are clicked rarely enough next to
+  // aircraft that a cache would save little.
+  const handleAirportSelect = useCallback((ap: AirportSelection) => {
+    setSelected(null);
+    setAirportDossier(ap);
+    setAirportInfo(null);
+    setDossierExpanded(false);
+    fetchAirportInfo(ap.code)
+      .then(setAirportInfo)
+      .catch(() => {});
   }, []);
 
   const toggleSelectedAircraftFavorite = useCallback(() => {
@@ -1334,7 +1389,7 @@ export default function FlightMap() {
           both states, so simplest correct rule is the dock is for
           browsing before a selection, not while the details panel
           already owns that part of the screen. */}
-      {!selectedPos && <Dock />}
+      {!selectedPos && !airportDossier && <Dock />}
       <div className="left-overlay-stack">
         {/* Same element, same JSX position, both themes — only its CSS
             position differs (see [data-theme="cyberpunk"] .app-header):
@@ -1415,7 +1470,7 @@ export default function FlightMap() {
         />
         {theme === "cyberpunk" && (
           <Suspense fallback={null}>
-            <VectorBasemap />
+            <VectorBasemap onAirportSelect={handleAirportSelect} />
           </Suspense>
         )}
         {/* Metric only — every other distance in this app (altitude in m,
@@ -1432,6 +1487,7 @@ export default function FlightMap() {
           lat={selectedPos?.latitude ?? null}
           lon={selectedPos?.longitude ?? null}
           sheetExpanded={dossierExpanded}
+          theme={theme}
         />
 
         {route.length > 1 && (
@@ -1561,6 +1617,48 @@ export default function FlightMap() {
               {dossierExpanded ? "▲" : "▼"}
             </button>
             <button className="details-panel-close" onClick={() => setSelected(null)} aria-label="Close aircraft details">
+              Close
+            </button>
+          </div>
+        </aside>
+      )}
+
+      {/* The airport counterpart to the aircraft panel above — same
+          .details-panel shell (desktop side panel / mobile bottom sheet),
+          shown instead of it rather than alongside it (see handleSelect/
+          handleAirportSelect, which keep the two selections mutually
+          exclusive). No favorite toggles here: favoriting an airport
+          itself was never asked for, only routes/aircraft. */}
+      {airportDossier && (
+        <aside
+          className={`details-panel${dossierExpanded ? " details-panel--expanded" : ""}`}
+          aria-labelledby="airport-details-panel-heading"
+        >
+          <button className="details-panel-close-x" onClick={() => setAirportDossier(null)} aria-label="Close airport details">
+            ✕
+          </button>
+          <div className="details-panel-inner">
+            <span className="details-panel-eyebrow" id="airport-details-panel-heading">Airport Details</span>
+            <h2>{airportDossier.name || airportDossier.code}</h2>
+            <p className="details-panel-meta">
+              {airportInfo?.iataCode || airportDossier.code}
+              {airportInfo?.icaoCode ? ` / ${airportInfo.icaoCode}` : ""}
+            </p>
+            <dl className="details-panel-fields">
+              <dt>Municipality</dt><dd>{airportInfo?.municipality || "—"}</dd>
+              <dt>Country</dt><dd>{airportInfo?.country || "—"}</dd>
+              <dt>Latitude</dt><dd>{airportDossier.lat.toFixed(4)}°</dd>
+              <dt>Longitude</dt><dd>{airportDossier.lon.toFixed(4)}°</dd>
+            </dl>
+            <button
+              className="details-panel-expand-toggle"
+              onClick={() => setDossierExpanded((v) => !v)}
+              aria-expanded={dossierExpanded}
+              aria-label={dossierExpanded ? "Show less" : "Show more"}
+            >
+              {dossierExpanded ? "▲" : "▼"}
+            </button>
+            <button className="details-panel-close" onClick={() => setAirportDossier(null)} aria-label="Close airport details">
               Close
             </button>
           </div>
