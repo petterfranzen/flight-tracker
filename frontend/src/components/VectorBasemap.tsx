@@ -162,6 +162,23 @@ const MIN_OUTLINE_PX = 8;
 // even before you're zoomed in enough to make out individual gate dots -
 // noticeably sooner.
 const GATES_MIN_ZOOM = 12;
+
+// How close (on-screen px) a click needs to land to an airport's dot to
+// count as "clicked that airport" — generous enough for a real tap/click on
+// a ~3px-radius dot plus its label without stealing clicks meant for
+// something else further away. Only checked below GATES_MIN_ZOOM: past
+// that the real outline is already on screen as the guide, so there's
+// nothing left for a click here to do.
+const AIRPORT_CLICK_RADIUS_PX = 14;
+
+// Where a clicked airport's own zoom-to lands when no real gate/apron/
+// terminal geometry is available to fit bounds to (fetch still in flight,
+// failed, or OSM genuinely has none for this airport) — comfortably past
+// GATES_MIN_ZOOM so at least the runway centerlines this basemap can
+// already draw become visible, rather than landing exactly on the
+// threshold and showing nothing new.
+const AIRPORT_ZOOM_TO_FALLBACK_ZOOM = GATES_MIN_ZOOM + 3;
+
 const APRON_FILL_COLOR = "rgba(125, 144, 163, 0.10)";
 const APRON_OUTLINE_COLOR = "rgba(125, 144, 163, 0.4)";
 const TERMINAL_FILL_COLOR = "rgba(226, 221, 201, 0.14)";
@@ -707,6 +724,50 @@ export default function VectorBasemap() {
     }
   }, [map]);
 
+  // Clicking an airport's dot below GATES_MIN_ZOOM (see the click handler
+  // in useMapEvents below) jumps straight to it — fetches the same real
+  // gate/apron/terminal/hangar geometry scheduleGateFetch would eventually
+  // fetch anyway once zoomed in this far normally, fits the view to it
+  // (plus this airport's own runway centerlines, which can extend well
+  // past its buildings) so everything actually built there ends up on
+  // screen, and caches the result the same way so a later normal zoom-in
+  // doesn't refetch it. Falls back to a fixed close zoom, not a
+  // deliberately-empty view, when there's nothing to fit bounds to —  a
+  // small airport OSM has no gate data for, or the fetch failing outright.
+  //
+  // animate: false for the same reason FollowSelected's own aircraft-
+  // centering setView is: this theme's whole buffer cache only swaps at
+  // zoomstart/zoomend on the assumption a zoom is instant (see this
+  // component's own header comment) — fitBounds' default animated flight
+  // would race past that swap the same way flyTo once did, showing the
+  // background vanish mid-flight.
+  const zoomToAirport = useCallback((ap: (typeof WORLD_AIRPORTS)[number]) => {
+    const [lon, lat] = ap.pos;
+    const fallback = () => map.setView([lat, lon], AIRPORT_ZOOM_TO_FALLBACK_ZOOM, { animate: false });
+    const fitToFeatures = (features: AirportGateFeature[]) => {
+      const bounds = L.latLngBounds([]);
+      for (const feature of features) {
+        for (const [flon, flat] of feature.ring) bounds.extend([flat, flon]);
+      }
+      if (ap.runways) {
+        for (const seg of ap.runways) for (const [rlon, rlat] of seg) bounds.extend([rlat, rlon]);
+      }
+      if (bounds.isValid()) map.fitBounds(bounds, { padding: [40, 40], animate: false });
+      else fallback();
+    };
+    const cached = gateCacheRef.current.get(ap.code);
+    if (cached) {
+      fitToFeatures(cached);
+      return;
+    }
+    fetchAirportGates(ap.code, lat, lon)
+      .then((features) => {
+        gateCacheRef.current.set(ap.code, features);
+        fitToFeatures(features);
+      })
+      .catch(fallback);
+  }, [map]);
+
   // Refreshes/attaches whatever the map's current zoom level is, right
   // now — used for the initial paint, every pan refresh, and the
   // moveend/resize safety nets. Always repaints (never trusts a cache
@@ -827,6 +888,28 @@ export default function VectorBasemap() {
   }, [refreshCurrent]);
 
   useMapEvents({
+    // Below GATES_MIN_ZOOM an airport's dot is the only thing marking
+    // where it is (its real outline isn't drawn/visible yet) — a click
+    // near enough one of them jumps straight to it instead of leaving
+    // someone to hunt for the right zoom level by hand. Nearest-within-
+    // radius, not first-match: a crowded area can have several dots
+    // within AIRPORT_CLICK_RADIUS_PX of any given click.
+    click: (e) => {
+      if (map.getZoom() >= GATES_MIN_ZOOM) return;
+      const clickPt = map.latLngToContainerPoint(e.latlng);
+      const viewBounds = map.getBounds();
+      let nearest: (typeof WORLD_AIRPORTS)[number] | null = null;
+      let nearestDist = AIRPORT_CLICK_RADIUS_PX;
+      for (const ap of WORLD_AIRPORTS) {
+        if (!viewBounds.contains([ap.pos[1], ap.pos[0]])) continue;
+        const dist = clickPt.distanceTo(map.latLngToContainerPoint([ap.pos[1], ap.pos[0]]));
+        if (dist < nearestDist) {
+          nearestDist = dist;
+          nearest = ap;
+        }
+      }
+      if (nearest) zoomToAirport(nearest);
+    },
     move: schedulePanRefresh,
     moveend: () => {
       if (panThrottleRef.current != null) {
