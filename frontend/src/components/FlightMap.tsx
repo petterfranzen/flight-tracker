@@ -487,6 +487,8 @@ function FollowSelected({
   lon,
   sheetExpanded,
   theme,
+  focusRequest,
+  onOffScreenChange,
 }: {
   selectedId: string | null;
   lat: number | null;
@@ -503,16 +505,35 @@ function FollowSelected({
   // the *previous* map height, which is exactly the "plane hidden behind
   // the sheet" bug this replaces.
   sheetExpanded: boolean;
+  // Bumped by the details panel's "Focus Plane" button (see FlightMap's
+  // own state) — an increasing counter rather than a boolean so clicking
+  // it twice in a row (still off-screen both times, nothing else about
+  // the selection changed) is still a distinct, actionable change this
+  // effect's dependency array will actually see.
+  focusRequest: number;
+  onOffScreenChange: (offScreen: boolean) => void;
 }) {
   const map = useMap();
-  // Distinguishes "just selected a different aircraft" (zoom in and
-  // center on it) from "the already-selected aircraft moved, or the
-  // available map area changed" (keep it centered/re-centered, but leave
-  // the user's current zoom alone) — both re-center the view, but flyTo's
-  // zoom bump on every ordinary position tick would otherwise keep
-  // yanking the view back to SELECTED_MIN_ZOOM even after the user
-  // deliberately zoomed out further to see more context around it.
+  // Distinguishes three reasons this effect can re-run: a genuinely new
+  // selection, an explicit "Focus Plane" click, or the mobile sheet
+  // resizing the visible map area — each gets centered — from an
+  // ordinary position tick for an aircraft that's already been centered
+  // once, which deliberately does *not* recenter (see the per-branch
+  // comments below for why each of the first three still does).
   const lastCenteredIdRef = useRef<string | null>(null);
+  const lastFocusRequestRef = useRef(focusRequest);
+  const lastSheetExpandedRef = useRef(sheetExpanded);
+
+  const checkOffScreen = useCallback(() => {
+    onOffScreenChange(lat != null && lon != null && !map.getBounds().contains([lat, lon]));
+  }, [map, lat, lon, onOffScreenChange]);
+
+  // Independent of the centering effect below: the tracked aircraft can
+  // drift off-screen (or back on) from either end — its own position
+  // moving, or the user panning/zooming the map themselves — and the
+  // "Focus Plane" button needs to reflect that live regardless of which
+  // one just happened.
+  useMapEvents({ moveend: checkOffScreen, zoomend: checkOffScreen });
 
   useEffect(() => {
     // Leaflet caches the container's last-known size and won't repaint
@@ -524,11 +545,23 @@ function FollowSelected({
     map.invalidateSize();
     if (selectedId == null) {
       lastCenteredIdRef.current = null;
+      onOffScreenChange(false);
       return;
     }
     if (lat == null || lon == null) return;
-    if (lastCenteredIdRef.current !== selectedId) {
-      lastCenteredIdRef.current = selectedId;
+
+    const isNewSelection = lastCenteredIdRef.current !== selectedId;
+    const isFocusRequest = !isNewSelection && focusRequest !== lastFocusRequestRef.current;
+    const isSheetToggle = !isNewSelection && !isFocusRequest && sheetExpanded !== lastSheetExpandedRef.current;
+    lastCenteredIdRef.current = selectedId;
+    lastFocusRequestRef.current = focusRequest;
+    lastSheetExpandedRef.current = sheetExpanded;
+
+    if (isNewSelection || isFocusRequest) {
+      // A new selection zooms in; an explicit Focus click just brings an
+      // already-selected, off-screen aircraft back into view at whatever
+      // zoom the user already had — Math.max leaves that alone rather
+      // than re-applying SELECTED_MIN_ZOOM's floor a second time.
       const targetZoom = Math.max(map.getZoom(), SELECTED_MIN_ZOOM);
       if (theme === "cyberpunk") {
         // Not flyTo here: VectorBasemap's whole canvas-buffer cache only
@@ -556,14 +589,24 @@ function FollowSelected({
         // all, so a real flyTo is safe here.
         map.flyTo([lat, lon], targetZoom, { duration: 0.8 });
       }
-    } else {
-      // lat/lon here are two of the dependencies that actually vary tick
-      // to tick (unlike a `[lat, lon]` tuple prop, which would be a fresh
-      // array reference — and so a "changed" dependency — on every parent
-      // render regardless of whether the position itself moved).
+    } else if (isSheetToggle) {
+      // The visible map area itself just changed shape (mobile sheet
+      // expanding/collapsing) — recenter so the selected aircraft doesn't
+      // end up newly hidden behind it, but this isn't the user asking to
+      // look elsewhere, so leave zoom alone and don't touch it below.
       map.panTo([lat, lon], { animate: true, duration: 0.5 });
     }
-  }, [selectedId, lat, lon, map, sheetExpanded, theme]);
+    // Deliberately no else branch: an ordinary position tick for an
+    // aircraft that's already been centered once does *not* recenter the
+    // map on every update. It used to (panTo here unconditionally) —
+    // real user feedback was that panning away to look at other traffic
+    // got yanked straight back the instant the tracked aircraft's
+    // position ticked, which made "look at something else while still
+    // tracking a flight" impossible. onOffScreenChange below is the
+    // replacement: it surfaces a "Focus Plane" button (see FlightMap's
+    // details panel) instead of forcing the view back.
+    checkOffScreen();
+  }, [selectedId, lat, lon, map, sheetExpanded, theme, focusRequest, onOffScreenChange, checkOffScreen]);
   return null;
 }
 
@@ -761,6 +804,13 @@ export default function FlightMap() {
   // collapsed on every new selection (handleSelect below) so a previous
   // aircraft's expanded state doesn't carry over to the next one.
   const [dossierExpanded, setDossierExpanded] = useState(false);
+  // Whether the selected aircraft's marker is currently outside the map's
+  // visible bounds — see FollowSelected, which no longer auto-recenters
+  // on every ordinary position tick. Drives the details panel's "Focus
+  // Plane" button below; focusRequest is what that button bumps to ask
+  // FollowSelected for a one-off recenter.
+  const [planeOffScreen, setPlaneOffScreen] = useState(false);
+  const [focusRequest, setFocusRequest] = useState(0);
   // Ticked every second while an aircraft is selected, purely to force the
   // details panel's "last updated" line to re-render as time passes —
   // selectedPos.observedAt itself doesn't change between real updates, so
@@ -1466,6 +1516,20 @@ export default function FlightMap() {
         // up rendered far outside the visible map), and getBounds() reports
         // a longitude span that isn't a real bbox at all. minZoom keeps the
         // view to a single, unambiguous world.
+        //
+        // maxBounds/maxBoundsViscosity close the other side of the same
+        // hole: minZoom alone stops the *tile grid* from repeating, but a
+        // wide-aspect viewport (or just panning hard east/west) could
+        // still drag the visible area into a second, tile-only copy of
+        // the world with no aircraft in it — real positions only ever
+        // exist in the one canonical [-180,180] range, so a repeated copy
+        // reads as "the planes disappeared." maxBoundsViscosity: 1 makes
+        // this a hard stop (matches VectorBasemap's own single-world
+        // canvas, which was never able to wrap at all) rather than
+        // letting you drag past and spring back, which would still
+        // flash the empty repeated copy for a frame.
+        maxBounds={[[-90, -180], [90, 180]]}
+        maxBoundsViscosity={1.0}
         className="map-container"
         zoomControl={false}
         aria-label="Live aircraft map"
@@ -1484,6 +1548,10 @@ export default function FlightMap() {
         <TileLayer
           attribution={theme === "cyberpunk" ? "" : '&copy; OpenStreetMap contributors'}
           url={theme === "cyberpunk" ? BLANK_TILE_URL : "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"}
+          // Belt-and-suspenders with maxBounds above: without this, a fast
+          // drag can still briefly request/paint a second copy's tiles
+          // before Leaflet's bounds correction catches up on drag end.
+          noWrap
         />
         {theme === "cyberpunk" && (
           <Suspense fallback={null}>
@@ -1505,6 +1573,8 @@ export default function FlightMap() {
           lon={selectedPos?.longitude ?? null}
           sheetExpanded={dossierExpanded}
           theme={theme}
+          focusRequest={focusRequest}
+          onOffScreenChange={setPlaneOffScreen}
         />
 
         {route.length > 1 && (
@@ -1554,6 +1624,21 @@ export default function FlightMap() {
           <div className="details-panel-inner">
             <span className="details-panel-eyebrow" id="details-panel-heading">Aircraft Details</span>
             <h2>{selectedPos.callsign?.trim() || selectedPos.icao24.toUpperCase()}</h2>
+            {/* Only shown once the tracked aircraft has actually drifted
+                off-screen (see FollowSelected/planeOffScreen) — panning
+                away to look at other traffic no longer snaps the view
+                back on its own (real feedback: that made "keep tracking
+                this flight while looking around" impossible), so this is
+                the deliberate, on-demand replacement for that. */}
+            {planeOffScreen && (
+              <button
+                type="button"
+                className="details-panel-focus-toggle"
+                onClick={() => setFocusRequest((n) => n + 1)}
+              >
+                ⌖ Focus Plane
+              </button>
+            )}
             <div className="details-panel-favorite-toggles">
               <button
                 type="button"

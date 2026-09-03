@@ -782,13 +782,31 @@ export default function VectorBasemap({ onAirportSelect }: { onAirportSelect?: (
       .catch(fallback);
   }, [map]);
 
-  // Below GATES_MIN_ZOOM an airport's dot is the only thing marking where
-  // it is (its real outline isn't drawn/visible yet) — a click near enough
-  // one jumps straight to it instead of leaving someone to hunt for the
-  // right zoom level by hand. Nearest-within-radius, not first-match: a
-  // crowded area can have several dots within AIRPORT_CLICK_RADIUS_PX of
-  // any given click.
-  //
+  // Shared by the click and hover handlers below: below GATES_MIN_ZOOM an
+  // airport's dot is the only thing marking where it is (its real outline
+  // isn't drawn/visible yet), so both "did this click hit an airport" and
+  // "is the cursor over one" are the same nearest-within-radius query.
+  // Nearest, not first-match: a crowded area can have several dots within
+  // AIRPORT_CLICK_RADIUS_PX of any given point.
+  const nearestAirport = useCallback(
+    (point: L.Point): (typeof WORLD_AIRPORTS)[number] | null => {
+      if (map.getZoom() >= GATES_MIN_ZOOM) return null;
+      const viewBounds = map.getBounds();
+      let nearest: (typeof WORLD_AIRPORTS)[number] | null = null;
+      let nearestDist = AIRPORT_CLICK_RADIUS_PX;
+      for (const ap of WORLD_AIRPORTS) {
+        if (!viewBounds.contains([ap.pos[1], ap.pos[0]])) continue;
+        const dist = point.distanceTo(map.latLngToContainerPoint([ap.pos[1], ap.pos[0]]));
+        if (dist < nearestDist) {
+          nearestDist = dist;
+          nearest = ap;
+        }
+      }
+      return nearest;
+    },
+    [map],
+  );
+
   // A capture-phase listener on the map's own container, not
   // useMapEvents' click (a bubble-phase Leaflet event) — this pane sits
   // under markerPane (see the pane-creation effect below) and is
@@ -806,20 +824,7 @@ export default function VectorBasemap({ onAirportSelect }: { onAirportSelect?: (
   useEffect(() => {
     const container = map.getContainer();
     function handleCapture(e: MouseEvent) {
-      if (map.getZoom() >= GATES_MIN_ZOOM) return;
-      const latlng = map.mouseEventToLatLng(e);
-      const clickPt = map.latLngToContainerPoint(latlng);
-      const viewBounds = map.getBounds();
-      let nearest: (typeof WORLD_AIRPORTS)[number] | null = null;
-      let nearestDist = AIRPORT_CLICK_RADIUS_PX;
-      for (const ap of WORLD_AIRPORTS) {
-        if (!viewBounds.contains([ap.pos[1], ap.pos[0]])) continue;
-        const dist = clickPt.distanceTo(map.latLngToContainerPoint([ap.pos[1], ap.pos[0]]));
-        if (dist < nearestDist) {
-          nearestDist = dist;
-          nearest = ap;
-        }
-      }
+      const nearest = nearestAirport(map.mouseEventToContainerPoint(e));
       if (!nearest) return;
       e.stopPropagation();
       zoomToAirport(nearest);
@@ -827,7 +832,35 @@ export default function VectorBasemap({ onAirportSelect }: { onAirportSelect?: (
     }
     container.addEventListener("click", handleCapture, true);
     return () => container.removeEventListener("click", handleCapture, true);
-  }, [map, zoomToAirport, onAirportSelect]);
+  }, [map, nearestAirport, zoomToAirport, onAirportSelect]);
+
+  // Cursor feedback for the same hit-test the click handler above uses —
+  // without this an airport dot looked like plain decoration below
+  // GATES_MIN_ZOOM, identical to the grab cursor everywhere else on the
+  // map, with nothing hinting it's clickable. Toggles a class rather than
+  // writing container.style.cursor directly so Leaflet's own drag-state
+  // classes (.leaflet-grab/.leaflet-dragging, which set cursor via CSS
+  // too) don't get silently overridden by a stale inline style once the
+  // cursor moves off an airport — see .leaflet-container--airport-hover
+  // in FlightMap.css for the actual cursor: pointer rule, specific enough
+  // to win over Leaflet's own class-based one.
+  useEffect(() => {
+    const container = map.getContainer();
+    function handleMove(e: MouseEvent) {
+      const over = nearestAirport(map.mouseEventToContainerPoint(e)) != null;
+      container.classList.toggle("leaflet-container--airport-hover", over);
+    }
+    function handleLeave() {
+      container.classList.remove("leaflet-container--airport-hover");
+    }
+    container.addEventListener("mousemove", handleMove);
+    container.addEventListener("mouseleave", handleLeave);
+    return () => {
+      container.removeEventListener("mousemove", handleMove);
+      container.removeEventListener("mouseleave", handleLeave);
+      container.classList.remove("leaflet-container--airport-hover");
+    };
+  }, [map, nearestAirport]);
 
   // Refreshes/attaches whatever the map's current zoom level is, right
   // now — used for the initial paint, every pan refresh, and the

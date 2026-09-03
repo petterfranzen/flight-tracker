@@ -453,6 +453,18 @@ html, body {
   background: var(--color-panel);
 }
 
+/* Hover feedback for VectorBasemap's airport hit-test (see its
+   nearestAirport/mousemove effect) — below GATES_MIN_ZOOM an airport is
+   just a small dot with nothing else marking it as clickable, same
+   cursor as the rest of the draggable map. Needs real specificity (two
+   classes, not one) to win over Leaflet's own .leaflet-grab/
+   .leaflet-dragging rules, which set cursor via a class on this same
+   element and would otherwise silently override a same-specificity
+   single-class rule depending on which happened to load last. */
+.leaflet-container.leaflet-container--airport-hover {
+  cursor: pointer;
+}
+
 .route-line {
   stroke-linecap: round;
   animation: dash-travel 2.4s linear forwards;
@@ -738,6 +750,32 @@ html, body {
 .details-panel h2 {
   margin: 4px 0 10px;
   font-size: 20px;
+}
+
+/* Only ever rendered while the tracked aircraft is actually off-screen
+   (see FlightMap.tsx) — an accent color (not the muted favorite-toggle
+   style right below) since, unlike those, it's asking to be noticed:
+   the whole point is surfacing something the user would otherwise have
+   no way to tell happened (see FollowSelected's own comment on why this
+   replaced auto-recentering). */
+.details-panel-focus-toggle {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin-bottom: 10px;
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  border: 1px solid var(--color-accent);
+  color: var(--color-accent);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.details-panel-focus-toggle:hover {
+  background: color-mix(in srgb, var(--color-accent) 24%, transparent);
 }
 
 .details-panel-favorite-toggles {
