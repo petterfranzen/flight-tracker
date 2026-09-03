@@ -335,15 +335,34 @@ function ViewportReporter({ onViewportChange }: { onViewportChange: (bounds: Bou
 
 const SELECTED_MIN_ZOOM = 10;
 
-// Below this, an individual-marker viewport can mean tens of thousands of
-// aircraft (global tracking, not just one region) — confirmed on a real
-// deploy (~69k tracked worldwide) to freeze rendering entirely, not just
-// feel slow, echoing exactly what MIN_ICON_SIZE_PX's own comment below
-// warned this simpler approach risked. Below this zoom, the map switches
-// to ClusterMarker (one bubble per populated grid cell, from the same
-// backend aggregation endpoint — FlightController.liveClusters) instead of
-// individual AircraftMarkers.
-const CLUSTER_FETCH_MAX_ZOOM = 5;
+// Below this, an individual-marker viewport can mean thousands of aircraft
+// (global tracking, not just one region) — confirmed on a real deploy
+// (~69k tracked worldwide) to freeze rendering entirely, not just feel
+// slow, echoing exactly what MIN_ICON_SIZE_PX's own comment below warned
+// this simpler approach risked. Below this zoom, the map switches to
+// ClusterMarker (one bubble per populated grid cell, from the same backend
+// aggregation endpoint — FlightController.liveClusters) instead of
+// individual AircraftMarkers. Raised from an initial 5 to 7 — even a
+// several-country view at 5-6 over dense real European traffic was still
+// enough individual markers to visibly stutter; see MAX_INDIVIDUAL_MARKERS
+// just below for the second, count-driven backstop this alone wasn't
+// enough on its own (a fixed zoom can't know how busy any given view
+// actually is).
+const CLUSTER_FETCH_MAX_ZOOM = 7;
+
+// Backstop for individual-marker mode (zoom >= CLUSTER_FETCH_MAX_ZOOM):
+// even a "should be fine" zoom level can land on an unusually dense area
+// (a busy hub, a major air corridor) with more real traffic than that
+// static threshold assumed. Rather than trusting the zoom guess alone,
+// unselectedList itself is checked at render time — over this count, it's
+// bucketed into ClusterMarker bubbles client-side (clusterPositions below,
+// same grid math as the server-side aggregation, just run against data
+// already in hand) instead of one AircraftMarker per aircraft. No extra
+// network round trip: positions was already fetched in full for this
+// exact reason (selection, the WS reconcile, etc. all still need it) —
+// this only changes how the *unselected* bulk is rendered, not what's
+// fetched.
+const MAX_INDIVIDUAL_MARKERS = 500;
 
 // A cluster cell should read as roughly this many screen px across, so
 // neighboring cells don't crowd into an unreadable smear — the backend
@@ -361,6 +380,24 @@ const CLUSTER_TARGET_PX = 64;
 function gridDegForZoom(zoom: number): number {
   const degPerPixel = 360 / (256 * Math.pow(2, zoom));
   return CLUSTER_TARGET_PX * degPerPixel;
+}
+
+// MAX_INDIVIDUAL_MARKERS' own client-side bucketing — mirrors
+// FlightPositionRepository.findLiveClusteredInBounds's bucket-then-center
+// math exactly (floor(coord/gridDeg)*gridDeg, offset to the cell's
+// center), just run in JS against a list already in memory instead of a
+// SQL GROUP BY, since the point here is avoiding a network round trip.
+function clusterPositions(list: LiveMarker[], gridDeg: number): ClusterPoint[] {
+  const buckets = new Map<string, ClusterPoint>();
+  for (const p of list) {
+    const bucketLat = Math.floor(p.latitude / gridDeg) * gridDeg;
+    const bucketLon = Math.floor(p.longitude / gridDeg) * gridDeg;
+    const key = `${bucketLat},${bucketLon}`;
+    const existing = buckets.get(key);
+    if (existing) existing.count++;
+    else buckets.set(key, { lat: bucketLat + gridDeg / 2, lon: bucketLon + gridDeg / 2, count: 1 });
+  }
+  return Array.from(buckets.values());
 }
 
 // Aircraft icons shrink toward this floor as you zoom out (down to
@@ -1259,6 +1296,16 @@ export default function FlightMap() {
   // marker is always drawn last (on top) rather than in this list.
   const unselectedList = selected ? list.filter((p) => p.icao24 !== selected) : list;
 
+  // MAX_INDIVIDUAL_MARKERS' own backstop: an individual-marker zoom that
+  // still turned out too busy to draw one AircraftMarker per aircraft
+  // falls back to the same client-side bucketing clusterPositions does,
+  // rather than trusting CLUSTER_FETCH_MAX_ZOOM's static guess alone.
+  const clientClustered = zoom >= CLUSTER_FETCH_MAX_ZOOM && unselectedList.length > MAX_INDIVIDUAL_MARKERS;
+  const clientClusters = useMemo(
+    () => (clientClustered ? clusterPositions(unselectedList, gridDegForZoom(zoom)) : []),
+    [clientClustered, unselectedList, zoom],
+  );
+
   // Cyberpunk theme's "TRACKED" status chip — the worldwide total (see
   // fetchLiveCount/globalTrackedCount above), not list.length, which only
   // ever covers the current viewport and used to make this chip read as
@@ -1391,17 +1438,27 @@ export default function FlightMap() {
           <Polyline positions={smoothedRoute} className="route-line" pathOptions={{ color: ROUTE_COLOR, weight: 3, dashArray: "6 8" }} />
         )}
 
-        {/* Below CLUSTER_FETCH_MAX_ZOOM: aggregated bubbles, not individual
-            markers — see that constant's own comment. The individual list
-            keeps rendering underneath (see AircraftMarker's exiting prop)
-            so its markers can fade out under these fading in, rather than
-            vanishing the instant clustering kicks in. */}
+        {/* Below CLUSTER_FETCH_MAX_ZOOM: aggregated bubbles from the
+            backend, not individual markers — see that constant's own
+            comment. The individual list keeps rendering underneath (see
+            AircraftMarker's exiting prop) so its markers can fade out
+            under these fading in, rather than vanishing the instant
+            clustering kicks in. */}
         {zoom < CLUSTER_FETCH_MAX_ZOOM &&
           clusters.map((c) => <ClusterMarker key={`${c.lat},${c.lon}`} cluster={c} />)}
 
-        {unselectedList.map((p) => (
-          <AircraftMarker key={p.icao24} position={p} selected={false} zoom={zoom} onSelect={handleSelect} exiting={zoom < CLUSTER_FETCH_MAX_ZOOM} />
-        ))}
+        {/* MAX_INDIVIDUAL_MARKERS' own backstop, client-bucketed from data
+            already in hand — no crossfade here (unlike the server-cluster
+            case above): this exists specifically to avoid the render cost
+            of a too-busy individual view, so the individual list is
+            skipped outright below rather than kept mounted-but-fading. */}
+        {clientClustered &&
+          clientClusters.map((c) => <ClusterMarker key={`${c.lat},${c.lon}`} cluster={c} />)}
+
+        {!clientClustered &&
+          unselectedList.map((p) => (
+            <AircraftMarker key={p.icao24} position={p} selected={false} zoom={zoom} onSelect={handleSelect} exiting={zoom < CLUSTER_FETCH_MAX_ZOOM} />
+          ))}
 
         {/* Rendered last (on top) and separately from the list above, so
             the selected aircraft's marker never ends up underneath a
