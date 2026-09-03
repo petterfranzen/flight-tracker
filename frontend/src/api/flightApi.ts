@@ -1,4 +1,4 @@
-import type { AircraftDossier, AircraftUsage, Bounds, FlightPosition, PollingStatus } from "../types/flight";
+import type { AircraftDossier, AircraftUsage, Bounds, FlightPosition, LiveMarker, PollingStatus } from "../types/flight";
 import { filterByBounds, getMockFleet, getMockPlaneCount } from "./mockFleet";
 
 /**
@@ -7,7 +7,7 @@ import { filterByBounds, getMockFleet, getMockPlaneCount } from "./mockFleet";
  * which also reports that viewport as what the "hot" backend poll should
  * target next (see FlightController.live / ViewportService).
  */
-export async function fetchLivePositions(bounds?: Bounds): Promise<FlightPosition[]> {
+export async function fetchLivePositions(bounds?: Bounds): Promise<LiveMarker[]> {
   const mockCount = getMockPlaneCount();
   if (mockCount != null) return filterByBounds(getMockFleet(mockCount), bounds);
   const query = bounds

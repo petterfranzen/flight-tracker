@@ -466,6 +466,27 @@ html, body {
   .route-line { animation: none; }
 }
 
+/* Eases a genuinely new marker onto the map instead of it just appearing —
+   see planeIcon's own comment for why this is scoped to first-mount only
+   (plane-icon--entering), not every icon rebuild a zoom/selection change
+   triggers. A plain CSS animation, not a transition + class toggle: it
+   needs to start the instant the element exists, with nothing in JS left
+   to trigger it — this is what turns a whole viewport's worth of aircraft
+   appearing all at once the moment a pan/zoom fetch resolves into traffic
+   smoothly filling in instead of a hard, blocking-feeling redraw. */
+.plane-icon--entering {
+  animation: marker-fade-in 220ms ease-out;
+}
+
+@keyframes marker-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .plane-icon--entering { animation: none; }
+}
+
 .plane-glyph {
   display: flex;
   align-items: center;

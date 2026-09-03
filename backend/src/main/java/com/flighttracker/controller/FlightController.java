@@ -2,6 +2,7 @@ package com.flighttracker.controller;
 
 import com.flighttracker.dto.Bounds;
 import com.flighttracker.dto.ClusterPoint;
+import com.flighttracker.dto.LiveMarker;
 import com.flighttracker.model.FlightPosition;
 import com.flighttracker.repository.FlightPositionRepository;
 import com.flighttracker.service.LiveVisibilityWindows;
@@ -46,22 +47,29 @@ public class FlightController {
      * table, so there's nothing to do here beyond the plain query: no
      * per-endpoint overlay step to remember, unlike the old
      * EstimatedPositionCache.overlay() this replaced.
+     *
+     * Returns LiveMarker, not the full FlightPosition — this is the map's
+     * bulk, every-pan-and-zoom fetch, and at a continent or world-sized
+     * viewport that's tens of thousands of rows; a client only ever draws a
+     * marker from position/heading/identity, never the fuller detail
+     * (altitude, velocity, on_ground, ...) that liveOne below returns once
+     * an aircraft is actually selected. See LiveMarker's own javadoc.
      */
     @GetMapping("/live")
-    public List<FlightPosition> live(@RequestParam(required = false) Double latMin,
-                                      @RequestParam(required = false) Double latMax,
-                                      @RequestParam(required = false) Double lonMin,
-                                      @RequestParam(required = false) Double lonMax) {
+    public List<LiveMarker> live(@RequestParam(required = false) Double latMin,
+                                  @RequestParam(required = false) Double latMax,
+                                  @RequestParam(required = false) Double lonMin,
+                                  @RequestParam(required = false) Double lonMax) {
         Instant now = Instant.now();
         Instant staleAirborneCutoff = now.minus(LiveVisibilityWindows.STALE_AIRBORNE_BOUND);
         Instant landedCutoff = now.minus(LiveVisibilityWindows.LANDED_VISIBILITY);
 
         if (latMin == null || latMax == null || lonMin == null || lonMax == null) {
-            return positionRepository.findLive(staleAirborneCutoff, landedCutoff);
+            return positionRepository.findLiveMarkers(staleAirborneCutoff, landedCutoff);
         }
         Bounds bounds = new Bounds(latMin, latMax, lonMin, lonMax);
         viewportService.report(bounds);
-        return positionRepository.findLiveInBounds(staleAirborneCutoff, landedCutoff,
+        return positionRepository.findLiveMarkersInBounds(staleAirborneCutoff, landedCutoff,
                 bounds.latMin(), bounds.latMax(), bounds.lonMin(), bounds.lonMax());
     }
 

@@ -21,6 +21,39 @@ export interface FlightPosition {
   agentSource: string;
 }
 
+/**
+ * What the map's bulk viewport fetch (fetchLivePositions) actually returns
+ * — see FlightController.live's javadoc on the backend. Everything needed
+ * to draw and select a marker (identity, position, heading, the observedAt
+ * FlightMap.tsx's merge logic orders updates by) and nothing else: at a
+ * continent or world-sized viewport this can be tens of thousands of rows,
+ * and every field FlightPosition carries beyond this is only ever read
+ * once an aircraft is actually selected — fetchFlightLive/fetchAircraftDossier
+ * fetch that full detail directly by icao24 at that point instead. A
+ * FlightPosition always structurally satisfies this (it's a superset), so
+ * the two interoperate freely — nothing needs an explicit conversion.
+ */
+export interface LiveMarker {
+  icao24: string;
+  callsign: string | null;
+  observedAt: string; // ISO instant
+  latitude: number;
+  longitude: number;
+  headingDeg: number | null;
+}
+
+/**
+ * FlightMap's selectedPos: a LiveMarker plus the one extra field the
+ * details panel reads directly (altitude — everything else it shows comes
+ * from the separate AircraftDossier fetch). Populated instantly from
+ * whatever LiveMarker triggered the selection (altitudeM starts null,
+ * exactly like the dossier fields' own "—" until loaded convention), then
+ * upgraded to the real value moments later by the dedicated priority
+ * fetchFlightLive poll or a WebSocket push, both of which return a full
+ * FlightPosition — again a structural superset, so no conversion needed.
+ */
+export type SelectedPosition = LiveMarker & { altitudeM: number | null };
+
 export interface AircraftDossier {
   icao24: string;
   registration: string | null;

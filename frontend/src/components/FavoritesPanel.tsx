@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { FavoriteAircraft, FavoriteRoute } from "../favorites";
 import { routeKey } from "../favorites";
-import type { FlightPosition } from "../types/flight";
+import type { FlightPosition, LiveMarker } from "../types/flight";
 import { fetchFlightLive, searchFlightsByAirport } from "../api/flightApi";
 import "./FavoritesPanel.css";
 
@@ -16,7 +16,11 @@ interface FavoritesPanelProps {
   aircraft: FavoriteAircraft[];
   onRemoveRoute: (route: FavoriteRoute) => void;
   onRemoveAircraft: (entry: FavoriteAircraft) => void;
-  onSelect: (p: FlightPosition) => void;
+  // A LiveMarker, not the full FlightPosition liveAircraft/liveRoutes below
+  // actually hold — that's all a selection needs to start with; see
+  // LiveMarker's own comment. FlightPosition always structurally satisfies
+  // it, so passing `live` (below) straight through needs no conversion.
+  onSelect: (p: LiveMarker) => void;
 }
 
 /**

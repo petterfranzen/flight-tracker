@@ -14,7 +14,7 @@ import L from "leaflet";
 // changing on every pan, a class toggling on selection, chunked loading
 // adding markers over several frames) reflowed everything around them.
 import "leaflet/dist/leaflet.css";
-import type { AircraftDossier, Bounds, FlightPosition } from "../types/flight";
+import type { AircraftDossier, Bounds, FlightPosition, LiveMarker, SelectedPosition } from "../types/flight";
 import {
   fetchAircraftDossier,
   fetchFlightLive,
@@ -225,7 +225,14 @@ class RotatingPlaneIcon extends L.DivIcon {
 // updates — see AircraftMarker for why that matters far more than it
 // sounds like it should. Each marker gets its own icon instance (not
 // shared across aircraft) since each needs its own headingRef.
-function planeIcon(known: boolean, selected: boolean, zoom: number, headingRef: { current: number }, callsignRef: { current: string }) {
+function planeIcon(
+  known: boolean,
+  selected: boolean,
+  zoom: number,
+  headingRef: { current: number },
+  callsignRef: { current: string },
+  entering: boolean,
+) {
   // Every rotation angle coincides with some real heading, so "just don't
   // rotate it" (or default to any other fixed angle) still misrepresents
   // an unknown heading as a specific real reading. Give unknown headings
@@ -260,7 +267,15 @@ function planeIcon(known: boolean, selected: boolean, zoom: number, headingRef: 
   const size = selected ? Math.max(scaleIconSize(baseSize, zoom), 16) : scaleIconSize(baseSize, zoom);
   return new RotatingPlaneIcon(
     {
-      className: `plane-icon${selected ? " plane-icon--selected" : ""}`,
+      // plane-icon--entering only on a genuinely new aircraft's first icon
+      // — see AircraftMarker's enteringRef for why every *later* icon
+      // rebuild for the same marker (a zoom-driven resize, a selection
+      // toggle) must never carry this, even though Leaflet creates an
+      // equally fresh DOM node for those too: replaying the entrance fade
+      // on every zoom step read as a flicker, not as smoothness. This is
+      // specifically the "aircraft ease onto the map instead of all
+      // popping in the instant a pan/zoom fetch resolves" treatment.
+      className: `plane-icon${selected ? " plane-icon--selected" : ""}${entering ? " plane-icon--entering" : ""}`,
       // .plane-icon-mark/.plane-icon-label are cyberpunk-theme-only (see
       // FlightMap.css) — always present in the markup either way so
       // RotatingPlaneIcon.createIcon() has a consistent DOM shape to fill
@@ -472,10 +487,10 @@ const AircraftMarker = memo(function AircraftMarker({
   zoom,
   onSelect,
 }: {
-  position: FlightPosition;
+  position: LiveMarker;
   selected: boolean;
   zoom: number;
-  onSelect: (p: FlightPosition) => void;
+  onSelect: (p: LiveMarker) => void;
 }) {
   const markerRef = useRef<L.Marker | null>(null);
   const known = position.headingDeg != null;
@@ -500,7 +515,17 @@ const AircraftMarker = memo(function AircraftMarker({
   // — full DOM teardown/rebuild, per this component's own comments above
   // — over a change too small to visibly matter.
   const roundedZoom = Math.round(zoom);
-  const icon = useMemo(() => planeIcon(known, selected, roundedZoom, headingRef, callsignRef), [known, selected, roundedZoom]);
+  // True only the first time this marker's icon is built (this aircraft's
+  // React element genuinely mounting for the first time) — every later
+  // recompute this useMemo does (roundedZoom or selected changing) leaves
+  // it false, flipped the instant it's read. See planeIcon's own comment
+  // on why that distinction matters for plane-icon--entering.
+  const enteringRef = useRef(true);
+  const icon = useMemo(() => {
+    const built = planeIcon(known, selected, roundedZoom, headingRef, callsignRef, enteringRef.current);
+    enteringRef.current = false;
+    return built;
+  }, [known, selected, roundedZoom]);
 
   // Handles the ordinary case: an already-mounted marker whose aircraft's
   // heading changes on a later position tick. Applied directly to the
@@ -524,7 +549,7 @@ const AircraftMarker = memo(function AircraftMarker({
 });
 
 export default function FlightMap() {
-  const [positions, setPositions] = useState<Record<string, FlightPosition>>({});
+  const [positions, setPositions] = useState<Record<string, LiveMarker>>({});
   const [selected, setSelected] = useState<string | null>(null);
   // Captured at click time and kept live-updated by the WebSocket feed and
   // the periodic reconcile below, but — unlike a plain positions[selected]
@@ -532,7 +557,15 @@ export default function FlightMap() {
   // in the live set. A user looking at one aircraft's details is exactly
   // the wrong moment for it to vanish from under them (e.g. right as it
   // crosses into "landed" and briefly races the next reconcile).
-  const [selectedPos, setSelectedPos] = useState<FlightPosition | null>(null);
+  //
+  // Typed SelectedPosition, not FlightPosition: the bulk fetch that
+  // usually seeds this (a click, or applyLiveSnapshot's reconcile below)
+  // only ever has a LiveMarker in hand, not the fuller row — see
+  // LiveMarker's own javadoc/comment for why. altitudeM starts null and
+  // reads as "—" until the dedicated priority poll or a WebSocket push
+  // (both fetch/deliver a full FlightPosition) fills it in, same pattern
+  // this file already uses for the dossier fields.
+  const [selectedPos, setSelectedPos] = useState<SelectedPosition | null>(null);
   // Mobile-only bottom-sheet state (see the ≤768px block in FlightMap.css):
   // collapsed shows just the summary + an expand toggle; expanded also
   // shows the fields grid. Irrelevant above the breakpoint — the CSS driven
@@ -601,7 +634,7 @@ export default function FlightMap() {
   // position — see EstimatedPositionCache.java), without making that
   // effect depend on (and re-run history fetches for) every selectedPos
   // update in between.
-  const selectedPosRef = useRef<FlightPosition | null>(null);
+  const selectedPosRef = useRef<SelectedPosition | null>(null);
   useEffect(() => {
     selectedPosRef.current = selectedPos;
   }, [selectedPos]);
@@ -636,7 +669,7 @@ export default function FlightMap() {
   // mid-render, but applyLiveSnapshot below needs the current value the
   // instant its fetch resolves, not a render cycle later) — see its use
   // there for why.
-  const positionsRef = useRef<Record<string, FlightPosition>>({});
+  const positionsRef = useRef<Record<string, LiveMarker>>({});
 
   // A live aircraft's position reaches this component two ways that race
   // each other with no ordering guarantee: pushed over the WebSocket the
@@ -653,7 +686,7 @@ export default function FlightMap() {
   // visibly jumping backward on every pan/zoom, since each one fires a
   // fresh /live request. observedAt is what actually orders these, not
   // arrival time, so every write path compares against it before applying.
-  function isNewer(a: FlightPosition, b: FlightPosition) {
+  function isNewer(a: { observedAt: string }, b: { observedAt: string }) {
     return a.observedAt > b.observedAt;
   }
 
@@ -697,7 +730,7 @@ export default function FlightMap() {
   // WebSocket push handler and applyLiveSnapshot's REST reconcile below —
   // both can hand this a fresher position for the selected aircraft, and
   // both need to keep the trail in sync with it.
-  function appendRoutePoint(p: FlightPosition) {
+  function appendRoutePoint(p: LiveMarker) {
     // Strictly-older only, not <= : the server can report an updated
     // position for the same last-known fix without observedAt itself
     // advancing (e.g. a dead-reckoned estimate the backend has projected
@@ -720,7 +753,7 @@ export default function FlightMap() {
     const seq = ++liveRequestSeqRef.current;
     return fetchLivePositions(bounds ?? undefined).then((list) => {
       if (seq !== liveRequestSeqRef.current) return; // superseded by a newer request
-      const merged: Record<string, FlightPosition> = {};
+      const merged: Record<string, LiveMarker> = {};
       for (const p of list) {
         const existing = positionsRef.current[p.icao24];
         // The REST snapshot itself defines who's currently live/visible
@@ -740,7 +773,12 @@ export default function FlightMap() {
       setPositions(merged);
       const current = selectedRef.current ? merged[selectedRef.current] : null;
       if (current) {
-        setSelectedPos(current);
+        // Only ever a LiveMarker here (see above) — merge its fresher
+        // position/heading fields onto whatever selectedPos already has
+        // rather than replacing it outright, so a full detail fetch's
+        // altitudeM survives this reconcile instead of being wiped back to
+        // null on every pan/zoom.
+        setSelectedPos((prev) => (prev ? { ...prev, ...current } : { ...current, altitudeM: null }));
         appendRoutePoint(current);
       }
     }).finally(() => setFirstLoadDone(true));
@@ -1038,9 +1076,16 @@ export default function FlightMap() {
   // Stable across renders (setSelected/setSelectedPos identities never
   // change) so it doesn't defeat AircraftMarker's memoization the way a
   // freshly-allocated closure passed as a prop would.
-  const handleSelect = useCallback((p: FlightPosition) => {
+  const handleSelect = useCallback((p: LiveMarker) => {
     setSelected(p.icao24);
-    setSelectedPos(p);
+    // altitudeM starts null (see SelectedPosition's own comment) — the
+    // dedicated priority poll below fires immediately once `selected`
+    // changes and fills in the real value within one round trip, same as
+    // this file's existing dossier-fields "—" until loaded convention.
+    // Preserves a still-fresh selectedPos's altitudeM across a reselect of
+    // the same aircraft (e.g. clicking it again) rather than nulling it
+    // out for no reason.
+    setSelectedPos((prev) => (prev && prev.icao24 === p.icao24 ? { ...prev, ...p } : { ...p, altitudeM: null }));
     setDossierExpanded(false);
   }, []);
 
