@@ -12,6 +12,10 @@ export default defineConfig({
   // the package's own ESM, worker included. Dev-only concern: the
   // production build (rollup) handles the worker correctly either way.
   optimizeDeps: { exclude: ["maplibre-gl"] },
+  // maplibre constructs its worker with { type: "module" }, so the worker
+  // bundle Vite emits for it (see MaplibreBasemap.tsx's ?worker&url import)
+  // has to be an ES module too — Vite's default here is "iife".
+  worker: { format: "es" },
   server: {
     proxy: {
       "/api": "http://localhost:8080",
