@@ -3,9 +3,10 @@ package com.flighttracker.dto;
 /**
  * Static reference details for one airport — the map's airport dossier
  * panel, opened by clicking an airport's dot (see AirportController).
- * Distinct from AirportGatesController's gate/apron/terminal geometry:
- * this is the `airport` reference table's own descriptive fields, not
- * anything fetched live from OpenStreetMap.
+ * The `airport` reference table's own descriptive fields — nothing here
+ * is fetched live. Gate/apron/terminal *geometry* used to be a sibling
+ * endpoint proxying Overpass; it now comes from the map's vector tiles
+ * instead (see AirportController).
  */
 public record AirportInfo(
         String icaoCode,

@@ -53,23 +53,20 @@ html, body {
    (panels, borders, text, the marker colors in plane-icon() below, the
    route line), so switching themes is one attribute flip for all of
    this, not a second copy of every component's CSS. The map itself is
-   the one exception: VectorBasemap.tsx replaces OpenStreetMap's raster
-   tiles outright for this theme (real country outlines/borders/major
-   cities/major airports/country names drawn from Natural Earth data),
-   rather than filtering the real tiles — an earlier CSS-filter/blend-
-   mode attempt at tinting the real tiles red was abandoned after real
-   testing surfaced two problems no amount of filter-tuning fixes:
-   Leaflet's tile-loading placeholders (any time a fresh area's tiles
-   haven't finished fetching — notably during the flyTo animation
-   between selecting two different aircraft) showed through the tint as
-   a flashing grid, since a filter over raster tiles can't distinguish
-   "no tile yet" from "tinted tile"; and the colors were only ever an
-   approximation of real tile colors, never an exact match for the
-   reference mockup. Drawing the map ourselves fixes both — see
-   VectorBasemap.tsx's own comment for the fuller account, including two
-   further dead ends (a blend-mode layer above the whole map tinted
-   markers too; a separate Leaflet pane for the tint couldn't blend
-   against tiles in a different pane at all) hit along the way.
+   the one exception: MaplibreBasemap replaces OpenStreetMap's raster
+   tiles outright for this theme, rendering vector tiles through a style
+   of our own (see cyberpunkMapStyle.ts) rather than filtering raster
+   ones. Tinting raster tiles with a CSS filter was tried first and
+   abandoned for two reasons no amount of filter-tuning fixes: Leaflet's
+   tile-loading placeholders showed through the tint as a flashing grid,
+   since a filter over raster tiles can't distinguish "no tile yet" from
+   "tinted tile"; and the colors were only ever an approximation, never
+   an exact match. Two further dead ends from that era, worth not
+   repeating: a blend-mode layer above the whole map tinted the markers
+   too, and a separate Leaflet pane for the tint couldn't blend against
+   tiles in a different pane at all. Styling vector tiles sidesteps the
+   lot — every color is the actual value, and there is no raster
+   placeholder to leak through.
      Marker semantics intentionally flip from the default theme: there,
    amber is the resting/default marker color and blue marks the selected
    one; here cyan is the resting color and amber is reserved for
@@ -498,17 +495,6 @@ html, body {
   background: var(--color-panel);
 }
 
-/* Hover feedback for VectorBasemap's airport hit-test (see its
-   nearestAirport/mousemove effect) — below GATES_MIN_ZOOM an airport is
-   just a small dot with nothing else marking it as clickable, same
-   cursor as the rest of the draggable map. Needs real specificity (two
-   classes, not one) to win over Leaflet's own .leaflet-grab/
-   .leaflet-dragging rules, which set cursor via a class on this same
-   element and would otherwise silently override a same-specificity
-   single-class rule depending on which happened to load last. */
-.leaflet-container.leaflet-container--airport-hover {
-  cursor: pointer;
-}
 
 .route-line {
   stroke-linecap: round;

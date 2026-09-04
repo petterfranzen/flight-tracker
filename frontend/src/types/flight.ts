@@ -116,3 +116,18 @@ export interface AircraftUsage {
   airborneHours: number;
   averageGroundSpeedKmh: number;
 }
+
+/**
+ * One airport as the map hands it to the dossier panel — code/name/
+ * position all come straight off the bundled AIRPORTS entry that was
+ * clicked, so the panel can populate instantly with no fetch; the
+ * reference-table fields (ICAO, municipality, country) arrive moments
+ * later via fetchAirportInfo. Lived in VectorBasemap.tsx until that
+ * renderer was replaced by MaplibreBasemap.
+ */
+export interface AirportSelection {
+  code: string;
+  name: string;
+  lat: number;
+  lon: number;
+}
