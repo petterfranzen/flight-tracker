@@ -13,9 +13,23 @@ export default defineConfig({
     baseURL: "http://localhost:5174",
     trace: "retain-on-failure",
   },
-  webServer: {
-    command: "npm run dev -- --port 5174 --strictPort",
-    url: "http://localhost:5174",
-    reuseExistingServer: !process.env.CI,
-  },
+  // Two servers: the dev server every spec uses, and a real production
+  // preview for production-build.spec.ts. That second one isn't
+  // belt-and-braces — Vite's dev server and Rollup handle maplibre-gl's
+  // worker differently, and a bug that only existed in the production
+  // build reached production precisely because nothing here ever built
+  // one. The build is a couple of seconds; reuseExistingServer keeps it
+  // off the path when a preview is already up.
+  webServer: [
+    {
+      command: "npm run dev -- --port 5174 --strictPort",
+      url: "http://localhost:5174",
+      reuseExistingServer: !process.env.CI,
+    },
+    {
+      command: "npm run build && npx vite preview --port 4173 --strictPort",
+      url: "http://localhost:4173",
+      reuseExistingServer: !process.env.CI,
+    },
+  ],
 });
