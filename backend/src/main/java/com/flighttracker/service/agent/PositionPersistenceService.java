@@ -70,13 +70,16 @@ public class PositionPersistenceService {
         int written = 0;
         List<RawPositionReport> newAircraft = new ArrayList<>();
         for (RawPositionReport r : reports) {
-            aircraftRepository.findById(r.icao24()).ifPresentOrElse(
-                    Aircraft::touch,
-                    () -> {
-                        aircraftRepository.save(new Aircraft(r.icao24()));
-                        newAircraft.add(r);
-                    }
-            );
+            // existsById, not findById: this only needs to know whether the
+            // aircraft is new, and loading the entity used to exist purely
+            // to call touch() on it — which bumped last_seen_at, a column
+            // nothing reads (see AIRCRAFT_UPSERT_SQL). Loading it into the
+            // persistence context also meant Hibernate's dirty check
+            // emitted an UPDATE per known aircraft on every flush.
+            if (!aircraftRepository.existsById(r.icao24())) {
+                aircraftRepository.save(new Aircraft(r.icao24()));
+                newAircraft.add(r);
+            }
             var inserted = positionRepository.insertIgnoringDuplicate(
                     r.icao24(), r.callsign(), r.observedAt(),
                     r.latitude(), r.longitude(), r.altitudeM(),
@@ -117,15 +120,22 @@ public class PositionPersistenceService {
     // down (~13 calls per statement type for a full sweep, vs. one per row).
     private static final int JDBC_BATCH_SIZE = 1000;
 
-    // Same upsert persist()'s aircraftRepository.findById/touch/save trio
-    // does, collapsed into one statement: a new icao24 gets inserted, an
-    // existing one just gets last_seen_at bumped. Unlike persist(), this
-    // doesn't need to know which icao24s were new — see persistBatch's
-    // javadoc for why.
+    // Same insert-if-absent persist()'s aircraftRepository lookup/save pair
+    // does, collapsed into one statement. Unlike persist(), this doesn't
+    // need to know which icao24s were new — see persistBatch's javadoc.
+    //
+    // DO NOTHING, not the DO UPDATE SET last_seen_at = now() this used to
+    // be. That bump ran for every distinct icao24 in every sweep — ~2.76M
+    // updates/day against a ~22k-row table, turning it over ~125 times a
+    // day — and nothing anywhere read the column: no query, endpoint or
+    // DTO in the backend, nothing in the frontend, only the entity's own
+    // unused getter. Three quarters of those updates weren't even HOT, so
+    // each one rewrote index entries too. Pure write amplification for no
+    // reader, which on a NAS is the expensive kind of nothing.
     private static final String AIRCRAFT_UPSERT_SQL = """
         INSERT INTO aircraft (icao24, first_seen_at, last_seen_at)
         VALUES (?, now(), now())
-        ON CONFLICT (icao24) DO UPDATE SET last_seen_at = now()
+        ON CONFLICT (icao24) DO NOTHING
         """;
 
     // Same statement as FlightPositionRepository.insertIgnoringDuplicate,

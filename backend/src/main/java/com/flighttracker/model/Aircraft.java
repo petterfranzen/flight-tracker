@@ -56,6 +56,14 @@ public class Aircraft {
     @Column(name = "first_seen_at", nullable = false)
     private Instant firstSeenAt = Instant.now();
 
+    // No longer maintained after the row is created — the per-sweep bump
+    // was ~2.76M updates/day against a column nothing reads, so it was
+    // removed from both write paths (see PositionPersistenceService's
+    // AIRCRAFT_UPSERT_SQL). Effectively "first report seen" now. Kept
+    // rather than dropped only because it's NOT NULL and costs nothing to
+    // leave in place; if a real "last seen" is ever wanted, note that
+    // aircraft_latest_position.observed_at already is exactly that, kept
+    // current for free.
     @Column(name = "last_seen_at", nullable = false)
     private Instant lastSeenAt = Instant.now();
 
@@ -96,5 +104,4 @@ public class Aircraft {
     public void setLandingConfirmedAt(Instant landingConfirmedAt) { this.landingConfirmedAt = landingConfirmedAt; }
     public Instant getFirstSeenAt() { return firstSeenAt; }
     public Instant getLastSeenAt() { return lastSeenAt; }
-    public void touch() { this.lastSeenAt = Instant.now(); }
 }
