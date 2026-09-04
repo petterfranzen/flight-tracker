@@ -93,11 +93,44 @@ CREATE TABLE IF NOT EXISTS flight_position (
     inserted_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- The two indexes that matter: "give me everything for this aircraft in
--- time order" (used for the usage calc and for drawing a track) and
--- "give me everything airborne right now" (used for the live map).
-CREATE INDEX IF NOT EXISTS idx_position_icao_time ON flight_position (icao24, observed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_position_recent ON flight_position (observed_at DESC) WHERE on_ground = false;
+
+-- Was: idx_position_icao_time (icao24, observed_at DESC). Dropped as
+-- provably redundant rather than on stats alone — it's a strict prefix of
+-- uq_position_icao_time_source (icao24, observed_at, agent_source) below,
+-- and Postgres walks a B-tree in either direction, so the DESC bought
+-- nothing the unique index couldn't already serve. Confirmed unused in
+-- practice too (pg_stat_user_indexes.idx_scan = 0 against 164k scans of
+-- the unique index), and it cost 7MB plus a share of the write load on
+-- the highest-insert-rate table in the schema.
+DROP INDEX IF EXISTS idx_position_icao_time;
+
+-- Serves PositionRetentionService's rolling 24h delete predicate. Without
+-- it that DELETE is a seq scan of the whole table every run (verified with
+-- EXPLAIN): idx_position_recent can't serve it, being partial on
+-- `on_ground = false` while retention deliberately deletes both ground and
+-- airborne rows.
+--
+-- B-tree rather than BRIN, despite this being the textbook BRIN shape
+-- (append-only, observed_at strongly correlated with physical order): the
+-- insert cost that would normally argue for BRIN is largely absent here,
+-- because near-monotonic values append to the rightmost leaf page instead
+-- of scattering page splits across the index. BRIN would be smaller, but
+-- its block ranges widen as retention starts freeing and recycling pages,
+-- and a degraded BRIN falls back to exactly the seq scan this exists to
+-- avoid. Worth revisiting with real measurements if index size on the NAS
+-- ever becomes the binding constraint.
+CREATE INDEX IF NOT EXISTS idx_position_observed_at ON flight_position (observed_at);
+
+-- Retention deletes roughly as many rows per day as are inserted, so dead
+-- tuples accumulate far faster than the stock 20%-of-table scale factor
+-- reacts to. Left at the default, autovacuum would fire rarely and in
+-- large bursty passes; these settings trade that for frequent small ones,
+-- which is the better shape on a NAS with a modest I/O budget.
+ALTER TABLE flight_position SET (
+    autovacuum_vacuum_scale_factor = 0.02,
+    autovacuum_vacuum_threshold = 10000
+);
 
 -- Serves findLive's "when did this aircraft last fly / start its current
 -- landed streak" lookups: both filter by (icao24, on_ground) and scan
@@ -128,7 +161,7 @@ CREATE TABLE IF NOT EXISTS airport (
 );
 
 COMMENT ON TABLE flight_position IS
-    'Append-only. Rows are never updated or deleted by the app; usage metrics are computed from this history.';
+    'Insert-only, but not retained forever: PositionRetentionService prunes rows older than 24h (see flighttracker.retention.*). Nothing reads further back than that — the frontend track trace asks for 6h.';
 
 -- One row per aircraft, always its most recent report — a materialized
 -- "current state" projection kept in sync at write time (see
@@ -190,7 +223,23 @@ DROP INDEX IF EXISTS idx_latest_position_bbox;
 CREATE INDEX IF NOT EXISTS idx_latest_position_bbox_estimated ON aircraft_latest_position (
     (COALESCE(estimated_latitude, latitude)), (COALESCE(estimated_longitude, longitude))
 );
-CREATE INDEX IF NOT EXISTS idx_latest_position_ground_state ON aircraft_latest_position (on_ground, observed_at, landed_since);
+-- Was: idx_latest_position_ground_state (on_ground, observed_at,
+-- landed_since). Dropped because it cost far more to maintain than it ever
+-- saved. Every column in it is rewritten by the global sweep's upsert on
+-- ~2.76M updates/day, and because they're indexed, not one of those can be
+-- a HOT (heap-only tuple) update — measured: 139,275 updates, zero HOT —
+-- so each one wrote a fresh entry into this index. Meanwhile the planner
+-- doesn't even choose it for findLive's own ground-state predicate: at
+-- ~22k rows / 4.3MB the seq scan wins outright (verified with EXPLAIN),
+-- and its recorded 38 scans averaged ~12k tuples read apiece, i.e. it was
+-- reading most of the table anyway when it was used at all.
+--
+-- Note this doesn't make those updates HOT — a moving aircraft genuinely
+-- changes latitude/longitude, which idx_latest_position_bbox_estimated
+-- indexes, so non-HOT is unavoidable for real position changes and isn't
+-- worth chasing further. The win here is one fewer index to rewrite on
+-- every one of them, not HOT itself.
+DROP INDEX IF EXISTS idx_latest_position_ground_state;
 
 COMMENT ON TABLE aircraft_latest_position IS
     'One row per aircraft: its most recent report, plus an optional dead-reckoned estimate (estimated_*) written independently by EstimatorAgent. Upserted alongside flight_position, never queried to derive "latest" the expensive way.';

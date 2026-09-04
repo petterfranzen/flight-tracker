@@ -12,9 +12,16 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 /**
- * Turns the append-only flight_position history into usage figures. This
- * is the whole point of keeping every historic row instead of just a
- * "last known position" table.
+ * Turns flight_position history into usage figures.
+ *
+ * This used to be the stated reason for keeping every historic row
+ * forever. It no longer is: PositionRetentionService prunes that table to
+ * a rolling 24h window, so these figures now cover the retention window
+ * rather than all time. That was a deliberate trade — /api/usage has no
+ * caller anywhere in the frontend, while unbounded history cost ~0.8 GB a
+ * day. If deep usage history is ever genuinely wanted, the right shape is
+ * a small rolled-up aggregate table written as the data ages out, not
+ * retaining raw position rows to derive it from.
  */
 @Service
 public class UsageService {

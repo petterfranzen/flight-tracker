@@ -25,14 +25,38 @@ spring:
         # blocks the hot poll for its entire duration. That looked from
         # the outside like OpenSky throttling the whole agent; it was
         # actually this app's own scheduler being monopolized by itself.
-        # 2 is enough for today's two @Scheduled methods in
-        # AgentOrchestrator — bump this if a third one is ever added.
-        size: 2
+        # 3 for today's three @Scheduled methods on the agent profile:
+        # AgentOrchestrator's two, plus PositionRetentionService.prune()
+        # — bump this again if a fourth is ever added. Retention in
+        # particular must not have to wait on a sweep for a thread: its
+        # first run after a long outage walks a real backlog, and sharing
+        # a thread would put that directly in front of the hot poll, which
+        # is the exact stall this pool exists to prevent.
+        size: 3
 
 server:
   port: 8080
 
 flighttracker:
+  # Rolling retention for flight_position — see PositionRetentionService,
+  # which is also where the reasoning for pruning *only* that table lives.
+  retention:
+    # "No flight takes longer than 24h and we aren't analysing patterns
+    # over time", so nothing needs history deeper than this. The frontend's
+    # own track trace only ever asks for 6h.
+    hours: 24
+    # Rows per transaction. Small enough that a batch never holds locks or
+    # WAL for long, large enough that steady-state (~19k rows per 10-minute
+    # run) clears in a handful of round-trips.
+    batch-size: 5000
+    interval-ms: 600000
+    # One cycle's grace on startup so retention never competes with schema
+    # init or the agent's first poll for a connection.
+    initial-delay-ms: 60000
+    # Caps a single run at ~1M rows so the first pass over a long-accumulated
+    # backlog makes steady progress across cycles instead of monopolising a
+    # scheduler thread for an hour.
+    max-batches-per-run: 200
   agents:
     # Each entry becomes one polling agent. Point this at whatever live
     # flight-data source you have access to (OpenSky Network's free REST
