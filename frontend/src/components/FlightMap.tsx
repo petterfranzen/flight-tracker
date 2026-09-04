@@ -14,7 +14,7 @@ import L from "leaflet";
 // changing on every pan, a class toggling on selection, chunked loading
 // adding markers over several frames) reflowed everything around them.
 import "leaflet/dist/leaflet.css";
-import type { AircraftDossier, AirportInfo, Bounds, ClusterPoint, FlightPosition, LiveMarker, SelectedPosition } from "../types/flight";
+import type { AircraftDossier, AirportInfo, AirportSelection, Bounds, ClusterPoint, FlightPosition, LiveMarker, SelectedPosition } from "../types/flight";
 import {
   fetchAircraftDossier,
   fetchAirportInfo,
@@ -27,25 +27,25 @@ import {
   restartPolling,
   subscribeLiveFeed,
 } from "../api/flightApi";
-import type { AirportSelection } from "./VectorBasemap";
+
 import FlightSearch from "./FlightSearch";
 import FavoritesPanel from "./FavoritesPanel";
 import Legend from "./Legend";
 import Dock from "./Dock";
 import BootScreen from "./BootScreen";
 import ThemeToggle from "./ThemeToggle";
-// Lazy-loaded so worldMapData.ts's 226KB of embedded Natural Earth
-// geometry — only ever needed for the cyberpunk theme — isolates into
-// its own async chunk instead of bloating the main bundle default-theme
-// users pay for on every load.
-const VectorBasemap = lazy(() => import("./VectorBasemap"));
-// Same reasoning as VectorBasemap above: this imports AIRPORTS from
-// worldMapData.ts too (2MB+), which must stay out of the main bundle
-// for anyone on the default theme who never even opens the cyberpunk
-// one — a plain top-level import here pulled the *entire* worldMapData
-// module (COUNTRIES/CITIES/RIVERS/LAKES included, not just AIRPORTS)
-// into the main chunk regardless of theme, caught via a real build-size
-// check before shipping.
+// Lazy-loaded so maplibre-gl (~260KB gzipped, and only ever needed by the
+// cyberpunk theme) isolates into its own async chunk instead of bloating
+// the bundle default-theme users pay for on every load. Same reasoning
+// that used to apply to VectorBasemap and its bundled Natural Earth
+// geometry, which this replaces.
+const MaplibreBasemap = lazy(() => import("./MaplibreBasemap"));
+// Lazy for the same reason, though a much smaller one now: this imports
+// AIRPORTS from worldMapData.ts, and a plain top-level import here pulled
+// that whole module into the main chunk regardless of theme — caught via a
+// real build-size check before shipping. Worth keeping lazy even though
+// worldMapData is now airports-only (~160KB, down from 4.2MB once
+// COUNTRIES/CITIES/RIVERS/LAKES went away with the canvas renderer).
 const DefaultAirports = lazy(() => import("./DefaultAirports"));
 import ScaleBar from "./ScaleBar";
 import "./FlightMap.css";
@@ -151,12 +151,12 @@ function smoothRoute(points: [number, number][]): [number, number][] {
 // network request for it (no fetch at all; the browser just decodes the
 // inline data), and every tile renders fully invisible. A *real*
 // TileLayer still has to be mounted even so: confirmed by bisection that
-// swapping it out entirely (rendering only VectorBasemap, or a raw
+// swapping it out entirely (rendering only the vector basemap, or a raw
 // L.gridLayer() with no url) makes Leaflet throw inside a passive effect
 // on mount — something in Leaflet/react-leaflet's own internals
 // genuinely depends on a real TileLayer component existing, not just
 // "some layer, any layer." This satisfies that without fetching or
-// showing any real map imagery — VectorBasemap draws over it.
+// showing any real map imagery — MaplibreBasemap renders over it.
 const BLANK_TILE_URL =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
 
@@ -496,16 +496,12 @@ function FollowSelected({
   lat,
   lon,
   sheetExpanded,
-  theme,
   focusRequest,
   onOffScreenChange,
 }: {
   selectedId: string | null;
   lat: number | null;
   lon: number | null;
-  // Only the default theme's flyTo below is safe to animate — see its own
-  // comment for the cyberpunk-specific reason it still can't be.
-  theme: Theme;
   // Mobile bottom-sheet collapsed/expanded state (see FlightMap.css's
   // ≤768px block) — irrelevant to desktop's layout, but on mobile the map
   // container's actual on-screen height changes when this toggles (the
@@ -573,32 +569,14 @@ function FollowSelected({
       // zoom the user already had — Math.max leaves that alone rather
       // than re-applying SELECTED_MIN_ZOOM's floor a second time.
       const targetZoom = Math.max(map.getZoom(), SELECTED_MIN_ZOOM);
-      if (theme === "cyberpunk") {
-        // Not flyTo here: VectorBasemap's whole canvas-buffer cache only
-        // swaps buffers at zoomstart/zoomend (see its own header comment)
-        // on the assumption zoom changes are instant, which is also why
-        // this theme disables Leaflet's own _zoomAnimated. flyTo's
-        // animation path runs independently of that flag though - it
-        // drives a real multi-frame zoom+pan tween regardless - so during
-        // its ~0.8s the buffer stayed exactly where zoomstart left it
-        // (the *previous* zoom/position) while the visible map raced far
-        // past it, reading as the basemap and its red country fill
-        // briefly vanishing mid-flight. setView jumps straight to the
-        // destination in one frame, which is exactly the single
-        // zoomstart→zoomend transition the buffer swap was already built
-        // to handle correctly. Fixing this properly needs the buffer
-        // swap itself reworked to animate alongside a real flyTo (e.g.
-        // swapping at zoomend instead of zoomstart, letting Leaflet's own
-        // pane transform carry the *old* buffer through the tween) —
-        // real scope, not a one-line change, so left alone here.
-        map.setView([lat, lon], targetZoom, { animate: false });
-      } else {
-        // The default theme's plain raster TileLayer has none of the
-        // above constraint — Leaflet's ordinary zoom animation already
-        // handles a raster tile layer correctly mid-flight, tiles and
-        // all, so a real flyTo is safe here.
-        map.flyTo([lat, lon], targetZoom, { duration: 0.8 });
-      }
+      // Both themes get a real animated flight now. This used to branch on
+      // theme: cyberpunk was forced onto an instant setView because the
+      // canvas renderer's zoom-buffer cache only swapped at
+      // zoomstart/zoomend and couldn't follow flyTo's multi-frame tween —
+      // the basemap visibly vanished mid-flight. MapLibre renders
+      // continuously at fractional zoom like any real map renderer, so
+      // that constraint and its whole branch are gone.
+      map.flyTo([lat, lon], targetZoom, { duration: 0.8 });
     } else if (isSheetToggle) {
       // The visible map area itself just changed shape (mobile sheet
       // expanding/collapsing) — recenter so the selected aircraft doesn't
@@ -616,7 +594,7 @@ function FollowSelected({
     // replacement: it surfaces a "Focus Plane" button (see FlightMap's
     // details panel) instead of forcing the view back.
     checkOffScreen();
-  }, [selectedId, lat, lon, map, sheetExpanded, theme, focusRequest, onOffScreenChange, checkOffScreen]);
+  }, [selectedId, lat, lon, map, sheetExpanded, focusRequest, onOffScreenChange, checkOffScreen]);
   return null;
 }
 
@@ -771,11 +749,11 @@ const ClusterMarker = memo(function ClusterMarker({ cluster }: { cluster: Cluste
         // A flat +3 rather than jumping straight past CLUSTER_FETCH_MAX_ZOOM:
         // a very dense cell may still cluster (just into smaller cells) after
         // one click, which is fine — another click keeps drilling in exactly
-        // the way panning/re-fetching already works. animate: false matches
-        // every other click-to-zoom in this app (FollowSelected, the airport
-        // dot) — see FollowSelected's own comment for why cyberpunk theme
-        // specifically needs that, kept unconditional here for consistency
-        // with the default theme too.
+        // the way panning/re-fetching already works. animate: false because
+        // a cluster click is a drill-down, not a journey: three zoom levels
+        // of tween between "this blob has 40 planes" and seeing them is
+        // latency, not orientation. (FollowSelected does animate — it's
+        // moving you somewhere, which is worth showing.)
         click: () => map.setView([cluster.lat, cluster.lon], map.getZoom() + 3, { animate: false }),
       }}
     />
@@ -1486,11 +1464,7 @@ export default function FlightMap() {
           onRemoveAircraft={removeFavoriteAircraft}
           onSelect={handleSelect}
         />
-        {/* Cyberpunk-only: explains marks (airport squares, the
-            home-country amber outline) that only exist on VectorBasemap
-            — the default theme's plain OpenStreetMap tiles don't draw
-            airports at all, so there'd be nothing for a legend to key. */}
-        <Legend theme={theme} />
+        <Legend />
         <ThemeToggle theme={theme} onToggle={toggleTheme} />
       </div>
       {theme === "cyberpunk" && (
@@ -1564,27 +1538,15 @@ export default function FlightMap() {
           noWrap
         />
         <Suspense fallback={null}>
-          {theme === "cyberpunk" && <VectorBasemap onAirportSelect={handleAirportSelect} />}
-          {/* Rendered on both themes now — on the default theme this is
-              the airport layer, full stop; on cyberpunk it's a second,
-              purely visual copy in a dedicated always-on-top pane
-              (interactive={false}: VectorBasemap's own capture-phase
-              hit-testing still owns clicks/hover there, unchanged) fixing
-              real feedback that a plane or cluster mark could render on
-              top of and hide an airport's dot/label, since VectorBasemap's
-              own canvas-drawn airport dots/labels were removed in favor of
-              this real-Marker overlay, which — unlike a canvas draw call —
-              can live in a pane above markerPane instead of being baked
-              into the same bitmap as land/cities/grid. DefaultAirports
-              creates its own "airport-overlay" pane (z-index 650, above
-              markerPane's 600) synchronously during render rather than via
-              react-leaflet's <Pane> — see its own comment on why a sibling
-              <Pane> raced its 878 Marker children and lost. */}
-          <DefaultAirports
-            onAirportSelect={handleAirportSelect}
-            pane={theme === "cyberpunk" ? "airport-overlay" : undefined}
-            interactive={theme !== "cyberpunk"}
-          />
+          {theme === "cyberpunk" && <MaplibreBasemap />}
+          {/* The airport layer for both themes, identical on each. It used
+              to be theme-conditional: on cyberpunk these markers were a
+              purely visual copy (interactive={false}) because VectorBasemap
+              owned airport clicks there via a capture-phase hit-test
+              against its own coordinate list. With that renderer gone
+              there's only one airport layer left, so it simply handles its
+              own clicks everywhere. */}
+          <DefaultAirports onAirportSelect={handleAirportSelect} />
         </Suspense>
         {/* Metric only — every other distance in this app (altitude in m,
             speed in km/h) is metric, so a scale bar switching to miles/ft
@@ -1600,7 +1562,6 @@ export default function FlightMap() {
           lat={selectedPos?.latitude ?? null}
           lon={selectedPos?.longitude ?? null}
           sheetExpanded={dossierExpanded}
-          theme={theme}
           focusRequest={focusRequest}
           onOffScreenChange={setPlaneOffScreen}
         />

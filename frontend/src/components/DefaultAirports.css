@@ -1,5 +1,5 @@
 /* Default (non-cyberpunk) theme's airport mark — a small void-filled dot
-   with a pale border, matching the spirit of VectorBasemap's own airport
+   with a pale border, matching the spirit of the old canvas renderer's airport
    mark on the other theme, plus an always-visible IATA code label so it
    reads the same way at a glance as that theme's dot+code pairing.
    Deliberately no `position` override here: this class doubles as

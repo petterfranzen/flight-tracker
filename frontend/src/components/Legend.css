@@ -152,11 +152,9 @@
   color: var(--color-text);
 }
 
-/* Outline square by default, matching the mockup's own .legend-swatch —
-   and the actual marker/mark shape each row stands for: aircraft and
-   selected are both square marks (see planeIcon in FlightMap.tsx), only
-   airport (a circle, see VectorBasemap.tsx's airport mark) and home
-   region (a short bar, not a point mark at all) override the shape. */
+/* Outline square by default, and the actual marker shape each row stands
+   for: aircraft and selected are both square marks (see planeIcon in
+   FlightMap.tsx); only airport overrides it, being a circle. */
 .map-legend-swatch {
   width: 10px;
   height: 10px;
@@ -169,20 +167,11 @@
   border-color: var(--color-marker-selected);
 }
 
-/* Circle, not square — matches VectorBasemap.tsx's actual airport mark
-   (a stroked circle, not a square). AIRPORT_COLOR there is #e2ddc9; kept
-   in sync by hand since it's a canvas fill, not a shared CSS token. */
+/* Circle, matching DefaultAirports' own dot. The colour is duplicated
+   from DefaultAirports.css by hand rather than shared through a token,
+   since it's specific to that one mark. */
 .map-legend-swatch--airport {
   border-radius: 50%;
   border-color: #e2ddc9;
 }
 
-/* A short bar, not a point mark — this one isn't a marker shape at all,
-   it stands for the amber country-outline highlight (see
-   HOME_COUNTRY_COLOR in VectorBasemap.tsx). */
-.map-legend-swatch--home {
-  width: 14px;
-  height: 2px;
-  border: none;
-  background: var(--color-marker-selected);
-}

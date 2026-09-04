@@ -153,30 +153,9 @@ export function subscribeLiveFeed(onPosition: (p: FlightPosition) => void): () =
 }
 
 /**
- * Real terminal/apron/hangar/gate geometry for one airport, from
- * OpenStreetMap via the backend's Overpass proxy (see
- * AirportGatesController/OverpassAirportGatesClient) — a direct browser
- * call to Overpass itself is blocked by CORS (confirmed: its responses
- * carry no Access-Control-Allow-Origin header), so this has to be
- * server-proxied regardless of how the request is shaped. VectorBasemap
- * only calls this once zoomed in close enough on a specific airport to
- * actually show this level of detail, and caches results client-side on
- * top of the backend's own cache.
- */
-export interface AirportGateFeature {
-  kind: "gate" | "apron" | "terminal" | "hangar";
-  ring: [number, number][];
-}
-export async function fetchAirportGates(code: string, lat: number, lon: number): Promise<AirportGateFeature[]> {
-  const res = await fetch(`/api/airports/gates?code=${encodeURIComponent(code)}&lat=${lat}&lon=${lon}`);
-  if (!res.ok) throw new Error(`airport gates fetch failed: ${res.status}`);
-  return res.json();
-}
-
-/**
  * Static name/municipality/country for the airport dossier panel — see
- * AirportGatesController.info. Null on 404 (a code VectorBasemap's own
- * airport data has but the reference table doesn't), same convention as
+ * AirportController.info. Null on 404 (a code the bundled AIRPORTS data
+ * has but the reference table doesn't), same convention as
  * fetchAircraftDossier.
  */
 export async function fetchAirportInfo(code: string): Promise<AirportInfo | null> {

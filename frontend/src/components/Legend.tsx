@@ -1,13 +1,9 @@
 import { useState } from "react";
-import type { Theme } from "../theme";
 import "./Legend.css";
 
 /**
- * Static swatch key for the cyberpunk theme's vector basemap — explains
- * marks that aren't otherwise self-evident (airport squares, the
- * home-country amber outline) the way the default theme's plain
- * OpenStreetMap imagery never needed one for. Matches the earlier
- * approved mockup's own legend card: same four rows, same colors.
+ * Static swatch key for the marks on the map that aren't self-evident —
+ * which aircraft is selected, and what an airport dot looks like.
  *
  * Collapsible, same interaction pattern as FlightSearch's advanced panel
  * and FavoritesPanel — this used to render permanently open, which on a
@@ -32,12 +28,13 @@ function InfoIcon() {
   );
 }
 
-// Airport/home-region marks only exist on the cyberpunk theme's vector
-// basemap (VectorBasemap.tsx) — the default theme's plain OpenStreetMap
-// tiles have no airport layer of their own yet (a separate, larger
-// follow-up), and no "home country" highlight at all. Explaining marks
-// that aren't actually on screen would just be confusing, not helpful.
-export default function Legend({ theme }: { theme: Theme }) {
+// No longer theme-dependent. The airport mark used to be cyberpunk-only,
+// back when airports were drawn into that theme's own canvas; they're real
+// Leaflet markers on both themes now (see DefaultAirports), so the row
+// applies either way. The "home region" row went with the amber
+// home-country outline, which the canvas renderer drew and the vector
+// basemap deliberately doesn't reproduce.
+export default function Legend() {
   const [open, setOpen] = useState(false);
   return (
     <div className="map-legend">
@@ -83,18 +80,10 @@ export default function Legend({ theme }: { theme: Theme }) {
               <span className="map-legend-swatch map-legend-swatch--selected" />
               Tracked / selected
             </li>
-            {theme === "cyberpunk" && (
-              <>
-                <li className="map-legend-row">
-                  <span className="map-legend-swatch map-legend-swatch--airport" />
-                  Airport
-                </li>
-                <li className="map-legend-row">
-                  <span className="map-legend-swatch map-legend-swatch--home" />
-                  Home region
-                </li>
-              </>
-            )}
+            <li className="map-legend-row">
+              <span className="map-legend-swatch map-legend-swatch--airport" />
+              Airport
+            </li>
           </ul>
         )}
       </div>

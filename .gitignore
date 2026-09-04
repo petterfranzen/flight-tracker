@@ -34,3 +34,6 @@ frontend/blob-report/
 # Cached source data for scripts/generate_world_map_data.py — multi-MB
 # GeoJSON/CSV downloads, regenerable from the URLs in that script.
 scripts/.cache/
+
+# Basemap reference screenshots (see frontend/tests/basemap-reference-shots.spec.ts)
+frontend/spike-shots/
