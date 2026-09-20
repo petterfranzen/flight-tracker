@@ -1,6 +1,7 @@
 package com.flighttracker.service.agent;
 
 import com.flighttracker.dto.Bounds;
+import com.flighttracker.observability.PhaseLogger;
 import com.flighttracker.service.ViewportService;
 import com.flighttracker.service.enrichment.OpenSkyOAuthTokenProvider;
 import org.slf4j.Logger;
@@ -99,15 +100,18 @@ public class OpenSkyAgent implements FlightDataAgent {
     // answerable from the logs immediately instead of requiring a debugging
     // session to discover polling was running anonymous the whole time.
     private final AtomicBoolean authModeLogged = new AtomicBoolean(false);
+    private final PhaseLogger phases;
 
     public OpenSkyAgent(
             @Value("${flighttracker.agents.opensky.enabled:true}") boolean enabled,
             @Value("${flighttracker.agents.opensky.base-url}") String baseUrl,
             ViewportService viewportService,
-            OpenSkyOAuthTokenProvider tokenProvider) {
+            OpenSkyOAuthTokenProvider tokenProvider,
+            PhaseLogger phases) {
         this.enabled = enabled;
         this.viewportService = viewportService;
         this.tokenProvider = tokenProvider;
+        this.phases = phases;
 
         SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
         requestFactory.setConnectTimeout((int) CONNECT_TIMEOUT.toMillis());
@@ -196,6 +200,11 @@ public class OpenSkyAgent implements FlightDataAgent {
                 wait = backoff.recordFailure(MIN_BACKOFF, MAX_BACKOFF);
             }
             log.warn("OpenSky throttled us (429) — backing off {}s", wait.toSeconds());
+            // Surfaces on the dashboard as "Degraded" rather than the
+            // stack merely looking quiet: being rate-limited by the
+            // upstream is the single most common reason a demo shows
+            // fewer aircraft than expected.
+            phases.degraded("OpenSky rate-limited us (429), backing off " + wait.toSeconds() + "s");
             return List.of();
         } catch (HttpServerErrorException e) {
             // The API itself is unhealthy, not just rate-limiting us — back

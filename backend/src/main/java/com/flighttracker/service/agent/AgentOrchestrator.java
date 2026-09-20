@@ -1,5 +1,6 @@
 package com.flighttracker.service.agent;
 
+import com.flighttracker.observability.PhaseLogger;
 import com.flighttracker.service.PollWindowService;
 import com.flighttracker.service.enrichment.AircraftEnrichmentService;
 import jakarta.annotation.PostConstruct;
@@ -33,6 +34,7 @@ public class AgentOrchestrator {
     private final PositionPersistenceService persistenceService;
     private final AircraftEnrichmentService enrichmentService;
     private final PollWindowService pollWindowService;
+    private final PhaseLogger phases;
 
     // Local-only, just to avoid a log line every poll cycle while the
     // window stays closed — the authoritative state is PollWindowService.
@@ -45,11 +47,13 @@ public class AgentOrchestrator {
     public AgentOrchestrator(List<FlightDataAgent> agents,
                               PositionPersistenceService persistenceService,
                               AircraftEnrichmentService enrichmentService,
-                              PollWindowService pollWindowService) {
+                              PollWindowService pollWindowService,
+                              PhaseLogger phases) {
         this.agents = agents;
         this.persistenceService = persistenceService;
         this.enrichmentService = enrichmentService;
         this.pollWindowService = pollWindowService;
+        this.phases = phases;
     }
 
     // Opens the window on every container boot, same as the old in-memory
@@ -72,6 +76,10 @@ public class AgentOrchestrator {
         pollWindowService.restart(true);
         if (persistenceService.hasNoPositions()) {
             log.info("Database is empty — seeding with a global sweep before startup completes");
+            // The one case where this phase really earns its keep: a stack
+            // started fresh for a demo blocks here for ~30s+ with an empty
+            // map, and this is what lets the dashboard say why.
+            phases.populating("seeding an empty database with a global sweep");
             runGlobalSweep();
         }
     }
@@ -82,6 +90,7 @@ public class AgentOrchestrator {
             if (windowOpenLastCycle.compareAndSet(true, false)) {
                 log.info("Polling window elapsed — stopped until restarted via POST /api/agents/restart");
             }
+            phases.idle("polling window closed");
             return;
         }
         windowOpenLastCycle.set(true);
@@ -96,9 +105,11 @@ public class AgentOrchestrator {
             if (budgetAvailableLastCycle.compareAndSet(true, false)) {
                 log.warn("Global hot-poll call budget exhausted for today — falling back to the global sweep alone");
             }
+            phases.degraded("hot-poll call budget exhausted for today");
             return;
         }
         budgetAvailableLastCycle.set(true);
+        phases.populating("polling viewport traffic");
 
         for (FlightDataAgent agent : agents) {
             try {
@@ -153,6 +164,7 @@ public class AgentOrchestrator {
     }
 
     private void runGlobalSweep() {
+        phases.populating("global sweep");
         for (FlightDataAgent agent : agents) {
             try {
                 List<RawPositionReport> reports = agent.pollGlobal();
@@ -167,5 +179,6 @@ public class AgentOrchestrator {
                 log.warn("Agent {} global sweep failed", agent.sourceName(), e);
             }
         }
+        phases.idle("global sweep complete");
     }
 }

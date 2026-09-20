@@ -1,6 +1,7 @@
 package com.flighttracker.service.estimator;
 
 import com.flighttracker.model.Aircraft;
+import com.flighttracker.observability.PhaseLogger;
 import com.flighttracker.model.FlightPosition;
 import com.flighttracker.repository.AircraftRepository;
 import com.flighttracker.repository.FlightPositionRepository;
@@ -80,11 +81,20 @@ class EstimatorAgentTest {
         return captor.getValue();
     }
 
+    /**
+     * A real PhaseLogger rather than a mock: it only writes a log line,
+     * and none of these tests are about what it writes — see
+     * PhaseLoggerTest for that.
+     */
+    private EstimatorAgent newAgent() {
+        return new EstimatorAgent(positionRepository, aircraftRepository, jdbcTemplate, new PhaseLogger());
+    }
+
     @Test
     void emptyLiveSet_noBatchUpdateIssued() {
         when(positionRepository.findLive(any(), any())).thenReturn(List.of());
 
-        new EstimatorAgent(positionRepository, aircraftRepository, jdbcTemplate).refresh();
+        newAgent().refresh();
 
         verify(jdbcTemplate, never()).batchUpdate(anyString(), anyList(), anyInt(), any(ParameterizedPreparedStatementSetter.class));
         verifyNoMoreInteractions(aircraftRepository);
@@ -99,7 +109,7 @@ class EstimatorAgentTest {
                 .thenReturn(List.of(withDestination("abc123", 0.0, 90.0))); // far east, won't clip
         when(positionRepository.findIcao24sWithEstimate()).thenReturn(Set.of());
 
-        new EstimatorAgent(positionRepository, aircraftRepository, jdbcTemplate).refresh();
+        newAgent().refresh();
 
         List<Object> batch = captureBatch().getValue();
         org.assertj.core.api.Assertions.assertThat(batch).hasSize(1);
@@ -128,7 +138,7 @@ class EstimatorAgentTest {
                 .thenReturn(List.of(withDestination("def456", 0.0, 90.0)));
         when(positionRepository.findIcao24sWithEstimate()).thenReturn(Set.of()); // not previously estimated
 
-        new EstimatorAgent(positionRepository, aircraftRepository, jdbcTemplate).refresh();
+        newAgent().refresh();
 
         verify(jdbcTemplate, never()).batchUpdate(anyString(), anyList(), anyInt(), any(ParameterizedPreparedStatementSetter.class));
     }
@@ -146,7 +156,7 @@ class EstimatorAgentTest {
                 .thenReturn(List.of(withDestination("def456", 0.0, 90.0)));
         when(positionRepository.findIcao24sWithEstimate()).thenReturn(Set.of("def456")); // has a stale estimate
 
-        new EstimatorAgent(positionRepository, aircraftRepository, jdbcTemplate).refresh();
+        newAgent().refresh();
 
         List<Object> batch = captureBatch().getValue();
         org.assertj.core.api.Assertions.assertThat(batch).hasSize(1);
@@ -174,7 +184,7 @@ class EstimatorAgentTest {
         // depends on this set (a genuine projection always writes).
         when(positionRepository.findIcao24sWithEstimate()).thenReturn(Set.of("def456"));
 
-        new EstimatorAgent(positionRepository, aircraftRepository, jdbcTemplate).refresh();
+        newAgent().refresh();
 
         List<Object> batch = captureBatch().getValue();
         org.assertj.core.api.Assertions.assertThat(batch).hasSize(2);
@@ -207,7 +217,7 @@ class EstimatorAgentTest {
         when(aircraftRepository.findAllById(List.of("zzz999"))).thenReturn(List.of()); // no Aircraft row at all
         when(positionRepository.findIcao24sWithEstimate()).thenReturn(Set.of("zzz999")); // exercise the clear-write path
 
-        new EstimatorAgent(positionRepository, aircraftRepository, jdbcTemplate).refresh();
+        newAgent().refresh();
 
         List<Object> batch = captureBatch().getValue();
         var setter = captureSetter();

@@ -2,6 +2,7 @@ package com.flighttracker.service.estimator;
 
 import com.flighttracker.model.Aircraft;
 import com.flighttracker.model.FlightPosition;
+import com.flighttracker.observability.PhaseLogger;
 import com.flighttracker.repository.AircraftRepository;
 import com.flighttracker.repository.FlightPositionRepository;
 import com.flighttracker.service.EstimatedPositionService;
@@ -106,13 +107,16 @@ public class EstimatorAgent {
     private final FlightPositionRepository positionRepository;
     private final AircraftRepository aircraftRepository;
     private final JdbcTemplate jdbcTemplate;
+    private final PhaseLogger phases;
 
     public EstimatorAgent(FlightPositionRepository positionRepository,
                            AircraftRepository aircraftRepository,
-                           JdbcTemplate jdbcTemplate) {
+                           JdbcTemplate jdbcTemplate,
+                           PhaseLogger phases) {
         this.positionRepository = positionRepository;
         this.aircraftRepository = aircraftRepository;
         this.jdbcTemplate = jdbcTemplate;
+        this.phases = phases;
     }
 
     @Scheduled(fixedDelayString = "#{${flighttracker.estimator.refresh-interval-seconds} * 1000}")
@@ -123,7 +127,15 @@ public class EstimatorAgent {
                 now.minus(LiveVisibilityWindows.STALE_AIRBORNE_BOUND),
                 now.minus(LiveVisibilityWindows.LANDED_VISIBILITY));
 
-        if (live.isEmpty()) return;
+        if (live.isEmpty()) {
+            phases.idle("no live aircraft to estimate");
+            return;
+        }
+        // This loop runs every few seconds, which is exactly the shape
+        // that would spam the log — PhaseLogger only emits on transition,
+        // so in practice this prints once when estimating starts and not
+        // again until it stops.
+        phases.populating("refreshing estimated positions");
 
         // One batched lookup for every aircraft in this cycle rather than a
         // query each — EstimatedPositionService needs each one's filed

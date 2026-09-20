@@ -49,9 +49,35 @@ the database current everywhere regardless of what anyone's looking at.
 this unattended on a NAS via prebuilt images from CI, see
 [`deploy/README.md`](deploy/README.md).
 
+## Phase reporting
+
+Each backend container prints a one-line marker when what it's doing
+changes:
+
+```
+[phase:populating_data] global sweep
+[phase:degraded] OpenSky rate-limited us (429), backing off 30s
+```
+
+[docker-monitor](../docker-monitor) reads these out of the container log
+stream so the portfolio's dashboard can show what this stack is *doing* —
+Docker itself can only say "running", which doesn't distinguish an agent
+mid-sweep from an idle one. That distinction matters most on a cold start,
+where the map is legitimately empty for the first minute while
+`seedOnStartup` backfills.
+
+`PhaseLogger` (`backend/.../observability/`) emits on transition only, so
+the estimator's few-second refresh loop prints one line, not one per
+cycle. The vocabulary and the rules are docker-monitor's — see its README
+under "Phase reporting" — this repo is just one of the apps that speaks it.
+
+Nothing here depends on docker-monitor running: with nobody reading them,
+these are ordinary, fairly useful log lines.
+
 ## Where things live
 - `backend/.../service/agent/` — the agent interface + orchestrator + the OpenSky implementation. Add a new source by adding one `@Component`.
 - `backend/.../service/UsageService.java` — turns historic positions into distance/airtime figures.
 - `frontend/src/components/FlightMap.tsx` — the map; design tokens are at the top of the adjacent `.css`.
+- `backend/.../observability/PhaseLogger.java` — the phase markers above.
 - `docs/neovim-basics.md` — Neovim primer for the config in `nvim/init.lua`.
 - `docs/multi-agent-workflow.md` — running Claude Code, Codex, and Gemini CLI on this repo in parallel without them stepping on each other.
