@@ -1,3 +1,4 @@
+import { useEffect, useMemo, useState } from "react";
 import { Marker, useMap } from "react-leaflet";
 import L from "leaflet";
 import { AIRPORTS } from "../worldMapData";
@@ -12,6 +13,31 @@ import "./DefaultAirports.css";
 // still out-stack it within a shared pane no matter what the offset is.
 const AIRPORT_PANE = "airport-overlay";
 const AIRPORT_PANE_Z_INDEX = "650";
+
+/**
+ * How far down Natural Earth's significance ranking to draw, per zoom
+ * level: index is the zoom, value is the highest `rank` still shown
+ * (lower rank = more significant). Zooms past the end of the array show
+ * everything.
+ *
+ * Drawing all 878 at every zoom made the world view unreadable — a solid
+ * band of overlapping IATA labels across Europe and the US eastern
+ * seaboard, with the aircraft underneath them. Natural Earth's scalerank
+ * already encodes "how zoomed out can this still earn a place", so this
+ * just follows it.
+ *
+ * Resulting counts worldwide — and at these zooms the whole world *is* the
+ * viewport, so these are what you actually see:
+ *   z<=3: 65   z4: 90   z5: 284   z6: 480   z7: 612   z8: 850   z9+: 878
+ *
+ * The steps aren't evenly spaced because Natural Earth's tiers aren't:
+ * rank 5 holds only 46 airports, so pausing on it left a regional view
+ * visibly emptier than the zoom either side of it.
+ *
+ * Thresholds live here rather than in the generator so they can be tuned
+ * without regenerating worldMapData.ts.
+ */
+const MAX_RANK_BY_ZOOM = [2, 2, 2, 2, 3, 4, 6, 7, 8];
 
 /**
  * Every airport on the map, on both themes: a dot plus its IATA code,
@@ -30,6 +56,34 @@ export default function DefaultAirports({
   onAirportSelect: (ap: AirportSelection) => void;
 }) {
   const map = useMap();
+
+  // Which airports are drawn depends on zoom, so this has to re-render
+  // when zoom changes. "zoomend" only, not "zoom": re-filtering on every
+  // frame of a pinch or wheel zoom would remount markers mid-animation
+  // for no visible benefit — the same reasoning ScaleBar.tsx uses.
+  const [zoom, setZoom] = useState(() => map.getZoom());
+  useEffect(() => {
+    const update = () => setZoom(map.getZoom());
+    map.on("zoomend", update);
+    return () => {
+      map.off("zoomend", update);
+    };
+  }, [map]);
+
+  const visible = useMemo(() => {
+    const level = Math.max(0, Math.floor(zoom));
+    const maxRank =
+      level >= MAX_RANK_BY_ZOOM.length ? Infinity : MAX_RANK_BY_ZOOM[level];
+    // The original index is carried through as the React key. Filtering
+    // first and using the filtered index would mean a marker's key
+    // changed with zoom, so React would reuse one airport's DOM node for
+    // a different airport as the list grew — the same class of breakage
+    // the duplicate-code keys caused before (see the key comment below).
+    return AIRPORTS.map((ap, index) => ({ ap, index })).filter(
+      ({ ap }) => ap.rank <= maxRank,
+    );
+  }, [zoom]);
+
   // Deliberately not a useEffect: React runs effects child-before-parent
   // (and these 878 Markers are this component's children), so creating
   // the pane in an effect here — or via react-leaflet's own <Pane>
@@ -47,8 +101,8 @@ export default function DefaultAirports({
   }
   return (
     <>
-      {AIRPORTS.map((ap, i) => {
-        // Built per-airport (not memoized across all 878) so each carries
+      {visible.map(({ ap, index }) => {
+        // Built per-airport (not memoized across the whole list) so each carries
         // its own IATA code as real text — cheap; L.DivIcon construction
         // itself does no DOM work until Leaflet actually mounts it.
         const icon = new L.DivIcon({
@@ -67,7 +121,7 @@ export default function DefaultAirports({
             // generate_world_map_data.py at some point, but the list
             // itself never reorders, so index is a perfectly stable key
             // in the meantime.
-            key={i}
+            key={index}
             position={[ap.pos[1], ap.pos[0]]}
             icon={icon}
             pane={AIRPORT_PANE}

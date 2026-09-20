@@ -53,6 +53,19 @@ SOURCES = {
 # up by.
 AIRPORT_TYPES = {"major", "major and military", "mid", "mid and military", "military mid", "military major"}
 
+# Natural Earth's own "how far out should this still be drawn" ranking:
+# lower means more significant, and the value is the smallest scale (most
+# zoomed-out map) the cartographers think the airport earns a place on.
+# Carried through to the app so it can thin the list as you zoom out
+# instead of drawing all of them at every zoom — 878 markers over a whole
+# continent is unreadable. The zoom thresholds themselves live in
+# DefaultAirports.tsx, not here: they're a display decision worth tuning
+# without regenerating this file.
+#
+# Distribution across the airports kept above, for a sense of scale:
+#   rank 2: 65   3: 25   4: 194   5: 46   6: 150   7: 132   8: 238   9: 28
+DEFAULT_SCALERANK = 9  # treat a missing rank as least significant
+
 
 def fetch(key: str) -> str:
     os.makedirs(CACHE_DIR, exist_ok=True)
@@ -81,7 +94,14 @@ def build_airports():
         if not iata or props.get("type") not in AIRPORT_TYPES:
             continue
         lon, lat = f["geometry"]["coordinates"][0], f["geometry"]["coordinates"][1]
-        out.append({"name": props.get("name"), "code": iata, "pos": (lon, lat)})
+        rank = props.get("scalerank")
+        if not isinstance(rank, int):
+            rank = DEFAULT_SCALERANK
+        out.append({"name": props.get("name"), "code": iata, "pos": (lon, lat), "rank": rank})
+    # Most significant first. Nothing depends on the order for correctness,
+    # but it means a truncated or partially-rendered list still shows the
+    # airports that matter most.
+    out.sort(key=lambda a: (a["rank"], a["code"]))
     return out
 
 
@@ -107,7 +127,9 @@ def emit(airports):
         "// script instead.",
         "//",
         "// Source: Natural Earth 1:10m airports (the only tier carrying an airport",
-        "// layer at all), filtered to the major/mid significance tiers. Raw lon/lat,",
+        "// layer at all), filtered to the major/mid significance tiers. Each keeps",
+        "// Natural Earth's scalerank so the app can thin them out as you zoom out.",
+        "// Raw lon/lat,",
         "// not pre-projected: these are rendered as real Leaflet markers (see",
         "// DefaultAirports.tsx) and projected live like every other marker, so they",
         "// stay correct at any pan/zoom.",
@@ -122,11 +144,20 @@ def emit(airports):
         "  name: string;",
         "  code: string;",
         "  pos: [number, number];",
+        "  /**",
+        "   * Natural Earth's scalerank: lower is more significant. Drives which",
+        "   * airports survive at which zoom — see MAX_RANK_BY_ZOOM in",
+        "   * DefaultAirports.tsx. Sorted most-significant-first below.",
+        "   */",
+        "  rank: number;",
         "}",
         "",
     ]
     entries = [
-        "{" + f'"name":{fmt_str(a["name"])},"code":{fmt_str(a["code"])},"pos":{fmt_point(a["pos"])}' + "}"
+        "{"
+        + f'"name":{fmt_str(a["name"])},"code":{fmt_str(a["code"])},'
+        + f'"pos":{fmt_point(a["pos"])},"rank":{a["rank"]}'
+        + "}"
         for a in airports
     ]
     lines.append("export const AIRPORTS: AirportFeature[] = [" + ",".join(entries) + "];")
