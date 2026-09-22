@@ -44,7 +44,7 @@ conflicts and wasted work. This codebase has natural boundaries already:
 | Agent | Good fit | Why |
 |---|---|---|
 | Claude Code | `AgentOrchestrator`, a new `FlightDataAgent` implementation, the usage-calculation logic, schema changes | Backend correctness, multi-file refactors, anything touching the persistence model |
-| Codex | `IndianaJonesMap.tsx` / `.css`, new frontend views, the WebSocket client | Frontend iteration loops well with Codex's edit-review cycle |
+| Codex | `FlightMap.tsx` / `.css`, new frontend views, the WebSocket client | Frontend iteration loops well with Codex's edit-review cycle |
 | Antigravity CLI (`agy`) | Integration tests, the README, a second `FlightDataAgent` (e.g. an ADS-B Exchange source) to compare against OpenSky | Shares Gemini's large-context harness, and `/agents` lets it fan a task like "write tests for every FlightDataAgent" out to concurrent subagents on its own |
 
 That table is a starting point, not a rule — the point is that each agent
@@ -58,7 +58,7 @@ even a shared symlink of the same file works — describing:
 
 - the schema is append-only (`flight_position` rows are never updated/deleted)
 - new data sources implement `FlightDataAgent` and get registered automatically via Spring
-- frontend theme tokens live at the top of `IndianaJonesMap.css` — don't hardcode colours elsewhere
+- frontend theme tokens live at the top of `FlightMap.css` — don't hardcode colours elsewhere
 
 This is the cheapest lever you have for keeping three separately-run agents
 converging on the same architecture instead of drifting apart.
