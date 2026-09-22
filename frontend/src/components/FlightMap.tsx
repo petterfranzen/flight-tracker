@@ -1015,7 +1015,7 @@ export default function FlightMap() {
         // rather than replacing it outright, so a full detail fetch's
         // altitudeM survives this reconcile instead of being wiped back to
         // null on every pan/zoom.
-        setSelectedPos((prev) => (prev ? { ...prev, ...current } : { ...current, altitudeM: null }));
+        setSelectedPos((prev) => (prev ? { ...prev, ...current } : { ...current, altitudeM: null, velocityMs: null, verticalRateMs: null }));
         appendRoutePoint(current);
       }
     }).finally(() => setFirstLoadDone(true));
@@ -1343,7 +1343,7 @@ export default function FlightMap() {
     // Preserves a still-fresh selectedPos's altitudeM across a reselect of
     // the same aircraft (e.g. clicking it again) rather than nulling it
     // out for no reason.
-    setSelectedPos((prev) => (prev && prev.icao24 === p.icao24 ? { ...prev, ...p } : { ...p, altitudeM: null }));
+    setSelectedPos((prev) => (prev && prev.icao24 === p.icao24 ? { ...prev, ...p } : { ...p, altitudeM: null, velocityMs: null, verticalRateMs: null }));
     setDossierExpanded(false);
   }, []);
 
@@ -1688,6 +1688,19 @@ export default function FlightMap() {
               <dd>{selectedPos.altitudeM != null ? `${Math.round(Math.max(0, selectedPos.altitudeM))} m` : "—"}</dd>
               <dt>Cruising altitude</dt>
               <dd>{dossier?.cruisingAltitudeM != null ? `${Math.round(dossier.cruisingAltitudeM)} m` : "—"}</dd>
+              <dt>Speed</dt>
+              <dd>{selectedPos.velocityMs != null ? `${Math.round(selectedPos.velocityMs * 3.6)} km/h` : "—"}</dd>
+              <dt>Vertical rate</dt>
+              {/* Signed, not just magnitude: the sign is the only thing
+                  that says climbing vs. descending — dropping it would
+                  make "5 m/s" ambiguous between the two. Near-zero (level
+                  flight) still reads as "+0 m/s" rather than a bare "0",
+                  same reasoning. */}
+              <dd>
+                {selectedPos.verticalRateMs != null
+                  ? `${selectedPos.verticalRateMs >= 0 ? "+" : ""}${(Math.round(selectedPos.verticalRateMs * 10) / 10).toFixed(1)} m/s`
+                  : "—"}
+              </dd>
               <dt>Flight time</dt>
               <dd>{dossier?.flightMinutes != null ? formatDurationMinutes(dossier.flightMinutes) : "—"}</dd>
               <dt>ETA</dt>
