@@ -12,6 +12,13 @@ spring:
   sql:
     init:
       mode: always           # runs schema.sql on startup
+  lifecycle:
+    # Docker's own default SIGKILL grace period is 10s — timeout-per-shutdown-
+    # phase must stay under that or Docker kills the process before graceful
+    # shutdown (server.shutdown: graceful below) finishes waiting anyway.
+    # See docker-compose.yml's `stop_grace_period` if this ever needs to
+    # grow past what fits under Docker's default.
+    timeout-per-shutdown-phase: 8s
   task:
     scheduling:
       pool:
@@ -36,8 +43,21 @@ spring:
 
 server:
   port: 8080
+  # Waits for in-flight requests (and, via spring.lifecycle below, scheduled
+  # work like AgentOrchestrator.pollAll/PositionRetentionService.prune) to
+  # finish before the container actually stops, instead of Spring's default
+  # of tearing the context down immediately on SIGTERM — a poll or a
+  # retention batch mid-write no longer gets cut off by an ordinary restart.
+  shutdown: graceful
 
 flighttracker:
+  observability:
+    # How often PhaseLogger.heartbeat() re-prints the current phase even
+    # when it hasn't changed — see PhaseLogger's javadoc. Must stay well
+    # under docker-monitor's NO_DATA_IDLE_SECONDS (default 600s), or a
+    # container that's healthy but quiet (idle between sweeps, say) trips
+    # that check.
+    phase-heartbeat-seconds: 240
   # Rolling retention for flight_position — see PositionRetentionService,
   # which is also where the reasoning for pruning *only* that table lives.
   retention:

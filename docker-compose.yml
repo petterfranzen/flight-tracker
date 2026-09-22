@@ -113,10 +113,20 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    # No healthcheck: headless (spring.main.web-application-type: none in
-    # application-agent.yml), so there's no port to probe the way
-    # backend-api's wget check does. `docker compose ps`/logs are the way
-    # to check on it instead.
+    # Headless (spring.main.web-application-type: none in application-
+    # agent.yml) — no port to probe the way backend-api's wget check does.
+    # PhaseLogger touches /tmp/phase-heartbeat on every emit *and* on its own
+    # heartbeat schedule (flighttracker.observability.phase-heartbeat-seconds,
+    # default 240s) regardless of whether the phase actually changed, so a
+    # stale file means the scheduler thread itself has stopped running, not
+    # just that nothing's currently happening. -mmin window is roughly 1.5x
+    # that default, for scheduler jitter.
+    healthcheck:
+      test: ["CMD-SHELL", "test -n \"$(find /tmp/phase-heartbeat -mmin -6 2>/dev/null)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
 
   backend-estimator:
     build: ./backend
@@ -128,8 +138,14 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    # No healthcheck, same reasoning as backend-agent: headless (see
-    # application-estimator.yml), nothing to probe over HTTP.
+    # Same heartbeat-file healthcheck as backend-agent, same reasoning:
+    # headless (see application-estimator.yml), nothing to probe over HTTP.
+    healthcheck:
+      test: ["CMD-SHELL", "test -n \"$(find /tmp/phase-heartbeat -mmin -6 2>/dev/null)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
 
   frontend:
     build: ./frontend

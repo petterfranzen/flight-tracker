@@ -77,8 +77,18 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    # No healthcheck: headless (no embedded web server in the "agent"
-    # profile), so there's no port to probe — check `docker logs` instead.
+    # Headless (no embedded web server in the "agent" profile) — no port to
+    # probe. PhaseLogger touches /tmp/phase-heartbeat on every emit and on
+    # its own fixed heartbeat schedule (flighttracker.observability.phase-
+    # heartbeat-seconds, default 240s) regardless of whether the phase
+    # changed, so a stale file means the scheduler itself died, not just
+    # that nothing's currently happening.
+    healthcheck:
+      test: ["CMD-SHELL", "test -n \"$(find /tmp/phase-heartbeat -mmin -6 2>/dev/null)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
 
   backend-estimator:
     container_name: flight_tracker_backend_estimator
@@ -92,7 +102,14 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    # No healthcheck, same reasoning as backend-agent: headless, no port to probe.
+    # Same heartbeat-file healthcheck as backend-agent, same reasoning:
+    # headless, no port to probe.
+    healthcheck:
+      test: ["CMD-SHELL", "test -n \"$(find /tmp/phase-heartbeat -mmin -6 2>/dev/null)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
 
   frontend:
     container_name: flight_tracker_frontend
