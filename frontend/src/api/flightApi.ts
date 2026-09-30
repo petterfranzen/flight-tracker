@@ -138,18 +138,70 @@ export async function restartPolling(): Promise<RestartOutcome> {
   return { status: await res.json(), rateLimited: false, retryAfterSeconds: null };
 }
 
-/** Subscribes to the live push feed; returns an unsubscribe function. */
+// Capped exponential backoff for WS reconnects (B1.5): first retry after 1s,
+// doubling on every further consecutive failure, capped at 30s. Reset to the
+// floor the moment a connection actually opens, so one bad connect doesn't
+// leave every later reconnect slower than it needs to be.
+const WS_RECONNECT_MIN_MS = 1_000;
+const WS_RECONNECT_MAX_MS = 30_000;
+
+function isFlightPosition(data: unknown): data is FlightPosition {
+  if (!data || typeof data !== "object") return false;
+  const p = data as Record<string, unknown>;
+  return typeof p.icao24 === "string" && typeof p.observedAt === "string";
+}
+
+/**
+ * Subscribes to the live push feed; returns an unsubscribe function.
+ * Reconnects on an unexpected close with capped exponential backoff (see
+ * WS_RECONNECT_MIN_MS/MAX_MS), and silently ignores keepalive frames — the
+ * backend sends either a real WS ping (invisible to `onmessage`, handled by
+ * the browser) or, if the client can't see those, a tiny `{"type":"ping"}`
+ * text frame (see A1's hand-off) — neither is a FlightPosition, so
+ * `isFlightPosition` filters it out the same way a malformed frame is
+ * already ignored.
+ */
 export function subscribeLiveFeed(onPosition: (p: FlightPosition) => void): () => void {
-  const proto = location.protocol === "https:" ? "wss" : "ws";
-  const socket = new WebSocket(`${proto}://${location.host}/ws/live`);
-  socket.onmessage = (event) => {
-    try {
-      onPosition(JSON.parse(event.data) as FlightPosition);
-    } catch {
-      // ignore malformed frame
-    }
+  let socket: WebSocket | null = null;
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let backoffMs = WS_RECONNECT_MIN_MS;
+  let closed = false;
+
+  function connect(): void {
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    socket = new WebSocket(`${proto}://${location.host}/ws/live`);
+    socket.onopen = () => {
+      backoffMs = WS_RECONNECT_MIN_MS;
+    };
+    socket.onmessage = (event) => {
+      let data: unknown;
+      try {
+        data = JSON.parse(event.data);
+      } catch {
+        return; // ignore malformed frame
+      }
+      if (isFlightPosition(data)) onPosition(data);
+    };
+    socket.onclose = () => {
+      if (!closed) scheduleReconnect();
+    };
+    socket.onerror = () => {
+      socket?.close();
+    };
+  }
+
+  function scheduleReconnect(): void {
+    const delay = backoffMs;
+    backoffMs = Math.min(WS_RECONNECT_MAX_MS, backoffMs * 2);
+    reconnectTimer = setTimeout(connect, delay);
+  }
+
+  connect();
+  return () => {
+    closed = true;
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    socket?.close();
   };
-  return () => socket.close();
 }
 
 /**
