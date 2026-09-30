@@ -1,0 +1,92 @@
+[
+  {
+    "observedAt": "2026-09-30T12:57:58Z",
+    "icao24": "39de4f",
+    "onGround": true,
+    "latitude": 48.7272,
+    "longitude": 2.3732,
+    "callsign": "TVF37MF",
+    "headingDeg": 73.12
+  },
+  {
+    "observedAt": "2026-09-30T12:57:59Z",
+    "icao24": "39de4e",
+    "onGround": false,
+    "latitude": 48.7564,
+    "longitude": 2.5599,
+    "callsign": "TVF31MA",
+    "headingDeg": 254.74
+  },
+  {
+    "observedAt": "2026-09-30T12:55:53Z",
+    "icao24": "3ffc29",
+    "onGround": false,
+    "latitude": 48.263,
+    "longitude": 12.1913,
+    "callsign": "DMFSS",
+    "headingDeg": 30.2
+  },
+  {
+    "observedAt": "2026-09-30T12:57:48Z",
+    "icao24": "a5f852",
+    "onGround": true,
+    "latitude": 40.4535,
+    "longitude": -105.009,
+    "callsign": "",
+    "headingDeg": 250.31
+  },
+  {
+    "observedAt": "2026-09-30T12:58:00Z",
+    "icao24": "e8027e",
+    "onGround": false,
+    "latitude": -30.4565,
+    "longitude": -61.8305,
+    "callsign": "LPE2464",
+    "headingDeg": 322.96
+  },
+  {
+    "observedAt": "2026-09-30T12:57:58Z",
+    "icao24": "e8027d",
+    "onGround": false,
+    "latitude": -9.1398,
+    "longitude": -78.0452,
+    "callsign": "LPE2290",
+    "headingDeg": 167.41
+  },
+  {
+    "observedAt": "2026-09-30T12:57:59Z",
+    "icao24": "801638",
+    "onGround": false,
+    "latitude": 21.816,
+    "longitude": 85.9077,
+    "callsign": "AXB2945",
+    "headingDeg": 42.58
+  },
+  {
+    "observedAt": "2026-09-30T12:57:59Z",
+    "icao24": "39de4b",
+    "onGround": false,
+    "latitude": 48.6469,
+    "longitude": 2.8865,
+    "callsign": "TVF36VX",
+    "headingDeg": 344.8
+  },
+  {
+    "observedAt": "2026-09-30T12:58:00Z",
+    "icao24": "39de4c",
+    "onGround": false,
+    "latitude": 45.0406,
+    "longitude": 9.1,
+    "callsign": "TVF28HN",
+    "headingDeg": 302.19
+  },
+  {
+    "observedAt": "2026-09-30T12:57:59Z",
+    "icao24": "488284",
+    "onGround": false,
+    "latitude": 52.2691,
+    "longitude": 21.0195,
+    "callsign": "SPAWE",
+    "headingDeg": 337.59
+  }
+]

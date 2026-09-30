@@ -25,18 +25,45 @@ source ~/.local/toolchains/env.sh
 That exports `JAVA_HOME` and prepends all the above to `PATH`. Verify with
 `java -version && mvn -v && node -v && npm -v && shellcheck --version && actionlint -version`.
 
-Docker Desktop was already installed (v4.5.0 / engine 20.10.12, set up back
-in 2022) but not running. Started with `open -a Docker`; daemon takes
-~10-60s to come up after launch — poll `docker info` until it succeeds. If a
-fresh session finds `docker` not responding, run `open -a Docker` and wait
-before starting Phase 0's `docker compose` steps.
+**Docker Desktop (v4.5.0 / engine 20.10.12, set up back in 2022) is dead.**
+Launched fine but its VM networking is broken (`docker pull` hangs forever,
+no progress) — plausibly just stale after years dormant. Quit it
+(`osascript -e 'quit app "Docker"'`) and don't use it.
+
+**Using Colima + containerd + nerdctl instead**, started with:
+```bash
+colima start --runtime containerd --cpu 4 --memory 4 --disk 30
+```
+`docker-compose.yml` works via `colima nerdctl -- compose <args>` (nerdctl
+runs *inside* the VM via SSH — no host-side `docker`/`nerdctl` binary needed).
+There is no `docker` CLI on this host and no `docker compose` — every compose
+command in PLAN.md/agent files that says `docker compose ...` should be run
+as `colima nerdctl -- compose ...` here instead. `docker stats` becomes
+`colima nerdctl -- stats`.
+
+**Why not plain Homebrew:** this machine's only Homebrew (`/usr/local/bin/brew`)
+is the **Intel/Rosetta build** (no native `/opt/homebrew` install), and
+separately this exact macOS version ("Tahoe") has few prebuilt bottles yet
+(Homebrew Tier 3) — formulas needing a from-source build (`docker`, `nerdctl`,
+`go`, `maven`'s `openjdk` dep, ...) fail without Xcode Command Line Tools
+(`xcode-select --install`, an interactive GUI install, not run). Lima and
+Colima got installed via Homebrew first (bottled fine) but as **x86_64
+binaries under Rosetta**, which `limactl` itself refuses to run under
+("please reinstall lima with native arch") — so those were replaced with
+native arm64 binaries downloaded straight from the lima-vm/lima and
+abiosoft/colima GitHub releases into `~/.local/toolchains/`, same as the
+other tools. `env.sh` already puts these ahead of the Rosetta Homebrew ones
+on PATH.
+
+If a fresh session finds `colima status` failing, run the `colima start`
+command above and wait (VM boot + nerdctl provisioning takes a few minutes).
 
 ## Progress
 
 | Phase / Gate | Status | Notes |
 |---|---|---|
 | Bundle copied to `feat/cloud-migration`, toolchain set up | ✅ done | this commit |
-| Phase 0 (baseline + golden contract) | ⏳ in progress | |
+| Phase 0 (baseline + golden contract) | ✅ done | all green, see `00-baseline.md`; no 🔒 ASK |
 | A1 backend-consolidator | not started | |
 | Gate A1 | not started | |
 | A2 sqlite-migrator | not started | |
