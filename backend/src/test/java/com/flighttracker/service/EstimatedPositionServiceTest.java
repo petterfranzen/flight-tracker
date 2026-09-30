@@ -90,18 +90,18 @@ class EstimatedPositionServiceTest {
         FlightPosition result = EstimatedPositionService.estimate(
                 last, OBSERVED_AT.plusSeconds(1000), 0.0, 90.0);
 
-        assertThat(result.getLatitude()).isCloseTo(0.0, org.assertj.core.data.Offset.offset(1e-6));
-        assertThat(result.getLongitude()).isCloseTo(1.0, org.assertj.core.data.Offset.offset(1e-6));
+        assertThat(result.latitude()).isCloseTo(0.0, org.assertj.core.data.Offset.offset(1e-6));
+        assertThat(result.longitude()).isCloseTo(1.0, org.assertj.core.data.Offset.offset(1e-6));
 
-        assertThat(result.getIcao24()).isEqualTo(last.getIcao24());
-        assertThat(result.getCallsign()).isEqualTo(last.getCallsign());
-        assertThat(result.getObservedAt()).isEqualTo(last.getObservedAt());
-        assertThat(result.getAltitudeM()).isEqualTo(last.getAltitudeM());
-        assertThat(result.getVelocityMs()).isEqualTo(last.getVelocityMs());
-        assertThat(result.getHeadingDeg()).isEqualTo(last.getHeadingDeg());
-        assertThat(result.getVerticalRateMs()).isEqualTo(last.getVerticalRateMs());
-        assertThat(result.isOnGround()).isEqualTo(last.isOnGround());
-        assertThat(result.getAgentSource()).isEqualTo(last.getAgentSource());
+        assertThat(result.icao24()).isEqualTo(last.icao24());
+        assertThat(result.callsign()).isEqualTo(last.callsign());
+        assertThat(result.observedAt()).isEqualTo(last.observedAt());
+        assertThat(result.altitudeM()).isEqualTo(last.altitudeM());
+        assertThat(result.velocityMs()).isEqualTo(last.velocityMs());
+        assertThat(result.headingDeg()).isEqualTo(last.headingDeg());
+        assertThat(result.verticalRateMs()).isEqualTo(last.verticalRateMs());
+        assertThat(result.onGround()).isEqualTo(last.onGround());
+        assertThat(result.agentSource()).isEqualTo(last.agentSource());
     }
 
     /**
@@ -122,8 +122,8 @@ class EstimatedPositionServiceTest {
                 last, OBSERVED_AT.plusSeconds(1000), 0.0, 0.5);
 
         assertThat(distanceForHalfDegreeM).isPositive(); // sanity: destination is closer than the uncapped projection
-        assertThat(result.getLatitude()).isCloseTo(0.0, org.assertj.core.data.Offset.offset(1e-6));
-        assertThat(result.getLongitude()).isCloseTo(0.5, org.assertj.core.data.Offset.offset(1e-6));
+        assertThat(result.latitude()).isCloseTo(0.0, org.assertj.core.data.Offset.offset(1e-6));
+        assertThat(result.longitude()).isCloseTo(0.5, org.assertj.core.data.Offset.offset(1e-6));
     }
 
     /**
@@ -140,7 +140,7 @@ class EstimatedPositionServiceTest {
         FlightPosition result = EstimatedPositionService.estimate(
                 last, OBSERVED_AT.plusSeconds(1000), 0.0, -170.0);
 
-        assertThat(result.getLongitude()).isCloseTo(-179.5, org.assertj.core.data.Offset.offset(1e-6));
-        assertThat(result.getLongitude()).isGreaterThanOrEqualTo(-180.0).isLessThan(180.0);
+        assertThat(result.longitude()).isCloseTo(-179.5, org.assertj.core.data.Offset.offset(1e-6));
+        assertThat(result.longitude()).isGreaterThanOrEqualTo(-180.0).isLessThan(180.0);
     }
 }

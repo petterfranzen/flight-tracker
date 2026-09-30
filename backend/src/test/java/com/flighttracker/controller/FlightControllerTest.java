@@ -22,7 +22,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -67,12 +66,9 @@ class FlightControllerTest {
 
     private static Aircraft aircraftWithRoute(String icao24, String originAirport, String originAirportName,
                                                String destinationAirport, String destinationAirportName) {
-        Aircraft a = new Aircraft(icao24);
-        a.setOriginAirport(originAirport);
-        a.setOriginAirportName(originAirportName);
-        a.setDestinationAirport(destinationAirport);
-        a.setDestinationAirportName(destinationAirportName);
-        return a;
+        return new Aircraft(icao24, null, null, null,
+                originAirport, originAirportName, destinationAirport, destinationAirportName,
+                null, null, null, null, null, null, null, null, null);
     }
 
     @Test
@@ -86,7 +82,7 @@ class FlightControllerTest {
 
         List<FlightPosition> result = controller().search("SAS123", "Arlanda");
 
-        assertThat(result).extracting(FlightPosition::getIcao24).containsExactly("abc123");
+        assertThat(result).extracting(FlightPosition::icao24).containsExactly("abc123");
         verify(liveStateStore, never()).searchByCallsign(any(), any(), any(), anyInt());
     }
 
@@ -95,17 +91,16 @@ class FlightControllerTest {
         when(liveStateStore.liveAircraft(any(), any())).thenReturn(List.of(live("abc123", "SAS100")));
         when(aircraftRepository.findAllById(List.of("abc123")))
                 .thenReturn(List.of(aircraftWithRoute("abc123", "ESSA", null, "EGLL", null)));
-        Airport arlanda = mock(Airport.class);
-        when(arlanda.getIataCode()).thenReturn("ARN");
-        when(arlanda.getName()).thenReturn("Stockholm Arlanda Airport");
-        // getMunicipality() and the destination (EGLL) lookup are never
-        // reached — the origin's name already matches, short-circuiting
-        // the rest of matchesAirportPattern's OR chain.
+        // A real record instance, not a mock — Airport has no behaviour to
+        // stub, just fields, and matchesAirportPattern's OR chain
+        // short-circuits on the name match below before municipality or
+        // the destination (EGLL) lookup are ever reached.
+        Airport arlanda = new Airport("ESSA", "ARN", "Stockholm Arlanda Airport", "Stockholm", "SE", 59.6, 17.9);
         when(airportLookupService.lookup("ESSA")).thenReturn(Optional.of(arlanda));
 
         List<FlightPosition> result = controller().search(null, "arlanda"); // lowercase, table has mixed case
 
-        assertThat(result).extracting(FlightPosition::getIcao24).containsExactly("abc123");
+        assertThat(result).extracting(FlightPosition::icao24).containsExactly("abc123");
     }
 
     @Test

@@ -48,10 +48,8 @@ class EstimatorAgentTest {
     }
 
     private static Aircraft withDestination(String icao24, double destLat, double destLon) {
-        Aircraft a = new Aircraft(icao24);
-        a.setDestinationAirportLat(destLat);
-        a.setDestinationAirportLon(destLon);
-        return a;
+        return new Aircraft(icao24, null, null, null, null, null, null, null,
+                null, null, destLat, destLon, null, null, null, null, null);
     }
 
     /**

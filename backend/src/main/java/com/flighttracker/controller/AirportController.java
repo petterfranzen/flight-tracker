@@ -48,6 +48,6 @@ public class AirportController {
     }
 
     private static AirportInfo toInfo(Airport a) {
-        return new AirportInfo(a.getIcaoCode(), a.getIataCode(), a.getName(), a.getMunicipality(), a.getCountry(), a.getLatitude(), a.getLongitude());
+        return new AirportInfo(a.icaoCode(), a.iataCode(), a.name(), a.municipality(), a.country(), a.latitude(), a.longitude());
     }
 }

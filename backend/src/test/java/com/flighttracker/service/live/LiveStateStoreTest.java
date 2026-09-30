@@ -7,6 +7,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.jdbc.core.JdbcTemplate;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -21,18 +22,21 @@ import static org.assertj.core.api.Assertions.assertThat;
  * guard, landed_since streak logic, estimate clearing on a real report,
  * and the estimate write's own optimistic-concurrency guard), per
  * docs/cloud-migration/PLAN.md §6 A1 item 12. No Spring context, no DB —
- * warmUp()'s JdbcTemplate dependency is never exercised here (that's a
- * @PostConstruct only Spring invokes; a plain `new LiveStateStore(mock)`
- * starts with an empty map, exactly what every test below wants).
+ * warmUp()'s JdbcTemplate/Clock dependencies are never exercised here
+ * (that's a @PostConstruct only Spring invokes; a plain
+ * `new LiveStateStore(mock, mock)` starts with an empty map, exactly what
+ * every test below wants).
  */
 @ExtendWith(MockitoExtension.class)
 class LiveStateStoreTest {
 
     @Mock
     private JdbcTemplate jdbcTemplate;
+    @Mock
+    private Clock clock;
 
     private LiveStateStore store() {
-        return new LiveStateStore(jdbcTemplate);
+        return new LiveStateStore(jdbcTemplate, clock);
     }
 
     private static final Instant T0 = Instant.parse("2026-01-01T00:00:00Z");
@@ -47,8 +51,8 @@ class LiveStateStoreTest {
         assertThat(accepted).isTrue();
         Optional<FlightPosition> p = store.findLatestPosition("abc123");
         assertThat(p).isPresent();
-        assertThat(p.get().getLatitude()).isEqualTo(59.0);
-        assertThat(p.get().getObservedAt()).isEqualTo(T0);
+        assertThat(p.get().latitude()).isEqualTo(59.0);
+        assertThat(p.get().observedAt()).isEqualTo(T0);
     }
 
     @Test
@@ -60,7 +64,7 @@ class LiveStateStoreTest {
         boolean accepted = store.upsert("abc123", "SAS100", t1, 59.5, 18.5, null, null, null, null, false, "opensky");
 
         assertThat(accepted).isTrue();
-        assertThat(store.findLatestPosition("abc123").get().getLatitude()).isEqualTo(59.5);
+        assertThat(store.findLatestPosition("abc123").get().latitude()).isEqualTo(59.5);
     }
 
     @Test
@@ -75,31 +79,31 @@ class LiveStateStoreTest {
         assertThat(acceptedOlder).isFalse();
         // Neither stale write took — position is still the original T0 report.
         FlightPosition p = store.findLatestPosition("abc123").orElseThrow();
-        assertThat(p.getLatitude()).isEqualTo(59.0);
-        assertThat(p.getObservedAt()).isEqualTo(T0);
+        assertThat(p.latitude()).isEqualTo(59.0);
+        assertThat(p.observedAt()).isEqualTo(T0);
     }
 
     @Test
     void id_isAssignedOnceAndStableAcrossUpdates() {
         LiveStateStore store = store();
         store.upsert("abc123", "SAS100", T0, 59.0, 18.0, null, null, null, null, false, "opensky");
-        long firstId = store.findLatestPosition("abc123").orElseThrow().getId();
+        long firstId = store.findLatestPosition("abc123").orElseThrow().id();
 
         store.upsert("abc123", "SAS100", T0.plusSeconds(10), 59.1, 18.1, null, null, null, null, false, "opensky");
-        long secondId = store.findLatestPosition("abc123").orElseThrow().getId();
+        long secondId = store.findLatestPosition("abc123").orElseThrow().id();
 
         // A stale write is rejected outright, but even a *rejected* write
         // must never disturb the stored id — mirrors ON CONFLICT DO UPDATE
         // never reassigning a row's BIGSERIAL id.
         store.upsert("abc123", "SAS100", T0.minusSeconds(5), 1.0, 1.0, null, null, null, null, false, "opensky");
-        long thirdId = store.findLatestPosition("abc123").orElseThrow().getId();
+        long thirdId = store.findLatestPosition("abc123").orElseThrow().id();
 
         assertThat(secondId).isEqualTo(firstId);
         assertThat(thirdId).isEqualTo(firstId);
 
         // A different aircraft gets its own, different id.
         store.upsert("def456", "SAS200", T0, 60.0, 19.0, null, null, null, null, false, "opensky");
-        long otherId = store.findLatestPosition("def456").orElseThrow().getId();
+        long otherId = store.findLatestPosition("def456").orElseThrow().id();
         assertThat(otherId).isNotEqualTo(firstId);
     }
 
@@ -160,13 +164,13 @@ class LiveStateStoreTest {
         LiveStateStore store = store();
         store.upsert("abc123", "SAS100", T0, 59.0, 18.0, null, null, null, null, false, "opensky");
         store.writeEstimate("abc123", T0, 59.5, 18.5, T0.plusSeconds(5));
-        assertThat(store.findLatestPosition("abc123").orElseThrow().getLatitude()).isEqualTo(59.5); // estimate showing
+        assertThat(store.findLatestPosition("abc123").orElseThrow().latitude()).isEqualTo(59.5); // estimate showing
 
         Instant t1 = T0.plusSeconds(20);
         store.upsert("abc123", "SAS100", t1, 60.0, 19.0, null, null, null, null, false, "opensky");
 
         FlightPosition p = store.findLatestPosition("abc123").orElseThrow();
-        assertThat(p.getLatitude()).isEqualTo(60.0); // real report, not the stale estimate
+        assertThat(p.latitude()).isEqualTo(60.0); // real report, not the stale estimate
         assertThat(store.icao24sWithEstimate()).doesNotContain("abc123");
     }
 
@@ -182,7 +186,7 @@ class LiveStateStoreTest {
         boolean applied = store.writeEstimate("abc123", T0, 99.0, 99.0, T0); // stale expectedObservedAt
 
         assertThat(applied).isFalse();
-        assertThat(store.findLatestPosition("abc123").orElseThrow().getLatitude()).isEqualTo(59.2);
+        assertThat(store.findLatestPosition("abc123").orElseThrow().latitude()).isEqualTo(59.2);
     }
 
     @Test
@@ -205,7 +209,7 @@ class LiveStateStoreTest {
 
         assertThat(applied).isTrue();
         assertThat(store.icao24sWithEstimate()).doesNotContain("abc123");
-        assertThat(store.findLatestPosition("abc123").orElseThrow().getLatitude()).isEqualTo(59.0); // back to the raw report
+        assertThat(store.findLatestPosition("abc123").orElseThrow().latitude()).isEqualTo(59.0); // back to the raw report
     }
 
     @Test
@@ -219,7 +223,7 @@ class LiveStateStoreTest {
         assertThat(raw.latitude()).isEqualTo(59.0);
         assertThat(raw.longitude()).isEqualTo(18.0);
         // ...while the coalesced view does reflect it.
-        assertThat(store.findLatestPosition("abc123").orElseThrow().getLatitude()).isEqualTo(59.5);
+        assertThat(store.findLatestPosition("abc123").orElseThrow().latitude()).isEqualTo(59.5);
     }
 
     @Test

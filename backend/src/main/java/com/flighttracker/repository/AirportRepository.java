@@ -1,15 +1,50 @@
 package com.flighttracker.repository;
 
 import com.flighttracker.model.Airport;
-import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.stereotype.Repository;
 
 import java.util.Optional;
 
-public interface AirportRepository extends JpaRepository<Airport, String> {
+/**
+ * Cloud migration A2: JdbcClient + record, replacing the Spring Data JPA
+ * repository this used to be.
+ */
+@Repository
+public class AirportRepository {
+
+    private final JdbcClient jdbcClient;
+
+    public AirportRepository(JdbcClient jdbcClient) {
+        this.jdbcClient = jdbcClient;
+    }
+
+    private static Airport mapRow(java.sql.ResultSet rs, int rowNum) throws java.sql.SQLException {
+        return new Airport(
+                rs.getString("icao_code"),
+                rs.getString("iata_code"),
+                rs.getString("name"),
+                rs.getString("municipality"),
+                rs.getString("country"),
+                (Double) rs.getObject("latitude"),
+                (Double) rs.getObject("longitude"));
+    }
+
+    public Optional<Airport> findById(String icaoCode) {
+        return jdbcClient.sql("SELECT * FROM airport WHERE icao_code = :icaoCode")
+                .param("icaoCode", icaoCode)
+                .query(AirportRepository::mapRow)
+                .optional();
+    }
 
     // The map's own airport data (VectorBasemap's WORLD_AIRPORTS, from
     // Natural Earth) keys everything by IATA code, not the icao_code this
     // repository's id normally looks up by — this is what lets the airport
     // dossier resolve a click straight from that code.
-    Optional<Airport> findByIataCode(String iataCode);
+    public Optional<Airport> findByIataCode(String iataCode) {
+        return jdbcClient.sql("SELECT * FROM airport WHERE iata_code = :iataCode")
+                .param("iataCode", iataCode)
+                .query(AirportRepository::mapRow)
+                .optional();
+    }
 }

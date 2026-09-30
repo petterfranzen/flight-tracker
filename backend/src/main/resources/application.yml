@@ -1,14 +1,11 @@
 spring:
   application:
     name: flight-tracker
-  datasource:
-    url: jdbc:postgresql://localhost:5432/flighttracker
-    username: flighttracker
-    password: flighttracker
-  jpa:
-    hibernate:
-      ddl-auto: none        # schema.sql owns the schema, not Hibernate
-    show-sql: false
+  # No spring.datasource.* here — cloud migration A2 replaces the
+  # autoconfigured Postgres DataSource with a hand-built SQLite one (see
+  # config/SqliteDataSourceConfig), which backs off Spring Boot's own
+  # DataSourceAutoConfiguration entirely. flighttracker.db-path below is
+  # what actually configures it.
   sql:
     init:
       mode: always           # runs schema.sql on startup
@@ -29,26 +26,25 @@ spring:
         #
         # Since the cloud-migration consolidation (one process, no more
         # api/agent/estimator split) every @Scheduled method in the app
-        # shares this one pool, so the count below is every one of them,
-        # not just the former "agent" profile's own three: AgentOrchestrator's
-        # two (pollAll, pollGlobalSweep), PositionRetentionService.prune(),
-        # EstimatorAgent.refresh(), AirportSeedService.sync(), and
-        # LiveFeedBroadcaster.sendKeepalive() (the WebSocket ping, added
-        # alongside the api role's WS handling once it moved into this same
-        # process/pool) — six — plus one spare so a single slow/stuck task
-        # never leaves the pool fully saturated. Bump this again if a
-        # seventh @Scheduled method is ever added. Retention and the
-        # estimator refresh in particular must not have to wait on a sweep
-        # for a thread: retention's first run after a long outage walks a
-        # real backlog, and the estimator needs to keep running on its own
-        # short interval — sharing a thread would put either directly
-        # behind the hot poll, which is the exact stall this pool exists
-        # to prevent. The keepalive ping needs a thread available on its
-        # own fixed 30s cadence too, for the same reason WS connections
+        # shares this one pool, so the count below is every one of them:
+        # AgentOrchestrator's two (pollAll, pollGlobalSweep),
+        # PositionRetentionService's two (prune, nightlyOptimize — cloud
+        # migration A2's PRAGMA optimize pass), EstimatorAgent.refresh(),
+        # AirportSeedService.sync(), and LiveFeedBroadcaster.sendKeepalive()
+        # (the WebSocket ping) — seven — plus one spare so a single
+        # slow/stuck task never leaves the pool fully saturated. Bump this
+        # again if an eighth @Scheduled method is ever added. Retention and
+        # the estimator refresh in particular must not have to wait on a
+        # sweep for a thread: retention's first run after a long outage
+        # walks a real backlog, and the estimator needs to keep running on
+        # its own short interval — sharing a thread would put either
+        # directly behind the hot poll, which is the exact stall this pool
+        # exists to prevent. The keepalive ping needs a thread available on
+        # its own fixed 30s cadence too, for the same reason WS connections
         # would otherwise silently die under Cloudflare's ~100s idle
         # timeout during exactly the kind of long sweep that used to
         # starve everything else.
-        size: 7
+        size: 8
 
 server:
   port: 8080
@@ -59,16 +55,27 @@ server:
   address: ${SERVER_ADDRESS:127.0.0.1}
 
 flighttracker:
+  # SQLite database file (cloud migration A2 — see config/SqliteDataSourceConfig).
+  # Parent directory is created if missing. ./data/flighttracker.db by
+  # default — deploy.sh/the systemd unit set FLIGHTTRACKER_DB_PATH to a
+  # path under the service's real StateDirectory in production.
+  db-path: ${FLIGHTTRACKER_DB_PATH:./data/flighttracker.db}
   # Rolling retention for flight_position — see PositionRetentionService,
   # which is also where the reasoning for pruning *only* that table lives.
   retention:
-    # "No flight takes longer than 24h and we aren't analysing patterns
-    # over time", so nothing needs history deeper than this. The frontend's
-    # own track trace only ever asks for 6h.
-    hours: 24
-    # Rows per transaction. Small enough that a batch never holds locks or
-    # WAL for long, large enough that steady-state (~19k rows per 10-minute
-    # run) clears in a handful of round-trips.
+    # Cloud migration A2: 24h -> 72h. The predicting agent (EstimatedPositionService's
+    # dead-reckoning) doesn't need deeper history than this to work — it
+    # only ever looks at an aircraft's *last* real report — but the app
+    # increasingly wants to show/derive multi-day patterns (the frontend's
+    # own track trace, /api/usage) now that SQLite's per-row storage cost
+    # is cheap enough (a local file, not a NAS-hosted Postgres instance
+    # paying replication/backup overhead per byte retained) that 3 days of
+    # headroom costs little and buys real flexibility.
+    hours: 72
+    # Rows per transaction. Small enough that a batch never holds the
+    # single SQLite writer lock for long (PLAN.md's own "SQLite rules that
+    # bite": busy_timeout=5000 covers realistic overlap, not an indefinite
+    # wait), large enough that steady-state clears in a handful of round-trips.
     batch-size: 5000
     interval-ms: 600000
     # One cycle's grace on startup so retention never competes with schema
@@ -78,6 +85,21 @@ flighttracker:
     # backlog makes steady progress across cycles instead of monopolising a
     # scheduler thread for an hour.
     max-batches-per-run: 200
+  persistence:
+    # Cloud migration A2 (PLAN.md §6 item 7): skips inserting an on_ground
+    # report whose lat/lon/heading exactly match the aircraft's last
+    # *stored* report — a parked aircraft's global-sweep hits otherwise
+    # write an identical row every global-sweep-interval-seconds (360s)
+    # for as long as it sits at the gate, pure write amplification with no
+    # new information (see PositionPersistenceService.persist/persistBatch
+    # for where this is applied). Airborne reports always insert
+    # regardless — a moving aircraft's position is never truly unchanged,
+    # and usage/distance calculations need every real sample. See
+    # UsageService's own javadoc for why this is safe for that calc
+    # specifically: a skipped duplicate-ground report contributes a
+    # haversine distance of 0 either way, whether it's a real row or
+    # simply absent.
+    skip-unchanged-ground: true
   agents:
     # Each entry becomes one polling agent. Point this at whatever live
     # flight-data source you have access to (OpenSky Network's free REST

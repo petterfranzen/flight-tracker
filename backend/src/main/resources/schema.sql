@@ -1,145 +1,116 @@
--- Flight Tracker schema
+-- Flight Tracker schema (SQLite — cloud migration A2, PLAN.md §6)
 -- Design goal: every position report is kept (never overwritten), so usage
 -- (flight hours, distance flown, utilisation %) can be derived later from
 -- the historic series rather than from a "current state" row.
-
--- Concurrent-startup guard: the api, agent, and estimator containers all
--- run this same schema.sql independently at boot (one image, three
--- profiles, no separate migration step — see docker-compose.yml). Every
--- statement below is individually idempotent (IF NOT EXISTS / ADD COLUMN
--- IF NOT EXISTS), but that doesn't make CREATE TABLE safe under real
--- concurrency: two sessions can both pass Postgres's existence check before
--- either commits, then race to insert the same row into the pg_type
--- catalog, and the loser fails with "duplicate key value violates unique
--- constraint pg_type_typname_nsp_index" — seen on a cold multi-container
--- start (CI's blackbox job, and the same race on a fresh production
--- deploy). A session-level advisory lock held for the whole script
--- serializes the three containers' first-boot runs: whichever gets here
--- first does the real DDL, the other two block on this call until it
--- releases (at the very end of the script) and then run through against an
--- already-current schema — a safe no-op, since every statement here really
--- is idempotent on its own once there's no longer a race to lose. 727433 is
--- an arbitrary constant scoped to this app; nothing else here uses
--- pg_advisory_lock.
-SELECT pg_advisory_lock(727433);
+--
+-- Every timestamp column below is an INTEGER storing epoch milliseconds
+-- UTC — SQLite has no native timestamp type, and this is the one
+-- Instant<->long convention the whole app uses (see repository/
+-- Timestamps.java). now() has no SQLite equivalent worth relying on for
+-- this either: every write binds its own timestamp from a Clock bean
+-- instead (PLAN.md §6 item 4), so tests can use a fixed Clock and get
+-- deterministic cutoffs.
+--
+-- Single process now (cloud migration A1), so the advisory-lock dance the
+-- Postgres version of this file needed for three containers racing
+-- CREATE TABLE on the same cold boot no longer applies — there's only ever
+-- one writer starting this script.
+--
+-- auto_vacuum must be set before this database's first table is created —
+-- a no-op on every later boot against an already-existing file (SQLite
+-- silently ignores changing it once any table exists), which is exactly
+-- the "only at DB creation" behaviour PLAN.md §6 item 3 asks for, with no
+-- extra Java-side "is this a fresh file" branching needed: the file either
+-- has tables already (no-op) or doesn't (takes effect), and this statement
+-- runs first either way. INCREMENTAL over the default (NONE) or FULL:
+-- PositionRetentionService calls PRAGMA incremental_vacuum(2000) after
+-- every retention run (see below) to reclaim freed pages in small,
+-- predictable steps instead of either leaking free space forever (NONE)
+-- or paying a full, blocking VACUUM's cost (FULL would auto-compact on
+-- every transaction commit, not just when asked).
+PRAGMA auto_vacuum = INCREMENTAL;
 
 CREATE TABLE IF NOT EXISTS aircraft (
-    icao24          VARCHAR(6) PRIMARY KEY,          -- ICAO 24-bit transponder address, hex
-    registration    VARCHAR(16),
-    model           VARCHAR(64),
-    operator        VARCHAR(128),
-    first_seen_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    last_seen_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+    icao24                     TEXT PRIMARY KEY,   -- ICAO 24-bit transponder address, hex
+    registration               TEXT,
+    model                      TEXT,
+    operator                   TEXT,
+    -- Dossier enrichment (registration/model/operator via adsbdb.com,
+    -- origin/destination via authenticated OpenSky /flights/aircraft),
+    -- fetched lazily once per aircraft the first time we see it — see
+    -- AircraftEnrichmentService.
+    origin_airport             TEXT,
+    origin_airport_name        TEXT,   -- from adsbdb's callsign route lookup when available, backfilled from `airport` otherwise — see AirportLookupService
+    destination_airport        TEXT,
+    destination_airport_name   TEXT,
+    -- Coordinates — adsbdb's callsign route lookup returns these alongside
+    -- the name/code. destination_airport_lat/lon is what makes ETA
+    -- computable (great-circle distance to current position / current
+    -- groundspeed) — see AircraftController.
+    origin_airport_lat         REAL,
+    origin_airport_lon         REAL,
+    destination_airport_lat    REAL,
+    destination_airport_lon    REAL,
+    metadata_fetched_at        INTEGER,
+    -- OpenSky-confirmed landing for the current leg, checked lazily the
+    -- moment a dossier request lands on an aircraft AircraftController's
+    -- own silence+descending heuristic already presumes landed (see
+    -- LiveVisibilityWindows.PRESUMED_LANDED_SILENCE) — see
+    -- OpenSkyFlightsClient.confirmLanded and AircraftEnrichmentService.
+    -- checkLandingIfNeeded. landing_check_observed_at is the last position
+    -- report's observed_at this aircraft was checked against; comparing it
+    -- to the *current* latest report's observed_at is what both throttles
+    -- re-checking (no new report yet means nothing could have changed) and
+    -- invalidates a stale confirmation once a new leg's reports start
+    -- coming in, without needing an explicit reset anywhere.
+    -- landing_confirmed_at is OpenSky's own reported arrival time (null if
+    -- never confirmed, including "not checked yet" and "checked, but
+    -- OpenSky doesn't show it landed").
+    landing_check_observed_at  INTEGER,
+    landing_confirmed_at       INTEGER,
+    first_seen_at              INTEGER NOT NULL,
+    -- No longer maintained after the row is created — the per-sweep bump
+    -- was ~2.76M updates/day against a column nothing reads, so it was
+    -- removed from both write paths. Effectively "first report seen" now.
+    -- Kept rather than dropped only because it's NOT NULL and costs
+    -- nothing to leave in place.
+    last_seen_at               INTEGER NOT NULL
 );
-
--- Dossier enrichment (registration/model/operator via adsbdb.com,
--- origin/destination via authenticated OpenSky /flights/aircraft), fetched
--- lazily once per aircraft the first time we see it — see
--- AircraftEnrichmentService. No migration framework in this project, so
--- these are added with IF NOT EXISTS to stay idempotent against a database
--- that already has the table from before this enrichment existed.
-ALTER TABLE aircraft ADD COLUMN IF NOT EXISTS origin_airport VARCHAR(8);
-ALTER TABLE aircraft ADD COLUMN IF NOT EXISTS destination_airport VARCHAR(8);
-ALTER TABLE aircraft ADD COLUMN IF NOT EXISTS metadata_fetched_at TIMESTAMPTZ;
-
--- Full airport names — from adsbdb's callsign route lookup when available,
--- backfilled from the local `airport` reference table (see
--- AirportLookupService) when a route only resolved via OpenSky's fallback
--- path (bare codes, no name/coordinates). Nullable: falls back to the
--- ICAO code in the UI on the rare code AirportLookupService doesn't cover.
-ALTER TABLE aircraft ADD COLUMN IF NOT EXISTS origin_airport_name VARCHAR(128);
-ALTER TABLE aircraft ADD COLUMN IF NOT EXISTS destination_airport_name VARCHAR(128);
-
--- Airport coordinates — adsbdb's callsign route lookup returns these
--- alongside the name/code (AdsbdbClient wasn't parsing them; the data was
--- there all along). destination_airport_lat/lon is what makes ETA
--- computable (great-circle distance to current position ÷ current
--- groundspeed) — see AircraftController. Same lazy-enrichment path and
--- null-if-unknown fallback as the other dossier columns above.
-ALTER TABLE aircraft ADD COLUMN IF NOT EXISTS origin_airport_lat DOUBLE PRECISION;
-ALTER TABLE aircraft ADD COLUMN IF NOT EXISTS origin_airport_lon DOUBLE PRECISION;
-ALTER TABLE aircraft ADD COLUMN IF NOT EXISTS destination_airport_lat DOUBLE PRECISION;
-ALTER TABLE aircraft ADD COLUMN IF NOT EXISTS destination_airport_lon DOUBLE PRECISION;
-
--- OpenSky-confirmed landing for the current leg, checked lazily the moment
--- a dossier request lands on an aircraft AircraftController's own
--- silence+descending heuristic already presumes landed (see
--- LiveVisibilityWindows.PRESUMED_LANDED_SILENCE) — see
--- OpenSkyFlightsClient.confirmLanded and AircraftEnrichmentService.
--- checkLandingIfNeeded. landing_check_observed_at is the last position
--- report's observed_at this aircraft was checked against; comparing it to
--- the *current* latest report's observed_at is what both throttles
--- re-checking (no new report yet means nothing could have changed) and
--- invalidates a stale confirmation once a new leg's reports start coming
--- in, without needing an explicit reset anywhere. landing_confirmed_at is
--- OpenSky's own reported arrival time (null if never confirmed, including
--- "not checked yet" and "checked, but OpenSky doesn't show it landed").
-ALTER TABLE aircraft ADD COLUMN IF NOT EXISTS landing_check_observed_at TIMESTAMPTZ;
-ALTER TABLE aircraft ADD COLUMN IF NOT EXISTS landing_confirmed_at TIMESTAMPTZ;
 
 CREATE TABLE IF NOT EXISTS flight_position (
-    id              BIGSERIAL PRIMARY KEY,
-    icao24          VARCHAR(6) NOT NULL REFERENCES aircraft(icao24),
-    callsign        VARCHAR(16),
-    observed_at     TIMESTAMPTZ NOT NULL,             -- when the position was true, not when we inserted it
-    latitude        DOUBLE PRECISION NOT NULL,
-    longitude       DOUBLE PRECISION NOT NULL,
-    altitude_m      DOUBLE PRECISION,
-    velocity_ms     DOUBLE PRECISION,
-    heading_deg     DOUBLE PRECISION,
-    vertical_rate_ms DOUBLE PRECISION,
-    on_ground       BOOLEAN NOT NULL DEFAULT false,
-    agent_source    VARCHAR(32) NOT NULL,             -- which agent/data source reported this
-    inserted_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+    id               INTEGER PRIMARY KEY,   -- SQLite rowid alias; auto-assigned on NULL insert, same role BIGSERIAL had
+    icao24           TEXT NOT NULL REFERENCES aircraft(icao24),
+    callsign         TEXT,
+    observed_at      INTEGER NOT NULL,      -- when the position was true, not when we inserted it
+    latitude         REAL NOT NULL,
+    longitude        REAL NOT NULL,
+    altitude_m       REAL,
+    velocity_ms      REAL,
+    heading_deg      REAL,
+    vertical_rate_ms REAL,
+    on_ground        INTEGER NOT NULL DEFAULT 0,   -- SQLite has no BOOLEAN; 0/1
+    agent_source     TEXT NOT NULL,         -- which agent/data source reported this
+    inserted_at      INTEGER NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_position_recent ON flight_position (observed_at DESC) WHERE on_ground = false;
+-- Partial index: this table's overwhelming majority of reads (findLive /
+-- LiveStateStore.warmUp, the dossier's leg lookups) only ever care about
+-- recent, in-the-air positions, so on_ground = 0 rows are the only ones
+-- worth a dedicated observed_at-ordered index.
+CREATE INDEX IF NOT EXISTS idx_position_recent ON flight_position (observed_at DESC) WHERE on_ground = 0;
 
--- Was: idx_position_icao_time (icao24, observed_at DESC). Dropped as
--- provably redundant rather than on stats alone — it's a strict prefix of
--- uq_position_icao_time_source (icao24, observed_at, agent_source) below,
--- and Postgres walks a B-tree in either direction, so the DESC bought
--- nothing the unique index couldn't already serve. Confirmed unused in
--- practice too (pg_stat_user_indexes.idx_scan = 0 against 164k scans of
--- the unique index), and it cost 7MB plus a share of the write load on
--- the highest-insert-rate table in the schema.
-DROP INDEX IF EXISTS idx_position_icao_time;
-
--- Serves PositionRetentionService's rolling 24h delete predicate. Without
--- it that DELETE is a seq scan of the whole table every run (verified with
--- EXPLAIN): idx_position_recent can't serve it, being partial on
--- `on_ground = false` while retention deliberately deletes both ground and
--- airborne rows.
---
--- B-tree rather than BRIN, despite this being the textbook BRIN shape
--- (append-only, observed_at strongly correlated with physical order): the
--- insert cost that would normally argue for BRIN is largely absent here,
--- because near-monotonic values append to the rightmost leaf page instead
--- of scattering page splits across the index. BRIN would be smaller, but
--- its block ranges widen as retention starts freeing and recycling pages,
--- and a degraded BRIN falls back to exactly the seq scan this exists to
--- avoid. Worth revisiting with real measurements if index size on the NAS
--- ever becomes the binding constraint.
+-- Serves PositionRetentionService's rolling retention-window delete
+-- predicate. Without it that DELETE (and LiveStateStore.warmUp's own
+-- windowed read) would be a full table scan every run.
 CREATE INDEX IF NOT EXISTS idx_position_observed_at ON flight_position (observed_at);
 
--- Retention deletes roughly as many rows per day as are inserted, so dead
--- tuples accumulate far faster than the stock 20%-of-table scale factor
--- reacts to. Left at the default, autovacuum would fire rarely and in
--- large bursty passes; these settings trade that for frequent small ones,
--- which is the better shape on a NAS with a modest I/O budget.
-ALTER TABLE flight_position SET (
-    autovacuum_vacuum_scale_factor = 0.02,
-    autovacuum_vacuum_threshold = 10000
-);
-
--- Serves findLive's "when did this aircraft last fly / start its current
--- landed streak" lookups: both filter by (icao24, on_ground) and scan
--- observed_at, which idx_position_icao_time alone doesn't narrow by ground
--- state.
+-- Serves findCurrentLegTakeoffTime/findAltitudeAtOrBefore-style lookups:
+-- both filter by (icao24, on_ground) and scan observed_at.
 CREATE INDEX IF NOT EXISTS idx_position_icao_ground_time ON flight_position (icao24, on_ground, observed_at);
 
--- Prevents an agent from writing a duplicate report if two agents see the
--- same broadcast in the same polling window.
+-- Prevents a duplicate report if two agents (or two poll cycles) see the
+-- same broadcast in the same polling window — ON CONFLICT DO NOTHING keys
+-- off exactly this index.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_position_icao_time_source
     ON flight_position (icao24, observed_at, agent_source);
 
@@ -151,191 +122,32 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_position_icao_time_source
 -- codes only, see OpenSkyFlightsClient) previously had no way to get a
 -- name at all. See AirportLookupService for how this backfills that gap.
 CREATE TABLE IF NOT EXISTS airport (
-    icao_code    VARCHAR(4) PRIMARY KEY,
-    iata_code    VARCHAR(3),
-    name         VARCHAR(128) NOT NULL,
-    municipality VARCHAR(128),
-    country      VARCHAR(2),
-    latitude     DOUBLE PRECISION,
-    longitude    DOUBLE PRECISION
+    icao_code    TEXT PRIMARY KEY,
+    iata_code    TEXT,
+    name         TEXT NOT NULL,
+    municipality TEXT,
+    country      TEXT,
+    latitude     REAL,
+    longitude    REAL
 );
 
-COMMENT ON TABLE flight_position IS
-    'Insert-only, but not retained forever: PositionRetentionService prunes rows older than 24h (see flighttracker.retention.*). Nothing reads further back than that — the frontend track trace asks for 6h.';
-
--- CLOUD MIGRATION A1: no longer written to. Replaced by the in-memory
--- LiveStateStore (service/live/) now that the api/agent/estimator split
--- that originally justified a DB-backed "latest per aircraft" table is
--- gone — see LiveStateStore's own javadoc. Left in place (unused) rather
--- than dropped here: A2 (sqlite-migrator) removes it along with
--- poll_window and viewport_state below when it rewrites this schema for
--- SQLite, so dropping it here would just be extra churn for that same
--- commit to redo. The comments below describe the table's original
--- design, which LiveStateStore's upsert/read logic ports exactly.
---
--- One row per aircraft, always its most recent report — a materialized
--- "current state" projection kept in sync at write time (see
--- FlightPositionRepository.upsertLatestPosition, called right after every
--- successful flight_position insert). Exists because /api/flights/live now
--- serves global, viewport-filtered traffic: computing "latest per aircraft"
--- via DISTINCT ON over the full (and, globally, unbounded-growing)
--- flight_position history on every map pan doesn't scale, and — more
--- importantly — filtering flight_position by a lat/lon box *before* picking
--- the latest row per aircraft would be outright wrong (it could surface an
--- aircraft's old position from when it was last inside that box, hours ago,
--- as if it were current). A dedicated one-row-per-aircraft table sidesteps
--- both problems: there's only ever one candidate row, so filtering it by
--- bbox is always correct, and the write is O(1) instead of an aggregate scan.
-CREATE TABLE IF NOT EXISTS aircraft_latest_position (
-    id              BIGSERIAL PRIMARY KEY,
-    icao24          VARCHAR(6) NOT NULL UNIQUE REFERENCES aircraft(icao24),
-    callsign        VARCHAR(16),
-    observed_at     TIMESTAMPTZ NOT NULL,
-    latitude        DOUBLE PRECISION NOT NULL,
-    longitude       DOUBLE PRECISION NOT NULL,
-    altitude_m      DOUBLE PRECISION,
-    velocity_ms     DOUBLE PRECISION,
-    heading_deg     DOUBLE PRECISION,
-    vertical_rate_ms DOUBLE PRECISION,
-    on_ground       BOOLEAN NOT NULL,
-    agent_source    VARCHAR(32) NOT NULL,
-    -- Earliest observed_at of the *current* landed streak — null while
-    -- airborne. Carried forward on every on_ground=true upsert while it
-    -- stays true, reset to the new observed_at the moment it transitions
-    -- from false to true, and cleared back to null on the next false.
-    -- Computed incrementally at write time (see the upsert), which is far
-    -- cheaper than the old findLive's query-time streak lookup.
-    landed_since    TIMESTAMPTZ
-);
--- Dead-reckoned "current best position," written by EstimatorAgent
--- (originally its own container/role, now just another scheduled method —
--- see EstimatorAgent's own javadoc) on its own schedule, independent of
--- real reports. NULL on all three means "no current
--- estimate, use latitude/longitude as-is" — the common case for a
--- just-landed or destination-less aircraft. Deliberately separate columns
--- rather than overwriting latitude/longitude/observed_at directly: those
--- three are relied on elsewhere (flight_position's dedup key, this table's
--- own upsert monotonicity guard, the dossier's presumed-landed timer and
--- landing-check cache key, the frontend's staleness banner) to mean "the
--- last REAL report," never an estimate's computation time. Every real-
--- report upsert clears these back to NULL (see FlightPositionRepository.
--- upsertLatestPosition and PositionPersistenceService's batched
--- equivalent) so a fresh report always wins immediately; EstimatorAgent
--- recomputes on its own next cycle regardless.
-ALTER TABLE aircraft_latest_position ADD COLUMN IF NOT EXISTS estimated_latitude DOUBLE PRECISION;
-ALTER TABLE aircraft_latest_position ADD COLUMN IF NOT EXISTS estimated_longitude DOUBLE PRECISION;
-ALTER TABLE aircraft_latest_position ADD COLUMN IF NOT EXISTS estimated_at TIMESTAMPTZ;
-
--- Expression index matching what the bbox-filtered queries actually filter
--- on (COALESCE(estimated_latitude, latitude), same for longitude — see
--- FlightPositionRepository.findLiveInBounds/findLiveClusteredInBounds) —
--- a plain (latitude, longitude) index isn't sargable for that expression.
-DROP INDEX IF EXISTS idx_latest_position_bbox;
-CREATE INDEX IF NOT EXISTS idx_latest_position_bbox_estimated ON aircraft_latest_position (
-    (COALESCE(estimated_latitude, latitude)), (COALESCE(estimated_longitude, longitude))
-);
--- Was: idx_latest_position_ground_state (on_ground, observed_at,
--- landed_since). Dropped because it cost far more to maintain than it ever
--- saved. Every column in it is rewritten by the global sweep's upsert on
--- ~2.76M updates/day, and because they're indexed, not one of those can be
--- a HOT (heap-only tuple) update — measured: 139,275 updates, zero HOT —
--- so each one wrote a fresh entry into this index. Meanwhile the planner
--- doesn't even choose it for findLive's own ground-state predicate: at
--- ~22k rows / 4.3MB the seq scan wins outright (verified with EXPLAIN),
--- and its recorded 38 scans averaged ~12k tuples read apiece, i.e. it was
--- reading most of the table anyway when it was used at all.
---
--- Note this doesn't make those updates HOT — a moving aircraft genuinely
--- changes latitude/longitude, which idx_latest_position_bbox_estimated
--- indexes, so non-HOT is unavoidable for real position changes and isn't
--- worth chasing further. The win here is one fewer index to rewrite on
--- every one of them, not HOT itself.
-DROP INDEX IF EXISTS idx_latest_position_ground_state;
-
-COMMENT ON TABLE aircraft_latest_position IS
-    'One row per aircraft: its most recent report, plus an optional dead-reckoned estimate (estimated_*) written independently by EstimatorAgent. Upserted alongside flight_position, never queried to derive "latest" the expensive way.';
-
--- CLOUD MIGRATION A1: no longer written to (except quota_window_start/
--- quota_restart_count and active_until, which PollWindowService now keeps
--- purely in memory — see that class's own javadoc for why those three
--- specifically don't need to survive a restart, unlike the hot-poll budget
--- columns below). Left in place rather than dropped for the same reason as
--- aircraft_latest_position above: A2 removes it. The comments below
--- describe the table's original multi-container design.
---
--- Bounded-polling state (see PollWindowService). Was DB-backed because the
--- api and agent containers, as separate processes, couldn't share an
--- in-memory AtomicReference for "is the poll window open". The insert is
--- ON CONFLICT DO NOTHING to avoid resetting an already-running agent's
--- window if the api container restarted later.
-CREATE TABLE IF NOT EXISTS poll_window (
-    id           SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
-    active_until TIMESTAMPTZ NOT NULL
-);
-INSERT INTO poll_window (id, active_until) VALUES (1, now())
-ON CONFLICT (id) DO NOTHING;
-
--- Global "Resume Watch" quota — this app is internet-facing and every
--- resume opens a real OpenSky-polling window, so it's a hard cap on
--- OpenSky usage, not just a UX nicety. Tracked the start of the current
--- 15-minute quota window and how many resumes had happened in it — see
--- PollWindowService.restart().
-ALTER TABLE poll_window ADD COLUMN IF NOT EXISTS quota_window_start TIMESTAMPTZ;
-ALTER TABLE poll_window ADD COLUMN IF NOT EXISTS quota_restart_count INT NOT NULL DEFAULT 0;
-
--- Global hot-poll call budget — a hard ceiling (flighttracker.agents.
--- hot-poll-daily-call-budget) on hot-poll HTTP calls per rolling 24h,
--- across every caller combined, independent of the poll window and quota
--- above. These two columns are the one part of this table cloud migration
--- A1 *doesn't* just leave orphaned: the budget is still required to
--- survive a process restart (the original design requirement — see
--- app_state below), so PollWindowService.recordHotPollCall now writes
--- through to app_state('hotpoll.window_start'/'hotpoll.call_count')
--- instead of here.
-ALTER TABLE poll_window ADD COLUMN IF NOT EXISTS hot_poll_count_window_start TIMESTAMPTZ;
-ALTER TABLE poll_window ADD COLUMN IF NOT EXISTS hot_poll_call_count INT NOT NULL DEFAULT 0;
-
--- CLOUD MIGRATION A1: no longer written to — ViewportService now holds the
--- current viewport in a plain in-memory AtomicReference (see that class's
--- own javadoc). Left in place for A2 to drop, same reasoning as the two
--- tables above.
---
--- Which lat/lon box the "hot" (frequent, poll-window-gated) OpenSky poll
--- should target. Was DB-backed because the agent container (which needs
--- this to know what to hot-poll) was a separate process from the api
--- container (where the frontend's viewport reports land). Seeded with the
--- app's old fixed default region (roughly Scandinavia/the Baltic) so a
--- fresh deployment showed live traffic immediately, before any browser had
--- reported in — ViewportService.DEFAULT now serves that same purpose.
-CREATE TABLE IF NOT EXISTS viewport_state (
-    id           SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
-    lat_min      DOUBLE PRECISION NOT NULL,
-    lat_max      DOUBLE PRECISION NOT NULL,
-    lon_min      DOUBLE PRECISION NOT NULL,
-    lon_max      DOUBLE PRECISION NOT NULL,
-    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-INSERT INTO viewport_state (id, lat_min, lat_max, lon_min, lon_max)
-VALUES (1, 54.0, 66.0, 10.0, 25.0)
-ON CONFLICT (id) DO NOTHING;
-
--- Small write-through key/value store (see AppStateRepository) for the
--- handful of counters that must survive a process restart now that most
--- former cross-container state (poll_window, viewport_state,
--- aircraft_latest_position above) moved into plain in-memory fields —
--- cloud migration A1, PLAN.md §6 item 6. Currently holds only the global
+-- Small write-through key/value store (see repository/AppStateRepository)
+-- for the handful of counters that must survive a process restart even
+-- though most former cross-container state lives in plain in-memory
+-- fields since cloud migration A1 (PLAN.md §6 item 6). Holds the global
 -- hot-poll-daily-call-budget counter (keys 'hotpoll.window_start' /
 -- 'hotpoll.call_count') and, one row per client IP, the per-IP
 -- hot-poll-seconds-per-ip-per-day budget (keys 'hotpoll.ip.<ip>') — see
--- PollWindowService and HotPollUserBudget respectively. Generic on
--- purpose: any future counter that needs the same "survive a restart, one
--- process, no real database schema evolution worth doing for one column"
--- treatment can reuse this table instead of growing a new one.
+-- PollWindowService and HotPollUserBudget respectively.
 CREATE TABLE IF NOT EXISTS app_state (
     key        TEXT PRIMARY KEY,
     value      TEXT NOT NULL,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    updated_at INTEGER NOT NULL
 );
 
--- Releases the lock taken at the top of this script — see that comment.
-SELECT pg_advisory_unlock(727433);
+-- aircraft_latest_position, poll_window, viewport_state (all previously
+-- unused-but-kept for this exact commit, see cloud migration A1's schema
+-- comments) are gone: LiveStateStore, PollWindowService and ViewportService
+-- have held this state in memory since A1, and SQLite — unlike Postgres
+-- pre-migration — was never asked to serve it, so there's no "drop later"
+-- deferral needed here the way A1 had to defer to this migration.

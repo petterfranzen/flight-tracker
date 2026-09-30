@@ -113,16 +113,16 @@ public class EstimatorAgent {
         // One batched lookup for every aircraft in this cycle rather than a
         // query each — EstimatedPositionService needs each one's filed
         // destination, which FlightPosition itself doesn't carry.
-        List<String> icao24s = live.stream().map(FlightPosition::getIcao24).distinct().toList();
+        List<String> icao24s = live.stream().map(FlightPosition::icao24).distinct().toList();
         Map<String, Aircraft> byIcao24 = aircraftRepository.findAllById(icao24s).stream()
-                .collect(Collectors.toMap(Aircraft::getIcao24, Function.identity()));
+                .collect(Collectors.toMap(Aircraft::icao24, Function.identity()));
         Set<String> alreadyEstimated = liveStateStore.icao24sWithEstimate();
 
         int written = 0;
         for (FlightPosition p : live) {
-            Aircraft a = byIcao24.get(p.getIcao24());
-            Double destLat = a == null ? null : a.getDestinationAirportLat();
-            Double destLon = a == null ? null : a.getDestinationAirportLon();
+            Aircraft a = byIcao24.get(p.icao24());
+            Double destLat = a == null ? null : a.destinationAirportLat();
+            Double destLon = a == null ? null : a.destinationAirportLon();
 
             // estimate() returns the exact same reference `p` when it
             // decided not to project (on ground, no destination, too
@@ -131,11 +131,11 @@ public class EstimatorAgent {
             // re-deriving the eligibility rules here.
             FlightPosition estimated = EstimatedPositionService.estimate(p, now, destLat, destLon);
             boolean projected = estimated != p;
-            if (!projected && !alreadyEstimated.contains(p.getIcao24())) continue; // null over already-null: nothing to do
+            if (!projected && !alreadyEstimated.contains(p.icao24())) continue; // null over already-null: nothing to do
 
-            boolean applied = liveStateStore.writeEstimate(p.getIcao24(), p.getObservedAt(),
-                    projected ? estimated.getLatitude() : null,
-                    projected ? estimated.getLongitude() : null,
+            boolean applied = liveStateStore.writeEstimate(p.icao24(), p.observedAt(),
+                    projected ? estimated.latitude() : null,
+                    projected ? estimated.longitude() : null,
                     projected ? now : null);
             if (applied) written++;
         }

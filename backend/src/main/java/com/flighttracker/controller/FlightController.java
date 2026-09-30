@@ -249,7 +249,7 @@ public class FlightController {
 
         List<String> icao24s = candidates.stream().map(LiveAircraft::icao24).distinct().toList();
         Map<String, Aircraft> byIcao24 = aircraftRepository.findAllById(icao24s).stream()
-                .collect(Collectors.toMap(Aircraft::getIcao24, Function.identity()));
+                .collect(Collectors.toMap(Aircraft::icao24, Function.identity()));
 
         return candidates.stream()
                 .filter(live -> matchesAirportPattern(byIcao24.get(live.icao24()), needle))
@@ -261,19 +261,19 @@ public class FlightController {
 
     private boolean matchesAirportPattern(Aircraft a, String needle) {
         if (a == null) return false;
-        return containsIgnoreCase(a.getOriginAirport(), needle)
-                || containsIgnoreCase(a.getOriginAirportName(), needle)
-                || matchesAirportRef(a.getOriginAirport(), needle)
-                || containsIgnoreCase(a.getDestinationAirport(), needle)
-                || containsIgnoreCase(a.getDestinationAirportName(), needle)
-                || matchesAirportRef(a.getDestinationAirport(), needle);
+        return containsIgnoreCase(a.originAirport(), needle)
+                || containsIgnoreCase(a.originAirportName(), needle)
+                || matchesAirportRef(a.originAirport(), needle)
+                || containsIgnoreCase(a.destinationAirport(), needle)
+                || containsIgnoreCase(a.destinationAirportName(), needle)
+                || matchesAirportRef(a.destinationAirport(), needle);
     }
 
     private boolean matchesAirportRef(String icaoCode, String needle) {
         Optional<Airport> airport = airportLookupService.lookup(icaoCode);
-        return airport.filter(ap -> containsIgnoreCase(ap.getIataCode(), needle)
-                        || containsIgnoreCase(ap.getName(), needle)
-                        || containsIgnoreCase(ap.getMunicipality(), needle))
+        return airport.filter(ap -> containsIgnoreCase(ap.iataCode(), needle)
+                        || containsIgnoreCase(ap.name(), needle)
+                        || containsIgnoreCase(ap.municipality(), needle))
                 .isPresent();
     }
 
@@ -299,6 +299,6 @@ public class FlightController {
     public List<FlightPosition> history(@PathVariable String icao24,
                                          @RequestParam Instant from,
                                          @RequestParam Instant to) {
-        return positionRepository.findByIcao24AndObservedAtBetweenOrderByObservedAtAsc(icao24, from, to);
+        return positionRepository.findByIcao24AndObservedAtBetween(icao24, from, to);
     }
 }

@@ -4,6 +4,7 @@ import com.flighttracker.dto.Bounds;
 import com.flighttracker.dto.ClusterPoint;
 import com.flighttracker.dto.LiveMarker;
 import com.flighttracker.model.FlightPosition;
+import com.flighttracker.repository.Timestamps;
 import com.flighttracker.service.LiveVisibilityWindows;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
@@ -13,7 +14,7 @@ import org.springframework.stereotype.Component;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.sql.Timestamp;
+import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -66,9 +67,11 @@ public class LiveStateStore {
     private final ConcurrentHashMap<String, LiveAircraft> byIcao24 = new ConcurrentHashMap<>();
     private final AtomicLong idSequence = new AtomicLong();
     private final JdbcTemplate jdbcTemplate;
+    private final Clock clock;
 
-    public LiveStateStore(JdbcTemplate jdbcTemplate) {
+    public LiveStateStore(JdbcTemplate jdbcTemplate, Clock clock) {
         this.jdbcTemplate = jdbcTemplate;
+        this.clock = clock;
     }
 
     /**
@@ -89,29 +92,33 @@ public class LiveStateStore {
      * resolved with the same LAG()-over-window-function technique
      * FlightPositionRepository.findCurrentLegTakeoffTime already uses for
      * an analogous "find the start of the current run" problem, so this
-     * runs as a handful of index scans in Postgres rather than pulling a
+     * runs as a handful of index scans in SQLite rather than pulling a
      * bounded-but-still-large row set into Java to walk by hand.
+     *
+     * Cloud migration A2: ROW_NUMBER() OVER (... ORDER BY observed_at DESC)
+     * = 1, not Postgres's DISTINCT ON (icao24) — SQLite has no DISTINCT ON.
+     * Timestamps are plain INTEGER epoch millis (Timestamps.fromEpochMilli),
+     * not java.sql.Timestamp.
      */
     @PostConstruct
     void warmUp() {
-        Instant cutoff = Instant.now().minus(LiveVisibilityWindows.STALE_AIRBORNE_BOUND);
+        Instant cutoff = clock.instant().minus(LiveVisibilityWindows.STALE_AIRBORNE_BOUND);
         String sql = """
             WITH windowed AS (
                 SELECT icao24, callsign, observed_at, latitude, longitude, altitude_m,
                        velocity_ms, heading_deg, vertical_rate_ms, on_ground, agent_source,
-                       LAG(on_ground) OVER (PARTITION BY icao24 ORDER BY observed_at) AS prev_on_ground
+                       LAG(on_ground) OVER (PARTITION BY icao24 ORDER BY observed_at) AS prev_on_ground,
+                       ROW_NUMBER() OVER (PARTITION BY icao24 ORDER BY observed_at DESC) AS rn
                 FROM flight_position
                 WHERE observed_at > ?
             ),
             latest AS (
-                SELECT DISTINCT ON (icao24) *
-                FROM windowed
-                ORDER BY icao24, observed_at DESC
+                SELECT * FROM windowed WHERE rn = 1
             ),
             landed_transitions AS (
                 SELECT icao24, observed_at AS landed_since
                 FROM windowed
-                WHERE on_ground = true AND prev_on_ground IS DISTINCT FROM true
+                WHERE on_ground = 1 AND prev_on_ground IS NOT 1
             )
             SELECT latest.icao24, latest.callsign, latest.observed_at, latest.latitude, latest.longitude,
                    latest.altitude_m, latest.velocity_ms, latest.heading_deg, latest.vertical_rate_ms,
@@ -123,13 +130,13 @@ public class LiveStateStore {
 
         int[] loaded = {0};
         jdbcTemplate.query(sql, (ResultSet rs) -> {
-            boolean onGround = rs.getBoolean("on_ground");
-            Timestamp landedSinceTs = onGround ? rs.getTimestamp("landed_since") : null;
+            boolean onGround = rs.getInt("on_ground") != 0;
+            Long landedSinceMillis = onGround ? (Long) rs.getObject("landed_since") : null;
             LiveAircraft aircraft = new LiveAircraft(
                     idSequence.incrementAndGet(),
                     rs.getString("icao24"),
                     rs.getString("callsign"),
-                    rs.getTimestamp("observed_at").toInstant(),
+                    Timestamps.fromEpochMilli(rs.getLong("observed_at")),
                     rs.getDouble("latitude"),
                     rs.getDouble("longitude"),
                     nullableDouble(rs, "altitude_m"),
@@ -138,11 +145,11 @@ public class LiveStateStore {
                     nullableDouble(rs, "vertical_rate_ms"),
                     onGround,
                     rs.getString("agent_source"),
-                    landedSinceTs == null ? null : landedSinceTs.toInstant(),
+                    Timestamps.fromEpochMilli(landedSinceMillis),
                     null, null, null); // no estimate to restore — EstimatorAgent recomputes on its own next cycle
             byIcao24.put(aircraft.icao24(), aircraft);
             loaded[0]++;
-        }, Timestamp.from(cutoff));
+        }, cutoff.toEpochMilli());
         log.info("LiveStateStore warm-up: loaded {} aircraft from flight_position", loaded[0]);
     }
 
@@ -349,6 +356,20 @@ public class LiveStateStore {
     /** Mirrors FlightPositionRepository.findLatestCallsign. */
     public Optional<String> findLatestCallsign(String icao24) {
         return Optional.ofNullable(byIcao24.get(icao24)).map(LiveAircraft::callsign);
+    }
+
+    /**
+     * Raw current state for one aircraft, not converted to FlightPosition —
+     * for PositionPersistenceService's skip-unchanged-ground write
+     * reduction (cloud migration A2, PLAN.md §6 item 7), which needs
+     * onGround/latitude/longitude/headingDeg from the *last stored* report
+     * to compare a new report against. LiveStateStore's own entry already
+     * *is* that last-stored report (upsert() is only ever called right
+     * after a real flight_position insert succeeds), so this is a free
+     * in-memory read instead of a second query.
+     */
+    public Optional<LiveAircraft> get(String icao24) {
+        return Optional.ofNullable(byIcao24.get(icao24));
     }
 
     /** Raw (never coalesced with an estimate) lat/lon — mirrors FlightPositionRepository.findRawLatestLatLon; see that method's own javadoc for why raw matters here. */

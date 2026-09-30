@@ -1,13 +1,14 @@
 package com.flighttracker.service.agent;
 
-import com.flighttracker.model.Aircraft;
 import com.flighttracker.model.FlightPosition;
 import com.flighttracker.repository.AircraftRepository;
 import com.flighttracker.repository.FlightPositionRepository;
+import com.flighttracker.service.live.LiveAircraft;
 import com.flighttracker.service.live.LiveStateStore;
 import com.flighttracker.service.live.PositionsPersistedEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -15,10 +16,11 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
-import java.sql.Timestamp;
 import java.sql.Types;
+import java.time.Clock;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * A separate bean from AgentOrchestrator specifically so persist() is
@@ -59,17 +61,31 @@ public class PositionPersistenceService {
     private final JdbcTemplate jdbcTemplate;
     private final ApplicationEventPublisher eventPublisher;
     private final LiveStateStore liveStateStore;
+    private final Clock clock;
+
+    // Cloud migration A2 (PLAN.md §6 item 7): skips inserting an on_ground
+    // report that's identical (lat/lon/heading) to the aircraft's last
+    // *stored* report — a parked aircraft's global-sweep hit otherwise
+    // writes a byte-for-byte duplicate row every global-sweep-interval-seconds
+    // for as long as it sits at the gate. Airborne reports are never
+    // skipped (see isUnchangedGroundReport) — a moving aircraft's position
+    // is never truly unchanged, and /api/usage's distance/airtime calc
+    // needs every real airborne sample.
+    @Value("${flighttracker.persistence.skip-unchanged-ground:true}")
+    private boolean skipUnchangedGround;
 
     public PositionPersistenceService(AircraftRepository aircraftRepository,
                                        FlightPositionRepository positionRepository,
                                        JdbcTemplate jdbcTemplate,
                                        ApplicationEventPublisher eventPublisher,
-                                       LiveStateStore liveStateStore) {
+                                       LiveStateStore liveStateStore,
+                                       Clock clock) {
         this.aircraftRepository = aircraftRepository;
         this.positionRepository = positionRepository;
         this.jdbcTemplate = jdbcTemplate;
         this.eventPublisher = eventPublisher;
         this.liveStateStore = liveStateStore;
+        this.clock = clock;
     }
 
     /**
@@ -85,6 +101,24 @@ public class PositionPersistenceService {
         return liveStateStore.isEmpty();
     }
 
+    /**
+     * True when {@code r} is an on_ground report whose lat/lon/heading
+     * exactly match LiveStateStore's current entry for this aircraft (also
+     * on_ground) — see skipUnchangedGround's own field javadoc. Reads
+     * LiveStateStore rather than issuing a query: its entry for this
+     * icao24 already *is* the last stored report, since upsert() is only
+     * ever called right after a real insert succeeds.
+     */
+    private boolean isUnchangedGroundReport(RawPositionReport r) {
+        if (!skipUnchangedGround || !r.onGround()) return false;
+        return liveStateStore.get(r.icao24())
+                .filter(LiveAircraft::onGround)
+                .filter(existing -> existing.latitude() == r.latitude()
+                        && existing.longitude() == r.longitude()
+                        && Objects.equals(existing.headingDeg(), r.headingDeg()))
+                .isPresent();
+    }
+
     /** Returns the reports for icao24s that were newly seen this cycle (not already known aircraft). */
     @Transactional
     public List<RawPositionReport> persist(String sourceName, List<RawPositionReport> reports) {
@@ -97,16 +131,14 @@ public class PositionPersistenceService {
         // below, just for the in-process fan-out instead of a DB round trip.
         List<FlightPosition> persisted = new ArrayList<>();
         for (RawPositionReport r : reports) {
-            // existsById, not findById: this only needs to know whether the
-            // aircraft is new, and loading the entity used to exist purely
-            // to call touch() on it — which bumped last_seen_at, a column
-            // nothing reads (see AIRCRAFT_UPSERT_SQL). Loading it into the
-            // persistence context also meant Hibernate's dirty check
-            // emitted an UPDATE per known aircraft on every flush.
-            if (!aircraftRepository.existsById(r.icao24())) {
-                aircraftRepository.save(new Aircraft(r.icao24()));
+            // insertIfAbsent's own return value is exactly "was this newly
+            // inserted" — no separate existsById check-then-insert needed
+            // (that was the JPA-entity-era shape; see AircraftRepository.
+            // insertIfAbsent's own javadoc).
+            if (aircraftRepository.insertIfAbsent(r.icao24())) {
                 newAircraft.add(r);
             }
+            if (isUnchangedGroundReport(r)) continue; // write reduction — see that method's own javadoc
             var inserted = positionRepository.insertIgnoringDuplicate(
                     r.icao24(), r.callsign(), r.observedAt(),
                     r.latitude(), r.longitude(), r.altitudeM(),
@@ -162,19 +194,23 @@ public class PositionPersistenceService {
     // unused getter. Three quarters of those updates weren't even HOT, so
     // each one rewrote index entries too. Pure write amplification for no
     // reader, which on a NAS is the expensive kind of nothing.
+    // now() has no SQLite equivalent — first_seen_at/last_seen_at bind from
+    // the injected Clock instead, like every other timestamp write in this
+    // app (cloud migration A2, PLAN.md §6 item 4).
     private static final String AIRCRAFT_UPSERT_SQL = """
         INSERT INTO aircraft (icao24, first_seen_at, last_seen_at)
-        VALUES (?, now(), now())
+        VALUES (?, ?, ?)
         ON CONFLICT (icao24) DO NOTHING
         """;
 
     // Same statement as FlightPositionRepository.insertIgnoringDuplicate,
     // positional params instead of named ones for raw JdbcTemplate use.
+    // inserted_at also binds from Clock, same reasoning as above.
     private static final String POSITION_INSERT_SQL = """
         INSERT INTO flight_position
             (icao24, callsign, observed_at, latitude, longitude, altitude_m,
-             velocity_ms, heading_deg, vertical_rate_ms, on_ground, agent_source)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             velocity_ms, heading_deg, vertical_rate_ms, on_ground, agent_source, inserted_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (icao24, observed_at, agent_source) DO NOTHING
         """;
 
@@ -215,12 +251,27 @@ public class PositionPersistenceService {
     public void persistBatch(String sourceName, List<RawPositionReport> reports) {
         if (reports.isEmpty()) return;
 
-        List<String> distinctIcao24s = reports.stream().map(RawPositionReport::icao24).distinct().toList();
-        jdbcTemplate.batchUpdate(AIRCRAFT_UPSERT_SQL, distinctIcao24s, JDBC_BATCH_SIZE,
-                (PreparedStatement ps, String icao24) -> ps.setString(1, icao24));
+        // Write reduction (PLAN.md §6 item 7) applied before batching: a
+        // parked aircraft's identical on_ground report is dropped here so
+        // it costs neither the flight_position insert below nor a
+        // LiveStateStore.upsert (also skipped for these, further down —
+        // there's nothing new to record). distinctIcao24s for the aircraft
+        // upsert is derived from this filtered list too: every icao24 in
+        // it is one LiveStateStore already has a record of onGround=true
+        // for, so it can never be a new aircraft.
+        List<RawPositionReport> toInsert = reports.stream().filter(r -> !isUnchangedGroundReport(r)).toList();
 
-        int[][] insertResults = jdbcTemplate.batchUpdate(POSITION_INSERT_SQL, reports, JDBC_BATCH_SIZE,
-                (PreparedStatement ps, RawPositionReport r) -> bindPositionInsert(ps, r, sourceName));
+        long now = clock.millis();
+        List<String> distinctIcao24s = toInsert.stream().map(RawPositionReport::icao24).distinct().toList();
+        jdbcTemplate.batchUpdate(AIRCRAFT_UPSERT_SQL, distinctIcao24s, JDBC_BATCH_SIZE,
+                (PreparedStatement ps, String icao24) -> {
+                    ps.setString(1, icao24);
+                    ps.setLong(2, now);
+                    ps.setLong(3, now);
+                });
+
+        int[][] insertResults = jdbcTemplate.batchUpdate(POSITION_INSERT_SQL, toInsert, JDBC_BATCH_SIZE,
+                (PreparedStatement ps, RawPositionReport r) -> bindPositionInsert(ps, r, sourceName, now));
         int written = 0;
         for (int[] chunkResults : insertResults) {
             for (int rowsAffected : chunkResults) {
@@ -232,28 +283,30 @@ public class PositionPersistenceService {
         // no JDBC batching to do here, unlike the two DB writes above; a
         // plain loop over ~13k reports is microseconds, not worth building
         // a batch API for.
-        for (RawPositionReport r : reports) {
+        for (RawPositionReport r : toInsert) {
             liveStateStore.upsert(r.icao24(), r.callsign(), r.observedAt(),
                     r.latitude(), r.longitude(), r.altitudeM(),
                     r.velocityMs(), r.headingDeg(), r.verticalRateMs(),
                     r.onGround(), sourceName);
         }
 
-        log.info("{}: wrote {} of {} position reports (batched)", sourceName, written, reports.size());
+        log.info("{}: wrote {} of {} position reports (batched, {} skipped as unchanged-ground)",
+                sourceName, written, reports.size(), reports.size() - toInsert.size());
     }
 
-    private static void bindPositionInsert(PreparedStatement ps, RawPositionReport r, String sourceName) throws SQLException {
+    private static void bindPositionInsert(PreparedStatement ps, RawPositionReport r, String sourceName, long insertedAt) throws SQLException {
         ps.setString(1, r.icao24());
         ps.setString(2, r.callsign());
-        ps.setTimestamp(3, Timestamp.from(r.observedAt()));
+        ps.setLong(3, r.observedAt().toEpochMilli());
         ps.setDouble(4, r.latitude());
         ps.setDouble(5, r.longitude());
         setNullableDouble(ps, 6, r.altitudeM());
         setNullableDouble(ps, 7, r.velocityMs());
         setNullableDouble(ps, 8, r.headingDeg());
         setNullableDouble(ps, 9, r.verticalRateMs());
-        ps.setBoolean(10, r.onGround());
+        ps.setInt(10, r.onGround() ? 1 : 0);
         ps.setString(11, sourceName);
+        ps.setLong(12, insertedAt);
     }
 
     private static void setNullableDouble(PreparedStatement ps, int index, Double value) throws SQLException {

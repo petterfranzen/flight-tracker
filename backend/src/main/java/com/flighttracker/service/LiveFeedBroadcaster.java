@@ -109,7 +109,7 @@ public class LiveFeedBroadcaster extends TextWebSocketHandler {
 
     private void publish(FlightPosition position) {
         if (sessions.isEmpty()) return;
-        if (!viewportService.currentCached().contains(position.getLatitude(), position.getLongitude())) return;
+        if (!viewportService.currentCached().contains(position.latitude(), position.longitude())) return;
         try {
             String json = mapper.writeValueAsString(position);
             TextMessage message = new TextMessage(json);
