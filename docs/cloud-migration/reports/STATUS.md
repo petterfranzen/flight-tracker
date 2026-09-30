@@ -65,8 +65,8 @@ command above and wait (VM boot + nerdctl provisioning takes a few minutes).
 | Bundle copied to `feat/cloud-migration`, toolchain set up | ✅ done | this commit |
 | Phase 0 (baseline + golden contract) | ✅ done | all green, see `00-baseline.md`; no 🔒 ASK |
 | A1 backend-consolidator | ✅ reported PASS | 8 commits, 70/70 unit tests, live-verified against real Postgres (blackbox 16/16, golden shapes match, rate-limit fix confirmed live, WS keepalive confirmed live ≥155s). See `A1-handoff.md`. Caught and fixed a real bug (warm-up SQL column alias) that only live testing surfaced, not `mvn verify` alone. |
-| Gate A1 | ⏳ verifying | |
-| A2 sqlite-migrator | not started | |
+| Gate A1 | ✅ **PASS** | independently verified, see `A1-verify-1.md`. RSS ~442MB (vs baseline 1,068MB/3 JVMs) — confirms consolidation win. Verifier wrote a raw RFC-6455 WS client to directly observe PING/PONG control frames. One golden-shape discrepancy (`/history` has 12 fields vs SHAPES.md's 7) investigated and confirmed pre-existing, not a regression — SHAPES.md needs a correction at some point, not urgent. |
+| A2 sqlite-migrator | ⏳ spawning | |
 | Gate A2 | not started | |
 | B1 frontend-vanilla | ✅ reported PASS | 2 commits, 17/17 Playwright specs, two real bugs found+fixed during port. See `B1-handoff.md`. **Bundle-size target (≤60KB gzip) not met — 82KB, well-explained** (Leaflet alone is ~42KB, airport dataset chunk ~23.5KB, both kept per PLAN; app code itself is only ~18KB). Needs Petter's call on the target, not blocking — matches Gate B1 checklist wording "target met or explained." |
 | Gate B1 | ✅ **PASS** | independently verified, see `B1-verify-1.md`. Verifier rebuilt both before/after bundles from clean `npm ci` and independently measured Leaflet's own gzip footprint (42,661B) — confirms the bundle-size explanation checks out. 2 non-blocking concerns noted: no dedicated theme-toggle UI test (pre-existing, not a regression), airport markers lose Tab-key reachability (documented trade-off). |

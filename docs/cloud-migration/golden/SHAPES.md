@@ -80,15 +80,24 @@ legStartAt                string (ISO-8601) | null
 **Note:** `from`/`to` are required `Instant` query params (ISO-8601, e.g.
 `2026-09-29T00:00:00Z`); omitting either → `400` with the standard Spring
 error body (`timestamp`, `status`, `error`, `path`).
-Array of `FlightPosition`:
+
+**Corrected 2026-09-30** (Gate A1 verification caught this doc being wrong
+from the original Phase 0 capture — the endpoint's actual shape was never
+just the `live` shape; this file undercounted it). Array of the full
+`FlightPosition` entity, not the trimmed `live` shape:
 ```
-observedAt   string (ISO-8601 instant)
-icao24       string
-onGround     boolean
-latitude     number
-longitude    number
-callsign     string | absent
-headingDeg   number | absent
+id               integer
+icao24           string
+callsign         string | null
+observedAt       string (ISO-8601 instant)
+latitude         number
+longitude        number
+altitudeM        number | null
+velocityMs       number | null
+headingDeg       number | null
+verticalRateMs   number | null
+onGround         boolean
+agentSource      string
 ```
 
 ## `GET /api/usage?from=<Instant>&to=<Instant>` → `usage.json`
