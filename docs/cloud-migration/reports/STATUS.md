@@ -71,7 +71,7 @@ command above and wait (VM boot + nerdctl provisioning takes a few minutes).
 | B1 frontend-vanilla | ⏳ in progress | same note as A1. Worktree `wt/frontend`, branch `feat/cm-frontend`. |
 | Gate B1 | not started | |
 | C1 ci-deployer | ✅ reported PASS | 4 commits, 20/20 local checks green. See `C1-handoff.md`. Two checklist items (workflow `blackbox` green, `/api/health` version) are structurally blocked on A1/A2 landing — expected per PLAN, deferred to Final Gate. |
-| Gate C1 | ⏳ verifying | |
+| Gate C1 | ✅ **PASS** | independently verified, see `C1-verify-1.md`. Two items deferred to Final Gate (structural to parallel-worktree design, not failures): live `blackbox` CI green, `/api/health` version match — both need A1's `/api/health` to exist first. |
 | Phase M merge | not started | |
 | Final gate | not started | |
 | PR opened | not started | |
