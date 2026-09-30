@@ -3,7 +3,6 @@ package com.flighttracker.service.agent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.context.annotation.Profile;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -64,7 +63,6 @@ import java.time.Instant;
  * about it.
  */
 @Service
-@Profile("agent")
 public class PositionRetentionService {
 
     private static final Logger log = LoggerFactory.getLogger(PositionRetentionService.class);
@@ -88,7 +86,7 @@ public class PositionRetentionService {
      *
      * ctids are only stable within a snapshot, which is fine here — the
      * subselect and the delete are one statement, and retention is a
-     * single writer (@Profile("agent"), one container).
+     * single writer (one scheduled method, one process).
      */
     private static final String DELETE_BATCH_SQL = """
         DELETE FROM flight_position

@@ -6,7 +6,6 @@ import com.flighttracker.service.enrichment.AircraftEnrichmentService;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.context.annotation.Profile;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
@@ -19,13 +18,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * to wire up by hand. Each poll cycle fans out to all agents, normalises
  * their reports, and hands them to PositionPersistenceService to write.
  *
- * Only runs in the "agent" container — see PollWindowService and
- * PositionNotificationListener for how it coordinates with the "api"
- * container (poll-window state and the live WebSocket feed respectively)
- * now that they're separate processes.
+ * Runs in the same process as everything else (see PollWindowService and
+ * LiveFeedBroadcaster, which this reaches via a same-process
+ * PositionsPersistedEvent rather than the cross-container LISTEN/NOTIFY
+ * bridge an earlier, multi-container version of this app used).
  */
 @Service
-@Profile("agent")
 public class AgentOrchestrator {
 
     private static final Logger log = LoggerFactory.getLogger(AgentOrchestrator.class);

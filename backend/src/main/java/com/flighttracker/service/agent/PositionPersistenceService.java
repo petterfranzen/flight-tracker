@@ -5,7 +5,6 @@ import com.flighttracker.repository.AircraftRepository;
 import com.flighttracker.repository.FlightPositionRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.context.annotation.Profile;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -41,7 +40,6 @@ import java.util.List;
  * application.yml for the other half of that fix).
  */
 @Service
-@Profile("agent")
 public class PositionPersistenceService {
 
     private static final Logger log = LoggerFactory.getLogger(PositionPersistenceService.class);

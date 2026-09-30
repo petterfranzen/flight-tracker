@@ -6,7 +6,6 @@ import com.flighttracker.service.HotPollUserBudget;
 import com.flighttracker.service.PollWindowService;
 import com.flighttracker.service.RestartRateLimiter;
 import jakarta.servlet.http.HttpServletRequest;
-import org.springframework.context.annotation.Profile;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -16,7 +15,6 @@ import java.util.Optional;
 
 @RestController
 @RequestMapping("/api/agents")
-@Profile("api")
 public class AgentController {
 
     private final PollWindowService pollWindowService;

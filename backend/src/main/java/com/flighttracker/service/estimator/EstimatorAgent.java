@@ -9,7 +9,6 @@ import com.flighttracker.service.EstimatedPositionService;
 import com.flighttracker.service.LiveVisibilityWindows;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.context.annotation.Profile;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -40,12 +39,8 @@ import java.util.stream.Collectors;
  * clustered and individual views could end up disagreeing about what's
  * currently visible.
  *
- * Runs in its own container (@Profile("estimator"), see docker-compose.yml's
- * backend-estimator service) — same split as "api" vs "agent", just a third
- * profile on the same image. Must never run alongside "agent" in the same
- * process: both would schedule their own independent work against the same
- * DB rows, which is harmless for correctness (see below) but doubles the
- * write load for no benefit.
+ * Runs as one more @Scheduled method in the single consolidated process
+ * (see FlightTrackerApplication) — no longer its own container/profile.
  *
  * Every cycle, for every aircraft findLive() currently considers live —
  * not just ones that were eligible for an estimate last cycle — this
@@ -87,7 +82,6 @@ import java.util.stream.Collectors;
  * disjoint sets of columns on the same row.
  */
 @Service
-@Profile("estimator")
 public class EstimatorAgent {
 
     private static final Logger log = LoggerFactory.getLogger(EstimatorAgent.class);

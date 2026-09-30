@@ -3,7 +3,6 @@ package com.flighttracker.controller;
 import com.flighttracker.dto.AirportInfo;
 import com.flighttracker.model.Airport;
 import com.flighttracker.repository.AirportRepository;
-import org.springframework.context.annotation.Profile;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -24,7 +23,6 @@ import org.springframework.web.bind.annotation.RestController;
  */
 @RestController
 @RequestMapping("/api/airports")
-@Profile("api")
 public class AirportController {
 
     private final AirportRepository airportRepository;
