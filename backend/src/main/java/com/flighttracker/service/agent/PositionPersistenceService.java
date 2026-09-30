@@ -4,6 +4,7 @@ import com.flighttracker.model.Aircraft;
 import com.flighttracker.model.FlightPosition;
 import com.flighttracker.repository.AircraftRepository;
 import com.flighttracker.repository.FlightPositionRepository;
+import com.flighttracker.service.live.LiveStateStore;
 import com.flighttracker.service.live.PositionsPersistedEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -57,20 +58,31 @@ public class PositionPersistenceService {
     private final FlightPositionRepository positionRepository;
     private final JdbcTemplate jdbcTemplate;
     private final ApplicationEventPublisher eventPublisher;
+    private final LiveStateStore liveStateStore;
 
     public PositionPersistenceService(AircraftRepository aircraftRepository,
                                        FlightPositionRepository positionRepository,
                                        JdbcTemplate jdbcTemplate,
-                                       ApplicationEventPublisher eventPublisher) {
+                                       ApplicationEventPublisher eventPublisher,
+                                       LiveStateStore liveStateStore) {
         this.aircraftRepository = aircraftRepository;
         this.positionRepository = positionRepository;
         this.jdbcTemplate = jdbcTemplate;
         this.eventPublisher = eventPublisher;
+        this.liveStateStore = liveStateStore;
     }
 
-    /** True only on a genuinely fresh database — see AgentOrchestrator.seedOnStartup. */
+    /**
+     * True only on a genuinely fresh database — see
+     * AgentOrchestrator.seedOnStartup. LiveStateStore.warmUp() (its own
+     * @PostConstruct, guaranteed to run before this service is even fully
+     * constructed — see LiveStateStore being a constructor-injected
+     * dependency here) already rebuilt the live set from any existing
+     * flight_position rows, so an empty store here means there was nothing
+     * to rebuild from, not just "nothing polled yet this process".
+     */
     public boolean hasNoPositions() {
-        return positionRepository.countLatestPositions() == 0;
+        return liveStateStore.isEmpty();
     }
 
     /** Returns the reports for icao24s that were newly seen this cycle (not already known aircraft). */
@@ -101,10 +113,10 @@ public class PositionPersistenceService {
                     r.velocityMs(), r.headingDeg(), r.verticalRateMs(),
                     r.onGround(), sourceName);
             if (inserted.isPresent()) {
-                // Keeps the "latest per aircraft" summary table (see its
-                // schema.sql comment) in step with the append-only history —
-                // every accepted report updates both, in the same transaction.
-                positionRepository.upsertLatestPosition(
+                // Keeps LiveStateStore (the in-memory "latest per aircraft"
+                // map — see its own javadoc) in step with the append-only
+                // history — every accepted report updates both.
+                liveStateStore.upsert(
                         r.icao24(), r.callsign(), r.observedAt(),
                         r.latitude(), r.longitude(), r.altitudeM(),
                         r.velocityMs(), r.headingDeg(), r.verticalRateMs(),
@@ -166,41 +178,6 @@ public class PositionPersistenceService {
         ON CONFLICT (icao24, observed_at, agent_source) DO NOTHING
         """;
 
-    // Same statement as FlightPositionRepository.upsertLatestPosition —
-    // on_ground and observed_at are each bound twice (params 10/12 and
-    // 3/13) because the landed_since CASE needs both again, same as the
-    // named-parameter version reusing :onGround/:observedAt twice.
-    // estimated_latitude/longitude/at are unconditionally cleared to NULL
-    // for the same reason as the named-parameter version — see that
-    // query's comment.
-    private static final String LATEST_POSITION_UPSERT_SQL = """
-        INSERT INTO aircraft_latest_position
-            (icao24, callsign, observed_at, latitude, longitude, altitude_m,
-             velocity_ms, heading_deg, vertical_rate_ms, on_ground, agent_source, landed_since)
-        VALUES
-            (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? THEN CAST(? AS timestamptz) ELSE NULL END)
-        ON CONFLICT (icao24) DO UPDATE SET
-            callsign = EXCLUDED.callsign,
-            observed_at = EXCLUDED.observed_at,
-            latitude = EXCLUDED.latitude,
-            longitude = EXCLUDED.longitude,
-            altitude_m = EXCLUDED.altitude_m,
-            velocity_ms = EXCLUDED.velocity_ms,
-            heading_deg = EXCLUDED.heading_deg,
-            vertical_rate_ms = EXCLUDED.vertical_rate_ms,
-            on_ground = EXCLUDED.on_ground,
-            agent_source = EXCLUDED.agent_source,
-            landed_since = CASE
-                WHEN EXCLUDED.on_ground = false THEN NULL
-                WHEN aircraft_latest_position.on_ground = true THEN aircraft_latest_position.landed_since
-                ELSE EXCLUDED.observed_at
-            END,
-            estimated_latitude = NULL,
-            estimated_longitude = NULL,
-            estimated_at = NULL
-        WHERE EXCLUDED.observed_at > aircraft_latest_position.observed_at
-        """;
-
     /**
      * Batched equivalent of persist(), for the global sweep's much larger
      * reports lists (~13k worldwide aircraft per run). Live log review
@@ -227,12 +204,12 @@ public class PositionPersistenceService {
      *    never triggers enrichment from this method's result the way
      *    pollAll() does with persist()'s, so there's nothing to return.
      *
-     * upsertLatestPosition's own WHERE EXCLUDED.observed_at > ... guard is
-     * what makes it safe to run this unconditionally for every report
-     * here, rather than needing to track (the way persist() does via
-     * insertIgnoringDuplicate's Optional result) which ones were genuine
-     * inserts: a true duplicate's observed_at can never be newer than
-     * what's already stored, so the guard simply no-ops for it.
+     * LiveStateStore.upsert's own observed_at guard is what makes it safe
+     * to call unconditionally for every report here, rather than needing
+     * to track (the way persist() does via insertIgnoringDuplicate's
+     * Optional result) which ones were genuine inserts: a true duplicate's
+     * observed_at can never be newer than what's already stored, so the
+     * guard simply no-ops for it.
      */
     @Transactional
     public void persistBatch(String sourceName, List<RawPositionReport> reports) {
@@ -251,8 +228,16 @@ public class PositionPersistenceService {
             }
         }
 
-        jdbcTemplate.batchUpdate(LATEST_POSITION_UPSERT_SQL, reports, JDBC_BATCH_SIZE,
-                (PreparedStatement ps, RawPositionReport r) -> bindLatestPositionUpsert(ps, r, sourceName));
+        // LiveStateStore.upsert is an in-memory ConcurrentHashMap.compute —
+        // no JDBC batching to do here, unlike the two DB writes above; a
+        // plain loop over ~13k reports is microseconds, not worth building
+        // a batch API for.
+        for (RawPositionReport r : reports) {
+            liveStateStore.upsert(r.icao24(), r.callsign(), r.observedAt(),
+                    r.latitude(), r.longitude(), r.altitudeM(),
+                    r.velocityMs(), r.headingDeg(), r.verticalRateMs(),
+                    r.onGround(), sourceName);
+        }
 
         log.info("{}: wrote {} of {} position reports (batched)", sourceName, written, reports.size());
     }
@@ -269,23 +254,6 @@ public class PositionPersistenceService {
         setNullableDouble(ps, 9, r.verticalRateMs());
         ps.setBoolean(10, r.onGround());
         ps.setString(11, sourceName);
-    }
-
-    private static void bindLatestPositionUpsert(PreparedStatement ps, RawPositionReport r, String sourceName) throws SQLException {
-        ps.setString(1, r.icao24());
-        ps.setString(2, r.callsign());
-        Timestamp observedAt = Timestamp.from(r.observedAt());
-        ps.setTimestamp(3, observedAt);
-        ps.setDouble(4, r.latitude());
-        ps.setDouble(5, r.longitude());
-        setNullableDouble(ps, 6, r.altitudeM());
-        setNullableDouble(ps, 7, r.velocityMs());
-        setNullableDouble(ps, 8, r.headingDeg());
-        setNullableDouble(ps, 9, r.verticalRateMs());
-        ps.setBoolean(10, r.onGround());
-        ps.setString(11, sourceName);
-        ps.setBoolean(12, r.onGround());
-        ps.setTimestamp(13, observedAt);
     }
 
     private static void setNullableDouble(PreparedStatement ps, int index, Double value) throws SQLException {

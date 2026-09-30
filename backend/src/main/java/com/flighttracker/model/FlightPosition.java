@@ -50,6 +50,23 @@ public class FlightPosition {
                            double latitude, double longitude, Double altitudeM,
                            Double velocityMs, Double headingDeg, Double verticalRateMs,
                            boolean onGround, String agentSource) {
+        this(null, icao24, callsign, observedAt, latitude, longitude, altitudeM,
+                velocityMs, headingDeg, verticalRateMs, onGround, agentSource);
+    }
+
+    /**
+     * Same fields, plus an explicit id — used only by LiveStateStore to
+     * reconstruct this class's established JSON shape (id included; see
+     * /api/flights/{icao24}/live and /api/flights/search) for a "live"
+     * position that was never actually persisted as its own flight_position
+     * row and so never got a real, database-generated id. See
+     * LiveAircraft's javadoc for where that id actually comes from.
+     */
+    public FlightPosition(Long id, String icao24, String callsign, Instant observedAt,
+                           double latitude, double longitude, Double altitudeM,
+                           Double velocityMs, Double headingDeg, Double verticalRateMs,
+                           boolean onGround, String agentSource) {
+        this.id = id;
         this.icao24 = icao24;
         this.callsign = callsign;
         this.observedAt = observedAt;

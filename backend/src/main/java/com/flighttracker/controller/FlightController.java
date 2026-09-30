@@ -3,26 +3,47 @@ package com.flighttracker.controller;
 import com.flighttracker.dto.Bounds;
 import com.flighttracker.dto.ClusterPoint;
 import com.flighttracker.dto.LiveMarker;
+import com.flighttracker.model.Aircraft;
+import com.flighttracker.model.Airport;
 import com.flighttracker.model.FlightPosition;
+import com.flighttracker.repository.AircraftRepository;
 import com.flighttracker.repository.FlightPositionRepository;
 import com.flighttracker.service.LiveVisibilityWindows;
 import com.flighttracker.service.ViewportService;
+import com.flighttracker.service.enrichment.AirportLookupService;
+import com.flighttracker.service.live.LiveAircraft;
+import com.flighttracker.service.live.LiveStateStore;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Optional;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/api/flights")
 public class FlightController {
 
+    private final LiveStateStore liveStateStore;
     private final FlightPositionRepository positionRepository;
     private final ViewportService viewportService;
+    private final AircraftRepository aircraftRepository;
+    private final AirportLookupService airportLookupService;
 
-    public FlightController(FlightPositionRepository positionRepository, ViewportService viewportService) {
+    public FlightController(LiveStateStore liveStateStore,
+                             FlightPositionRepository positionRepository,
+                             ViewportService viewportService,
+                             AircraftRepository aircraftRepository,
+                             AirportLookupService airportLookupService) {
+        this.liveStateStore = liveStateStore;
         this.positionRepository = positionRepository;
         this.viewportService = viewportService;
+        this.aircraftRepository = aircraftRepository;
+        this.airportLookupService = airportLookupService;
     }
 
     /**
@@ -34,16 +55,15 @@ public class FlightController {
      * is for (e.g. a fleet-wide check), not what the map UI calls with.
      *
      * Passing a bbox also reports it as the current viewport (see
-     * ViewportService) — this is what tells the "agent" container's hot
-     * poll, and this container's WebSocket broadcast filtering, what's
-     * actually on someone's screen right now.
+     * ViewportService) — this is what tells the hot poll, and this
+     * process's own WebSocket broadcast filtering, what's actually on
+     * someone's screen right now.
      *
      * Every row already carries EstimatorAgent's current best-guess
-     * position where one exists — see FlightPositionRepository.
-     * LATEST_COLUMNS, which COALESCEs estimated_latitude/
-     * estimated_longitude over the raw ones for every reader of this
-     * table, so there's nothing to do here beyond the plain query: no
-     * per-endpoint overlay step to remember, unlike the old
+     * position where one exists — see LiveAircraft.displayLatitude/
+     * displayLongitude, which every LiveStateStore reader gets
+     * automatically, so there's nothing to do here beyond the plain read:
+     * no per-endpoint overlay step to remember, unlike the old
      * EstimatedPositionCache.overlay() this replaced.
      *
      * Returns LiveMarker, not the full FlightPosition — this is the map's
@@ -63,12 +83,11 @@ public class FlightController {
         Instant landedCutoff = now.minus(LiveVisibilityWindows.LANDED_VISIBILITY);
 
         if (latMin == null || latMax == null || lonMin == null || lonMax == null) {
-            return positionRepository.findLiveMarkers(staleAirborneCutoff, landedCutoff);
+            return liveStateStore.liveMarkers(staleAirborneCutoff, landedCutoff, null);
         }
         Bounds bounds = new Bounds(latMin, latMax, lonMin, lonMax);
         viewportService.report(bounds);
-        return positionRepository.findLiveMarkersInBounds(staleAirborneCutoff, landedCutoff,
-                bounds.latMin(), bounds.latMax(), bounds.lonMin(), bounds.lonMax());
+        return liveStateStore.liveMarkers(staleAirborneCutoff, landedCutoff, bounds);
     }
 
     /**
@@ -81,7 +100,7 @@ public class FlightController {
     @GetMapping("/live/count")
     public long liveCount() {
         Instant now = Instant.now();
-        return positionRepository.countLive(
+        return liveStateStore.countLive(
                 now.minus(LiveVisibilityWindows.STALE_AIRBORNE_BOUND),
                 now.minus(LiveVisibilityWindows.LANDED_VISIBILITY));
     }
@@ -110,7 +129,7 @@ public class FlightController {
      */
     @GetMapping("/{icao24}/live")
     public ResponseEntity<FlightPosition> liveOne(@PathVariable String icao24) {
-        return positionRepository.findLatestPosition(icao24)
+        return liveStateStore.findLatestPosition(icao24)
                 .map(ResponseEntity::ok)
                 .orElseGet(() -> ResponseEntity.notFound().build());
     }
@@ -145,13 +164,10 @@ public class FlightController {
      * means hot-poll/broadcast keep reflecting whatever real, individual-
      * aircraft viewport was last in effect.
      *
-     * Buckets on the same COALESCE(estimated_latitude, latitude) (and
-     * longitude) expression LATEST_COLUMNS reads elsewhere — see
-     * FlightPositionRepository.findLiveClusteredInBounds — so a dead-
-     * reckoned aircraft lands in the same cell here as its marker would
-     * render at once zoomed in past CLUSTER_FETCH_MAX_ZOOM. No separate
-     * overlay step needed: the aggregation query itself already reads
-     * EstimatorAgent's current estimate directly off the row.
+     * Buckets on the same displayLatitude/displayLongitude (estimate-aware)
+     * fields every LiveStateStore reader uses — see LiveStateStore.clustered
+     * — so a dead-reckoned aircraft lands in the same cell here as its
+     * marker would render at once zoomed in past CLUSTER_FETCH_MAX_ZOOM.
      */
     @GetMapping("/live/clusters")
     public List<ClusterPoint> liveClusters(@RequestParam double latMin,
@@ -162,10 +178,9 @@ public class FlightController {
         Instant now = Instant.now();
         Bounds bounds = new Bounds(latMin, latMax, lonMin, lonMax);
         double clampedGridDeg = Math.min(MAX_CLUSTER_GRID_DEG, Math.max(MIN_CLUSTER_GRID_DEG, gridDeg));
-        return positionRepository.findLiveClusteredInBounds(
+        return liveStateStore.clustered(
                 now.minus(LiveVisibilityWindows.STALE_AIRBORNE_BOUND), now.minus(LiveVisibilityWindows.LANDED_VISIBILITY),
-                bounds.latMin(), bounds.latMax(), bounds.lonMin(), bounds.lonMax(),
-                clampedGridDeg);
+                bounds, clampedGridDeg);
     }
 
     private static final int SEARCH_RESULT_LIMIT = 8;
@@ -178,8 +193,14 @@ public class FlightController {
      * destination airport matches (name, IATA code, ICAO code, or city);
      * when given, it takes over from `q` entirely rather than combining
      * with it (the two are presented as distinct search modes in the UI,
-     * not one merged query). See FlightPositionRepository.searchLive and
-     * .searchByAirport for ranking/matching details.
+     * not one merged query). See LiveStateStore.searchByCallsign and
+     * searchByAirport below for ranking/matching details.
+     *
+     * No LIKE-pattern escaping needed any more (a literal `%`/`_`/`\`
+     * typed by the user used to need escaping before this reached SQL) —
+     * both branches are now plain Java substring/equality matches against
+     * the in-memory live set, which handle those characters literally with
+     * no special casing.
      */
     @GetMapping("/search")
     public List<FlightPosition> search(@RequestParam(required = false) String q,
@@ -190,28 +211,87 @@ public class FlightController {
 
         String trimmedAirport = airport == null ? "" : airport.trim();
         if (!trimmedAirport.isEmpty()) {
-            return positionRepository.searchByAirport(
-                    "%" + escapeLike(trimmedAirport) + "%",
-                    staleAirborneCutoff, landedCutoff, SEARCH_RESULT_LIMIT);
+            return searchByAirport(trimmedAirport, staleAirborneCutoff, landedCutoff);
         }
 
         String trimmed = q == null ? "" : q.trim();
         if (trimmed.isEmpty()) return List.of();
-        String escaped = escapeLike(trimmed);
         // Picking a search result flies the map to p.latitude/p.longitude
-        // directly (see FlightSearch.tsx) — LATEST_COLUMNS already reads
+        // directly (see FlightSearch.tsx) — LiveStateStore already reads
         // EstimatorAgent's current estimate for that, same as every other
         // reader, so it lands on the same best-current-estimate spot the
         // live view will show it at, not a possibly stale fix.
-        return positionRepository.searchLive(
-                "%" + escaped + "%", escaped + "%",
-                staleAirborneCutoff, landedCutoff, SEARCH_RESULT_LIMIT);
+        return liveStateStore.searchByCallsign(trimmed, staleAirborneCutoff, landedCutoff, SEARCH_RESULT_LIMIT);
     }
 
-    // So a literal % or _ typed by the user matches itself instead of
-    // acting as a SQL LIKE wildcard.
-    private static String escapeLike(String s) {
-        return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_");
+    /**
+     * Backs the "advanced search" panel's single airport field — matches a
+     * live aircraft whose origin OR destination airport matches the given
+     * pattern (name, IATA code, ICAO code, or city), case-insensitively.
+     * Ported from FlightPositionRepository.searchByAirport's SQL join, now
+     * done in Java: the live candidates come from LiveStateStore, their
+     * enrichment (origin/destination codes and cached names) from a single
+     * batched AircraftRepository.findAllById, and each code's IATA/
+     * name/municipality from AirportLookupService (a cheap local lookup,
+     * not another external call — see that service's own javadoc).
+     * originAirportName/destinationAirportName alone only ever contain
+     * whatever free-text name adsbdb or the OpenSky-fallback backfill
+     * happened to produce for that specific aircraft, which has no IATA
+     * code and isn't reliably the city name — hence also checking the
+     * airport reference table's iata_code/name/municipality for both
+     * codes. Ordered by callsign ascending, same as the SQL version (no
+     * prefix-match ranking here, unlike searchByCallsign).
+     */
+    private List<FlightPosition> searchByAirport(String pattern, Instant staleAirborneCutoff, Instant landedCutoff) {
+        String needle = pattern.toLowerCase(Locale.ROOT);
+        List<LiveAircraft> candidates = liveStateStore.liveAircraft(staleAirborneCutoff, landedCutoff);
+        if (candidates.isEmpty()) return List.of();
+
+        List<String> icao24s = candidates.stream().map(LiveAircraft::icao24).distinct().toList();
+        Map<String, Aircraft> byIcao24 = aircraftRepository.findAllById(icao24s).stream()
+                .collect(Collectors.toMap(Aircraft::getIcao24, Function.identity()));
+
+        return candidates.stream()
+                .filter(live -> matchesAirportPattern(byIcao24.get(live.icao24()), needle))
+                .sorted((a, b) -> compareCallsigns(a.callsign(), b.callsign()))
+                .limit(SEARCH_RESULT_LIMIT)
+                .map(FlightController::toFlightPosition)
+                .toList();
+    }
+
+    private boolean matchesAirportPattern(Aircraft a, String needle) {
+        if (a == null) return false;
+        return containsIgnoreCase(a.getOriginAirport(), needle)
+                || containsIgnoreCase(a.getOriginAirportName(), needle)
+                || matchesAirportRef(a.getOriginAirport(), needle)
+                || containsIgnoreCase(a.getDestinationAirport(), needle)
+                || containsIgnoreCase(a.getDestinationAirportName(), needle)
+                || matchesAirportRef(a.getDestinationAirport(), needle);
+    }
+
+    private boolean matchesAirportRef(String icaoCode, String needle) {
+        Optional<Airport> airport = airportLookupService.lookup(icaoCode);
+        return airport.filter(ap -> containsIgnoreCase(ap.getIataCode(), needle)
+                        || containsIgnoreCase(ap.getName(), needle)
+                        || containsIgnoreCase(ap.getMunicipality(), needle))
+                .isPresent();
+    }
+
+    private static boolean containsIgnoreCase(String value, String needle) {
+        return value != null && value.toLowerCase(Locale.ROOT).contains(needle);
+    }
+
+    private static int compareCallsigns(String a, String b) {
+        if (a == null && b == null) return 0;
+        if (a == null) return 1;
+        if (b == null) return -1;
+        return a.compareTo(b);
+    }
+
+    private static FlightPosition toFlightPosition(LiveAircraft a) {
+        return new FlightPosition(a.id(), a.icao24(), a.callsign(), a.observedAt(),
+                a.displayLatitude(), a.displayLongitude(), a.altitudeM(), a.velocityMs(),
+                a.headingDeg(), a.verticalRateMs(), a.onGround(), a.agentSource());
     }
 
     /** Full historic track for one aircraft, for the "trace the route across the map" view. */

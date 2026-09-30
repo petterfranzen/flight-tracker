@@ -10,6 +10,7 @@ import com.flighttracker.service.FlightPhaseClassifier;
 import com.flighttracker.service.LiveVisibilityWindows;
 import com.flighttracker.service.enrichment.AircraftEnrichmentService;
 import com.flighttracker.service.enrichment.AirportLookupService;
+import com.flighttracker.service.live.LiveStateStore;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -26,27 +27,30 @@ public class AircraftController {
 
     private final AircraftRepository aircraftRepository;
     private final FlightPositionRepository positionRepository;
+    private final LiveStateStore liveStateStore;
     private final AircraftEnrichmentService enrichmentService;
     private final AirportLookupService airportLookupService;
 
     public AircraftController(AircraftRepository aircraftRepository,
                                FlightPositionRepository positionRepository,
+                               LiveStateStore liveStateStore,
                                AircraftEnrichmentService enrichmentService,
                                AirportLookupService airportLookupService) {
         this.aircraftRepository = aircraftRepository;
         this.positionRepository = positionRepository;
+        this.liveStateStore = liveStateStore;
         this.enrichmentService = enrichmentService;
         this.airportLookupService = airportLookupService;
     }
 
     /**
      * Dossier fields (type/registration/operator/origin/destination) for one
-     * aircraft. Aircraft the "agent" container's hot poll sees get enriched
-     * eagerly and asynchronously (AgentOrchestrator.pollAll); aircraft only
-     * the global sweep has found are never eagerly enriched (that would mean
-     * enriching several thousand aircraft nobody's looking at every sweep —
-     * see AgentOrchestrator.pollGlobalSweep for why that doesn't scale), so
-     * this does it lazily and synchronously right here instead, the moment
+     * aircraft. Aircraft the hot poll sees get enriched eagerly and
+     * asynchronously (AgentOrchestrator.pollAll); aircraft only the global
+     * sweep has found are never eagerly enriched (that would mean enriching
+     * several thousand aircraft nobody's looking at every sweep — see
+     * AgentOrchestrator.pollGlobalSweep for why that doesn't scale), so this
+     * does it lazily and synchronously right here instead, the moment
      * someone actually asks. That means this request can take a bit longer
      * than a typical GET the first time a given aircraft's dossier is
      * opened — acceptable for a single user-initiated lookup, unlike the
@@ -58,7 +62,7 @@ public class AircraftController {
         if (aircraft == null) return ResponseEntity.notFound().build();
 
         if (aircraft.getMetadataFetchedAt() == null) {
-            String callsign = positionRepository.findLatestCallsign(icao24).orElse(null);
+            String callsign = liveStateStore.findLatestCallsign(icao24).orElse(null);
             enrichmentService.enrichSynchronously(icao24, callsign);
             aircraft = aircraftRepository.findById(icao24).orElse(aircraft);
         }
@@ -95,15 +99,15 @@ public class AircraftController {
     private AircraftDossier toDossier(Aircraft a) {
         Instant now = Instant.now();
         Optional<Instant> legStart = positionRepository.findCurrentLegTakeoffTime(a.getIcao24());
-        FlightPosition current = positionRepository.findLatestPosition(a.getIcao24()).orElse(null);
+        FlightPosition current = liveStateStore.findLatestPosition(a.getIcao24()).orElse(null);
         // Raw (never coalesced with EstimatorAgent's estimate) — needed only
         // for describeLikelyStatus's "at last report" distance text below,
         // which is documented as describing the last real report, not a
         // dead-reckoned projection. `current` itself stays coalesced for
         // everything else (the ETA calc benefits from the more accurate
         // live position).
-        FlightPositionRepository.RawLatLon rawPosition =
-                positionRepository.findRawLatestLatLon(a.getIcao24()).orElse(null);
+        LiveStateStore.RawLatLon rawPosition =
+                liveStateStore.findRawLatestLatLon(a.getIcao24()).orElse(null);
 
         // Skip the lookup entirely when on the ground — FlightPhaseClassifier
         // only needs the earlier-altitude reference to distinguish
@@ -238,7 +242,7 @@ public class AircraftController {
      *                         a sourced fact, rather than changing the
      *                         underlying guess itself.
      */
-    private String describeLikelyStatus(FlightPosition current, FlightPositionRepository.RawLatLon raw,
+    private String describeLikelyStatus(FlightPosition current, LiveStateStore.RawLatLon raw,
                                          FlightPhaseClassifier.FlightPhase phase, Aircraft a,
                                          boolean landingConfirmed) {
         if (current == null || phase == null) return null;
@@ -253,7 +257,7 @@ public class AircraftController {
         Double distanceToDestKm = null;
         if (raw != null && a.getDestinationAirportLat() != null && a.getDestinationAirportLon() != null) {
             distanceToDestKm = haversineMeters(
-                    raw.getLatitude(), raw.getLongitude(),
+                    raw.latitude(), raw.longitude(),
                     a.getDestinationAirportLat(), a.getDestinationAirportLon()) / 1000.0;
         }
 
