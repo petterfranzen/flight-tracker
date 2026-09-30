@@ -261,6 +261,12 @@ public class PositionPersistenceService {
         // for, so it can never be a new aircraft.
         List<RawPositionReport> toInsert = reports.stream().filter(r -> !isUnchangedGroundReport(r)).toList();
 
+        // PLAN.md §6 item 5: "verify < 2s on this machine and log the
+        // duration" — timed around just the two executeBatch calls (the
+        // actual DB work this item is about), not the write-reduction
+        // filtering above or the LiveStateStore fan-out below.
+        long batchStart = System.nanoTime();
+
         long now = clock.millis();
         List<String> distinctIcao24s = toInsert.stream().map(RawPositionReport::icao24).distinct().toList();
         jdbcTemplate.batchUpdate(AIRCRAFT_UPSERT_SQL, distinctIcao24s, JDBC_BATCH_SIZE,
@@ -277,6 +283,12 @@ public class PositionPersistenceService {
             for (int rowsAffected : chunkResults) {
                 if (rowsAffected > 0) written++;
             }
+        }
+
+        long batchMs = (System.nanoTime() - batchStart) / 1_000_000;
+        log.info("{}: batched insert of {} rows took {} ms", sourceName, toInsert.size(), batchMs);
+        if (batchMs >= 2000) {
+            log.warn("{}: batched insert of {} rows took {} ms — over the 2s budget", sourceName, toInsert.size(), batchMs);
         }
 
         // LiveStateStore.upsert is an in-memory ConcurrentHashMap.compute —

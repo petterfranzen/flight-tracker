@@ -16,19 +16,23 @@
 -- CREATE TABLE on the same cold boot no longer applies — there's only ever
 -- one writer starting this script.
 --
--- auto_vacuum must be set before this database's first table is created —
--- a no-op on every later boot against an already-existing file (SQLite
--- silently ignores changing it once any table exists), which is exactly
--- the "only at DB creation" behaviour PLAN.md §6 item 3 asks for, with no
--- extra Java-side "is this a fresh file" branching needed: the file either
--- has tables already (no-op) or doesn't (takes effect), and this statement
--- runs first either way. INCREMENTAL over the default (NONE) or FULL:
--- PositionRetentionService calls PRAGMA incremental_vacuum(2000) after
--- every retention run (see below) to reclaim freed pages in small,
--- predictable steps instead of either leaking free space forever (NONE)
--- or paying a full, blocking VACUUM's cost (FULL would auto-compact on
--- every transaction commit, not just when asked).
-PRAGMA auto_vacuum = INCREMENTAL;
+-- auto_vacuum must be set before this database's first table is created,
+-- and — this bit is *not* obvious — before any connection that flips
+-- journal_mode to WAL touches the file either, since that switch is
+-- itself a transaction that finalizes the page auto_vacuum's value lives
+-- on. A pooled DataSource whose connections carry journal_mode=WAL (this
+-- app's does) can easily win that race against a plain PRAGMA statement
+-- placed here, silently leaving auto_vacuum at SQLite's default (NONE) —
+-- confirmed the hard way. So this is no longer set here: see
+-- config/SqliteDataSourceConfig.setAutoVacuumOnFreshDatabase, which sets
+-- it via a bare, un-pragma'd connection *before* the pooled DataSource
+-- (and this script) ever open the file. INCREMENTAL over the default
+-- (NONE) or FULL: PositionRetentionService calls PRAGMA
+-- incremental_vacuum(2000) after every retention run (see below) to
+-- reclaim freed pages in small, predictable steps instead of either
+-- leaking free space forever (NONE) or paying a full, blocking VACUUM's
+-- cost (FULL would auto-compact on every transaction commit, not just
+-- when asked).
 
 CREATE TABLE IF NOT EXISTS aircraft (
     icao24                     TEXT PRIMARY KEY,   -- ICAO 24-bit transponder address, hex

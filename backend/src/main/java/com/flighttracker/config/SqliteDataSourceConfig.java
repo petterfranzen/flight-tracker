@@ -10,6 +10,10 @@ import org.springframework.context.annotation.Configuration;
 
 import javax.sql.DataSource;
 import java.io.File;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.SQLException;
+import java.sql.Statement;
 
 /**
  * Cloud migration A2 (PLAN.md §6 item 3): replaces Spring Boot's
@@ -27,12 +31,25 @@ import java.io.File;
  * version-fragile than reflectively wiring a SQLiteConfig through Hikari's
  * dataSourceClassName/addDataSourceProperty mechanism.
  *
- * auto_vacuum=INCREMENTAL is deliberately *not* here: SQLite only honours
- * that pragma before a database's first table is created (a no-op
- * afterwards), so it's set as schema.sql's very first statement instead —
- * see that file's own comment. Putting it in the connection URL would
- * apply it (harmlessly, but pointlessly) on every single connection
- * instead of exactly once per fresh database file.
+ * auto_vacuum=INCREMENTAL is deliberately *not* in the pooled PRAGMAS
+ * string below: SQLite only honours that setting before a database's
+ * first table is created (silently ignored afterwards), and it needs to
+ * win a real race against journal_mode=WAL. Switching journal_mode is
+ * itself a transaction that finalizes the database file's page 1 (which
+ * is where auto_vacuum's value is stored) — and Hikari opens its first
+ * pooled connection, with journal_mode=WAL in that connection's URL,
+ * during HikariDataSource construction, *before* Spring's schema.sql
+ * script initializer ever runs. Putting `PRAGMA auto_vacuum=INCREMENTAL;`
+ * as schema.sql's first statement (as PLAN.md's own text suggests) loses
+ * that race on a fresh database: by the time schema.sql runs, some pooled
+ * connection has already flipped journal_mode and finalized page 1 with
+ * SQLite's default auto_vacuum=NONE, and schema.sql's own attempt becomes
+ * a no-op — confirmed empirically (PRAGMA auto_vacuum read back 0, not 2,
+ * after a real app boot against a fresh file). setAutoVacuumOnFreshDatabase
+ * below wins that race instead: a bare, un-pragma'd connection (no
+ * journal_mode=WAL, nothing else that could write page 1 first) sets
+ * auto_vacuum and is closed *before* the pooled DataSource — and its
+ * journal_mode=WAL connections — ever touch the file.
  */
 @Configuration
 public class SqliteDataSourceConfig {
@@ -79,6 +96,9 @@ public class SqliteDataSourceConfig {
         }
         boolean freshDatabase = !dbFile.exists();
         log.info("SQLite database: {} ({})", dbFile.getAbsolutePath(), freshDatabase ? "new" : "existing");
+        if (freshDatabase) {
+            setAutoVacuumOnFreshDatabase(dbFile);
+        }
 
         HikariConfig config = new HikariConfig();
         config.setJdbcUrl("jdbc:sqlite:" + dbFile.getAbsolutePath() + "?" + PRAGMAS);
@@ -92,5 +112,24 @@ public class SqliteDataSourceConfig {
         config.setMaximumPoolSize(4);
         config.setPoolName("sqlite-pool");
         return new HikariDataSource(config);
+    }
+
+    /**
+     * Sets auto_vacuum=INCREMENTAL on a fresh database file before the
+     * pooled DataSource (and its journal_mode=WAL connections) ever opens
+     * it — see this class's own javadoc for why that ordering matters. A
+     * plain, un-pooled DriverManager connection with no PRAGMAs of its own
+     * in the URL: this must be the *first* thing that ever touches the
+     * file, and closed again immediately, so the pooled DataSource built
+     * right after starts against a file that already has this setting
+     * baked into its page 1.
+     */
+    private static void setAutoVacuumOnFreshDatabase(File dbFile) {
+        try (Connection connection = DriverManager.getConnection("jdbc:sqlite:" + dbFile.getAbsolutePath());
+             Statement statement = connection.createStatement()) {
+            statement.execute("PRAGMA auto_vacuum = INCREMENTAL");
+        } catch (SQLException e) {
+            throw new IllegalStateException("Could not set auto_vacuum on fresh database: " + dbFile, e);
+        }
     }
 }
