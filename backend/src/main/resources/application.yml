@@ -167,10 +167,22 @@ flighttracker:
   # from being the reason the shared quota gets exhausted, and catches
   # sustained abuse spread out *across* a day specifically to dodge the
   # 15-minute quota window. See RestartRateLimiter. Loopback/private-range
-  # callers (localhost, the docker-compose bridge network nginx proxies
-  # through, and — deliberately — anyone on the same LAN as a home/NAS
-  # deployment) are exempt; see ClientIpResolver.isLocal.
+  # callers (localhost, and — deliberately — anyone on the same LAN as a
+  # home/NAS deployment) are exempt *only* when trust-local is true; see
+  # ClientIpResolver.isLocal and trust-local directly below.
   rate-limit:
+    # Cloud migration security fix (PLAN.md §6 item 7): in production every
+    # request now arrives from cloudflared (the Cloudflare Tunnel daemon)
+    # on 127.0.0.1 — there's no nginx/docker-compose bridge network setting
+    # X-Real-IP to a real per-visitor address any more. With the
+    # local-network exemption left on, every visitor's resolved IP would
+    # look like a loopback address and every single one of them would be
+    # exempt from every rate limit on this page, defeating the point of
+    # having them. False in production (the default, and what deploy.sh's
+    # generated environment sets); TRUST_LOCAL=true is for running this
+    # backend directly against a local Postgres for development, where
+    # every caller genuinely is local.
+    trust-local: ${TRUST_LOCAL:false}
     restart-per-ip-per-minute: 3
     restart-per-ip-per-day: 20
     # Separate from restart-per-ip-per-day above, which counts *requests*:
