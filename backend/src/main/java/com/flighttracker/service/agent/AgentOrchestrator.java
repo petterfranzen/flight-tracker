@@ -33,6 +33,7 @@ public class AgentOrchestrator {
     private final AircraftEnrichmentService enrichmentService;
     private final PollWindowService pollWindowService;
     private final PhaseLogger phases;
+    private final SweepHealthTracker sweepHealthTracker;
 
     // Local-only, just to avoid a log line every poll cycle while the
     // window stays closed — the authoritative state is PollWindowService.
@@ -46,12 +47,14 @@ public class AgentOrchestrator {
                               PositionPersistenceService persistenceService,
                               AircraftEnrichmentService enrichmentService,
                               PollWindowService pollWindowService,
-                              PhaseLogger phases) {
+                              PhaseLogger phases,
+                              SweepHealthTracker sweepHealthTracker) {
         this.agents = agents;
         this.persistenceService = persistenceService;
         this.enrichmentService = enrichmentService;
         this.pollWindowService = pollWindowService;
         this.phases = phases;
+        this.sweepHealthTracker = sweepHealthTracker;
     }
 
     // Opens the window on every container boot, same as the old in-memory
@@ -177,6 +180,11 @@ public class AgentOrchestrator {
                 log.warn("Agent {} global sweep failed", agent.sourceName(), e);
             }
         }
+        // Recorded for the whole cycle, not per-agent — see
+        // SweepHealthTracker's own javadoc for why a single agent's
+        // exception above (already caught and logged) doesn't stop this
+        // from counting as "the sweep ran".
+        sweepHealthTracker.recordSweepCompleted();
         phases.idle("global sweep complete");
     }
 }
