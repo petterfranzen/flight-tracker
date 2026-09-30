@@ -95,62 +95,21 @@ export async function mockFlightApi(page: Page, opts?: { historyDelayMs?: Record
   await page.routeWebSocket("**/ws/live", () => {});
 }
 
-// Finds the mounted Leaflet map instance by walking the React fiber tree
-// from #root, in-page — react-leaflet doesn't expose it on `window`, and
-// the app has no test-only hook for it (deliberately: not worth adding
-// production code whose only purpose is being read by tests). Matches on
-// duck-typed shape (getZoom + getBounds) since the production bundle is
-// minified and has no stable class name to search for. Injected as a
-// string (see withMap below) so it runs inside the page, not this Node
-// process.
-//
-// depth cap raised 400->2000: this dfs increments depth on *every*
-// sibling step too, not just child steps, and DefaultAirports.tsx renders
-// one <Marker> per AIRPORTS entry (878, and now unconditionally on both
-// themes, not just the default one) as a flat sibling list inside
-// MapContainer. A long enough run of leaf siblings ahead of whatever
-// fiber actually holds the map reference blows through a depth budget
-// sized for a normal component tree before DFS ever reaches it — 2000
-// comfortably covers that plus headroom for AIRPORTS growing further,
-// without raising it so far a genuine infinite-tree bug would hang
-// instead of failing fast.
+// Finds the mounted Leaflet map instance, in-page. Vanilla TS (no React
+// fiber tree to walk anymore — see map/map.ts's createMap, which stashes
+// the instance directly on its own container element the moment it's
+// created: `container._leaflet_map = map`). That's a narrower surface than
+// the old React-fiber DFS this replaced (a single property read on a
+// single element, versus walking the whole component tree with a duck-typed
+// guess), and it's scoped to `.leaflet-container` specifically so it can
+// never accidentally match an unrelated element. Injected as a string (see
+// withMap below) so it runs inside the page, not this Node process.
 const FIND_MAP_SNIPPET = `
   function __findLeafletMap() {
-    const rootEl = document.getElementById("root");
-    const key = Object.keys(rootEl).find((k) => k.startsWith("__reactContainer"));
-    const rootFiber = rootEl[key];
-    let found = null;
-    const seen = new Set();
-    function looksLikeMap(v) {
-      return v && typeof v === "object" && typeof v.getZoom === "function" && typeof v.getBounds === "function";
-    }
-    function tryVal(v) {
-      if (looksLikeMap(v)) return v;
-      if (v && typeof v === "object" && looksLikeMap(v.map)) return v.map;
-      if (v && typeof v === "object" && looksLikeMap(v.current)) return v.current;
-      return null;
-    }
-    function dfs(node, depth) {
-      if (!node || found || depth > 2000 || seen.has(node)) return;
-      seen.add(node);
-      const mp = node.memoizedProps;
-      if (mp) { const r = tryVal(mp.value); if (r) { found = r; return; } }
-      const r2 = tryVal(node.stateNode);
-      if (r2) { found = r2; return; }
-      let hook = node.memoizedState;
-      let hc = 0;
-      while (hook && hc < 30) {
-        const r3 = tryVal(hook.memoizedState);
-        if (r3) { found = r3; return; }
-        hook = hook.next; hc++;
-      }
-      dfs(node.child, depth + 1);
-      if (found) return;
-      dfs(node.sibling, depth + 1);
-    }
-    dfs(rootFiber, 0);
-    if (!found) throw new Error("Leaflet map instance not found in React tree");
-    return found;
+    const el = document.querySelector(".leaflet-container");
+    const map = el && el._leaflet_map;
+    if (!map) throw new Error("Leaflet map instance not found (.leaflet-container has no _leaflet_map)");
+    return map;
   }
 `;
 
