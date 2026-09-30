@@ -76,7 +76,9 @@ command above and wait (VM boot + nerdctl provisioning takes a few minutes).
 | Gate C1 | ✅ **PASS** | independently verified, see `C1-verify-1.md`. Two items deferred to Final Gate (structural to parallel-worktree design, not failures): live `blackbox` CI green, `/api/health` version match — both need A1's `/api/health` to exist first. |
 | Phase M merge | ✅ done | 3 clean `--no-ff` merges (cm-backend, cm-frontend, cm-ci — the pom.xml conflict PLAN anticipated resolved automatically, verified both sides landed correctly), obsolete files removed (docker-compose.yml, Dockerfiles, nginx.conf, old workflows), README/deploy-README/multi-agent-workflow docs updated. Full rebuild green: 72/72 backend tests, 17/17 Playwright specs. |
 | Final gate | ✅ **PASS** | independently verified on the merged tree, see `final-verify-1.md`. Confirmed single jar serves SPA+API+WS all on port 8080 from one process. Confirmed obsolete files fully gone with no dangling references. Fixed 2 minor doc issues it flagged: `-Pwith-frontend`'s silent-no-op-without-a-prior-`npm-run-build` footgun (documented in `blackbox-tests/README.md`), and README's stale "container log stream" phrase (no container exists anywhere anymore, local or prod). |
-| PR opened | ⏳ next | |
+| PR opened | ✅ done | [PR #68](https://github.com/petterfranzen/flight-tracker/pull/68) — `feat/cloud-migration` → `main`. **Not merged** (merging triggers a real production deploy; Hetzner VM needs provisioning first via `deploy/hetzner/README.md`). |
+
+**Migration complete as of this commit.** All phases/gates done, PR open and awaiting Petter's review.
 
 Update the table above (and commit) as each stage completes. Hand-off
 reports and verifier reports land in this same directory per PLAN §8/§7.
