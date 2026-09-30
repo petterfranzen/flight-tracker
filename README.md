@@ -59,12 +59,17 @@ The backend process prints a one-line marker when what it's doing changes:
 [phase:degraded] OpenSky rate-limited us (429), backing off 30s
 ```
 
-[docker-monitor](../docker-monitor) reads these out of the container log
-stream so the portfolio's dashboard can show what this stack is *doing* —
-Docker itself can only say "running", which doesn't distinguish an agent
-mid-sweep from an idle one. That distinction matters most on a cold start,
-where the map is legitimately empty for the first minute while
-`seedOnStartup` backfills.
+[docker-monitor](../docker-monitor) used to read these out of the
+container log stream so the portfolio's dashboard could show what this
+stack is *doing* — plain "running" doesn't distinguish an agent mid-sweep
+from an idle one, which matters most on a cold start, where the map is
+legitimately empty for the first minute while `seedOnStartup` backfills.
+Since the cloud migration, the app runs as a single process under systemd
+(Hetzner) or directly (`mvn spring-boot:run`, local dev) — there's no
+Docker container to read a log stream from either way anymore. The phase
+markers themselves are unchanged (still plain stdout/journald lines); the
+docker-monitor integration itself would need updating to tail a different
+source if that dashboard view still matters.
 
 `PhaseLogger` (`backend/.../observability/`) emits on transition only, so
 the estimator's few-second refresh loop prints one line, not one per

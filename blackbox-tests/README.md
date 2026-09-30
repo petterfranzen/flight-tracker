@@ -43,10 +43,18 @@ with the frontend bundled in, `-Pwith-frontend`), then point `BASE_URL` at
 it directly:
 
 ```bash
-cd backend && mvn -B package -Pwith-frontend -DskipTests
+cd frontend && npm ci && npm run build   # required first — see note below
+cd ../backend && mvn -B package -Pwith-frontend -DskipTests
 java -jar target/flight-tracker.jar &
 BASE_URL=http://localhost:8080 node --test 'blackbox-tests/**/*.test.js'
 ```
+
+**`npm run build` must run first.** The `with-frontend` Maven profile only
+*copies* an already-built `frontend/dist` into the jar — it doesn't build
+the frontend itself. Skipping this step doesn't error; it silently produces
+a jar with no `static/` entries at all, and `GET /` 404s. CI
+(`build-deploy.yml`) always builds the frontend before the backend, so this
+only bites a local repro of "the one true jar."
 
 This is exactly what `build-deploy.yml`'s `blackbox` CI job does. There's
 no longer a reason to test through a proxy vs. direct — the jar serves the
