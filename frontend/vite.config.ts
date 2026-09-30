@@ -1,9 +1,7 @@
 import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react";
 
 export default defineConfig({
-  plugins: [react()],
-  // SPIKE (see MaplibreBasemap.tsx): maplibre-gl ships its renderer as a
+  // SPIKE (see src/map/maplibreBasemap.ts): maplibre-gl ships its renderer as a
   // web worker it loads by URL at runtime. Vite's dep pre-bundler rewrites
   // the package but doesn't emit that worker into .vite/deps, so the
   // request 404s (net::ERR_FAILED on maplibre-gl-worker.mjs) and the map
