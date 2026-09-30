@@ -64,8 +64,8 @@ command above and wait (VM boot + nerdctl provisioning takes a few minutes).
 |---|---|---|
 | Bundle copied to `feat/cloud-migration`, toolchain set up | ✅ done | this commit |
 | Phase 0 (baseline + golden contract) | ✅ done | all green, see `00-baseline.md`; no 🔒 ASK |
-| A1 backend-consolidator | ⏳ in progress | spawned as a background subagent (not the named `.claude/agents/backend-consolidator` type — those aren't picked up mid-session, so it got the full brief inlined into a `general-purpose` agent instead; functionally identical). Worktree `wt/backend`, branch `feat/cm-backend`. |
-| Gate A1 | not started | |
+| A1 backend-consolidator | ✅ reported PASS | 8 commits, 70/70 unit tests, live-verified against real Postgres (blackbox 16/16, golden shapes match, rate-limit fix confirmed live, WS keepalive confirmed live ≥155s). See `A1-handoff.md`. Caught and fixed a real bug (warm-up SQL column alias) that only live testing surfaced, not `mvn verify` alone. |
+| Gate A1 | ⏳ verifying | |
 | A2 sqlite-migrator | not started | |
 | Gate A2 | not started | |
 | B1 frontend-vanilla | ⏳ in progress | same note as A1. Worktree `wt/frontend`, branch `feat/cm-frontend`. |
