@@ -1,5 +1,12 @@
 # Deploying to the UGREEN NAS
 
+**This file describes the current (pre-cloud-migration) NAS deployment.**
+Once `docs/cloud-migration/PLAN.md` lands, the app moves to a single JVM
+process on a Hetzner VM, deployed automatically by
+`.github/workflows/build-deploy.yml` — see `deploy/hetzner/README.md` for
+operating *that* box (logs, restart, rollback, sqlite3 shell, disk usage).
+This NAS guide stays accurate until Phase M's cutover retires it.
+
 Images are built once in CI and pulled by the NAS — nothing gets built on
 the NAS itself.
 
