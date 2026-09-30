@@ -64,13 +64,13 @@ command above and wait (VM boot + nerdctl provisioning takes a few minutes).
 |---|---|---|
 | Bundle copied to `feat/cloud-migration`, toolchain set up | ✅ done | this commit |
 | Phase 0 (baseline + golden contract) | ✅ done | all green, see `00-baseline.md`; no 🔒 ASK |
-| A1 backend-consolidator | not started | |
+| A1 backend-consolidator | ⏳ in progress | spawned as a background subagent (not the named `.claude/agents/backend-consolidator` type — those aren't picked up mid-session, so it got the full brief inlined into a `general-purpose` agent instead; functionally identical). Worktree `wt/backend`, branch `feat/cm-backend`. |
 | Gate A1 | not started | |
 | A2 sqlite-migrator | not started | |
 | Gate A2 | not started | |
-| B1 frontend-vanilla | not started | |
+| B1 frontend-vanilla | ⏳ in progress | same note as A1. Worktree `wt/frontend`, branch `feat/cm-frontend`. |
 | Gate B1 | not started | |
-| C1 ci-deployer | not started | |
+| C1 ci-deployer | ⏳ in progress | same note as A1. Worktree `wt/ci`, branch `feat/cm-ci`. |
 | Gate C1 | not started | |
 | Phase M merge | not started | |
 | Final gate | not started | |
@@ -78,6 +78,17 @@ command above and wait (VM boot + nerdctl provisioning takes a few minutes).
 
 Update the table above (and commit) as each stage completes. Hand-off
 reports and verifier reports land in this same directory per PLAN §8/§7.
+
+**If resuming after an interruption while A1/B1/C1 show "in progress":** a
+killed session's background subagents are gone — there is nothing to
+reconnect to. Instead: `git worktree list` to find `wt/backend`,
+`wt/frontend`, `wt/ci`; `cd` into each and `git log --oneline` to see how
+far that agent got (each was instructed to commit after every green step).
+If a worktree has real commits, spawn a fresh agent for that package with a
+prompt telling it to `cd` into the *existing* worktree (don't recreate it),
+read its own branch's commit log plus PLAN.md, and continue from wherever it
+left off, rather than starting the package over. If a worktree is empty or
+missing, just re-spawn that package from scratch per the instructions below.
 
 ## Branch map (once streams start)
 
