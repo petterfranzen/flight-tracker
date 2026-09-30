@@ -26,9 +26,9 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * Fed by PositionPersistenceService.persist() via PositionsPersistedEvent —
  * an earlier, multi-container version of this app had positions written by
- * a separate "agent" container and bridged here over Postgres LISTEN/NOTIFY
- * (see PositionsPersistedEvent's javadoc); now both live in this one
- * process, so a plain in-process event does the same job.
+ * a separate "agent" container and bridged here over a Postgres pub/sub
+ * channel (see PositionsPersistedEvent's javadoc); now both live in this
+ * one process, so a plain in-process event does the same job.
  *
  * Also keeps every connection alive (sendKeepalive, cloud migration A1 —
  * PLAN.md §6 item 9): Cloudflare Tunnel closes a WebSocket idle for
@@ -65,9 +65,9 @@ public class LiveFeedBroadcaster extends TextWebSocketHandler {
 
     /**
      * AFTER_COMMIT so a broadcast never fires for a write that then rolled
-     * back — same guarantee Postgres's own commit-gated NOTIFY delivery
+     * back — same guarantee Postgres's own commit-gated pub/sub delivery
      * gave for free in the old cross-container design. fallbackExecution
-     * = true is the "plain @EventListener fallback" the migration plan
+     * = true is the "plain event-listener fallback" the migration plan
      * calls for: if this is ever published outside an active transaction
      * (there's no reason it should be, since PositionPersistenceService.
      * persist() is @Transactional, but a defensive default costs nothing),

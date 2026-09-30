@@ -116,8 +116,8 @@ public class LiveStateStore {
             SELECT latest.icao24, latest.callsign, latest.observed_at, latest.latitude, latest.longitude,
                    latest.altitude_m, latest.velocity_ms, latest.heading_deg, latest.vertical_rate_ms,
                    latest.on_ground, latest.agent_source,
-                   (SELECT MAX(lt.observed_at) FROM landed_transitions lt
-                     WHERE lt.icao24 = latest.icao24 AND lt.observed_at <= latest.observed_at) AS landed_since
+                   (SELECT MAX(lt.landed_since) FROM landed_transitions lt
+                     WHERE lt.icao24 = latest.icao24 AND lt.landed_since <= latest.observed_at) AS landed_since
             FROM latest
             """;
 

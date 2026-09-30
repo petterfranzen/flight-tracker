@@ -44,7 +44,7 @@ import java.util.List;
  * application.yml for the other half of that fix).
  *
  * persist() also publishes a PositionsPersistedEvent for LiveFeedBroadcaster
- * once its transaction commits — replaces the Postgres LISTEN/NOTIFY bridge
+ * once its transaction commits — replaces the Postgres pub/sub channel bridge
  * an earlier, multi-container version of this app used to reach the "api"
  * container's WebSocket clients from here, now that both live in the same
  * process (see service/live/PositionsPersistedEvent).
@@ -128,13 +128,13 @@ public class PositionPersistenceService {
         }
         if (!persisted.isEmpty()) {
             // LiveFeedBroadcaster's WebSocket clients live in this same
-            // process now — no cross-container Postgres LISTEN/NOTIFY
+            // process now — no cross-container Postgres pub/sub channel
             // bridge needed (see the deleted PositionNotificationListener).
             // Published from inside this @Transactional method, so
             // LiveFeedBroadcaster's @TransactionalEventListener(AFTER_COMMIT)
             // only actually runs once this transaction has committed —
             // same "don't broadcast a write that might still roll back"
-            // guarantee NOTIFY's own commit-gated delivery gave for free.
+            // guarantee the old pub/sub channel's commit-gated delivery gave for free.
             eventPublisher.publishEvent(new PositionsPersistedEvent(persisted));
         }
         log.info("{}: wrote {} of {} position reports", sourceName, written, reports.size());

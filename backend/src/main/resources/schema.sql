@@ -208,8 +208,9 @@ CREATE TABLE IF NOT EXISTS aircraft_latest_position (
     landed_since    TIMESTAMPTZ
 );
 -- Dead-reckoned "current best position," written by EstimatorAgent
--- (@Profile("estimator"), its own container) on its own schedule,
--- independent of real reports. NULL on all three means "no current
+-- (originally its own container/role, now just another scheduled method —
+-- see EstimatorAgent's own javadoc) on its own schedule, independent of
+-- real reports. NULL on all three means "no current
 -- estimate, use latitude/longitude as-is" — the common case for a
 -- just-landed or destination-less aircraft. Deliberately separate columns
 -- rather than overwriting latitude/longitude/observed_at directly: those

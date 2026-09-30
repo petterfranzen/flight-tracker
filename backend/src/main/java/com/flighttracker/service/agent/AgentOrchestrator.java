@@ -20,7 +20,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *
  * Runs in the same process as everything else (see PollWindowService and
  * LiveFeedBroadcaster, which this reaches via a same-process
- * PositionsPersistedEvent rather than the cross-container LISTEN/NOTIFY
+ * PositionsPersistedEvent rather than the cross-container pub/sub channel
  * bridge an earlier, multi-container version of this app used).
  */
 @Service
