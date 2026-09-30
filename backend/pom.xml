@@ -19,6 +19,10 @@
 
     <properties>
         <java.version>21</java.version>
+        <!-- Overridden by CI: -Dgit.sha=$GITHUB_SHA. BuildProperties exposes this as
+             "git.sha"; GET /api/health reports it as "version" and falls back to
+             "dev" for a local build. -->
+        <git.sha>dev</git.sha>
     </properties>
 
     <dependencies>
@@ -52,11 +56,62 @@
     </dependencies>
 
     <build>
+        <finalName>flight-tracker</finalName>
         <plugins>
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <!-- Writes META-INF/build-info.properties, which Spring Boot's
+                             BuildProperties bean reads; GET /api/health's "version"
+                             field comes from its "git.sha" property (see A1). -->
+                        <goals>
+                            <goal>build-info</goal>
+                        </goals>
+                        <configuration>
+                            <additionalProperties>
+                                <git.sha>${git.sha}</git.sha>
+                            </additionalProperties>
+                        </configuration>
+                    </execution>
+                </executions>
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <profile>
+            <!-- Packs the built SPA into the jar so the JVM can serve it itself
+                 (docs/cloud-migration/PLAN.md §6 C1). Not the default: backend-only
+                 dev (`mvn verify` with no frontend build yet) must still work. CI runs
+                 `mvn -B verify -Pwith-frontend` after building frontend/dist. -->
+            <id>with-frontend</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-resources-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>copy-frontend-dist</id>
+                                <phase>process-resources</phase>
+                                <goals>
+                                    <goal>copy-resources</goal>
+                                </goals>
+                                <configuration>
+                                    <outputDirectory>${project.build.outputDirectory}/static</outputDirectory>
+                                    <resources>
+                                        <resource>
+                                            <directory>${project.basedir}/../frontend/dist</directory>
+                                        </resource>
+                                    </resources>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>

@@ -5,7 +5,10 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-indent() { sed 's/^/      /' "$1"; }
+# Indent every non-blank line 6 spaces; leave blank lines empty rather than
+# spaces-only trailing whitespace (both are valid inside a YAML `|` block,
+# but only the empty form is yamllint-clean).
+indent() { sed '/^$/!s/^/      /' "$1"; }
 file_entry() { # path mode [owner] [defer]
   printf '  - path: %s\n    permissions: "%s"\n' "$1" "$2"
   [[ -n "${3:-}" ]] && printf '    owner: %s\n' "$3"
