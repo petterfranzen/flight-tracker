@@ -61,6 +61,17 @@ public class SqliteDataSourceConfig {
 
     @Bean
     public DataSource dataSource(@Value("${flighttracker.db-path:./data/flighttracker.db}") String dbPath) {
+        return buildDataSource(dbPath);
+    }
+
+    /**
+     * Extracted as a static, reusable builder — the integration tests
+     * (PLAN.md §6 item 8: "insert -> live read -> retention -> vacuum"
+     * against a temp-file SQLite, no Testcontainers) need the exact same
+     * pooled-connection/PRAGMA setup a real app boot gets, not a
+     * hand-rolled approximation that could silently drift from it.
+     */
+    public static DataSource buildDataSource(String dbPath) {
         File dbFile = new File(dbPath);
         File parent = dbFile.getAbsoluteFile().getParentFile();
         if (parent != null && !parent.exists() && !parent.mkdirs() && !parent.exists()) {
