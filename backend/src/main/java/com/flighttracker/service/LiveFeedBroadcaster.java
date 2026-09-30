@@ -2,8 +2,10 @@ package com.flighttracker.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.flighttracker.model.FlightPosition;
-import org.springframework.context.annotation.Profile;
+import com.flighttracker.service.live.PositionsPersistedEvent;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.event.TransactionPhase;
+import org.springframework.transaction.event.TransactionalEventListener;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
@@ -20,11 +22,13 @@ import java.util.concurrent.ConcurrentHashMap;
  * itself: every connected session gets the same filter, not a per-session
  * one.
  *
- * "api"-only: positions are written by the "agent" container, which
- * reaches this one via PositionNotificationListener, not a direct call.
+ * Fed by PositionPersistenceService.persist() via PositionsPersistedEvent —
+ * an earlier, multi-container version of this app had positions written by
+ * a separate "agent" container and bridged here over Postgres LISTEN/NOTIFY
+ * (see PositionsPersistedEvent's javadoc); now both live in this one
+ * process, so a plain in-process event does the same job.
  */
 @Component
-@Profile("api")
 public class LiveFeedBroadcaster extends TextWebSocketHandler {
 
     private final Map<String, WebSocketSession> sessions = new ConcurrentHashMap<>();
@@ -52,7 +56,25 @@ public class LiveFeedBroadcaster extends TextWebSocketHandler {
         sessions.remove(session.getId());
     }
 
-    public void publish(FlightPosition position) {
+    /**
+     * AFTER_COMMIT so a broadcast never fires for a write that then rolled
+     * back — same guarantee Postgres's own commit-gated NOTIFY delivery
+     * gave for free in the old cross-container design. fallbackExecution
+     * = true is the "plain @EventListener fallback" the migration plan
+     * calls for: if this is ever published outside an active transaction
+     * (there's no reason it should be, since PositionPersistenceService.
+     * persist() is @Transactional, but a defensive default costs nothing),
+     * this still runs immediately instead of the event being silently
+     * dropped.
+     */
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
+    public void onPositionsPersisted(PositionsPersistedEvent event) {
+        for (FlightPosition position : event.positions()) {
+            publish(position);
+        }
+    }
+
+    private void publish(FlightPosition position) {
         if (sessions.isEmpty()) return;
         if (!viewportService.currentCached().contains(position.getLatitude(), position.getLongitude())) return;
         try {

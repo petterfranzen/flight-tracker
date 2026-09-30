@@ -1,10 +1,13 @@
 package com.flighttracker.service.agent;
 
 import com.flighttracker.model.Aircraft;
+import com.flighttracker.model.FlightPosition;
 import com.flighttracker.repository.AircraftRepository;
 import com.flighttracker.repository.FlightPositionRepository;
+import com.flighttracker.service.live.PositionsPersistedEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -38,23 +41,31 @@ import java.util.List;
  * minutes at sweep scale, blocking everything else sharing this process's
  * scheduler for that whole time (see spring.task.scheduling.pool.size in
  * application.yml for the other half of that fix).
+ *
+ * persist() also publishes a PositionsPersistedEvent for LiveFeedBroadcaster
+ * once its transaction commits — replaces the Postgres LISTEN/NOTIFY bridge
+ * an earlier, multi-container version of this app used to reach the "api"
+ * container's WebSocket clients from here, now that both live in the same
+ * process (see service/live/PositionsPersistedEvent).
  */
 @Service
 public class PositionPersistenceService {
 
     private static final Logger log = LoggerFactory.getLogger(PositionPersistenceService.class);
-    private static final String POSITION_NOTIFY_CHANNEL = "flight_position";
 
     private final AircraftRepository aircraftRepository;
     private final FlightPositionRepository positionRepository;
     private final JdbcTemplate jdbcTemplate;
+    private final ApplicationEventPublisher eventPublisher;
 
     public PositionPersistenceService(AircraftRepository aircraftRepository,
                                        FlightPositionRepository positionRepository,
-                                       JdbcTemplate jdbcTemplate) {
+                                       JdbcTemplate jdbcTemplate,
+                                       ApplicationEventPublisher eventPublisher) {
         this.aircraftRepository = aircraftRepository;
         this.positionRepository = positionRepository;
         this.jdbcTemplate = jdbcTemplate;
+        this.eventPublisher = eventPublisher;
     }
 
     /** True only on a genuinely fresh database — see AgentOrchestrator.seedOnStartup. */
@@ -67,6 +78,12 @@ public class PositionPersistenceService {
     public List<RawPositionReport> persist(String sourceName, List<RawPositionReport> reports) {
         int written = 0;
         List<RawPositionReport> newAircraft = new ArrayList<>();
+        // Collected across the whole cycle rather than published row by
+        // row: one event per persist() call means LiveFeedBroadcaster does
+        // one viewport-filter pass over one small batch instead of N
+        // separate ones — same batching reasoning as the JDBC batch size
+        // below, just for the in-process fan-out instead of a DB round trip.
+        List<FlightPosition> persisted = new ArrayList<>();
         for (RawPositionReport r : reports) {
             // existsById, not findById: this only needs to know whether the
             // aircraft is new, and loading the entity used to exist purely
@@ -92,18 +109,21 @@ public class PositionPersistenceService {
                         r.latitude(), r.longitude(), r.altitudeM(),
                         r.velocityMs(), r.headingDeg(), r.verticalRateMs(),
                         r.onGround(), sourceName);
-                // The "api" container's WebSocket clients live in a separate
-                // process now, so there's no LiveFeedBroadcaster to call
-                // directly here — NOTIFY instead (see
-                // PositionNotificationListener on the api side). Postgres
-                // only delivers this to LISTENers once *this* transaction
-                // commits, and only the row id is sent (LISTEN/NOTIFY has an
-                // 8000-byte payload cap, and the listener can cheaply look
-                // the row up itself).
-                jdbcTemplate.execute("NOTIFY " + POSITION_NOTIFY_CHANNEL + ", '" + inserted.get().getId() + "'");
+                persisted.add(inserted.get());
                 written++;
             }
             // else: another agent already reported this exact (icao24, observed_at) tick — expected, skip
+        }
+        if (!persisted.isEmpty()) {
+            // LiveFeedBroadcaster's WebSocket clients live in this same
+            // process now — no cross-container Postgres LISTEN/NOTIFY
+            // bridge needed (see the deleted PositionNotificationListener).
+            // Published from inside this @Transactional method, so
+            // LiveFeedBroadcaster's @TransactionalEventListener(AFTER_COMMIT)
+            // only actually runs once this transaction has committed —
+            // same "don't broadcast a write that might still roll back"
+            // guarantee NOTIFY's own commit-gated delivery gave for free.
+            eventPublisher.publishEvent(new PositionsPersistedEvent(persisted));
         }
         log.info("{}: wrote {} of {} position reports", sourceName, written, reports.size());
         return newAircraft;
@@ -195,7 +215,7 @@ public class PositionPersistenceService {
      *
      * Deliberately skips two things persist() does, both specifically
      * because this is the global-sweep path:
-     *  - Per-row NOTIFY: nobody's actively watching an aircraft the
+     *  - Publishing a PositionsPersistedEvent: nobody's actively watching an aircraft the
      *    *global* sweep found, by definition — the hot poll already
      *    covers whatever's in someone's current viewport, in real time.
      *    A sweep-found update surfaces on that aircraft's next
