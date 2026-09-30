@@ -33,6 +33,15 @@ restart_service() {
   if [[ -n "${FT_RESTART_CMD:-}" ]]; then "$FT_RESTART_CMD"; else sudo -n /usr/bin/systemctl restart "$SERVICE"; fi
 }
 
+# deploy's sudo grant covers exactly these two systemctl subcommands (see
+# sudoers-deploy) — restart to install a release, status so `ssh flight
+# status` can report real unit state, not just the symlinks/health guess.
+status_service() {
+  if [[ -n "${FT_STATUS_CMD:-}" ]]; then "$FT_STATUS_CMD"
+  else sudo -n /usr/bin/systemctl status "$SERVICE" --no-pager || true
+  fi
+}
+
 sha_of_link() { basename "$(readlink -f "$1")" .jar; }
 
 # Waits until /api/health reports status UP and the expected version.
@@ -55,19 +64,30 @@ relink() {
   local link="$1" target="$2" tmp
   tmp="$(dirname "$link")/.$(basename "$link").tmp"
   ln -sfn "$target" "$tmp"
-  mv -Tf "$tmp" "$link"
+  # Plain `mv -f`, not GNU's `mv -Tf`: -T only changes behaviour when the
+  # destination is a symlink to a *directory* (treat it as a file to
+  # overwrite instead of a directory to move into), which $link never is
+  # here (it always points at a release jar) — so the portable form does the
+  # same atomic rename on both the Ubuntu target and a macOS dev box.
+  mv -f "$tmp" "$link"
 }
 
 prune_releases() {
   local keep_current keep_previous f
   keep_current="$(readlink -f "$CURRENT" 2>/dev/null || true)"
   keep_previous="$(readlink -f "$PREVIOUS" 2>/dev/null || true)"
-  # Newest first; skip the newest KEEP_RELEASES and anything still linked.
+  # Newest-mtime-first, skip the newest KEEP_RELEASES and anything still
+  # linked. `ls -t` (POSIX-ish, and what `previous`/`current` themselves rely
+  # on for ordering), not `find -printf` + sort (GNU-only): keeps this
+  # runnable with /usr/bin/find on a macOS dev box, same behaviour on the
+  # Ubuntu target. Release counts here are always small (single digits).
+  # shellcheck disable=SC2012 # release filenames are always <40-hex-sha>.jar
+  # (validated in cmd_deploy), never anything `ls` output-parsing could misread
   while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
     [[ "$f" == "$keep_current" || "$f" == "$keep_previous" ]] && continue
     rm -f -- "$f" && log "pruned $(basename "$f")"
-  done < <(find "$RELEASES" -maxdepth 1 -name '*.jar' -printf '%T@ %p\n' \
-             | sort -rn | tail -n +$((KEEP_RELEASES + 1)) | cut -d' ' -f2-)
+  done < <(cd "$RELEASES" && ls -1t -- *.jar 2>/dev/null | tail -n +$((KEEP_RELEASES + 1)) | sed "s#^#$RELEASES/#")
 }
 
 cmd_deploy() {
@@ -80,7 +100,9 @@ cmd_deploy() {
 
   # Read at most MAX+1 bytes so an oversized upload is detected, not truncated.
   head -c $((MAX_JAR_BYTES + 1)) > "$tmp"
-  size=$(stat -c %s "$tmp")
+  # wc -c (POSIX), not `stat -c %s` (GNU-only): keeps this runnable with
+  # /usr/bin/stat on a macOS dev box, same output on the Ubuntu target.
+  size=$(wc -c < "$tmp" | tr -d ' ')
   (( size > 0 )) || die "no jar received on stdin"
   (( size <= MAX_JAR_BYTES )) || die "jar exceeds ${MAX_JAR_BYTES} bytes"
   printf '%s  %s\n' "$sum" "$tmp" | sha256sum -c --quiet - || die "checksum mismatch"
@@ -142,6 +164,7 @@ cmd_status() {
   done
   curl -fsS --max-time 3 "$HEALTH_URL" || log "health endpoint not answering"
   echo
+  status_service
 }
 
 main() {

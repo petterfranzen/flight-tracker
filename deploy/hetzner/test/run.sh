@@ -53,4 +53,28 @@ check "rollback verb"               0  d "rollback"
 check "current is A after rollback" 0  test "$(basename "$(readlink -f "$work/app/current.jar")" .jar)" = "$A"
 check "status verb"                 0  d "status"
 check "no temp files left"          0  test -z "$(find "$work/app/releases" -name '.incoming.*')"
+
+# --- release pruning (deploy.sh keeps KEEP_RELEASES=5 on disk) ---
+# A, B, C are already on disk from above. Pin their mtimes first so pruning
+# order is deterministic regardless of how fast the checks above actually
+# ran (same-second mtimes would otherwise make "oldest" a coin flip).
+touch -t 202601010000.00 "$work/app/releases/$A.jar"
+touch -t 202601010000.01 "$work/app/releases/$B.jar"
+touch -t 202601010000.02 "$work/app/releases/$C.jar"
+D=$(sha 5); E=$(sha 6); F=$(sha 7)
+sd=$(jar "$D"); se=$(jar "$E"); sf=$(jar "$F")
+check "third deploy"  0 bash -c "SSH_ORIGINAL_COMMAND='deploy $D $sd' '$here/../deploy.sh' < '$work/$D.jar'"
+touch -t 202601010000.03 "$work/app/releases/$D.jar"
+check "fourth deploy" 0 bash -c "SSH_ORIGINAL_COMMAND='deploy $E $se' '$here/../deploy.sh' < '$work/$E.jar'"
+touch -t 202601010000.04 "$work/app/releases/$E.jar"
+# F is the 6th release ever written (A..F); its successful deploy's
+# prune_releases should evict exactly the oldest one not linked by
+# current/previous — A — and leave the other 5.
+check "fifth deploy (6th release on disk, prunes the oldest)" 0 \
+  bash -c "SSH_ORIGINAL_COMMAND='deploy $F $sf' '$here/../deploy.sh' < '$work/$F.jar'"
+check "oldest release (A) pruned"   1 test -e "$work/app/releases/$A.jar"
+check "5 releases remain on disk"   0 test "$(find "$work/app/releases" -maxdepth 1 -name '*.jar' | wc -l | tr -d ' ')" = 5
+check "current is F after prune"    0 test "$(basename "$(readlink -f "$work/app/current.jar")" .jar)" = "$F"
+check "previous (E) not pruned"     0 test -e "$work/app/releases/$E.jar"
+
 echo "$pass passed, $fail failed"; (( fail == 0 ))
