@@ -74,8 +74,8 @@ command above and wait (VM boot + nerdctl provisioning takes a few minutes).
 | Gate B1 | ✅ **PASS** | independently verified, see `B1-verify-1.md`. Verifier rebuilt both before/after bundles from clean `npm ci` and independently measured Leaflet's own gzip footprint (42,661B) — confirms the bundle-size explanation checks out. 2 non-blocking concerns noted: no dedicated theme-toggle UI test (pre-existing, not a regression), airport markers lose Tab-key reachability (documented trade-off). |
 | C1 ci-deployer | ✅ reported PASS | 4 commits, 20/20 local checks green. See `C1-handoff.md`. Two checklist items (workflow `blackbox` green, `/api/health` version) are structurally blocked on A1/A2 landing — expected per PLAN, deferred to Final Gate. |
 | Gate C1 | ✅ **PASS** | independently verified, see `C1-verify-1.md`. Two items deferred to Final Gate (structural to parallel-worktree design, not failures): live `blackbox` CI green, `/api/health` version match — both need A1's `/api/health` to exist first. |
-| Phase M merge | not started | |
-| Final gate | not started | |
+| Phase M merge | ✅ done | 3 clean `--no-ff` merges (cm-backend, cm-frontend, cm-ci — the pom.xml conflict PLAN anticipated resolved automatically, verified both sides landed correctly), obsolete files removed (docker-compose.yml, Dockerfiles, nginx.conf, old workflows), README/deploy-README/multi-agent-workflow docs updated. Full rebuild green: 72/72 backend tests, 17/17 Playwright specs. |
+| Final gate | ⏳ verifying | |
 | PR opened | not started | |
 
 Update the table above (and commit) as each stage completes. Hand-off
