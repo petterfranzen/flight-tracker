@@ -8,6 +8,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
+import java.time.Clock;
 import java.time.Instant;
 import java.util.Optional;
 
@@ -45,15 +46,18 @@ public class AircraftEnrichmentService {
     private final AdsbdbClient adsbdbClient;
     private final OpenSkyFlightsClient flightsClient;
     private final AirportLookupService airportLookupService;
+    private final Clock clock;
 
     public AircraftEnrichmentService(AircraftRepository aircraftRepository,
                                       AdsbdbClient adsbdbClient,
                                       OpenSkyFlightsClient flightsClient,
-                                      AirportLookupService airportLookupService) {
+                                      AirportLookupService airportLookupService,
+                                      Clock clock) {
         this.aircraftRepository = aircraftRepository;
         this.adsbdbClient = adsbdbClient;
         this.flightsClient = flightsClient;
         this.airportLookupService = airportLookupService;
+        this.clock = clock;
     }
 
     @Async("enrichmentExecutor")
@@ -91,47 +95,41 @@ public class AircraftEnrichmentService {
     public Optional<Instant> checkLandingIfNeeded(String icao24, Instant lastObservedAt) {
         Aircraft aircraft = aircraftRepository.findById(icao24).orElse(null);
         if (aircraft == null) return Optional.empty();
-        if (lastObservedAt.equals(aircraft.getLandingCheckObservedAt())) {
-            return Optional.ofNullable(aircraft.getLandingConfirmedAt());
+        if (lastObservedAt.equals(aircraft.landingCheckObservedAt())) {
+            return Optional.ofNullable(aircraft.landingConfirmedAt());
         }
 
         Optional<Instant> confirmedAt = flightsClient.confirmLanded(icao24, lastObservedAt);
-        aircraft.setLandingCheckObservedAt(lastObservedAt);
-        aircraft.setLandingConfirmedAt(confirmedAt.orElse(null));
-        aircraftRepository.save(aircraft);
+        aircraftRepository.updateLandingCheck(icao24, lastObservedAt, confirmedAt.orElse(null));
         return confirmedAt;
     }
 
     private void doEnrich(String icao24, String callsign) {
         Optional<AircraftInfo> info = adsbdbClient.fetchAircraftInfo(icao24);
         Optional<Route> route = fetchRoute(icao24, callsign).map(this::backfillNames);
-        // findById/save each run in their own transaction (Spring Data's
-        // SimpleJpaRepository), which is fine here — the mutation in
-        // between is plain Java, not a second write needing atomicity
-        // with the first.
-        aircraftRepository.findById(icao24).ifPresent(aircraft -> {
-            info.ifPresent(i -> {
-                aircraft.setModel(i.model());
-                aircraft.setRegistration(i.registration());
-                aircraft.setOperator(i.operator());
-            });
-            route.ifPresent(r -> {
-                aircraft.setOriginAirport(r.originAirport());
-                aircraft.setOriginAirportName(r.originAirportName());
-                aircraft.setOriginAirportLat(r.originAirportLat());
-                aircraft.setOriginAirportLon(r.originAirportLon());
-                aircraft.setDestinationAirport(r.destinationAirport());
-                aircraft.setDestinationAirportName(r.destinationAirportName());
-                aircraft.setDestinationAirportLat(r.destinationAirportLat());
-                aircraft.setDestinationAirportLon(r.destinationAirportLon());
-            });
-            // Set even when nothing was found: marks the lookup as "tried",
-            // so a data-less aircraft (no adsbdb record, no route) doesn't
-            // trigger a fresh external lookup every single time its
-            // dossier is viewed again.
-            aircraft.setMetadataFetchedAt(Instant.now());
-            aircraftRepository.save(aircraft);
-        });
+        // Aircraft is immutable (cloud migration A2) — no more
+        // load/mutate-fields/save; updateEnrichment issues a single
+        // targeted UPDATE, only touching the columns a lookup actually
+        // found a value for (see that method's own javadoc). Runs
+        // unconditionally, even when both lookups came back empty: it
+        // still needs to stamp metadataFetchedAt so a data-less aircraft
+        // (no adsbdb record, no route) doesn't trigger a fresh external
+        // lookup every single time its dossier is viewed again.
+        AircraftInfo i = info.orElse(null);
+        Route r = route.orElse(null);
+        aircraftRepository.updateEnrichment(icao24,
+                i == null ? null : i.model(),
+                i == null ? null : i.registration(),
+                i == null ? null : i.operator(),
+                r == null ? null : r.originAirport(),
+                r == null ? null : r.originAirportName(),
+                r == null ? null : r.originAirportLat(),
+                r == null ? null : r.originAirportLon(),
+                r == null ? null : r.destinationAirport(),
+                r == null ? null : r.destinationAirportName(),
+                r == null ? null : r.destinationAirportLat(),
+                r == null ? null : r.destinationAirportLon(),
+                clock.instant());
         if (info.isEmpty() && route.isEmpty()) {
             log.debug("No enrichment data found for {}", icao24);
         }
@@ -170,12 +168,12 @@ public class AircraftEnrichmentService {
 
         return new Route(
                 route.originAirport(),
-                origin != null ? origin.getName() : route.originAirportName(),
-                origin != null ? origin.getLatitude() : route.originAirportLat(),
-                origin != null ? origin.getLongitude() : route.originAirportLon(),
+                origin != null ? origin.name() : route.originAirportName(),
+                origin != null ? origin.latitude() : route.originAirportLat(),
+                origin != null ? origin.longitude() : route.originAirportLon(),
                 route.destinationAirport(),
-                destination != null ? destination.getName() : route.destinationAirportName(),
-                destination != null ? destination.getLatitude() : route.destinationAirportLat(),
-                destination != null ? destination.getLongitude() : route.destinationAirportLon());
+                destination != null ? destination.name() : route.destinationAirportName(),
+                destination != null ? destination.latitude() : route.destinationAirportLat(),
+                destination != null ? destination.longitude() : route.destinationAirportLon());
     }
 }

@@ -10,7 +10,7 @@ import com.flighttracker.service.FlightPhaseClassifier;
 import com.flighttracker.service.LiveVisibilityWindows;
 import com.flighttracker.service.enrichment.AircraftEnrichmentService;
 import com.flighttracker.service.enrichment.AirportLookupService;
-import org.springframework.context.annotation.Profile;
+import com.flighttracker.service.live.LiveStateStore;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -23,32 +23,34 @@ import java.util.Optional;
 
 @RestController
 @RequestMapping("/api/aircraft")
-@Profile("api")
 public class AircraftController {
 
     private final AircraftRepository aircraftRepository;
     private final FlightPositionRepository positionRepository;
+    private final LiveStateStore liveStateStore;
     private final AircraftEnrichmentService enrichmentService;
     private final AirportLookupService airportLookupService;
 
     public AircraftController(AircraftRepository aircraftRepository,
                                FlightPositionRepository positionRepository,
+                               LiveStateStore liveStateStore,
                                AircraftEnrichmentService enrichmentService,
                                AirportLookupService airportLookupService) {
         this.aircraftRepository = aircraftRepository;
         this.positionRepository = positionRepository;
+        this.liveStateStore = liveStateStore;
         this.enrichmentService = enrichmentService;
         this.airportLookupService = airportLookupService;
     }
 
     /**
      * Dossier fields (type/registration/operator/origin/destination) for one
-     * aircraft. Aircraft the "agent" container's hot poll sees get enriched
-     * eagerly and asynchronously (AgentOrchestrator.pollAll); aircraft only
-     * the global sweep has found are never eagerly enriched (that would mean
-     * enriching several thousand aircraft nobody's looking at every sweep —
-     * see AgentOrchestrator.pollGlobalSweep for why that doesn't scale), so
-     * this does it lazily and synchronously right here instead, the moment
+     * aircraft. Aircraft the hot poll sees get enriched eagerly and
+     * asynchronously (AgentOrchestrator.pollAll); aircraft only the global
+     * sweep has found are never eagerly enriched (that would mean enriching
+     * several thousand aircraft nobody's looking at every sweep — see
+     * AgentOrchestrator.pollGlobalSweep for why that doesn't scale), so this
+     * does it lazily and synchronously right here instead, the moment
      * someone actually asks. That means this request can take a bit longer
      * than a typical GET the first time a given aircraft's dossier is
      * opened — acceptable for a single user-initiated lookup, unlike the
@@ -59,8 +61,8 @@ public class AircraftController {
         Aircraft aircraft = aircraftRepository.findById(icao24).orElse(null);
         if (aircraft == null) return ResponseEntity.notFound().build();
 
-        if (aircraft.getMetadataFetchedAt() == null) {
-            String callsign = positionRepository.findLatestCallsign(icao24).orElse(null);
+        if (aircraft.metadataFetchedAt() == null) {
+            String callsign = liveStateStore.findLatestCallsign(icao24).orElse(null);
             enrichmentService.enrichSynchronously(icao24, callsign);
             aircraft = aircraftRepository.findById(icao24).orElse(aircraft);
         }
@@ -96,23 +98,23 @@ public class AircraftController {
 
     private AircraftDossier toDossier(Aircraft a) {
         Instant now = Instant.now();
-        Optional<Instant> legStart = positionRepository.findCurrentLegTakeoffTime(a.getIcao24());
-        FlightPosition current = positionRepository.findLatestPosition(a.getIcao24()).orElse(null);
+        Optional<Instant> legStart = positionRepository.findCurrentLegTakeoffTime(a.icao24());
+        FlightPosition current = liveStateStore.findLatestPosition(a.icao24()).orElse(null);
         // Raw (never coalesced with EstimatorAgent's estimate) — needed only
         // for describeLikelyStatus's "at last report" distance text below,
         // which is documented as describing the last real report, not a
         // dead-reckoned projection. `current` itself stays coalesced for
         // everything else (the ETA calc benefits from the more accurate
         // live position).
-        FlightPositionRepository.RawLatLon rawPosition =
-                positionRepository.findRawLatestLatLon(a.getIcao24()).orElse(null);
+        LiveStateStore.RawLatLon rawPosition =
+                liveStateStore.findRawLatestLatLon(a.icao24()).orElse(null);
 
         // Skip the lookup entirely when on the ground — FlightPhaseClassifier
         // only needs the earlier-altitude reference to distinguish
         // climbing/descending/level, none of which matter once on_ground
         // makes the phase ON_GROUND outright.
         //
-        // Anchored to current.getObservedAt(), not `now`: for a stale
+        // Anchored to current.observedAt(), not `now`: for a stale
         // aircraft (the whole point staleExplanation and the presumed-landed
         // check below exist for) `now` is well past the last real report, so
         // "now - 3min" is still after that report — the query would just
@@ -120,13 +122,13 @@ public class AircraftController {
         // reference, comparing it to itself (delta 0, always reads LEVEL).
         // Anchoring to when the data actually is makes the window relative
         // to the aircraft's own timeline instead of the server's.
-        Double earlierAltitudeForPhase = (current != null && !current.isOnGround())
+        Double earlierAltitudeForPhase = (current != null && !current.onGround())
                 ? legStart.flatMap(ls -> positionRepository.findAltitudeAtOrBefore(
-                        a.getIcao24(), ls, current.getObservedAt().minus(PHASE_TREND_WINDOW)))
+                        a.icao24(), ls, current.observedAt().minus(PHASE_TREND_WINDOW)))
                 .orElse(null)
                 : null;
         FlightPhaseClassifier.FlightPhase phase = current == null ? null
-                : FlightPhaseClassifier.classify(current.isOnGround(), current.getAltitudeM(), earlierAltitudeForPhase);
+                : FlightPhaseClassifier.classify(current.onGround(), current.altitudeM(), earlierAltitudeForPhase);
 
         // Flight time stops counting at the last real report once the
         // aircraft is known (on_ground) or presumed (silent this long while
@@ -139,8 +141,8 @@ public class AircraftController {
                 || phase == FlightPhaseClassifier.FlightPhase.LANDING;
         boolean presumedLanded = current != null && (phase == FlightPhaseClassifier.FlightPhase.ON_GROUND
                 || (descendingOrLanding
-                    && Duration.between(current.getObservedAt(), now).compareTo(LiveVisibilityWindows.PRESUMED_LANDED_SILENCE) > 0));
-        Instant flightEnd = presumedLanded ? current.getObservedAt() : now;
+                    && Duration.between(current.observedAt(), now).compareTo(LiveVisibilityWindows.PRESUMED_LANDED_SILENCE) > 0));
+        Instant flightEnd = presumedLanded ? current.observedAt() : now;
         Long flightMinutes = legStart.map(takeoff -> Duration.between(takeoff, flightEnd).toMinutes())
                 .filter(minutes -> minutes <= MAX_PLAUSIBLE_FLIGHT_MINUTES)
                 .orElse(null);
@@ -151,35 +153,35 @@ public class AircraftController {
         // than a reason to hide it — same call as EstimatedPositionService
         // dead-reckoning a stale fix forward instead of giving up on it.
         Long etaMinutes = null;
-        if (current != null && a.getDestinationAirportLat() != null && a.getDestinationAirportLon() != null) {
-            if (!current.isOnGround() && current.getVelocityMs() != null
-                    && current.getVelocityMs() >= MIN_ETA_GROUNDSPEED_MS) {
+        if (current != null && a.destinationAirportLat() != null && a.destinationAirportLon() != null) {
+            if (!current.onGround() && current.velocityMs() != null
+                    && current.velocityMs() >= MIN_ETA_GROUNDSPEED_MS) {
                 double distanceM = haversineMeters(
-                        current.getLatitude(), current.getLongitude(),
-                        a.getDestinationAirportLat(), a.getDestinationAirportLon());
-                etaMinutes = Math.round(distanceM / current.getVelocityMs() / 60.0);
+                        current.latitude(), current.longitude(),
+                        a.destinationAirportLat(), a.destinationAirportLon());
+                etaMinutes = Math.round(distanceM / current.velocityMs() / 60.0);
             }
         }
 
-        Double cruisingAltitudeM = legStart.flatMap(ls -> positionRepository.findMaxAltitudeSince(a.getIcao24(), ls))
+        Double cruisingAltitudeM = legStart.flatMap(ls -> positionRepository.findMaxAltitudeSince(a.icao24(), ls))
                 .orElse(null);
 
         // Only worth spending an OpenSky call on once our own heuristic
         // already presumes landed — see AircraftEnrichmentService.
         // checkLandingIfNeeded for the throttling/caching behind this.
         Optional<Instant> landingConfirmedAt = presumedLanded
-                ? enrichmentService.checkLandingIfNeeded(a.getIcao24(), current.getObservedAt())
+                ? enrichmentService.checkLandingIfNeeded(a.icao24(), current.observedAt())
                 : Optional.empty();
 
         String staleExplanation = describeLikelyStatus(current, rawPosition, phase, a, landingConfirmedAt.isPresent());
 
-        AirportDisplay origin = resolveAirport(a.getOriginAirport(), a.getOriginAirportName());
-        AirportDisplay destination = resolveAirport(a.getDestinationAirport(), a.getDestinationAirportName());
+        AirportDisplay origin = resolveAirport(a.originAirport(), a.originAirportName());
+        AirportDisplay destination = resolveAirport(a.destinationAirport(), a.destinationAirportName());
 
         return new AircraftDossier(
-                a.getIcao24(), a.getRegistration(), a.getModel(), a.getOperator(),
-                a.getOriginAirport(), origin.name(), origin.iataCode(),
-                a.getDestinationAirport(), destination.name(), destination.iataCode(),
+                a.icao24(), a.registration(), a.model(), a.operator(),
+                a.originAirport(), origin.name(), origin.iataCode(),
+                a.destinationAirport(), destination.name(), destination.iataCode(),
                 flightMinutes, etaMinutes, cruisingAltitudeM, phase == null ? null : phase.name(), staleExplanation,
                 legStart.orElse(null));
     }
@@ -209,8 +211,8 @@ public class AircraftController {
     private AirportDisplay resolveAirport(String icaoCode, String cachedName) {
         if (icaoCode == null) return AirportDisplay.EMPTY;
         Optional<Airport> airport = airportLookupService.lookup(icaoCode);
-        String name = cachedName != null ? cachedName : airport.map(Airport::getName).orElse(null);
-        String iataCode = airport.map(Airport::getIataCode).orElse(null);
+        String name = cachedName != null ? cachedName : airport.map(Airport::name).orElse(null);
+        String iataCode = airport.map(Airport::iataCode).orElse(null);
         return new AirportDisplay(name, iataCode);
     }
 
@@ -240,7 +242,7 @@ public class AircraftController {
      *                         a sourced fact, rather than changing the
      *                         underlying guess itself.
      */
-    private String describeLikelyStatus(FlightPosition current, FlightPositionRepository.RawLatLon raw,
+    private String describeLikelyStatus(FlightPosition current, LiveStateStore.RawLatLon raw,
                                          FlightPhaseClassifier.FlightPhase phase, Aircraft a,
                                          boolean landingConfirmed) {
         if (current == null || phase == null) return null;
@@ -253,18 +255,18 @@ public class AircraftController {
                 || phase == FlightPhaseClassifier.FlightPhase.LANDING;
 
         Double distanceToDestKm = null;
-        if (raw != null && a.getDestinationAirportLat() != null && a.getDestinationAirportLon() != null) {
+        if (raw != null && a.destinationAirportLat() != null && a.destinationAirportLon() != null) {
             distanceToDestKm = haversineMeters(
-                    raw.getLatitude(), raw.getLongitude(),
-                    a.getDestinationAirportLat(), a.getDestinationAirportLon()) / 1000.0;
+                    raw.latitude(), raw.longitude(),
+                    a.destinationAirportLat(), a.destinationAirportLon()) / 1000.0;
         }
 
         if (landingConfirmed) {
-            String dest = a.getDestinationAirportName() != null ? a.getDestinationAirportName() : "its destination";
+            String dest = a.destinationAirportName() != null ? a.destinationAirportName() : "its destination";
             return String.format("confirmed landed near %s (OpenSky's own flight record shows this leg ended)", dest);
         }
         if (descendingOrLanding && distanceToDestKm != null && distanceToDestKm <= NEAR_DESTINATION_KM) {
-            String dest = a.getDestinationAirportName() != null ? a.getDestinationAirportName() : "its destination";
+            String dest = a.destinationAirportName() != null ? a.destinationAirportName() : "its destination";
             return String.format("likely landed near %s (%.0f km away at last report, and descending)", dest, distanceToDestKm);
         }
         if (descendingOrLanding) {

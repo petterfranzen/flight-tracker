@@ -37,12 +37,10 @@ import java.util.List;
  * single local batched Postgres operation either way — no external call,
  * so there's no cost to doing this daily instead of once.
  *
- * No @Profile restriction, same as the rest of the enrichment package —
- * both the "api" and "agent" containers call AircraftEnrichmentService, so
- * both need this table populated, and both independently running this
- * sync on their own schedule is harmless: icao_code is the primary key,
- * so two concurrent upserts of the same row just serialize at the DB
- * level, not a conflict.
+ * Idempotent by design, which matters now that this and every other
+ * @Scheduled method share one process/pool: icao_code is the primary key,
+ * so even an overlapping run just serializes at the DB level, not a
+ * conflict.
  */
 @Component
 public class AirportSeedService {

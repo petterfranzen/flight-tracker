@@ -38,10 +38,10 @@ public class UsageService {
     }
 
     public List<AircraftUsage> usageForWindow(Instant from, Instant to) {
-        List<FlightPosition> all = positionRepository.findByObservedAtBetweenOrderByIcao24AscObservedAtAsc(from, to);
+        List<FlightPosition> all = positionRepository.findByObservedAtBetween(from, to);
 
         Map<String, List<FlightPosition>> byAircraft = all.stream()
-                .collect(Collectors.groupingBy(FlightPosition::getIcao24, LinkedHashMap::new, Collectors.toList()));
+                .collect(Collectors.groupingBy(FlightPosition::icao24, LinkedHashMap::new, Collectors.toList()));
 
         List<AircraftUsage> results = new ArrayList<>();
         for (var entry : byAircraft.entrySet()) {
@@ -58,12 +58,12 @@ public class UsageService {
             FlightPosition prev = track.get(i - 1);
             FlightPosition curr = track.get(i);
 
-            double legKm = haversineKm(prev.getLatitude(), prev.getLongitude(),
-                                        curr.getLatitude(), curr.getLongitude());
+            double legKm = haversineKm(prev.latitude(), prev.longitude(),
+                                        curr.latitude(), curr.longitude());
             distanceKm += legKm;
 
-            if (!prev.isOnGround() && !curr.isOnGround()) {
-                airborneSeconds += Duration.between(prev.getObservedAt(), curr.getObservedAt()).getSeconds();
+            if (!prev.onGround() && !curr.onGround()) {
+                airborneSeconds += Duration.between(prev.observedAt(), curr.observedAt()).getSeconds();
             }
         }
 
@@ -71,7 +71,7 @@ public class UsageService {
         double avgSpeedKmh = airborneHours > 0 ? distanceKm / airborneHours : 0.0;
 
         String registration = aircraftRepository.findById(icao24)
-                .map(a -> a.getRegistration())
+                .map(a -> a.registration())
                 .orElse(null);
 
         return new AircraftUsage(icao24, registration, track.size(), round2(distanceKm), round2(airborneHours), round2(avgSpeedKmh));

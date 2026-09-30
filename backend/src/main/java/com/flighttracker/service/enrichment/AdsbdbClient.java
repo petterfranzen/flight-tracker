@@ -17,10 +17,9 @@ import java.util.Optional;
  * failure (including "we don't have this aircraft") degrades to empty
  * rather than propagating, since this is dossier enrichment, not core data.
  *
- * No @Profile restriction: used by the "agent" container's eager
- * enrichment of newly hot-polled aircraft, and by the "api" container's
- * on-demand enrichment (AircraftController) for aircraft the global sweep
- * found but nobody's looked at yet.
+ * Used by both AgentOrchestrator's eager enrichment of newly hot-polled
+ * aircraft and AircraftController's on-demand enrichment for aircraft the
+ * global sweep found but nobody's looked at yet.
  */
 @Component
 public class AdsbdbClient {

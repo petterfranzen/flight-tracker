@@ -6,7 +6,6 @@ import com.flighttracker.service.enrichment.AircraftEnrichmentService;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.context.annotation.Profile;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
@@ -19,13 +18,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * to wire up by hand. Each poll cycle fans out to all agents, normalises
  * their reports, and hands them to PositionPersistenceService to write.
  *
- * Only runs in the "agent" container — see PollWindowService and
- * PositionNotificationListener for how it coordinates with the "api"
- * container (poll-window state and the live WebSocket feed respectively)
- * now that they're separate processes.
+ * Runs in the same process as everything else (see PollWindowService and
+ * LiveFeedBroadcaster, which this reaches via a same-process
+ * PositionsPersistedEvent rather than the cross-container pub/sub channel
+ * bridge an earlier, multi-container version of this app used).
  */
 @Service
-@Profile("agent")
 public class AgentOrchestrator {
 
     private static final Logger log = LoggerFactory.getLogger(AgentOrchestrator.class);
@@ -35,6 +33,7 @@ public class AgentOrchestrator {
     private final AircraftEnrichmentService enrichmentService;
     private final PollWindowService pollWindowService;
     private final PhaseLogger phases;
+    private final SweepHealthTracker sweepHealthTracker;
 
     // Local-only, just to avoid a log line every poll cycle while the
     // window stays closed — the authoritative state is PollWindowService.
@@ -48,12 +47,14 @@ public class AgentOrchestrator {
                               PositionPersistenceService persistenceService,
                               AircraftEnrichmentService enrichmentService,
                               PollWindowService pollWindowService,
-                              PhaseLogger phases) {
+                              PhaseLogger phases,
+                              SweepHealthTracker sweepHealthTracker) {
         this.agents = agents;
         this.persistenceService = persistenceService;
         this.enrichmentService = enrichmentService;
         this.pollWindowService = pollWindowService;
         this.phases = phases;
+        this.sweepHealthTracker = sweepHealthTracker;
     }
 
     // Opens the window on every container boot, same as the old in-memory
@@ -179,6 +180,11 @@ public class AgentOrchestrator {
                 log.warn("Agent {} global sweep failed", agent.sourceName(), e);
             }
         }
+        // Recorded for the whole cycle, not per-agent — see
+        // SweepHealthTracker's own javadoc for why a single agent's
+        // exception above (already caught and logged) doesn't stop this
+        // from counting as "the sweep ran".
+        sweepHealthTracker.recordSweepCompleted();
         phases.idle("global sweep complete");
     }
 }
