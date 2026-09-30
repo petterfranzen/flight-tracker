@@ -163,6 +163,16 @@ CREATE TABLE IF NOT EXISTS airport (
 COMMENT ON TABLE flight_position IS
     'Insert-only, but not retained forever: PositionRetentionService prunes rows older than 24h (see flighttracker.retention.*). Nothing reads further back than that — the frontend track trace asks for 6h.';
 
+-- CLOUD MIGRATION A1: no longer written to. Replaced by the in-memory
+-- LiveStateStore (service/live/) now that the api/agent/estimator split
+-- that originally justified a DB-backed "latest per aircraft" table is
+-- gone — see LiveStateStore's own javadoc. Left in place (unused) rather
+-- than dropped here: A2 (sqlite-migrator) removes it along with
+-- poll_window and viewport_state below when it rewrites this schema for
+-- SQLite, so dropping it here would just be extra churn for that same
+-- commit to redo. The comments below describe the table's original
+-- design, which LiveStateStore's upsert/read logic ports exactly.
+--
 -- One row per aircraft, always its most recent report — a materialized
 -- "current state" projection kept in sync at write time (see
 -- FlightPositionRepository.upsertLatestPosition, called right after every
@@ -244,13 +254,19 @@ DROP INDEX IF EXISTS idx_latest_position_ground_state;
 COMMENT ON TABLE aircraft_latest_position IS
     'One row per aircraft: its most recent report, plus an optional dead-reckoned estimate (estimated_*) written independently by EstimatorAgent. Upserted alongside flight_position, never queried to derive "latest" the expensive way.';
 
--- Bounded-polling state (see PollWindowService). Now that the API and the
--- polling agent are separate containers/processes, they can no longer
--- share an in-memory AtomicReference for "is the poll window open" — this
--- single-row table is the shared state instead. Both processes run this
--- schema on startup, so the insert is ON CONFLICT DO NOTHING to avoid
--- resetting an already-running agent's window if the api container
--- restarts later.
+-- CLOUD MIGRATION A1: no longer written to (except quota_window_start/
+-- quota_restart_count and active_until, which PollWindowService now keeps
+-- purely in memory — see that class's own javadoc for why those three
+-- specifically don't need to survive a restart, unlike the hot-poll budget
+-- columns below). Left in place rather than dropped for the same reason as
+-- aircraft_latest_position above: A2 removes it. The comments below
+-- describe the table's original multi-container design.
+--
+-- Bounded-polling state (see PollWindowService). Was DB-backed because the
+-- api and agent containers, as separate processes, couldn't share an
+-- in-memory AtomicReference for "is the poll window open". The insert is
+-- ON CONFLICT DO NOTHING to avoid resetting an already-running agent's
+-- window if the api container restarted later.
 CREATE TABLE IF NOT EXISTS poll_window (
     id           SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
     active_until TIMESTAMPTZ NOT NULL
@@ -260,37 +276,36 @@ ON CONFLICT (id) DO NOTHING;
 
 -- Global "Resume Watch" quota — this app is internet-facing and every
 -- resume opens a real OpenSky-polling window, so it's a hard cap on
--- OpenSky usage, not just a UX nicety. Tracks the start of the current
--- 15-minute quota window and how many resumes have happened in it — see
--- PollWindowService.restart(). Deliberately DB-backed like active_until
--- above, for the same reason: the "agent" and "api" containers are
--- separate processes and this state has to be visible to both (well,
--- really just "api", which is the only one that calls restart() — but
--- consistent with the rest of this table rather than a special case).
+-- OpenSky usage, not just a UX nicety. Tracked the start of the current
+-- 15-minute quota window and how many resumes had happened in it — see
+-- PollWindowService.restart().
 ALTER TABLE poll_window ADD COLUMN IF NOT EXISTS quota_window_start TIMESTAMPTZ;
 ALTER TABLE poll_window ADD COLUMN IF NOT EXISTS quota_restart_count INT NOT NULL DEFAULT 0;
 
 -- Global hot-poll call budget — a hard ceiling (flighttracker.agents.
 -- hot-poll-daily-call-budget) on hot-poll HTTP calls per rolling 24h,
 -- across every caller combined, independent of the poll window and quota
--- above. Same DB-backed reasoning as the rest of this table: the "agent"
--- container is the one that checks and increments this on every poll
--- cycle (see PollWindowService.hotPollBudgetAvailable/recordHotPollCall
--- and AgentOrchestrator.pollAll()), but it's kept alongside the window
--- state it gates rather than in agent-local memory so a container restart
--- doesn't quietly reset a budget meant to survive the whole day.
+-- above. These two columns are the one part of this table cloud migration
+-- A1 *doesn't* just leave orphaned: the budget is still required to
+-- survive a process restart (the original design requirement — see
+-- app_state below), so PollWindowService.recordHotPollCall now writes
+-- through to app_state('hotpoll.window_start'/'hotpoll.call_count')
+-- instead of here.
 ALTER TABLE poll_window ADD COLUMN IF NOT EXISTS hot_poll_count_window_start TIMESTAMPTZ;
 ALTER TABLE poll_window ADD COLUMN IF NOT EXISTS hot_poll_call_count INT NOT NULL DEFAULT 0;
 
+-- CLOUD MIGRATION A1: no longer written to — ViewportService now holds the
+-- current viewport in a plain in-memory AtomicReference (see that class's
+-- own javadoc). Left in place for A2 to drop, same reasoning as the two
+-- tables above.
+--
 -- Which lat/lon box the "hot" (frequent, poll-window-gated) OpenSky poll
--- should target — see ViewportService. Reported by the frontend whenever
--- someone pans/zooms the map (GET /api/flights/live with bbox params), so
--- the agent's frequent polling tracks whatever's actually on someone's
--- screen instead of a fixed region. Same single-shared-row simplicity as
--- poll_window: this app has one map, viewed by one person at a time, not a
--- multi-tenant per-session viewport model. Seeded with the app's old fixed
--- default region (roughly Scandinavia/the Baltic) so a fresh deployment
--- shows live traffic immediately, before any browser has reported in.
+-- should target. Was DB-backed because the agent container (which needs
+-- this to know what to hot-poll) was a separate process from the api
+-- container (where the frontend's viewport reports land). Seeded with the
+-- app's old fixed default region (roughly Scandinavia/the Baltic) so a
+-- fresh deployment showed live traffic immediately, before any browser had
+-- reported in — ViewportService.DEFAULT now serves that same purpose.
 CREATE TABLE IF NOT EXISTS viewport_state (
     id           SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
     lat_min      DOUBLE PRECISION NOT NULL,
@@ -302,6 +317,24 @@ CREATE TABLE IF NOT EXISTS viewport_state (
 INSERT INTO viewport_state (id, lat_min, lat_max, lon_min, lon_max)
 VALUES (1, 54.0, 66.0, 10.0, 25.0)
 ON CONFLICT (id) DO NOTHING;
+
+-- Small write-through key/value store (see AppStateRepository) for the
+-- handful of counters that must survive a process restart now that most
+-- former cross-container state (poll_window, viewport_state,
+-- aircraft_latest_position above) moved into plain in-memory fields —
+-- cloud migration A1, PLAN.md §6 item 6. Currently holds only the global
+-- hot-poll-daily-call-budget counter (keys 'hotpoll.window_start' /
+-- 'hotpoll.call_count') and, one row per client IP, the per-IP
+-- hot-poll-seconds-per-ip-per-day budget (keys 'hotpoll.ip.<ip>') — see
+-- PollWindowService and HotPollUserBudget respectively. Generic on
+-- purpose: any future counter that needs the same "survive a restart, one
+-- process, no real database schema evolution worth doing for one column"
+-- treatment can reuse this table instead of growing a new one.
+CREATE TABLE IF NOT EXISTS app_state (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 
 -- Releases the lock taken at the top of this script — see that comment.
 SELECT pg_advisory_unlock(727433);

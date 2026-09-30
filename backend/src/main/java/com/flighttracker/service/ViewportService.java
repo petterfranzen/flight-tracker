@@ -1,76 +1,54 @@
 package com.flighttracker.service;
 
 import com.flighttracker.dto.Bounds;
-import com.flighttracker.model.ViewportState;
-import com.flighttracker.repository.ViewportStateRepository;
-import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * Shared "which lat/lon box is currently on someone's screen" state — see
- * the viewport_state table comment in schema.sql for why this is DB-backed
- * (the "agent" container's OpenSkyAgent, which needs this to know what to
- * hot-poll, is a separate process from the "api" container, which is where
- * the frontend's viewport reports land).
+ * Shared "which lat/lon box is currently on someone's screen" state.
  *
- * Same single-shared-row model as PollWindowService: one map, one viewer
- * at a time, not a per-session/per-connection viewport.
+ * Cloud migration A1 (PLAN.md §6 item 6): this used to be backed by the
+ * viewport_state table because OpenSkyAgent's hot poll (needing to know
+ * what to poll) ran in a separate "agent" container from FlightController
+ * (where the frontend's viewport reports land). Now that both live in the
+ * same process, a plain AtomicReference does the job — no restart-survival
+ * requirement here (a fresh process falling back to DEFAULT until the next
+ * report is exactly the original single-process behaviour, before the
+ * multi-container split ever added a database in the middle). report()
+ * used to be @Async specifically to get a slow DB commit off the request
+ * thread (see the old javadoc: a real NAS I/O contention case, 20+ second
+ * commits under heavy sweep load); an AtomicReference.set() has no I/O to
+ * wait on, so that whole concern — and the dedicated executor
+ * (ViewportAsyncConfig) it needed — is gone too.
+ *
+ * Same single-shared-value model as before: one map, one viewer at a time,
+ * not a per-session/per-connection viewport.
  */
 @Service
 public class ViewportService {
 
-    private static final Integer ROW_ID = 1;
     private static final Bounds DEFAULT = new Bounds(54.0, 66.0, 10.0, 25.0);
 
-    private final ViewportStateRepository repository;
+    private final AtomicReference<Bounds> current = new AtomicReference<>(DEFAULT);
 
-    // Same-process fast path for LiveFeedBroadcaster, which would otherwise
-    // need a DB round trip on every single position it considers
-    // broadcasting. Only ever populated by report() in *this* process — the
-    // "agent" container never calls report(), so it always reads through
-    // current() instead.
-    private volatile Bounds cached;
+    /** Called from FlightController whenever a client reports its current map viewport (GET /api/flights/live with bbox params). */
+    public void report(Bounds bounds) {
+        current.set(bounds);
+    }
 
-    public ViewportService(ViewportStateRepository repository) {
-        this.repository = repository;
+    public Bounds current() {
+        return current.get();
     }
 
     /**
-     * Fire-and-forget from FlightController's point of view: this write
-     * only matters to *other* processes (the agent container's next hot
-     * poll, this process's own WebSocket broadcast filtering) — nothing
-     * about the /live response the caller is waiting on depends on it
-     * landing before that response goes out. Originally ran synchronously
-     * on the request thread; under real NAS load this row's commit was
-     * observed queuing behind heavy concurrent write I/O from the global
-     * sweep for 20+ seconds, and every /live call was paying that wait for
-     * a write it never needed to wait on in the first place. @Async moves
-     * it off the request thread entirely — correct only because this is
-     * called from FlightController, a different bean, not self-invoked
-     * (a same-class call would silently bypass the proxy @Async needs,
-     * the same pitfall AgentOrchestrator.persist() hit with @Transactional).
+     * Same as current() now that both live in the same process and neither
+     * involves a DB round trip — kept as a separate method rather than
+     * folding LiveFeedBroadcaster's call sites into current() directly, so
+     * that distinction ("this read is on the hot broadcast path") stays
+     * visible at the call site even though the two are identical today.
      */
-    @Async("viewportReportExecutor")
-    @Transactional
-    public void report(Bounds bounds) {
-        ViewportState state = repository.findById(ROW_ID)
-                .orElseGet(() -> new ViewportState(bounds.latMin(), bounds.latMax(), bounds.lonMin(), bounds.lonMax()));
-        state.update(bounds.latMin(), bounds.latMax(), bounds.lonMin(), bounds.lonMax());
-        repository.save(state);
-        cached = bounds;
-    }
-
-    /** Always reads through to the DB — the only correct source in a different process than whichever last called report(). */
-    public Bounds current() {
-        return repository.findById(ROW_ID)
-                .map(s -> new Bounds(s.getLatMin(), s.getLatMax(), s.getLonMin(), s.getLonMax()))
-                .orElse(DEFAULT);
-    }
-
-    /** Fast same-process read for LiveFeedBroadcaster; falls back to a DB read once, before this process has seen its first report(). */
     public Bounds currentCached() {
-        Bounds c = cached;
-        return c != null ? c : current();
+        return current.get();
     }
 }
