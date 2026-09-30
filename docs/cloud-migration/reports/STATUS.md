@@ -68,8 +68,8 @@ command above and wait (VM boot + nerdctl provisioning takes a few minutes).
 | Gate A1 | ⏳ verifying | |
 | A2 sqlite-migrator | not started | |
 | Gate A2 | not started | |
-| B1 frontend-vanilla | ⏳ in progress | same note as A1. Worktree `wt/frontend`, branch `feat/cm-frontend`. |
-| Gate B1 | not started | |
+| B1 frontend-vanilla | ✅ reported PASS | 2 commits, 17/17 Playwright specs, two real bugs found+fixed during port. See `B1-handoff.md`. **Bundle-size target (≤60KB gzip) not met — 82KB, well-explained** (Leaflet alone is ~42KB, airport dataset chunk ~23.5KB, both kept per PLAN; app code itself is only ~18KB). Needs Petter's call on the target, not blocking — matches Gate B1 checklist wording "target met or explained." |
+| Gate B1 | ⏳ verifying | |
 | C1 ci-deployer | ✅ reported PASS | 4 commits, 20/20 local checks green. See `C1-handoff.md`. Two checklist items (workflow `blackbox` green, `/api/health` version) are structurally blocked on A1/A2 landing — expected per PLAN, deferred to Final Gate. |
 | Gate C1 | ✅ **PASS** | independently verified, see `C1-verify-1.md`. Two items deferred to Final Gate (structural to parallel-worktree design, not failures): live `blackbox` CI green, `/api/health` version match — both need A1's `/api/health` to exist first. |
 | Phase M merge | not started | |
