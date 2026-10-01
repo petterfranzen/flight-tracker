@@ -49,6 +49,47 @@ shouldn't need to.
 **Secrets:** none are needed to build or test. Never add deploy keys or
 Cloudflare tokens to the cloud environment.
 
+## Working cost-effectively
+
+Every turn re-reads the whole conversation, including each GitHub wake-up
+and scheduled check-in. Long sessions are what cost the most, not the
+amount of work done in them.
+
+**Plan with Opus, build with Sonnet.**
+- **Opus:** defining plans, investigation, debugging, design, anything
+  fuzzy ("why does zoom always redraw"). The output of an Opus session is
+  ideally a brief in `docs/agent-tasks/` (or a PR when the fix is small).
+- **Sonnet:** everything well specified. That includes executing a brief,
+  merging, closing superseded PRs, small fixes, dependency bumps, CI
+  fixes with a known cause, and any session one agent spawns for another.
+  The model is chosen when a session starts, so pick Sonnet in the
+  session picker, or pass it when spawning (`create_session` `model`).
+
+**Rules:**
+1. **One session per PR or topic, then start fresh.** `CLAUDE.md`, the
+   briefs and the PR descriptions carry the context. Don't carry an old
+   PR's history into new work.
+2. **Briefs for anything non-trivial.** A file in `docs/agent-tasks/` with
+   acceptance criteria and a `Model:` line lets a fresh Sonnet session do
+   it without a long conversation.
+3. **Let GitHub do the waiting.** Use GitHub auto-merge for PRs already
+   approved in principle, and GitHub's failure emails for deploys.
+   Subscribe a session to a PR only when you want review comments or CI
+   failures fixed automatically; each wake-up costs a full turn.
+4. **Reproduce CI locally first.** Run the same suites as CI before
+   pushing; tests must not depend on hosts the cloud blocks (stub them, as
+   `tests/scenarios/harness.ts` does). A red CI round trip costs ~7 min
+   plus a wake-up.
+5. **Fan out only for work that is truly independent:** separate files, no
+   ordering between them. Each spawned session starts cold.
+
+```
+Idea / bug
+   ├─ well-defined ─► brief (Model: sonnet) ─► fresh Sonnet session ─► PR + auto-merge
+   └─ fuzzy ───────► Opus session: plan/investigate ─► brief or PR
+CI red ─► GitHub email ─► reopen that session: "fix CI"
+```
+
 ## GitHub Actions
 
 `.github/workflows/claude.yml` runs `anthropics/claude-code-action@v1` when
