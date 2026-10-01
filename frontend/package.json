@@ -12,6 +12,7 @@
     "test:scenarios": "playwright test --grep @scenario --workers=1"
   },
   "dependencies": {
+    "@fontsource/jetbrains-mono": "^5.3.0",
     "@maplibre/maplibre-gl-leaflet": "^0.1.4",
     "leaflet": "^1.9.4",
     "maplibre-gl": "^6.7.0"

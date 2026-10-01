@@ -34,6 +34,20 @@ html, body {
   overflow: hidden;
 }
 
+/* Form controls don't inherit font-family by default (browsers give them
+   their own, e.g. Arial). Family only, not the `font` shorthand, so each
+   control keeps its own size. :where() keeps specificity at zero so any
+   component rule that sets a family on purpose still wins. */
+:where(button, input, select, textarea) {
+  font-family: inherit;
+}
+
+/* Leaflet's own stylesheet sets a Helvetica/Arial stack on the container,
+   which wins for the attribution and anything inside the map. */
+.app-shell .leaflet-container {
+  font-family: inherit;
+}
+
 :root {
   --color-bg: #0b0f14;
   --color-panel: #161d27;
