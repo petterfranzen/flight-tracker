@@ -12,6 +12,9 @@ Branch: `docs/claude-md` from `origin/main`.
    - **Invariants:** `flight_position` is append-only (`UsageService`, `/api/usage`);
      new sources implement `FlightDataAgent` as a `@Component`; live state is
      in-memory (`LiveStateStore`) and pushes go through `PositionsPersistedEvent`;
+     routes (origin/destination) are keyed by callsign (`callsign_route` table,
+     `CallsignRouteService`), not stored per aircraft — the aircraft table's route
+     columns are legacy and unread;
      WebSocket wire format is one `FlightPosition` per frame (the blackbox suite
      depends on it); `/api/health` `version` is the git SHA `deploy.sh` waits for;
      theme tokens live in one place (find it).

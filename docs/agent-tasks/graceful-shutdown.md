@@ -12,7 +12,8 @@ Branch: `fix/graceful-shutdown` from `origin/main`.
 ## Do
 1. Set `server.shutdown: graceful` and `spring.lifecycle.timeout-per-shutdown-phase`
    well under 30 s (e.g. `20s`). Add a one-line comment tying it to `TimeoutStopSec`.
-2. Make scheduled pollers and the retention job finish their current run on
+2. Make scheduled pollers, the retention job and `CallsignRouteService.resolveNext()`
+   (the paced adsbdb route lookups added in PR #71) finish their current run on
    shutdown and not start a new one. Use
    `spring.task.scheduling.shutdown.await-termination` (+ `await-termination-period`)
    if needed.
