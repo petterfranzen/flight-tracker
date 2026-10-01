@@ -33,6 +33,11 @@ The blackbox suite needs the jar running locally; see the `blackbox` job in
 Agent briefs in `.claude/agents/` and commands in `.claude/commands/` are
 part of the checkout, so they work in cloud sessions too.
 
+**Starting work from any device:** queued tasks live in `docs/agent-tasks/`.
+Open claude.ai/code (or the Claude app, or Claude Code on the Linux box),
+pick this repo, and say "Do `docs/agent-tasks/<file>.md`". Because the briefs
+are in git, nothing depends on the machine you start from.
+
 **Network:** the cloud environment must allow the package registries
 (Maven Central, npm, NodeSource, Playwright CDN). The default "trusted"
 network level covers these. Agents can't reach the production VM, and
