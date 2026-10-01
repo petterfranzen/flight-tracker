@@ -711,6 +711,7 @@ function boot(): void {
     const selectedPos = store.get("selectedPos");
     followSelected.update({
       selectedId: store.get("selectedId"),
+      positionId: selectedPos?.icao24 ?? null,
       lat: selectedPos?.latitude ?? null,
       lon: selectedPos?.longitude ?? null,
       sheetExpanded: store.get("dossierExpanded"),

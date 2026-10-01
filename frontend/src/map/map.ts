@@ -153,6 +153,8 @@ export function createMap(container: HTMLElement, theme: Theme, onViewportChange
 
 export interface FollowSelectedUpdate {
   selectedId: string | null;
+  /** icao24 the lat/lon below belong to — can briefly differ from selectedId mid-switch. */
+  positionId: string | null;
   lat: number | null;
   lon: number | null;
   /** Mobile bottom-sheet collapsed/expanded state — irrelevant on desktop. */
@@ -187,7 +189,15 @@ export function createFollowSelected(map: L.Map, onOffScreenChange: (offScreen: 
   map.on("moveend", checkOffScreen);
   map.on("zoomend", checkOffScreen);
 
-  function update({ selectedId, lat, lon, sheetExpanded, focusRequest }: FollowSelectedUpdate): void {
+  function update({ selectedId, positionId, lat, lon, sheetExpanded, focusRequest }: FollowSelectedUpdate): void {
+    // Switching from aircraft A to B updates selectedId and selectedPos one
+    // after the other, so for a moment selectedId is B while lat/lon are
+    // still A's. Treating that as "B's position" flew the map to A and
+    // marked B as already centred, so B's real position was then ignored.
+    if (selectedId != null && positionId !== selectedId) {
+      lat = null;
+      lon = null;
+    }
     currentLat = lat;
     currentLon = lon;
     // Leaflet caches the container's last-known size and won't repaint
