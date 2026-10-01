@@ -16,6 +16,8 @@ export interface AppState extends Record<string, unknown> {
   zoom: number;
   trackedCount: number;
   firstLoadDone: boolean;
+  /** The basemap has drawn its first view (always true on the plain theme). The boot screen waits on it. */
+  basemapReady: boolean;
   showResumeDialog: boolean;
 
   selectedId: string | null;

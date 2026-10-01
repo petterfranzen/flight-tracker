@@ -56,7 +56,15 @@ export interface MapController {
  * (mount + every `moveend`) is wired here since it's a property of the map
  * itself, not any one UI module.
  */
-export function createMap(container: HTMLElement, theme: Theme, onViewportChange: (bounds: Bounds, zoom: number) => void): MapController {
+export function createMap(
+  container: HTMLElement,
+  theme: Theme,
+  onViewportChange: (bounds: Bounds, zoom: number) => void,
+  // false while a MapLibre basemap is still loading its first view, true
+  // once it's drawn (or the plain theme needs none) — the boot screen waits
+  // on it. See whenBasemapReady in maplibreBasemap.ts.
+  onBasemapReady: (ready: boolean) => void = () => {},
+): MapController {
   // Must be on the element *before* L.map() runs: .map-container is what
   // gives it height:100%, and Leaflet measures (and caches) the container
   // size during construction. Added afterwards, the map believed it was
@@ -102,21 +110,30 @@ export function createMap(container: HTMLElement, theme: Theme, onViewportChange
   let maplibreLoading: Promise<void> | null = null;
   let wantsMaplibre = false;
 
-  function mountMaplibre(): void {
+  // `atBoot`: the first mount, while the boot screen still covers the map —
+  // the only time it's safe to warm neighbouring zoom levels, since that
+  // briefly moves MapLibre's camera.
+  function mountMaplibre(atBoot: boolean): void {
     wantsMaplibre = true;
     if (maplibreLayer || maplibreLoading) return;
-    maplibreLoading = import("./maplibreBasemap").then(({ createMaplibreLayer }) => {
-      maplibreLoading = null;
-      // setTheme may have flipped back to default while the chunk was
-      // loading — guard against mounting a layer nobody wants anymore.
-      if (wantsMaplibre) {
-        maplibreLayer = createMaplibreLayer();
-        maplibreLayer.addTo(map);
-      }
-    });
+    onBasemapReady(false);
+    maplibreLoading = import("./maplibreBasemap")
+      .then(({ createMaplibreLayer, whenBasemapReady }) => {
+        maplibreLoading = null;
+        // setTheme may have flipped back to default while the chunk was
+        // loading — guard against mounting a layer nobody wants anymore.
+        if (!wantsMaplibre) return;
+        const layer = createMaplibreLayer();
+        maplibreLayer = layer;
+        layer.addTo(map);
+        return whenBasemapReady(layer, atBoot);
+      })
+      .catch(() => {})
+      .finally(() => onBasemapReady(true));
   }
   function unmountMaplibre(): void {
     wantsMaplibre = false;
+    onBasemapReady(true);
     if (maplibreLayer) {
       maplibreLayer.remove();
       maplibreLayer = null;
@@ -126,10 +143,11 @@ export function createMap(container: HTMLElement, theme: Theme, onViewportChange
   function setTheme(nextTheme: Theme): void {
     tileLayer.setUrl(nextTheme === "cyberpunk" ? BLANK_TILE_URL : OSM_TILE_URL);
     tileLayer.options.attribution = nextTheme === "cyberpunk" ? "" : OSM_ATTRIBUTION;
-    if (nextTheme === "cyberpunk") mountMaplibre();
+    if (nextTheme === "cyberpunk") mountMaplibre(false);
     else unmountMaplibre();
   }
-  if (theme === "cyberpunk") mountMaplibre();
+  if (theme === "cyberpunk") mountMaplibre(true);
+  else onBasemapReady(true);
 
   // Reports on every `moveend`. The *initial* report (equivalent to the
   // original ViewportReporter's own mount-time call) is deliberately not

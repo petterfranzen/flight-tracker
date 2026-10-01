@@ -25,8 +25,10 @@ function buildNoise(): string {
 
 /**
  * One boot-sequence run: cyberpunk theme's flavor loading screen, real
- * loading state (`firstLoadDone`) gating when it's allowed to dismiss, not
- * a fixed timer. Returns a teardown that clears every timer immediately —
+ * loading state gating when it's allowed to dismiss, not a fixed timer:
+ * the first aircraft data (`firstLoadDone`) and the basemap having drawn
+ * its view, with neighbouring zooms warmed behind the screen
+ * (`basemapReady`, see map/maplibreBasemap.ts whenBasemapReady). Returns a teardown that clears every timer immediately —
  * used both when the sequence finishes hiding itself and when the theme
  * flips away from cyberpunk mid-boot (the whole thing just unmounts).
  */
@@ -94,7 +96,9 @@ function runBootSequence(root: HTMLElement, store: AppStore): () => void {
   }
 
   function tryDismiss(): void {
-    if (dismissing || !store.get("firstLoadDone")) return;
+    // Both the aircraft data and the basemap: dismissing on data alone let
+    // the map be seen still loading its tiles right after the screen lifted.
+    if (dismissing || !store.get("firstLoadDone") || !store.get("basemapReady")) return;
     const elapsed = Date.now() - mountedAt;
     const delay = Math.max(0, MIN_VISIBLE_MS - elapsed);
     dismissTimer = setTimeout(() => {
@@ -109,7 +113,7 @@ function runBootSequence(root: HTMLElement, store: AppStore): () => void {
     }, delay);
   }
   tryDismiss();
-  const unsubscribe = store.subscribe("firstLoadDone", tryDismiss);
+  const unsubscribe = store.subscribeMany(["firstLoadDone", "basemapReady"], tryDismiss);
 
   return () => {
     if (lineTimer) clearTimeout(lineTimer);

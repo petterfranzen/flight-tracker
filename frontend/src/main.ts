@@ -117,6 +117,7 @@ function boot(): void {
     zoom: 6,
     trackedCount: 0,
     firstLoadDone: false,
+    basemapReady: initialTheme !== "cyberpunk",
     showResumeDialog: false,
 
     selectedId: null,
@@ -634,7 +635,7 @@ function boot(): void {
   }
 
   // ---- map + layers ----
-  const mapController = createMap(mapRoot, initialTheme, handleViewportChange);
+  const mapController = createMap(mapRoot, initialTheme, handleViewportChange, (ready) => store.set("basemapReady", ready));
   const map = mapController.map;
   const markerLayer = createMarkerLayer(map, handleSelectAircraft);
   const clusterLayer = createClusterLayer(map);
