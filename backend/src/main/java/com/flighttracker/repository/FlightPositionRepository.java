@@ -99,32 +99,51 @@ public class FlightPositionRepository {
     // "Current flight time" for the dossier (AircraftController) — this
     // leg's takeoff time, not the first time we ever saw the aircraft.
     // "This leg" means the most recent one, whether still airborne or
-    // already landed again: the takeoff moment immediately following the
-    // last time this aircraft was genuinely on the ground beforehand.
+    // already landed again: the first airborne report after the most recent
+    // leg boundary (defined below).
     //
-    // Found as the most recent ground->air *transition*, via LAG() over
-    // this aircraft's own chronological history: a row is a takeoff moment
-    // when it's airborne and the row immediately before it either doesn't
-    // exist (prev_on_ground IS NULL — the very first report we ever have)
-    // or was on the ground (prev_on_ground != 0). IS NOT (... IS ...) is
-    // the null-safe way to ask "prev_on_ground isn't exactly 0" — SQLite
-    // has no IS DISTINCT FROM, but `x IS NOT 0` is already null-safe by
-    // definition of SQLite's IS operator (NULL IS NOT 0 evaluates true).
+    // A row starts a new leg when it's airborne and any of these hold
+    // against the row immediately before it (LAG() over this aircraft's
+    // own chronological history):
+    //  - there is no previous row, or it was on the ground. IS NOT is
+    //    SQLite's null-safe comparison (NULL IS NOT 0 is true).
+    //  - the callsign changed. Airlines fly a new flight number on every
+    //    leg, and it's the one signal that survives a turnaround we never
+    //    saw on the ground: OpenSky's ground coverage is patchy and the
+    //    global sweep is minutes apart, so a quick stop (ARN->AMS->onward)
+    //    often leaves no on_ground row at all, and the legs used to merge.
+    //  - a silence of LEG_GAP_MINUTES or more that began at low altitude:
+    //    went quiet on approach, reappeared later. A gap at cruise altitude
+    //    (an ocean crossing out of receiver range) never splits a leg.
+    static final long LEG_GAP_MINUTES = 20;
+    static final double LEG_GAP_MAX_ALTITUDE_M = 3000;
+
     public Optional<Instant> findCurrentLegTakeoffTime(String icao24) {
         return jdbcClient.sql("""
                 SELECT observed_at
                 FROM (
-                    SELECT observed_at, on_ground,
-                           LAG(on_ground) OVER (ORDER BY observed_at) AS prev_on_ground
+                    SELECT observed_at, on_ground, callsign,
+                           LAG(on_ground)   OVER w AS prev_on_ground,
+                           LAG(callsign)    OVER w AS prev_callsign,
+                           LAG(observed_at) OVER w AS prev_observed_at,
+                           LAG(altitude_m)  OVER w AS prev_altitude_m
                     FROM flight_position
                     WHERE icao24 = :icao24
+                    WINDOW w AS (ORDER BY observed_at)
                 ) transitions
                 WHERE on_ground = 0
-                  AND prev_on_ground IS NOT 0
+                  AND (prev_on_ground IS NOT 0
+                       OR (NULLIF(TRIM(callsign), '') IS NOT NULL
+                           AND NULLIF(TRIM(prev_callsign), '') IS NOT NULL
+                           AND UPPER(TRIM(callsign)) <> UPPER(TRIM(prev_callsign)))
+                       OR (observed_at - prev_observed_at >= :gapMillis
+                           AND COALESCE(prev_altitude_m, 0) < :gapMaxAltitude))
                 ORDER BY observed_at DESC
                 LIMIT 1
                 """)
                 .param("icao24", icao24)
+                .param("gapMillis", LEG_GAP_MINUTES * 60_000)
+                .param("gapMaxAltitude", LEG_GAP_MAX_ALTITUDE_M)
                 .query(Long.class)
                 .optional()
                 .map(Timestamps::fromEpochMilli);

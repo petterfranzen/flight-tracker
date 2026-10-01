@@ -83,6 +83,7 @@ these are ordinary, fairly useful log lines.
 - `backend/.../service/agent/` — the agent interface + orchestrator + the OpenSky implementation. Add a new source by adding one `@Component`.
 - `backend/.../service/live/LiveStateStore.java` — in-memory live aircraft state (upserts, landed-streak logic, estimate clearing).
 - `backend/.../service/UsageService.java` — turns historic positions into distance/airtime figures.
+- `backend/.../service/enrichment/CallsignRouteService.java` — origin/destination per *callsign* (what a flight is), resolved from adsbdb by a paced background walk over every live callsign; backs the dossier's route and the airport search.
 - `frontend/src/main.ts` — boot/wiring; `frontend/src/map/` — Leaflet map, markers, clusters, route; `frontend/src/ui/` — one module per UI component; design tokens are at the top of each component's adjacent `.css`.
 - `backend/.../observability/PhaseLogger.java` — the phase markers above.
 - `docs/neovim-basics.md` — Neovim primer for the config in `nvim/init.lua`.

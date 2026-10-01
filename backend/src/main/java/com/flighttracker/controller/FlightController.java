@@ -3,14 +3,13 @@ package com.flighttracker.controller;
 import com.flighttracker.dto.Bounds;
 import com.flighttracker.dto.ClusterPoint;
 import com.flighttracker.dto.LiveMarker;
-import com.flighttracker.model.Aircraft;
-import com.flighttracker.model.Airport;
 import com.flighttracker.model.FlightPosition;
-import com.flighttracker.repository.AircraftRepository;
+import com.flighttracker.repository.AirportRepository;
 import com.flighttracker.repository.FlightPositionRepository;
 import com.flighttracker.service.LiveVisibilityWindows;
 import com.flighttracker.service.ViewportService;
-import com.flighttracker.service.enrichment.AirportLookupService;
+import com.flighttracker.service.enrichment.AircraftEnrichmentService;
+import com.flighttracker.service.enrichment.Route;
 import com.flighttracker.service.live.LiveAircraft;
 import com.flighttracker.service.live.LiveStateStore;
 import org.springframework.http.ResponseEntity;
@@ -19,10 +18,7 @@ import org.springframework.web.bind.annotation.*;
 import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
-import java.util.Optional;
-import java.util.function.Function;
-import java.util.stream.Collectors;
+import java.util.Set;
 
 @RestController
 @RequestMapping("/api/flights")
@@ -31,19 +27,19 @@ public class FlightController {
     private final LiveStateStore liveStateStore;
     private final FlightPositionRepository positionRepository;
     private final ViewportService viewportService;
-    private final AircraftRepository aircraftRepository;
-    private final AirportLookupService airportLookupService;
+    private final AircraftEnrichmentService enrichmentService;
+    private final AirportRepository airportRepository;
 
     public FlightController(LiveStateStore liveStateStore,
                              FlightPositionRepository positionRepository,
                              ViewportService viewportService,
-                             AircraftRepository aircraftRepository,
-                             AirportLookupService airportLookupService) {
+                             AircraftEnrichmentService enrichmentService,
+                             AirportRepository airportRepository) {
         this.liveStateStore = liveStateStore;
         this.positionRepository = positionRepository;
         this.viewportService = viewportService;
-        this.aircraftRepository = aircraftRepository;
-        this.airportLookupService = airportLookupService;
+        this.enrichmentService = enrichmentService;
+        this.airportRepository = airportRepository;
     }
 
     /**
@@ -228,53 +224,38 @@ public class FlightController {
      * Backs the "advanced search" panel's single airport field — matches a
      * live aircraft whose origin OR destination airport matches the given
      * pattern (name, IATA code, ICAO code, or city), case-insensitively.
-     * Ported from FlightPositionRepository.searchByAirport's SQL join, now
-     * done in Java: the live candidates come from LiveStateStore, their
-     * enrichment (origin/destination codes and cached names) from a single
-     * batched AircraftRepository.findAllById, and each code's IATA/
-     * name/municipality from AirportLookupService (a cheap local lookup,
-     * not another external call — see that service's own javadoc).
-     * originAirportName/destinationAirportName alone only ever contain
-     * whatever free-text name adsbdb or the OpenSky-fallback backfill
-     * happened to produce for that specific aircraft, which has no IATA
-     * code and isn't reliably the city name — hence also checking the
-     * airport reference table's iata_code/name/municipality for both
-     * codes. Ordered by callsign ascending, same as the SQL version (no
-     * prefix-match ranking here, unlike searchByCallsign).
+     * The text is resolved to airport codes once (one query over the
+     * airport reference table: ICAO/IATA code, name, municipality — so
+     * "Kalmar" finds ESMQ), then every live aircraft is matched in memory
+     * against its *current* flight's route (AircraftEnrichmentService.
+     * knownRoute: by callsign, from CallsignRouteService's cache, which a
+     * background job keeps filled for every live callsign). This used to
+     * read the per-aircraft route stored on first enrichment — only ever
+     * filled for aircraft someone had opened, often a previous leg — and
+     * did a reference-table lookup per aircraft. Ordered by callsign
+     * ascending (no prefix-match ranking here, unlike searchByCallsign).
      */
     private List<FlightPosition> searchByAirport(String pattern, Instant staleAirborneCutoff, Instant landedCutoff) {
         String needle = pattern.toLowerCase(Locale.ROOT);
+        Set<String> matchingCodes = airportRepository.findIcaoCodesMatching(needle);
         List<LiveAircraft> candidates = liveStateStore.liveAircraft(staleAirborneCutoff, landedCutoff);
         if (candidates.isEmpty()) return List.of();
 
-        List<String> icao24s = candidates.stream().map(LiveAircraft::icao24).distinct().toList();
-        Map<String, Aircraft> byIcao24 = aircraftRepository.findAllById(icao24s).stream()
-                .collect(Collectors.toMap(Aircraft::icao24, Function.identity()));
-
         return candidates.stream()
-                .filter(live -> matchesAirportPattern(byIcao24.get(live.icao24()), needle))
+                .filter(live -> enrichmentService.knownRoute(live.icao24(), live.callsign())
+                        .filter(route -> matchesAirport(route, needle, matchingCodes))
+                        .isPresent())
                 .sorted((a, b) -> compareCallsigns(a.callsign(), b.callsign()))
                 .limit(SEARCH_RESULT_LIMIT)
                 .map(FlightController::toFlightPosition)
                 .toList();
     }
 
-    private boolean matchesAirportPattern(Aircraft a, String needle) {
-        if (a == null) return false;
-        return containsIgnoreCase(a.originAirport(), needle)
-                || containsIgnoreCase(a.originAirportName(), needle)
-                || matchesAirportRef(a.originAirport(), needle)
-                || containsIgnoreCase(a.destinationAirport(), needle)
-                || containsIgnoreCase(a.destinationAirportName(), needle)
-                || matchesAirportRef(a.destinationAirport(), needle);
-    }
-
-    private boolean matchesAirportRef(String icaoCode, String needle) {
-        Optional<Airport> airport = airportLookupService.lookup(icaoCode);
-        return airport.filter(ap -> containsIgnoreCase(ap.iataCode(), needle)
-                        || containsIgnoreCase(ap.name(), needle)
-                        || containsIgnoreCase(ap.municipality(), needle))
-                .isPresent();
+    private static boolean matchesAirport(Route route, String needle, Set<String> matchingCodes) {
+        return (route.originAirport() != null && matchingCodes.contains(route.originAirport()))
+                || (route.destinationAirport() != null && matchingCodes.contains(route.destinationAirport()))
+                || containsIgnoreCase(route.originAirportName(), needle)
+                || containsIgnoreCase(route.destinationAirportName(), needle);
     }
 
     private static boolean containsIgnoreCase(String value, String needle) {

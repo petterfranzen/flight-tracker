@@ -30,10 +30,11 @@ spring:
         # AgentOrchestrator's two (pollAll, pollGlobalSweep),
         # PositionRetentionService's two (prune, nightlyOptimize — cloud
         # migration A2's PRAGMA optimize pass), EstimatorAgent.refresh(),
-        # AirportSeedService.sync(), and LiveFeedBroadcaster.sendKeepalive()
-        # (the WebSocket ping) — seven — plus one spare so a single
+        # AirportSeedService.sync(), LiveFeedBroadcaster.sendKeepalive()
+        # (the WebSocket ping) and CallsignRouteService.resolveNext() (the
+        # paced callsign->route lookups) — eight — plus one spare so a single
         # slow/stuck task never leaves the pool fully saturated. Bump this
-        # again if an eighth @Scheduled method is ever added. Retention and
+        # again if a ninth @Scheduled method is ever added. Retention and
         # the estimator refresh in particular must not have to wait on a
         # sweep for a thread: retention's first run after a long outage
         # walks a real backlog, and the estimator needs to keep running on
@@ -44,7 +45,7 @@ spring:
         # would otherwise silently die under Cloudflare's ~100s idle
         # timeout during exactly the kind of long sweep that used to
         # starve everything else.
-        size: 8
+        size: 9
 
 server:
   port: 8080

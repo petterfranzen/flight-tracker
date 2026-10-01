@@ -1,12 +1,11 @@
 package com.flighttracker.controller;
 
-import com.flighttracker.model.Aircraft;
-import com.flighttracker.model.Airport;
 import com.flighttracker.model.FlightPosition;
-import com.flighttracker.repository.AircraftRepository;
+import com.flighttracker.repository.AirportRepository;
 import com.flighttracker.repository.FlightPositionRepository;
 import com.flighttracker.service.ViewportService;
-import com.flighttracker.service.enrichment.AirportLookupService;
+import com.flighttracker.service.enrichment.AircraftEnrichmentService;
+import com.flighttracker.service.enrichment.Route;
 import com.flighttracker.service.live.LiveAircraft;
 import com.flighttracker.service.live.LiveStateStore;
 import org.junit.jupiter.api.Test;
@@ -17,6 +16,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -47,12 +47,12 @@ class FlightControllerTest {
     @Mock
     private ViewportService viewportService;
     @Mock
-    private AircraftRepository aircraftRepository;
+    private AircraftEnrichmentService enrichmentService;
     @Mock
-    private AirportLookupService airportLookupService;
+    private AirportRepository airportRepository;
 
     private FlightController controller() {
-        return new FlightController(liveStateStore, positionRepository, viewportService, aircraftRepository, airportLookupService);
+        return new FlightController(liveStateStore, positionRepository, viewportService, enrichmentService, airportRepository);
     }
 
     // LiveAircraft has no public constructor test helper of its own (it's a
@@ -64,51 +64,47 @@ class FlightControllerTest {
                 null, null, null, null, false, "opensky", null, null, null, null);
     }
 
-    private static Aircraft aircraftWithRoute(String icao24, String originAirport, String originAirportName,
-                                               String destinationAirport, String destinationAirportName) {
-        return new Aircraft(icao24, null, null, null,
-                originAirport, originAirportName, destinationAirport, destinationAirportName,
-                null, null, null, null, null, null, null, null, null);
+    private static Route route(String origin, String originName, String destination, String destinationName) {
+        return new Route(origin, originName, null, null, destination, destinationName, null, null);
     }
 
     @Test
-    void airportNonBlank_matchesByCachedOriginAirportName_ignoringQEvenIfPresent() {
-        when(liveStateStore.liveAircraft(any(), any())).thenReturn(List.of(live("abc123", "SAS100")));
-        when(aircraftRepository.findAllById(List.of("abc123")))
-                .thenReturn(List.of(aircraftWithRoute("abc123", "ESSA", "Stockholm Arlanda", "EGLL", null)));
-        // No airportLookupService stub needed: the cached originAirportName
-        // ("Stockholm Arlanda") already matches, short-circuiting before
-        // the airport reference table lookup is ever reached.
+    void airportNonBlank_matchesCityViaReferenceTableCodes_ignoringQEvenIfPresent() {
+        // "Kalmar" is a municipality, not in the route itself: the airport
+        // table resolves it to ESMQ, and the flight's route ends there.
+        when(airportRepository.findIcaoCodesMatching("kalmar")).thenReturn(Set.of("ESMQ"));
+        when(liveStateStore.liveAircraft(any(), any()))
+                .thenReturn(List.of(live("abc123", "BRX101"), live("def456", "SAS100")));
+        when(enrichmentService.knownRoute("abc123", "BRX101"))
+                .thenReturn(Optional.of(route("ESSB", "Stockholm Bromma Airport", "ESMQ", "Kalmar Airport")));
+        when(enrichmentService.knownRoute("def456", "SAS100"))
+                .thenReturn(Optional.of(route("ESSA", "Stockholm Arlanda", "EGLL", "London Heathrow")));
 
-        List<FlightPosition> result = controller().search("SAS123", "Arlanda");
+        List<FlightPosition> result = controller().search("SAS123", "Kalmar");
 
         assertThat(result).extracting(FlightPosition::icao24).containsExactly("abc123");
         verify(liveStateStore, never()).searchByCallsign(any(), any(), any(), anyInt());
     }
 
     @Test
-    void airportNonBlank_matchesByAirportReferenceTable_caseInsensitive() {
+    void airportNonBlank_matchesRouteNameEvenWithoutAReferenceTableHit() {
+        when(airportRepository.findIcaoCodesMatching("arlanda")).thenReturn(Set.of());
         when(liveStateStore.liveAircraft(any(), any())).thenReturn(List.of(live("abc123", "SAS100")));
-        when(aircraftRepository.findAllById(List.of("abc123")))
-                .thenReturn(List.of(aircraftWithRoute("abc123", "ESSA", null, "EGLL", null)));
-        // A real record instance, not a mock — Airport has no behaviour to
-        // stub, just fields, and matchesAirportPattern's OR chain
-        // short-circuits on the name match below before municipality or
-        // the destination (EGLL) lookup are ever reached.
-        Airport arlanda = new Airport("ESSA", "ARN", "Stockholm Arlanda Airport", "Stockholm", "SE", 59.6, 17.9);
-        when(airportLookupService.lookup("ESSA")).thenReturn(Optional.of(arlanda));
+        when(enrichmentService.knownRoute("abc123", "SAS100"))
+                .thenReturn(Optional.of(route("ESSA", "Stockholm Arlanda", "EGLL", null)));
 
-        List<FlightPosition> result = controller().search(null, "arlanda"); // lowercase, table has mixed case
+        List<FlightPosition> result = controller().search(null, "Arlanda");
 
         assertThat(result).extracting(FlightPosition::icao24).containsExactly("abc123");
     }
 
     @Test
-    void airportNonBlank_noMatch_returnsEmpty() {
-        when(liveStateStore.liveAircraft(any(), any())).thenReturn(List.of(live("abc123", "SAS100")));
-        when(aircraftRepository.findAllById(List.of("abc123")))
-                .thenReturn(List.of(aircraftWithRoute("abc123", "ESSA", "Stockholm Arlanda", "EGLL", "London Heathrow")));
-        when(airportLookupService.lookup(any())).thenReturn(Optional.empty());
+    void airportNonBlank_aircraftWithNoKnownRoute_isNotMatched() {
+        when(airportRepository.findIcaoCodesMatching("narita")).thenReturn(Set.of("RJAA"));
+        when(liveStateStore.liveAircraft(any(), any())).thenReturn(List.of(live("abc123", "SAS100"), live("def456", "N123AB")));
+        when(enrichmentService.knownRoute("abc123", "SAS100"))
+                .thenReturn(Optional.of(route("ESSA", "Stockholm Arlanda", "EGLL", "London Heathrow")));
+        when(enrichmentService.knownRoute("def456", "N123AB")).thenReturn(Optional.empty());
 
         List<FlightPosition> result = controller().search(null, "Narita");
 

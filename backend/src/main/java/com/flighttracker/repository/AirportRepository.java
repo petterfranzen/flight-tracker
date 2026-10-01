@@ -4,7 +4,10 @@ import com.flighttracker.model.Airport;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
+import java.util.HashSet;
+import java.util.Locale;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * Cloud migration A2: JdbcClient + record, replacing the Spring Data JPA
@@ -46,5 +49,26 @@ public class AirportRepository {
                 .param("iataCode", iataCode)
                 .query(AirportRepository::mapRow)
                 .optional();
+    }
+
+    /**
+     * ICAO codes of every airport whose ICAO/IATA code, name or
+     * municipality contains {@code needle} (case-insensitive) — the airport
+     * search resolves "Kalmar" to ESMQ once here, then matches live flights
+     * against the codes in memory instead of one lookup per flight.
+     */
+    public Set<String> findIcaoCodesMatching(String needle) {
+        String like = "%" + needle.toLowerCase(Locale.ROOT)
+                .replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%";
+        return new HashSet<>(jdbcClient.sql("""
+                SELECT icao_code FROM airport
+                WHERE LOWER(icao_code) LIKE :like ESCAPE '\\'
+                   OR LOWER(COALESCE(iata_code, '')) LIKE :like ESCAPE '\\'
+                   OR LOWER(name) LIKE :like ESCAPE '\\'
+                   OR LOWER(COALESCE(municipality, '')) LIKE :like ESCAPE '\\'
+                """)
+                .param("like", like)
+                .query(String.class)
+                .list());
     }
 }

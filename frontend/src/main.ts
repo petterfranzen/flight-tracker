@@ -22,6 +22,7 @@ import { boundsFromMap, createFollowSelected, createMap } from "./map/map";
 import { createMarkerLayer } from "./map/markers";
 import { clusterPositions, createClusterLayer, gridDegForZoom } from "./map/clusters";
 import { createRouteLayer } from "./map/route";
+import { snapBounds, ViewCache, type CachedView } from "./map/viewCache";
 import * as scaleBar from "./ui/scaleBar";
 import * as dock from "./ui/dock";
 import * as flightSearch from "./ui/flightSearch";
@@ -55,6 +56,29 @@ const WS_FLUSH_MS = 250;
 // Matches .plane-icon's opacity transition (FlightMap.css): how long the
 // "exiting" fade gets before markers are actually dropped on zoom-out.
 const EXIT_FADE_MS = 300;
+
+// View cache (map/viewCache.ts): a cached view this fresh is shown without
+// asking the server again; older but still usable ones are shown at once
+// and revalidated in the background; past VIEW_CACHE_MAX_AGE_MS they're
+// not shown at all.
+const VIEW_CACHE_FRESH_MS = 15_000;
+const VIEW_CACHE_MAX_AGE_MS = 5 * 60_000;
+const VIEW_CACHE_MAX_ENTRIES = 40;
+
+// FlightController.liveClusters clamps gridDeg to this range; snapping the
+// request to the grid the server actually uses keeps every cell complete.
+function serverGridDeg(zoom: number): number {
+  return Math.min(25, Math.max(0.5, gridDegForZoom(zoom)));
+}
+
+// Fraction of the view's size drawn beyond each edge.
+const RENDER_MARGIN = 0.2;
+
+function padBounds(b: Bounds, fraction: number): Bounds {
+  const dLat = (b.latMax - b.latMin) * fraction;
+  const dLon = (b.lonMax - b.lonMin) * fraction;
+  return { latMin: b.latMin - dLat, latMax: b.latMax + dLat, lonMin: b.lonMin - dLon, lonMax: b.lonMax + dLon };
+}
 
 function inBounds(b: Bounds, lat: number, lon: number): boolean {
   return lat >= b.latMin && lat <= b.latMax && lon >= b.lonMin && lon <= b.lonMax;
@@ -148,6 +172,13 @@ function boot(): void {
   // Whether the last render drew unselected aircraft as individual markers.
   let individualMarkersShown = false;
 
+  // Per zoom for clusters (the grid depends on it); for individual aircraft
+  // any z>=CLUSTER_FETCH_MAX_ZOOM entry whose bbox covers the view will do,
+  // so zooming in is served entirely from the parent view's data.
+  const clusterCache = new ViewCache<ClusterPoint[]>(VIEW_CACHE_MAX_ENTRIES, VIEW_CACHE_MAX_AGE_MS);
+  const liveCache = new ViewCache<LiveMarker[]>(VIEW_CACHE_MAX_ENTRIES, VIEW_CACHE_MAX_AGE_MS);
+  let lastAppliedView: CachedView<unknown> | null = null;
+
   const pendingWs = new Map<string, FlightPosition>();
   let wsFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -178,7 +209,12 @@ function boot(): void {
   function renderAircraftLayer(): void {
     const selectedId = store.get("selectedId");
     const selectedPos = store.get("selectedPos");
-    const list = Array.from(positions.values());
+    // Only what's on screen (plus a margin, so a short drag doesn't reveal
+    // empty edges before moveend re-renders). `positions` can hold a wider
+    // area than the view — a cached parent view when zooming in — and the
+    // MAX_INDIVIDUAL_MARKERS decision has to be about what's visible.
+    const view = bounds ? padBounds(bounds, RENDER_MARGIN) : null;
+    const list = Array.from(positions.values()).filter((p) => !view || inBounds(view, p.latitude, p.longitude));
     const unselectedList = selectedId ? list.filter((p) => p.icao24 !== selectedId) : list;
 
     const belowServerClusterZoom = zoom < CLUSTER_FETCH_MAX_ZOOM;
@@ -230,31 +266,65 @@ function boot(): void {
     }
   }
 
+  function findCachedView(now: number): CachedView<ClusterPoint[]> | CachedView<LiveMarker[]> | null {
+    if (!bounds) return null;
+    return zoom < CLUSTER_FETCH_MAX_ZOOM
+      ? clusterCache.find(bounds, (z) => z === zoom, now)
+      : liveCache.find(bounds, (z) => z >= CLUSTER_FETCH_MAX_ZOOM, now);
+  }
+
+  /** Draws the best cached data for the current view, if any and not already on screen. */
+  function applyCachedView(now: number): CachedView<unknown> | null {
+    const hit = findCachedView(now);
+    if (!hit || hit === lastAppliedView) return hit;
+    lastAppliedView = hit;
+    if (zoom < CLUSTER_FETCH_MAX_ZOOM) {
+      clusters = hit.data as ClusterPoint[];
+      renderAircraftLayer();
+    } else {
+      applyLiveSnapshot(hit.data as LiveMarker[]);
+    }
+    return hit;
+  }
+
   /**
    * The one place viewport data is requested. Below CLUSTER_FETCH_MAX_ZOOM
    * that's server-side clusters only — never /live, whose size grows with
    * the whole tracked fleet; at or above it, /live for exactly the current
-   * viewport. One request at a time: a newer viewport aborts the one in
-   * flight, and a poll tick that finds one in flight skips (see
-   * fetchFreshData), so requests never overlap or land out of order.
+   * viewport (deliberately unpadded: its bbox is what the OpenSky hot poll
+   * covers, and a bigger area costs more credits). Cached views are drawn
+   * first (see ViewCache) and a fresh one skips the request entirely. One
+   * request at a time: a newer viewport aborts the one in flight, and a
+   * poll tick that finds one in flight skips (see fetchFreshData), so
+   * requests never overlap or land out of order.
    */
   function fetchViewport(): void {
     if (viewportFetchTimer) clearTimeout(viewportFetchTimer);
     viewportFetchTimer = null;
     if (!bounds) return;
+    const now = Date.now();
+    const hit = applyCachedView(now);
+    if (hit && now - hit.fetchedAt < VIEW_CACHE_FRESH_MS) {
+      store.set("firstLoadDone", true);
+      return;
+    }
     viewportAbort?.abort();
     const controller = new AbortController();
     viewportAbort = controller;
-    const requestBounds = bounds;
-    const clustered = zoom < CLUSTER_FETCH_MAX_ZOOM;
+    const requestZoom = zoom;
     const done = (): void => {
       if (viewportAbort === controller) viewportAbort = null;
       store.set("firstLoadDone", true);
     };
-    if (clustered) {
-      fetchLiveClusters(requestBounds, gridDegForZoom(zoom), controller.signal)
+    if (requestZoom < CLUSTER_FETCH_MAX_ZOOM) {
+      const grid = serverGridDeg(requestZoom);
+      const requestBounds = snapBounds(bounds, grid * 2);
+      fetchLiveClusters(requestBounds, grid, controller.signal)
         .then((c) => {
-          if (controller.signal.aborted || zoom >= CLUSTER_FETCH_MAX_ZOOM) return;
+          const entry = { zoom: requestZoom, bbox: requestBounds, data: c, fetchedAt: Date.now() };
+          clusterCache.put(entry);
+          if (controller.signal.aborted || zoom !== requestZoom) return;
+          lastAppliedView = entry;
           clusters = c;
           renderAircraftLayer();
         })
@@ -262,9 +332,13 @@ function boot(): void {
         .finally(done);
       return;
     }
+    const requestBounds = bounds;
     fetchLivePositions(requestBounds, controller.signal)
       .then((list) => {
+        const entry = { zoom: requestZoom, bbox: requestBounds, data: list, fetchedAt: Date.now() };
+        liveCache.put(entry);
         if (controller.signal.aborted || zoom < CLUSTER_FETCH_MAX_ZOOM) return;
+        lastAppliedView = entry;
         applyLiveSnapshot(list);
       })
       .catch(() => {})
@@ -287,13 +361,18 @@ function boot(): void {
     zoom = nextZoom;
     store.set("zoom", nextZoom);
     const clustered = nextZoom < CLUSTER_FETCH_MAX_ZOOM;
-    if (clustered !== wasClustered) clusters = [];
+    if (clustered !== wasClustered) {
+      clusters = [];
+      lastAppliedView = null;
+    }
     if (clustered && !wasClustered) dropIndividualMarkersAfterFade();
     if (!clustered && exitFadeTimer) {
       clearTimeout(exitFadeTimer);
       exitFadeTimer = null;
     }
     renderAircraftLayer(); // icon sizes/cluster mode update for the new zoom immediately, independent of the fetch below
+    // A view we've seen recently is drawn right away, before the debounce.
+    applyCachedView(Date.now());
 
     // Whatever is in flight was for a viewport that no longer exists.
     viewportAbort?.abort();

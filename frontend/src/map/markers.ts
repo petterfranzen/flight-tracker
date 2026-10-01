@@ -115,6 +115,38 @@ function compareKey(known: boolean, selected: boolean, zoom: number, exiting: bo
   return `${known}|${selected}|${zoom}|${exiting}`;
 }
 
+// Same tuple minus zoom: when only the zoom changed, the icon's markup is
+// identical and just its size differs — see resizeInPlace.
+function styleKey(key: string): string {
+  const [known, selected, , exiting] = key.split("|");
+  return `${known}|${selected}|${exiting}`;
+}
+
+/**
+ * Applies a new icon size to an already-mounted marker element — the same
+ * width/height/margins L.DivIcon's own _setIconStyles writes — instead of
+ * handing the marker a new icon, which tears down and rebuilds its DOM.
+ * Every zoom step used to rebuild every visible plane that way. Also
+ * updates the marker's icon options so a later rebuild (or Leaflet's own
+ * re-render) keeps the new size.
+ */
+function resizeInPlace(marker: L.Marker, options: L.DivIconOptions): boolean {
+  const el = marker.getElement();
+  const size = options.iconSize as [number, number] | undefined;
+  const anchor = options.iconAnchor as [number, number] | undefined;
+  if (!el || !size || !anchor) return false;
+  el.style.width = `${size[0]}px`;
+  el.style.height = `${size[1]}px`;
+  el.style.marginLeft = `${-anchor[0]}px`;
+  el.style.marginTop = `${-anchor[1]}px`;
+  const icon = marker.options.icon as L.DivIcon | undefined;
+  if (icon) {
+    icon.options.iconSize = options.iconSize;
+    icon.options.iconAnchor = options.iconAnchor;
+  }
+  return true;
+}
+
 export interface MarkerLayerUpdate {
   /** Unselected aircraft to draw as individual markers (empty when clustered). */
   unselected: LiveMarker[];
@@ -177,12 +209,18 @@ export function createMarkerLayer(map: L.Map, onSelect: (p: LiveMarker) => void)
 
     const nextKey = compareKey(known, selected, roundedZoom, exiting);
     if (nextKey !== entry.compareKey) {
-      // Rebuilt icon picks the heading up from headingRef in createIcon.
       const options = planeIconOptions(known, selected, roundedZoom, false, exiting);
-      entry.marker.setIcon(new RotatingPlaneIcon(options, entry.headingRef, entry.callsignRef));
-      entry.compareKey = nextKey;
-      entry.rotationDeg = rotationDeg;
-    } else if (rotationDeg !== entry.rotationDeg) {
+      if (styleKey(nextKey) === styleKey(entry.compareKey) && resizeInPlace(entry.marker, options)) {
+        entry.compareKey = nextKey;
+      } else {
+        // Rebuilt icon picks the heading up from headingRef in createIcon.
+        entry.marker.setIcon(new RotatingPlaneIcon(options, entry.headingRef, entry.callsignRef));
+        entry.compareKey = nextKey;
+        entry.rotationDeg = rotationDeg;
+        return;
+      }
+    }
+    if (rotationDeg !== entry.rotationDeg) {
       // Heading is applied directly to the mounted glyph, never by handing
       // the marker a new `icon` — that would trigger Marker.setIcon(), which
       // tears down and rebuilds the icon DOM on every single position tick.
@@ -197,10 +235,16 @@ export function createMarkerLayer(map: L.Map, onSelect: (p: LiveMarker) => void)
     const seen = new Set<string>();
 
     for (const p of unselected) {
-      seen.add(p.icao24);
       const existing = entries.get(p.icao24);
-      if (existing) applyEntry(existing, p, false, roundedZoom, exiting);
-      else entries.set(p.icao24, buildEntry(p, false, roundedZoom, exiting));
+      if (existing) {
+        seen.add(p.icao24);
+        applyEntry(existing, p, false, roundedZoom, exiting);
+      } else if (!exiting) {
+        // Never build a marker just to fade it out: an exiting render only
+        // fades what is already on the map.
+        seen.add(p.icao24);
+        entries.set(p.icao24, buildEntry(p, false, roundedZoom, exiting));
+      }
     }
 
     if (selectedPos) {
