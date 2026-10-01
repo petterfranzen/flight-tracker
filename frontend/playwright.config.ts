@@ -12,6 +12,10 @@ export default defineConfig({
   use: {
     baseURL: "http://localhost:5174",
     trace: "retain-on-failure",
+    // Set by scripts/cloud-setup.sh in cloud sessions whose network can't
+    // reach Playwright's browser CDN: use the image's pre-installed
+    // Chromium instead. Unset everywhere else (CI, laptops).
+    ...(process.env.PW_CHROMIUM_PATH ? { launchOptions: { executablePath: process.env.PW_CHROMIUM_PATH } } : {}),
   },
   // Two servers: the dev server every spec uses, and a real production
   // preview for production-build.spec.ts. That second one isn't
