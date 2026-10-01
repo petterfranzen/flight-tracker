@@ -19,8 +19,11 @@ only a human merge to `main` deploys.
 The repo is cloned fresh into a VM. `.claude/settings.json` runs
 `scripts/cloud-setup.sh` on session start; it does nothing locally and, in
 the cloud (`CLAUDE_CODE_REMOTE=true`), installs whatever's missing from the
-CI toolchain: JDK 21, Maven, Node 24, `npm ci`, Playwright Chromium and the
-Maven dependencies. After that the same commands as CI work:
+CI toolchain: JDK 21, Maven, Node (22+; CI uses 24), `npm ci`, Playwright
+Chromium and the Maven dependencies. Each step is best-effort. On the
+default network level NodeSource and Playwright's browser CDN are blocked,
+so the script keeps the image's Node 22 and points Playwright at the
+pre-installed `/opt/pw-browsers/chromium` (`PW_CHROMIUM_PATH`). After that the same commands as CI work:
 
 ```bash
 (cd frontend && npm run build && npm run test:e2e)
