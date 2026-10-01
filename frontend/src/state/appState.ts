@@ -16,10 +16,19 @@ export interface AppState extends Record<string, unknown> {
   zoom: number;
   trackedCount: number;
   firstLoadDone: boolean;
+  /** The basemap has drawn its first view (always true on the plain theme). The boot screen waits on it. */
+  basemapReady: boolean;
   showResumeDialog: boolean;
 
   selectedId: string | null;
   selectedPos: SelectedPosition | null;
+  /**
+   * selectedPos came from the server after the current selection was made.
+   * A selection can start from a stale position (a favourites or search
+   * list entry fetched seconds ago); the map only flies to it once this is
+   * true — see handleSelectAircraft.
+   */
+  selectedPosFresh: boolean;
   dossier: AircraftDossier | null;
   dossierExpanded: boolean;
   planeOffScreen: boolean;

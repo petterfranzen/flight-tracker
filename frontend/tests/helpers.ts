@@ -44,7 +44,23 @@ export interface ClusterPointFixture {
  * empty response — see clustering.spec.ts, which needs a populated cell to
  * assert against.
  */
-export async function mockFlightApi(page: Page, opts?: { historyDelayMs?: Record<string, number>; clusters?: ClusterPointFixture[] }) {
+export async function mockFlightApi(
+  page: Page,
+  opts?: { historyDelayMs?: Record<string, number>; clusters?: ClusterPointFixture[]; appDefaultTheme?: boolean },
+) {
+  // Pin the plain theme unless a test is about the app's default (cyberpunk)
+  // theme: the cyberpunk boot screen waits for a WebGL basemap, which in CI
+  // (real tiles, software rendering) can take seconds and isn't what these
+  // tests are about. A test's own later addInitScript still wins.
+  if (!opts?.appDefaultTheme) {
+    await page.addInitScript(() => {
+      try {
+        if (localStorage.getItem("flighttracker:theme") == null) localStorage.setItem("flighttracker:theme", "default");
+      } catch {
+        /* storage unavailable: the app's default applies */
+      }
+    });
+  }
   await page.route("**/api/flights/live/clusters*", (route: Route) => route.fulfill({ json: opts?.clusters ?? [] }));
   await page.route("**/api/flights/live*", (route: Route) => route.fulfill({ json: LIVE_FIXTURE }));
 

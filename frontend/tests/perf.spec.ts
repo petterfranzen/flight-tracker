@@ -20,6 +20,14 @@ const API_LATENCY_MS = 80;
 
 const LONDON = { lat: 51.5, lon: -0.5 };
 
+// The budget measures this app's own main-thread work, so it runs on the
+// plain theme. The cyberpunk theme (the default since it became one) adds
+// a MapLibre WebGL basemap, and CI runners have no GPU: Chromium renders
+// WebGL in software there, which alone costs tens of long tasks per zoom
+// and says nothing about the app or about a real browser with a GPU.
+// PERF_THEME=cyberpunk runs the same scenario on it for a manual look.
+const PERF_THEME = process.env.PERF_THEME === "cyberpunk" ? "cyberpunk" : "default";
+
 interface ViewportRequest {
   kind: "live" | "clusters";
   bbox: { latMin: number; latMax: number; lonMin: number; lonMax: number } | null;
@@ -173,13 +181,14 @@ async function mockTenThousand(page: Page, opts: { liveDelayMs?: number; liveFee
 }
 
 async function startLongTaskObserver(page: Page) {
-  await page.addInitScript(() => {
+  await page.addInitScript((theme) => {
+    localStorage.setItem("flighttracker:theme", theme);
     const w = window as unknown as { __longTasks: number[] };
     w.__longTasks = [];
     new PerformanceObserver((list) => {
       for (const e of list.getEntries()) w.__longTasks.push(Math.round(e.duration));
     }).observe({ type: "longtask", buffered: true });
-  });
+  }, PERF_THEME);
 }
 
 const takeLongTasks = (page: Page) =>

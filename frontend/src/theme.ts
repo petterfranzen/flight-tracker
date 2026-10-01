@@ -6,9 +6,11 @@
  * what every theme-aware CSS rule keys off (`[data-theme="cyberpunk"]`).
  * index.html has an inline, synchronous script that reads the same
  * localStorage key and sets this same attribute *before* any stylesheet
- * paints — critical for a stored "cyberpunk" preference: without it,
- * the page would flash the default theme for one frame on every load
- * before this module's own effect could catch up. That script is
+ * paints — without it, the page would flash the plain theme for one
+ * frame on every load before this module's own effect could catch up.
+ *
+ * Cyberpunk is the default: only an explicitly stored "default" choice
+ * (the theme toggle) gets the plain theme. That script is
  * necessarily a duplicate of loadTheme()'s logic (it runs before any JS
  * module is available to import from) — keep the two in sync if this
  * logic ever changes.
@@ -20,9 +22,9 @@ const THEME_KEY = "flighttracker:theme";
 
 export function loadTheme(): Theme {
   try {
-    return localStorage.getItem(THEME_KEY) === "cyberpunk" ? "cyberpunk" : "default";
+    return localStorage.getItem(THEME_KEY) === "default" ? "default" : "cyberpunk";
   } catch {
-    return "default";
+    return "cyberpunk";
   }
 }
 

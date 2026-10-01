@@ -96,6 +96,11 @@ function planeIconOptions(known: boolean, selected: boolean, zoom: number, enter
 
 interface MarkerEntry {
   marker: L.Marker;
+  // Latest position this marker was drawn with — what a click selects.
+  // The click handler used to capture the LiveMarker from when the marker
+  // was first built, so selecting a long-lived marker flew to wherever the
+  // aircraft was back then.
+  latest: LiveMarker;
   headingRef: { current: number };
   callsignRef: { current: string };
   // (known, selected, roundedZoom, exiting) only — excludes `entering`,
@@ -178,11 +183,13 @@ export function createMarkerLayer(map: L.Map, onSelect: (p: LiveMarker) => void)
     const options = planeIconOptions(known, selected, roundedZoom, true, exiting);
     const icon = new RotatingPlaneIcon(options, headingRef, callsignRef);
     const marker = L.marker([p.latitude, p.longitude], { icon });
-    marker.on("click", () => onSelect(p));
+    const entry = {} as MarkerEntry;
+    marker.on("click", () => onSelect(entry.latest));
     marker.addTo(map);
     if (selected) marker.setZIndexOffset(10_000);
-    return {
+    return Object.assign(entry, {
       marker,
+      latest: p,
       headingRef,
       callsignRef,
       compareKey: compareKey(known, selected, roundedZoom, exiting),
@@ -190,12 +197,13 @@ export function createMarkerLayer(map: L.Map, onSelect: (p: LiveMarker) => void)
       lon: p.longitude,
       rotationDeg: headingRef.current,
       selected,
-    };
+    });
   }
 
   function applyEntry(entry: MarkerEntry, p: LiveMarker, selected: boolean, roundedZoom: number, exiting: boolean): void {
     const known = p.headingDeg != null;
     const rotationDeg = known ? (p.headingDeg as number) : 0;
+    entry.latest = p;
     entry.headingRef.current = rotationDeg;
     if (p.latitude !== entry.lat || p.longitude !== entry.lon) {
       entry.marker.setLatLng([p.latitude, p.longitude]);
