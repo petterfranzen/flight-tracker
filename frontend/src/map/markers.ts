@@ -103,6 +103,12 @@ interface MarkerEntry {
   // trigger for rebuilding afterward. Matches AircraftMarker's own
   // useMemo deps in the original React component.
   compareKey: string;
+  // Last values written to the DOM, so an unchanged aircraft costs nothing
+  // on a re-render (setLatLng and the glyph lookup each touch layout).
+  lat: number;
+  lon: number;
+  rotationDeg: number;
+  selected: boolean;
 }
 
 function compareKey(known: boolean, selected: boolean, zoom: number, exiting: boolean): string {
@@ -142,27 +148,47 @@ export function createMarkerLayer(map: L.Map, onSelect: (p: LiveMarker) => void)
     const marker = L.marker([p.latitude, p.longitude], { icon });
     marker.on("click", () => onSelect(p));
     marker.addTo(map);
-    return { marker, headingRef, callsignRef, compareKey: compareKey(known, selected, roundedZoom, exiting) };
+    if (selected) marker.setZIndexOffset(10_000);
+    return {
+      marker,
+      headingRef,
+      callsignRef,
+      compareKey: compareKey(known, selected, roundedZoom, exiting),
+      lat: p.latitude,
+      lon: p.longitude,
+      rotationDeg: headingRef.current,
+      selected,
+    };
   }
 
   function applyEntry(entry: MarkerEntry, p: LiveMarker, selected: boolean, roundedZoom: number, exiting: boolean): void {
     const known = p.headingDeg != null;
     const rotationDeg = known ? (p.headingDeg as number) : 0;
     entry.headingRef.current = rotationDeg;
-    entry.marker.setLatLng([p.latitude, p.longitude]);
-    entry.marker.setZIndexOffset(selected ? 10_000 : 0);
-
-    // Heading is applied directly to the mounted glyph, never by handing
-    // the marker a new `icon` — that would trigger Marker.setIcon(), which
-    // tears down and rebuilds the icon DOM on every single position tick.
-    const glyph = entry.marker.getElement()?.querySelector<HTMLElement>(".plane-glyph");
-    if (glyph) glyph.style.transform = `rotate(${rotationDeg}deg)`;
+    if (p.latitude !== entry.lat || p.longitude !== entry.lon) {
+      entry.marker.setLatLng([p.latitude, p.longitude]);
+      entry.lat = p.latitude;
+      entry.lon = p.longitude;
+    }
+    if (selected !== entry.selected) {
+      entry.marker.setZIndexOffset(selected ? 10_000 : 0);
+      entry.selected = selected;
+    }
 
     const nextKey = compareKey(known, selected, roundedZoom, exiting);
     if (nextKey !== entry.compareKey) {
+      // Rebuilt icon picks the heading up from headingRef in createIcon.
       const options = planeIconOptions(known, selected, roundedZoom, false, exiting);
       entry.marker.setIcon(new RotatingPlaneIcon(options, entry.headingRef, entry.callsignRef));
       entry.compareKey = nextKey;
+      entry.rotationDeg = rotationDeg;
+    } else if (rotationDeg !== entry.rotationDeg) {
+      // Heading is applied directly to the mounted glyph, never by handing
+      // the marker a new `icon` — that would trigger Marker.setIcon(), which
+      // tears down and rebuilds the icon DOM on every single position tick.
+      const glyph = entry.marker.getElement()?.querySelector<HTMLElement>(".plane-glyph");
+      if (glyph) glyph.style.transform = `rotate(${rotationDeg}deg)`;
+      entry.rotationDeg = rotationDeg;
     }
   }
 

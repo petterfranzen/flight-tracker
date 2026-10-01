@@ -57,6 +57,12 @@ export interface MapController {
  * itself, not any one UI module.
  */
 export function createMap(container: HTMLElement, theme: Theme, onViewportChange: (bounds: Bounds, zoom: number) => void): MapController {
+  // Must be on the element *before* L.map() runs: .map-container is what
+  // gives it height:100%, and Leaflet measures (and caches) the container
+  // size during construction. Added afterwards, the map believed it was
+  // N×0 px until the next window resize, so every bbox it reported had
+  // latMin === latMax.
+  container.classList.add("map-container");
   const map = L.map(container, {
     center: [59.33, 18.06],
     zoom: 6,
@@ -77,7 +83,6 @@ export function createMap(container: HTMLElement, theme: Theme, onViewportChange
   });
 
   const containerEl = map.getContainer();
-  containerEl.classList.add("map-container");
   containerEl.setAttribute("aria-label", "Live aircraft map");
   // Test-only hook (see tests/helpers.ts __findLeafletMap): with React gone
   // there's no fiber tree to walk to find the mounted map instance, so it's
