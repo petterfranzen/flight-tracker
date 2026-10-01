@@ -66,7 +66,7 @@ const BUFFER_OPTIONS = {
 
 // Upper bound on holding the boot screen for the basemap: a slow or
 // unreachable tile server must never trap anyone behind it.
-const BASEMAP_READY_CAP_MS = 8_000;
+const BASEMAP_READY_CAP_MS = 5_000;
 
 export function createMaplibreLayer(): L.Layer {
   return (

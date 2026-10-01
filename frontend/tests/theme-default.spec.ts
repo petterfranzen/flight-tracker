@@ -6,7 +6,7 @@ import { mockFlightApi } from "./helpers";
 // script and theme.ts's loadTheme() decide this, and must agree.
 
 test("a first visit gets the cyberpunk theme", async ({ page }) => {
-  await mockFlightApi(page);
+  await mockFlightApi(page, { appDefaultTheme: true });
   await page.goto("/");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "cyberpunk");
   await expect(page.locator(".tracked-chip")).toBeVisible(); // cyberpunk-only UI, rendered by main.ts
