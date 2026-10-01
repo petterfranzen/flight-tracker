@@ -759,6 +759,8 @@ function boot(): void {
       positionFresh: store.get("selectedPosFresh"),
       lat: selectedPos?.latitude ?? null,
       lon: selectedPos?.longitude ?? null,
+      onGround: selectedPos?.onGround ?? null,
+      velocityMs: selectedPos?.velocityMs ?? null,
       sheetExpanded: store.get("dossierExpanded"),
       focusRequest: store.get("focusRequest"),
     });

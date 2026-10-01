@@ -71,6 +71,8 @@ export type SelectedPosition = LiveMarker & {
   altitudeM: number | null;
   velocityMs: number | null;
   verticalRateMs: number | null;
+  /** Present once upgraded from a full FlightPosition; absent on the marker-only initial selection. */
+  onGround?: boolean;
 };
 
 export interface AircraftDossier {
