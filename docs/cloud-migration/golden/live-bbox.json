@@ -1,0 +1,92 @@
+[
+  {
+    "observedAt": "2026-09-30T12:57:58Z",
+    "icao24": "39de4f",
+    "onGround": true,
+    "latitude": 48.7272,
+    "longitude": 2.3732,
+    "callsign": "TVF37MF",
+    "headingDeg": 73.12
+  },
+  {
+    "observedAt": "2026-09-30T12:57:59Z",
+    "icao24": "39de4e",
+    "onGround": false,
+    "latitude": 48.7564,
+    "longitude": 2.5599,
+    "callsign": "TVF31MA",
+    "headingDeg": 254.74
+  },
+  {
+    "observedAt": "2026-09-30T12:55:53Z",
+    "icao24": "3ffc29",
+    "onGround": false,
+    "latitude": 48.263,
+    "longitude": 12.1913,
+    "callsign": "DMFSS",
+    "headingDeg": 30.2
+  },
+  {
+    "observedAt": "2026-09-30T12:57:59Z",
+    "icao24": "39de4b",
+    "onGround": false,
+    "latitude": 48.6469,
+    "longitude": 2.8865,
+    "callsign": "TVF36VX",
+    "headingDeg": 344.8
+  },
+  {
+    "observedAt": "2026-09-30T12:58:00Z",
+    "icao24": "39de4c",
+    "onGround": false,
+    "latitude": 45.0406,
+    "longitude": 9.1,
+    "callsign": "TVF28HN",
+    "headingDeg": 302.19
+  },
+  {
+    "observedAt": "2026-09-30T12:58:00Z",
+    "icao24": "39de59",
+    "onGround": false,
+    "latitude": 42.6288,
+    "longitude": 16.4134,
+    "callsign": "TVF22TA",
+    "headingDeg": 310.9
+  },
+  {
+    "observedAt": "2026-09-30T12:58:00Z",
+    "icao24": "39de51",
+    "onGround": false,
+    "latitude": 45.9461,
+    "longitude": 5.9687,
+    "callsign": "TVF42VD",
+    "headingDeg": 134.65
+  },
+  {
+    "observedAt": "2026-09-30T12:58:00Z",
+    "icao24": "39de54",
+    "onGround": false,
+    "latitude": 49.0974,
+    "longitude": 4.2775,
+    "callsign": "TVF21ZC",
+    "headingDeg": 66.46
+  },
+  {
+    "observedAt": "2026-09-30T12:57:59Z",
+    "icao24": "50046a",
+    "onGround": false,
+    "latitude": 49.2043,
+    "longitude": -1.0057,
+    "callsign": "DWC055",
+    "headingDeg": 349.68
+  },
+  {
+    "observedAt": "2026-09-30T12:55:03Z",
+    "icao24": "3d23f5",
+    "onGround": false,
+    "latitude": 47.7097,
+    "longitude": 10.3675,
+    "callsign": "DELWF",
+    "headingDeg": 186.6
+  }
+]

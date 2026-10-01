@@ -1,0 +1,194 @@
+name: Build and deploy
+
+# One pipeline for the single-JVM app (docs/cloud-migration/PLAN.md):
+#   frontend  → Vite bundle + Playwright
+#   backend   → mvn verify with the bundle packed into the jar
+#   blackbox  → run that exact jar on the runner, black-box suite against it
+#   deploy    → main only: SSH through Cloudflare Access (service token) and run
+#               deploy.sh on the Hetzner VM, which installs the jar, restarts,
+#               health-checks the new git SHA and rolls back if it isn't healthy.
+#               deploy.sh's exit code is this job's result.
+#
+# ci-deployer: pin each action to its current major version before merging.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  # Cancel superseded PR runs; never cancel a main run (it may be deploying).
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  cloud-init:
+    # Keeps deploy/hetzner/cloud-init.yaml honest: it's generated from the unit,
+    # deploy script, sudoers, sshd and env files next to it, so it can't drift
+    # from them unnoticed (docs/cloud-migration/PLAN.md §6 C1.5).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: deploy/hetzner/build-cloud-init.sh
+      - run: git diff --exit-code deploy/hetzner/cloud-init.yaml
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+        env:
+          CI: "true"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: frontend-dist
+          path: frontend/dist
+          if-no-files-found: error
+          retention-days: 7
+
+  backend:
+    needs: frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - uses: actions/download-artifact@v8
+        with:
+          name: frontend-dist
+          path: frontend/dist
+      # -Dgit.sha feeds spring-boot build-info, which /api/health reports as
+      # "version"; deploy.sh waits for exactly this value.
+      - run: mvn -B verify -Pwith-frontend -Dgit.sha=${{ github.sha }}
+        working-directory: backend
+      - uses: actions/upload-artifact@v7
+        with:
+          name: app-jar
+          path: backend/target/flight-tracker.jar
+          if-no-files-found: error
+          retention-days: 30
+
+  blackbox:
+    needs: backend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24 # live-feed.test.js needs the global WebSocket client
+      - uses: actions/download-artifact@v8
+        with:
+          name: app-jar
+          path: dist
+      - name: Start the app
+        run: |
+          APP_DIR="$RUNNER_TEMP/ft"
+          mkdir -p "$APP_DIR"
+          FLIGHTTRACKER_DB_PATH="$APP_DIR/ft.db" SERVER_ADDRESS=127.0.0.1 TRUST_LOCAL=true \
+            nohup java -Xmx512m -jar dist/flight-tracker.jar > "$APP_DIR/app.log" 2>&1 &
+          for _ in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8080/api/health; then echo; exit 0; fi
+            sleep 2
+          done
+          echo "app did not become healthy"; exit 1
+      - name: Reopen the poll window
+        run: curl -sf -X POST http://127.0.0.1:8080/api/agents/restart
+      - name: Run the black-box suite
+        env:
+          BASE_URL: http://127.0.0.1:8080
+        run: node --test 'blackbox-tests/**/*.test.js'
+      - name: App log
+        if: failure()
+        run: cat "$RUNNER_TEMP/ft/app.log"
+
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [backend, blackbox, cloud-init]
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://flight.pastabake.cloud
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    env:
+      DEPLOY_SSH_HOSTNAME: ${{ vars.DEPLOY_SSH_HOSTNAME }} # flight-ssh.pastabake.cloud
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: app-jar
+          path: dist
+
+      - name: Install cloudflared
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/cloudflared.deb" \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i "$RUNNER_TEMP/cloudflared.deb"
+          cloudflared --version
+
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          # The service token is read from the environment when ssh runs the
+          # ProxyCommand, so it is never written to disk.
+          cat > ~/.ssh/config <<EOF
+          Host flight
+            HostName ${DEPLOY_SSH_HOSTNAME}
+            User deploy
+            IdentityFile ~/.ssh/deploy_key
+            IdentitiesOnly yes
+            HostKeyAlias flight-tracker-vm
+            StrictHostKeyChecking yes
+            ServerAliveInterval 15
+            ProxyCommand cloudflared access ssh --hostname %h --service-token-id "\$CF_ACCESS_CLIENT_ID" --service-token-secret "\$CF_ACCESS_CLIENT_SECRET"
+          EOF
+
+      - name: Deploy
+        env:
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+        run: |
+          sum=$(sha256sum dist/flight-tracker.jar | cut -d' ' -f1)
+          # shellcheck disable=SC2029 # expanding on the runner is intended
+          ssh flight "deploy ${GITHUB_SHA} ${sum}" < dist/flight-tracker.jar
+
+      # End-to-end through Cloudflare. Non-fatal: deploy.sh already verified the
+      # new SHA on the box, and Bot Fight Mode may challenge runner IPs.
+      - name: Public smoke check
+        continue-on-error: true
+        run: |
+          curl -fsS --retry 5 --retry-delay 5 https://flight.pastabake.cloud/api/health \
+            | jq -e --arg v "$GITHUB_SHA" '.version == $v'
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "### Deploy ${GITHUB_SHA::7}: ${{ job.status }}" >> "$GITHUB_STEP_SUMMARY"

@@ -29,13 +29,14 @@ import java.util.Optional;
  * core data.
  *
  * This is called concurrently from AircraftEnrichmentService's @Async pool
- * (see AsyncConfig) and from an "api"-container request thread
- * (AircraftController's on-demand enrichment/landing-check), unlike
- * OpenSkyAgent's single-threaded poll() — so unlike PollBackoff's usual
- * single-thread assumption, every access here is synchronized on the
- * backoff instance itself. No @Profile restriction: the "api" and "agent"
- * containers each get their own instance (and therefore their own
- * independent backoff state) since they're separate processes.
+ * (see AsyncConfig) and from a request thread (AircraftController's
+ * on-demand enrichment/landing-check), unlike OpenSkyAgent's
+ * single-threaded poll() — so unlike PollBackoff's usual single-thread
+ * assumption, every access here is synchronized on the backoff instance
+ * itself. This one Spring-managed singleton bean really is shared by both
+ * call paths in this one process, so that synchronization is load-bearing,
+ * not defensive: without it, a poll thread and a request thread could race
+ * on the same PollBackoff state.
  *
  * PollBackoff alone is purely reactive — it only slows down *after*
  * OpenSky has already said no. In production this endpoint was hitting

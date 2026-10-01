@@ -1,0 +1,3 @@
+# /etc/sudoers.d/flight-tracker-deploy  (mode 0440)
+# The deploy user may restart and check the status of the app, nothing else.
+deploy ALL=(root) NOPASSWD: /usr/bin/systemctl restart flight-tracker, /usr/bin/systemctl status flight-tracker

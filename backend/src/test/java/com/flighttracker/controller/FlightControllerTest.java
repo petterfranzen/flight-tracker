@@ -1,14 +1,22 @@
 package com.flighttracker.controller;
 
+import com.flighttracker.model.Aircraft;
+import com.flighttracker.model.Airport;
 import com.flighttracker.model.FlightPosition;
+import com.flighttracker.repository.AircraftRepository;
 import com.flighttracker.repository.FlightPositionRepository;
 import com.flighttracker.service.ViewportService;
+import com.flighttracker.service.enrichment.AirportLookupService;
+import com.flighttracker.service.live.LiveAircraft;
+import com.flighttracker.service.live.LiveStateStore;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -20,82 +28,120 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
- * No DB, no Spring context — FlightPositionRepository/ViewportService are
- * mocked, and FlightController is constructed directly. Covers /search's
- * branching (airport takes over from q entirely) and escaping, not
- * FlightPositionRepository's own SQL (that's a native query, out of scope
- * for a DB-less unit test — see this repo's Playwright/blackbox suite for
- * end-to-end coverage).
+ * No DB, no Spring context — LiveStateStore/ViewportService/
+ * AircraftRepository/AirportLookupService are mocked, and FlightController
+ * is constructed directly. Covers /search's branching (airport takes over
+ * from q entirely) and the airport-pattern matching FlightController now
+ * does itself in Java (ported from FlightPositionRepository.searchByAirport's
+ * SQL join — see that method's own javadoc). LiveStateStore's own SQL-free
+ * in-memory reads (bbox/clustered/count/callsign search) are covered by
+ * LiveStateStoreTest instead.
  */
 @ExtendWith(MockitoExtension.class)
 class FlightControllerTest {
 
     @Mock
+    private LiveStateStore liveStateStore;
+    @Mock
     private FlightPositionRepository positionRepository;
     @Mock
     private ViewportService viewportService;
+    @Mock
+    private AircraftRepository aircraftRepository;
+    @Mock
+    private AirportLookupService airportLookupService;
 
     private FlightController controller() {
-        return new FlightController(positionRepository, viewportService);
+        return new FlightController(liveStateStore, positionRepository, viewportService, aircraftRepository, airportLookupService);
+    }
+
+    // LiveAircraft has no public constructor test helper of its own (it's a
+    // plain record) — this just fills every field with an innocuous default
+    // except the ones a given test cares about.
+    private static LiveAircraft live(String icao24, String callsign) {
+        Instant now = Instant.now();
+        return new LiveAircraft(1L, icao24, callsign, now, 59.0, 18.0,
+                null, null, null, null, false, "opensky", null, null, null, null);
+    }
+
+    private static Aircraft aircraftWithRoute(String icao24, String originAirport, String originAirportName,
+                                               String destinationAirport, String destinationAirportName) {
+        return new Aircraft(icao24, null, null, null,
+                originAirport, originAirportName, destinationAirport, destinationAirportName,
+                null, null, null, null, null, null, null, null, null);
     }
 
     @Test
-    void airportNonBlank_callsSearchByAirportOnly_ignoringQEvenIfPresent() {
-        when(positionRepository.searchByAirport(any(), any(), any(), anyInt()))
-                .thenReturn(List.of());
+    void airportNonBlank_matchesByCachedOriginAirportName_ignoringQEvenIfPresent() {
+        when(liveStateStore.liveAircraft(any(), any())).thenReturn(List.of(live("abc123", "SAS100")));
+        when(aircraftRepository.findAllById(List.of("abc123")))
+                .thenReturn(List.of(aircraftWithRoute("abc123", "ESSA", "Stockholm Arlanda", "EGLL", null)));
+        // No airportLookupService stub needed: the cached originAirportName
+        // ("Stockholm Arlanda") already matches, short-circuiting before
+        // the airport reference table lookup is ever reached.
 
-        controller().search("SAS123", "Arlanda");
+        List<FlightPosition> result = controller().search("SAS123", "Arlanda");
 
-        verify(positionRepository).searchByAirport(eq("%Arlanda%"), any(), any(), eq(8));
-        verify(positionRepository, never()).searchLive(any(), any(), any(), any(), anyInt());
+        assertThat(result).extracting(FlightPosition::icao24).containsExactly("abc123");
+        verify(liveStateStore, never()).searchByCallsign(any(), any(), any(), anyInt());
     }
 
     @Test
-    void airportBlank_fallsBackToSearchLiveWithQ() {
-        when(positionRepository.searchLive(any(), any(), any(), any(), anyInt()))
-                .thenReturn(List.of());
+    void airportNonBlank_matchesByAirportReferenceTable_caseInsensitive() {
+        when(liveStateStore.liveAircraft(any(), any())).thenReturn(List.of(live("abc123", "SAS100")));
+        when(aircraftRepository.findAllById(List.of("abc123")))
+                .thenReturn(List.of(aircraftWithRoute("abc123", "ESSA", null, "EGLL", null)));
+        // A real record instance, not a mock — Airport has no behaviour to
+        // stub, just fields, and matchesAirportPattern's OR chain
+        // short-circuits on the name match below before municipality or
+        // the destination (EGLL) lookup are ever reached.
+        Airport arlanda = new Airport("ESSA", "ARN", "Stockholm Arlanda Airport", "Stockholm", "SE", 59.6, 17.9);
+        when(airportLookupService.lookup("ESSA")).thenReturn(Optional.of(arlanda));
 
-        controller().search("SAS", "  ");
+        List<FlightPosition> result = controller().search(null, "arlanda"); // lowercase, table has mixed case
 
-        verify(positionRepository).searchLive(eq("%SAS%"), eq("SAS%"), any(), any(), eq(8));
-        verify(positionRepository, never()).searchByAirport(any(), any(), any(), anyInt());
+        assertThat(result).extracting(FlightPosition::icao24).containsExactly("abc123");
     }
 
     @Test
-    void allBlank_returnsEmptyListWithoutCallingRepository() {
+    void airportNonBlank_noMatch_returnsEmpty() {
+        when(liveStateStore.liveAircraft(any(), any())).thenReturn(List.of(live("abc123", "SAS100")));
+        when(aircraftRepository.findAllById(List.of("abc123")))
+                .thenReturn(List.of(aircraftWithRoute("abc123", "ESSA", "Stockholm Arlanda", "EGLL", "London Heathrow")));
+        when(airportLookupService.lookup(any())).thenReturn(Optional.empty());
+
+        List<FlightPosition> result = controller().search(null, "Narita");
+
+        assertThat(result).isEmpty();
+    }
+
+    @Test
+    void airportBlank_fallsBackToCallsignSearchWithTrimmedQ() {
+        when(liveStateStore.searchByCallsign(eq("SAS"), any(), any(), eq(8))).thenReturn(List.of());
+
+        controller().search("  SAS  ", "  ");
+
+        verify(liveStateStore).searchByCallsign(eq("SAS"), any(), any(), eq(8));
+        verify(liveStateStore, never()).liveAircraft(any(), any());
+    }
+
+    @Test
+    void allBlank_returnsEmptyListWithoutCallingStore() {
         List<FlightPosition> result = controller().search(null, null);
 
         assertThat(result).isEmpty();
-        verifyNoInteractions(positionRepository);
+        verifyNoInteractions(liveStateStore);
     }
 
     @Test
-    void qWithLiteralPercent_isEscapedBeforeMatching() {
-        when(positionRepository.searchLive(any(), any(), any(), any(), anyInt()))
-                .thenReturn(List.of());
+    void qWithSpecialCharacters_passedThroughLiterally_noLikeEscapingNeeded() {
+        // Now that this is a plain Java substring match rather than a SQL
+        // LIKE pattern, a literal %/_/\\ needs no escaping — the exact
+        // trimmed string reaches LiveStateStore.searchByCallsign as-is.
+        when(liveStateStore.searchByCallsign(eq("50%"), any(), any(), eq(8))).thenReturn(List.of());
 
         controller().search("50%", null);
 
-        verify(positionRepository).searchLive(eq("%50\\%%"), eq("50\\%%"), any(), any(), eq(8));
-    }
-
-    @Test
-    void qWithLiteralUnderscore_isEscapedBeforeMatching() {
-        when(positionRepository.searchLive(any(), any(), any(), any(), anyInt()))
-                .thenReturn(List.of());
-
-        controller().search("a_b", null);
-
-        verify(positionRepository).searchLive(eq("%a\\_b%"), eq("a\\_b%"), any(), any(), eq(8));
-    }
-
-    @Test
-    void qWithLiteralBackslash_isEscapedBeforeMatching() {
-        when(positionRepository.searchLive(any(), any(), any(), any(), anyInt()))
-                .thenReturn(List.of());
-
-        controller().search("x\\y", null);
-
-        verify(positionRepository).searchLive(eq("%x\\\\y%"), eq("x\\\\y%"), any(), any(), eq(8));
+        verify(liveStateStore).searchByCallsign(eq("50%"), any(), any(), eq(8));
     }
 }

@@ -6,7 +6,7 @@ import com.flighttracker.service.HotPollUserBudget;
 import com.flighttracker.service.PollWindowService;
 import com.flighttracker.service.RestartRateLimiter;
 import jakarta.servlet.http.HttpServletRequest;
-import org.springframework.context.annotation.Profile;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -16,18 +16,26 @@ import java.util.Optional;
 
 @RestController
 @RequestMapping("/api/agents")
-@Profile("api")
 public class AgentController {
 
     private final PollWindowService pollWindowService;
     private final RestartRateLimiter rateLimiter;
     private final HotPollUserBudget hotPollUserBudget;
+    // Cloud migration security fix (PLAN.md §6 item 7): in production every
+    // request arrives from cloudflared on 127.0.0.1, so ClientIpResolver.
+    // isLocal(ip) alone would call *every* visitor local (see that method's
+    // own javadoc) — trustLocal gates whether the local exemption applies
+    // at all, defaulting to false so it's off unless explicitly enabled
+    // (TRUST_LOCAL=true, for dev/local testing).
+    private final boolean trustLocal;
 
     public AgentController(PollWindowService pollWindowService, RestartRateLimiter rateLimiter,
-                            HotPollUserBudget hotPollUserBudget) {
+                            HotPollUserBudget hotPollUserBudget,
+                            @Value("${flighttracker.rate-limit.trust-local:false}") boolean trustLocal) {
         this.pollWindowService = pollWindowService;
         this.rateLimiter = rateLimiter;
         this.hotPollUserBudget = hotPollUserBudget;
+        this.trustLocal = trustLocal;
     }
 
     /** Whether the poll window is currently open, and how long until it closes — for a UI countdown. */
@@ -48,16 +56,18 @@ public class AgentController {
      * many times they've asked), and the global restart quota
      * (PollWindowService — shared across every non-local caller, protects
      * OpenSky usage from the public internet-facing endpoint). All three
-     * are skipped entirely for local/private-network callers (see
-     * ClientIpResolver.isLocal) — the owner of the deployment testing it
-     * from their own machine or LAN isn't who any of them exist for.
-     * Either way the body still carries the real current PollingStatus, so
-     * the UI has something accurate to show either way.
+     * are skipped entirely for local/private-network callers when
+     * trustLocal is enabled (see ClientIpResolver.isLocal and this class's
+     * own trustLocal field) — in production (trustLocal=false, the
+     * default) nothing is exempt, because every request now looks like it
+     * came from 127.0.0.1 (cloudflared) regardless of who actually sent
+     * it. Either way the body still carries the real current PollingStatus,
+     * so the UI has something accurate to show either way.
      */
     @PostMapping("/restart")
     public ResponseEntity<PollingStatus> restart(HttpServletRequest request) {
         String ip = ClientIpResolver.resolve(request);
-        boolean local = ClientIpResolver.isLocal(ip);
+        boolean local = trustLocal && ClientIpResolver.isLocal(ip);
         Optional<String> rejected = rateLimiter.checkAndRecord(ip, local);
         if (rejected.isPresent()) {
             return ResponseEntity.status(429).body(pollWindowService.status());

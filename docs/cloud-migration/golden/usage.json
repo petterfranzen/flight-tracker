@@ -1,0 +1,82 @@
+[
+  {
+    "icao24": "008080",
+    "registration": null,
+    "positionReports": 1,
+    "distanceFlownKm": 0.0,
+    "airborneHours": 0.0,
+    "averageGroundSpeedKmh": 0.0
+  },
+  {
+    "icao24": "008139",
+    "registration": null,
+    "positionReports": 1,
+    "distanceFlownKm": 0.0,
+    "airborneHours": 0.0,
+    "averageGroundSpeedKmh": 0.0
+  },
+  {
+    "icao24": "008407",
+    "registration": null,
+    "positionReports": 1,
+    "distanceFlownKm": 0.0,
+    "airborneHours": 0.0,
+    "averageGroundSpeedKmh": 0.0
+  },
+  {
+    "icao24": "008697",
+    "registration": null,
+    "positionReports": 1,
+    "distanceFlownKm": 0.0,
+    "airborneHours": 0.0,
+    "averageGroundSpeedKmh": 0.0
+  },
+  {
+    "icao24": "008698",
+    "registration": null,
+    "positionReports": 1,
+    "distanceFlownKm": 0.0,
+    "airborneHours": 0.0,
+    "averageGroundSpeedKmh": 0.0
+  },
+  {
+    "icao24": "008de8",
+    "registration": null,
+    "positionReports": 1,
+    "distanceFlownKm": 0.0,
+    "airborneHours": 0.0,
+    "averageGroundSpeedKmh": 0.0
+  },
+  {
+    "icao24": "008dee",
+    "registration": null,
+    "positionReports": 1,
+    "distanceFlownKm": 0.0,
+    "airborneHours": 0.0,
+    "averageGroundSpeedKmh": 0.0
+  },
+  {
+    "icao24": "008e2f",
+    "registration": null,
+    "positionReports": 1,
+    "distanceFlownKm": 0.0,
+    "airborneHours": 0.0,
+    "averageGroundSpeedKmh": 0.0
+  },
+  {
+    "icao24": "008ef9",
+    "registration": null,
+    "positionReports": 1,
+    "distanceFlownKm": 0.0,
+    "airborneHours": 0.0,
+    "averageGroundSpeedKmh": 0.0
+  },
+  {
+    "icao24": "008feb",
+    "registration": null,
+    "positionReports": 1,
+    "distanceFlownKm": 0.0,
+    "airborneHours": 0.0,
+    "averageGroundSpeedKmh": 0.0
+  }
+]

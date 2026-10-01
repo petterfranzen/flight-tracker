@@ -2,8 +2,7 @@
 
 Exercises the flight-tracker system purely over HTTP/WebSocket — no JVM,
 no repository classes, no test containers. Point it at any running
-instance (local backend, the full docker-compose stack, staging) via
-`BASE_URL`.
+instance (local dev, the deployed Hetzner box) via `BASE_URL`.
 
 Uses Node's built-in test runner (`node:test`) and the global `fetch` /
 `WebSocket`, so there is nothing to `npm install`. The global `WebSocket`
@@ -36,28 +35,30 @@ directory) works from anywhere:
 BASE_URL=http://localhost:8080 node --test blackbox-tests/flights-live.test.js
 ```
 
-## Running against the docker-compose stack
+## Running against the real jar
 
-`docker-compose.yml` at the repo root brings up four containers — `db`
-(Postgres), `backend-api` (Spring Boot REST + WebSocket), `backend-agent`
-(the headless OpenSky poller — see its own `@Profile("agent")`, no HTTP
-port of its own), and `frontend` (nginx serving the built SPA and proxying
-`/api` and `/ws` to `backend-api`). To black-box test the *whole* stack as
-a real client would hit it — through nginx, not straight to the JVM —
-point `BASE_URL` at the frontend's published port rather than
-`backend-api`'s:
+There's one process and one port now — no nginx, no separate frontend
+container, nothing to proxy through. Build and run the jar (optionally
+with the frontend bundled in, `-Pwith-frontend`), then point `BASE_URL` at
+it directly:
 
 ```bash
-docker compose up --build -d
-BASE_URL=http://localhost:5173 node --test 'blackbox-tests/**/*.test.js'
+cd frontend && npm ci && npm run build   # required first — see note below
+cd ../backend && mvn -B package -Pwith-frontend -DskipTests
+java -jar target/flight-tracker.jar &
+BASE_URL=http://localhost:8080 node --test 'blackbox-tests/**/*.test.js'
 ```
 
-This exercises nginx's `/api`/`/ws` proxy rules, `backend-api`'s
-controllers and WebSocket handler, `backend-agent` (indirectly — it's the
-one actually writing the positions these tests read), and Postgres
-underneath. Pointing `BASE_URL` at `http://localhost:8080` instead talks to
-`backend-api` directly, skipping the nginx hop — useful for isolating
-whether a failure is in the proxy config or the app itself.
+**`npm run build` must run first.** The `with-frontend` Maven profile only
+*copies* an already-built `frontend/dist` into the jar — it doesn't build
+the frontend itself. Skipping this step doesn't error; it silently produces
+a jar with no `static/` entries at all, and `GET /` 404s. CI
+(`build-deploy.yml`) always builds the frontend before the backend, so this
+only bites a local repro of "the one true jar."
+
+This is exactly what `build-deploy.yml`'s `blackbox` CI job does. There's
+no longer a reason to test through a proxy vs. direct — the jar serves the
+API, WebSocket and SPA on the same port either way.
 
 ## What's covered
 

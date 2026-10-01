@@ -100,17 +100,17 @@ public final class EstimatedPositionService {
      */
     public static FlightPosition estimate(FlightPosition last, Instant asOf,
                                            Double destinationLat, Double destinationLon) {
-        if (last == null || last.isOnGround()) return last;
+        if (last == null || last.onGround()) return last;
         if (destinationLat == null || destinationLon == null) return last;
-        Double speed = last.getVelocityMs();
-        Double heading = last.getHeadingDeg();
+        Double speed = last.velocityMs();
+        Double heading = last.headingDeg();
         if (speed == null || speed < MIN_SPEED_MS || heading == null) return last;
 
-        Duration elapsed = Duration.between(last.getObservedAt(), asOf);
+        Duration elapsed = Duration.between(last.observedAt(), asOf);
         if (elapsed.compareTo(MIN_AGE) < 0) return last;
 
         double distanceToDestinationM = haversineMeters(
-                last.getLatitude(), last.getLongitude(), destinationLat, destinationLon);
+                last.latitude(), last.longitude(), destinationLat, destinationLon);
         double projectedDistanceM = speed * elapsed.toSeconds();
         // Never project past the destination — once elapsed time at this
         // groundspeed would already cover the remaining distance, the
@@ -119,7 +119,7 @@ public final class EstimatedPositionService {
         // rather than continuing on past it.
         double distanceM = Math.min(projectedDistanceM, distanceToDestinationM);
 
-        double[] projected = destinationPoint(last.getLatitude(), last.getLongitude(), heading, distanceM);
+        double[] projected = destinationPoint(last.latitude(), last.longitude(), heading, distanceM);
         return last.withEstimatedPosition(projected[0], projected[1]);
     }
 

@@ -1,0 +1,56 @@
+# /etc/systemd/system/flight-tracker.service
+# Single JVM: REST + WebSocket + static SPA + pollers + SQLite.
+# Listens on 127.0.0.1:8080 only; cloudflared is the sole way in.
+[Unit]
+Description=Flight tracker
+After=network-online.target
+Wants=network-online.target
+# Stays inactive until the first deploy has installed a jar.
+ConditionPathExists=/opt/flight-tracker/app/current.jar
+
+[Service]
+Type=simple
+User=flighttracker
+Group=flighttracker
+StateDirectory=flight-tracker
+StateDirectoryMode=0750
+WorkingDirectory=/var/lib/flight-tracker
+EnvironmentFile=/etc/flight-tracker/env
+Environment=FLIGHTTRACKER_DB_PATH=/var/lib/flight-tracker/flighttracker.db
+Environment=SERVER_ADDRESS=127.0.0.1
+Environment=SERVER_PORT=8080
+Environment=TRUST_LOCAL=false
+ExecStart=/usr/bin/java -Xms256m -Xmx768m -XX:+UseG1GC -XX:+ExitOnOutOfMemoryError \
+    -jar /opt/flight-tracker/app/current.jar
+SuccessExitStatus=143
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=5
+
+# Memory: 768 MB heap + ~300 MB JVM overhead; SQLite page cache is reclaimable.
+MemoryHigh=1400M
+MemoryMax=1800M
+
+# Hardening. No MemoryDenyWriteExecute: the JIT needs W+X pages.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

@@ -24,9 +24,10 @@ import java.util.Optional;
  *
  * Tokens expire every 30 minutes; this caches the token and refreshes it a
  * minute early rather than on every call, so a burst of callers doesn't
- * turn into a burst of token requests. No @Profile restriction — both the
- * "api" container (AircraftController's on-demand enrichment) and the
- * "agent" container (OpenSkyAgent's polling) need this.
+ * turn into a burst of token requests. Shared by every caller in this one
+ * process — both AircraftController's on-demand enrichment and
+ * OpenSkyAgent's polling need this, and the cache above is exactly what
+ * lets them share one token instead of each fetching their own.
  */
 @Component
 public class OpenSkyOAuthTokenProvider {
