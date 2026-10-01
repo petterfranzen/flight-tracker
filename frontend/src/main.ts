@@ -32,6 +32,11 @@ import * as themeToggle from "./ui/themeToggle";
 import * as dossierPanel from "./ui/dossierPanel";
 import * as bootScreen from "./ui/bootScreen";
 import * as resumeDialog from "./ui/resumeDialog";
+// Self-hosted cyberpunk face (latin subset). @font-face files are fetched
+// only once a matching font-family is used, so the default theme pays nothing.
+import "@fontsource/jetbrains-mono/latin-500.css";
+import "@fontsource/jetbrains-mono/latin-600.css";
+import "@fontsource/jetbrains-mono/latin-700.css";
 import "./components/FlightMap.css"; // app-shell/header/dock/details-panel/tracked-chip/resume-dialog styles — kept unchanged
 
 // See the comment block above FETCH_INTERVAL_MS in the original FlightMap.tsx
