@@ -22,6 +22,13 @@ export interface AppState extends Record<string, unknown> {
 
   selectedId: string | null;
   selectedPos: SelectedPosition | null;
+  /**
+   * selectedPos came from the server after the current selection was made.
+   * A selection can start from a stale position (a favourites or search
+   * list entry fetched seconds ago); the map only flies to it once this is
+   * true — see handleSelectAircraft.
+   */
+  selectedPosFresh: boolean;
   dossier: AircraftDossier | null;
   dossierExpanded: boolean;
   planeOffScreen: boolean;

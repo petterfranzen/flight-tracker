@@ -7,8 +7,9 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "test:e2e": "playwright test --grep-invert @perf",
-    "test:perf": "playwright test --grep @perf --workers=1"
+    "test:e2e": "playwright test --grep-invert \"@perf|@scenario\"",
+    "test:perf": "playwright test --grep @perf --workers=1",
+    "test:scenarios": "playwright test --grep @scenario --workers=1"
   },
   "dependencies": {
     "@maplibre/maplibre-gl-leaflet": "^0.1.4",

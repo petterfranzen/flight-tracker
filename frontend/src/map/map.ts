@@ -173,6 +173,8 @@ export interface FollowSelectedUpdate {
   selectedId: string | null;
   /** icao24 the lat/lon below belong to — can briefly differ from selectedId mid-switch. */
   positionId: string | null;
+  /** lat/lon came from the server after this selection was made (see AppState.selectedPosFresh). */
+  positionFresh: boolean;
   lat: number | null;
   lon: number | null;
   /** Mobile bottom-sheet collapsed/expanded state — irrelevant on desktop. */
@@ -207,7 +209,7 @@ export function createFollowSelected(map: L.Map, onOffScreenChange: (offScreen: 
   map.on("moveend", checkOffScreen);
   map.on("zoomend", checkOffScreen);
 
-  function update({ selectedId, positionId, lat, lon, sheetExpanded, focusRequest }: FollowSelectedUpdate): void {
+  function update({ selectedId, positionId, positionFresh, lat, lon, sheetExpanded, focusRequest }: FollowSelectedUpdate): void {
     // Switching from aircraft A to B updates selectedId and selectedPos one
     // after the other, so for a moment selectedId is B while lat/lon are
     // still A's. Treating that as "B's position" flew the map to A and
@@ -231,6 +233,9 @@ export function createFollowSelected(map: L.Map, onOffScreenChange: (offScreen: 
       return;
     }
     if (lat == null || lon == null) return;
+    // A new selection waits for a fresh position before flying: the one it
+    // was selected with may be a list entry from many seconds ago.
+    if (lastCenteredId !== selectedId && !positionFresh) return;
 
     const isNewSelection = lastCenteredId !== selectedId;
     const isFocusRequest = !isNewSelection && focusRequest !== lastFocusRequest;

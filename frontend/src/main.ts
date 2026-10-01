@@ -62,6 +62,10 @@ const EXIT_FADE_MS = 300;
 // and revalidated in the background; past VIEW_CACHE_MAX_AGE_MS they're
 // not shown at all.
 const VIEW_CACHE_FRESH_MS = 15_000;
+// Individual positions go stale much faster than cluster counts: a cached
+// /live view is still drawn at once, but older than this it's re-fetched
+// in the background so markers correct within one round trip.
+const LIVE_CACHE_FRESH_MS = 3_000;
 const VIEW_CACHE_MAX_AGE_MS = 5 * 60_000;
 const VIEW_CACHE_MAX_ENTRIES = 40;
 
@@ -122,6 +126,7 @@ function boot(): void {
 
     selectedId: null,
     selectedPos: null,
+    selectedPosFresh: false,
     dossier: null,
     dossierExpanded: false,
     planeOffScreen: false,
@@ -305,7 +310,8 @@ function boot(): void {
     if (!bounds) return;
     const now = Date.now();
     const hit = applyCachedView(now);
-    if (hit && now - hit.fetchedAt < VIEW_CACHE_FRESH_MS) {
+    const freshFor = zoom < CLUSTER_FETCH_MAX_ZOOM ? VIEW_CACHE_FRESH_MS : LIVE_CACHE_FRESH_MS;
+    if (hit && now - hit.fetchedAt < freshFor) {
       store.set("firstLoadDone", true);
       return;
     }
@@ -401,12 +407,21 @@ function boot(): void {
   }
 
   // ---- live push feed ----
+  // Updates are kept for everything renderAircraftLayer draws: the view plus
+  // its RENDER_MARGIN. Filtering to the bare view left aircraft in the
+  // margin frozen at their last snapshot, so a pan brought them on screen
+  // at old positions.
+  function inDrawnArea(p: LiveMarker): boolean {
+    if (zoom < CLUSTER_FETCH_MAX_ZOOM || !bounds) return false;
+    return inBounds(padBounds(bounds, RENDER_MARGIN), p.latitude, p.longitude);
+  }
+
   function onLivePush(p: FlightPosition): void {
     // The server filters by the last viewport *anyone* reported (one shared
     // viewport, see ViewportService) — keep only what this map is showing
     // as individual markers, plus the selected aircraft.
     const isSelected = p.icao24 === store.get("selectedId");
-    if (!isSelected && (zoom < CLUSTER_FETCH_MAX_ZOOM || !bounds || !inBounds(bounds, p.latitude, p.longitude))) return;
+    if (!isSelected && !inDrawnArea(p)) return;
     const queued = pendingWs.get(p.icao24);
     if (queued && !isNewer(p, queued)) return;
     pendingWs.set(p.icao24, p);
@@ -422,7 +437,7 @@ function boot(): void {
     for (const p of pendingWs.values()) {
       const existing = positions.get(p.icao24);
       if (existing && !isNewer(p, existing)) continue; // superseded by a /live reconcile already
-      if (p.icao24 !== selectedId && (zoom < CLUSTER_FETCH_MAX_ZOOM || !bounds || !inBounds(bounds, p.latitude, p.longitude))) continue;
+      if (p.icao24 !== selectedId && !inDrawnArea(p)) continue;
       positions.set(p.icao24, p);
       changed = true;
       if (p.icao24 === selectedId) selectedUpdate = p;
@@ -431,6 +446,7 @@ function boot(): void {
     if (changed) renderAircraftLayer();
     if (selectedUpdate) {
       store.set("selectedPos", selectedUpdate);
+      store.set("selectedPosFresh", true);
       appendRoutePoint(selectedUpdate);
     }
   }
@@ -488,10 +504,14 @@ function boot(): void {
         .then((p) => {
           if (!p || p.icao24 !== store.get("selectedId")) return;
           const existing = positions.get(p.icao24);
-          if (existing && !isNewer(p, existing)) return; // superseded already
-          positions.set(p.icao24, p);
-          store.set("selectedPos", p);
-          appendRoutePoint(p);
+          // A newer live push may have beaten this response; either way the
+          // selection now has a server position from after it was made.
+          const best = existing && isNewer(existing, p) ? existing : p;
+          positions.set(best.icao24, best);
+          const prev = store.get("selectedPos");
+          store.set("selectedPos", prev && prev.icao24 === best.icao24 ? { ...prev, ...best } : { ...best, altitudeM: null, velocityMs: null, verticalRateMs: null });
+          store.set("selectedPosFresh", true);
+          appendRoutePoint(best);
           renderAircraftLayer();
         })
         .catch(() => {})
@@ -569,7 +589,25 @@ function boot(): void {
   }
 
   // ---- selection actions ----
-  function handleSelectAircraft(p: LiveMarker): void {
+  // How long a new selection waits for a fresh server position before the
+  // map flies to the (possibly stale) one it was selected with anyway.
+  const FRESH_POSITION_WAIT_MS = 1_500;
+  let freshWaitTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function handleSelectAircraft(selected: LiveMarker): void {
+    // Lists (favourites, search results) hand over the position they last
+    // fetched, which can be many seconds old; the map flies only once a
+    // fresh one arrives (the priority poll starts on selection, or a live
+    // push lands first) — or after FRESH_POSITION_WAIT_MS regardless.
+    const known = positions.get(selected.icao24);
+    const p = known && isNewer(known, selected) ? known : selected;
+    if (p.icao24 !== store.get("selectedId")) {
+      store.set("selectedPosFresh", false);
+      if (freshWaitTimer) clearTimeout(freshWaitTimer);
+      freshWaitTimer = setTimeout(() => {
+        if (store.get("selectedId") === p.icao24) store.set("selectedPosFresh", true);
+      }, FRESH_POSITION_WAIT_MS);
+    }
     store.set("airportDossier", null);
     store.set("selectedId", p.icao24); // no-op (and no effect re-run) if already selected — matches the original's state bail-out
     const prevSelectedPos = store.get("selectedPos");
@@ -713,13 +751,14 @@ function boot(): void {
     followSelected.update({
       selectedId: store.get("selectedId"),
       positionId: selectedPos?.icao24 ?? null,
+      positionFresh: store.get("selectedPosFresh"),
       lat: selectedPos?.latitude ?? null,
       lon: selectedPos?.longitude ?? null,
       sheetExpanded: store.get("dossierExpanded"),
       focusRequest: store.get("focusRequest"),
     });
   }
-  store.subscribeMany(["selectedId", "selectedPos", "dossierExpanded", "focusRequest"], syncFollowSelected);
+  store.subscribeMany(["selectedId", "selectedPos", "selectedPosFresh", "dossierExpanded", "focusRequest"], syncFollowSelected);
 
   // ---- per-selection effect wiring ----
   store.subscribe("selectedId", onSelectedIdChanged);
