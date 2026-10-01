@@ -2,6 +2,7 @@ package com.flighttracker.service.enrichment;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.HttpClientErrorException;
@@ -28,12 +29,12 @@ public class AdsbdbClient {
 
     private final RestClient client;
 
-    public AdsbdbClient() {
+    public AdsbdbClient(@Value("${flighttracker.enrichment.adsbdb-base-url:https://api.adsbdb.com/v0}") String baseUrl) {
         SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
         requestFactory.setConnectTimeout(5_000);
         requestFactory.setReadTimeout(10_000);
         this.client = RestClient.builder()
-                .baseUrl("https://api.adsbdb.com/v0")
+                .baseUrl(baseUrl)
                 .requestFactory(requestFactory)
                 .build();
     }
@@ -49,6 +50,27 @@ public class AdsbdbClient {
      * fall back to OpenSkyFlightsClient.
      */
     public Optional<Route> fetchRoute(String callsign) {
+        return lookupRoute(callsign).route();
+    }
+
+    /** Outcome of a callsign lookup — a miss is cacheable, a failure isn't. */
+    public enum LookupStatus { FOUND, NOT_FOUND, THROTTLED, FAILED }
+
+    public record RouteLookup(LookupStatus status, Optional<Route> route) {
+        static RouteLookup of(LookupStatus status) {
+            return new RouteLookup(status, Optional.empty());
+        }
+    }
+
+    /**
+     * Same lookup as fetchRoute, but says *why* nothing came back:
+     * NOT_FOUND (adsbdb answered and doesn't know this callsign — 404/400,
+     * or a record with no airports) is a real answer worth caching;
+     * THROTTLED (429) and FAILED (anything else) are not, and tell a bulk
+     * caller like CallsignRouteService to back off rather than record a
+     * miss.
+     */
+    public RouteLookup lookupRoute(String callsign) {
         try {
             AdsbdbCallsignResponse body = client.get()
                     .uri("/callsign/{callsign}", callsign)
@@ -56,11 +78,11 @@ public class AdsbdbClient {
                     .body(AdsbdbCallsignResponse.class);
 
             if (body == null || body.response() == null || body.response().flightroute() == null) {
-                return Optional.empty();
+                return RouteLookup.of(LookupStatus.NOT_FOUND);
             }
             FlightRoute route = body.response().flightroute();
             if (route.origin() == null && route.destination() == null) {
-                return Optional.empty();
+                return RouteLookup.of(LookupStatus.NOT_FOUND);
             }
             String origin = route.origin() == null ? null : route.origin().icao_code();
             String originName = route.origin() == null ? null : route.origin().name();
@@ -70,13 +92,16 @@ public class AdsbdbClient {
             String destinationName = route.destination() == null ? null : route.destination().name();
             Double destinationLat = route.destination() == null ? null : route.destination().latitude();
             Double destinationLon = route.destination() == null ? null : route.destination().longitude();
-            return Optional.of(new Route(origin, originName, originLat, originLon,
-                    destination, destinationName, destinationLat, destinationLon));
+            return new RouteLookup(LookupStatus.FOUND, Optional.of(new Route(origin, originName, originLat, originLon,
+                    destination, destinationName, destinationLat, destinationLon)));
+        } catch (HttpClientErrorException.TooManyRequests e) {
+            return RouteLookup.of(LookupStatus.THROTTLED);
         } catch (HttpClientErrorException e) {
-            return Optional.empty();
+            // 404 unknown callsign, 400 malformed one — both a definite "no".
+            return RouteLookup.of(LookupStatus.NOT_FOUND);
         } catch (Exception e) {
             log.debug("adsbdb callsign lookup failed for {}: {}", callsign, e.toString());
-            return Optional.empty();
+            return RouteLookup.of(LookupStatus.FAILED);
         }
     }
 

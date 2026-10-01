@@ -155,3 +155,29 @@ CREATE TABLE IF NOT EXISTS app_state (
 -- have held this state in memory since A1, and SQLite — unlike Postgres
 -- pre-migration — was never asked to serve it, so there's no "drop later"
 -- deferral needed here the way A1 had to defer to this migration.
+
+-- Origin/destination keyed by *callsign*, not by aircraft (see
+-- CallsignRouteService). Airlines fly a different flight number on every
+-- leg, so the callsign is what actually identifies "this flight"; the
+-- aircraft table's route columns used to hold whatever route an airframe
+-- was first enriched with, forever, which showed long-finished legs as the
+-- current destination. Rows here come from adsbdb's schedule-based
+-- callsign database. found = 0 records a confirmed miss (charter/GA/
+-- military callsigns adsbdb doesn't know) so it isn't re-asked every pass;
+-- fetched_at drives re-checking both kinds after a TTL.
+-- A new table rather than new aircraft columns: schema.sql only ever runs
+-- CREATE ... IF NOT EXISTS, so a new table reaches an existing database
+-- with no migration step.
+CREATE TABLE IF NOT EXISTS callsign_route (
+    callsign                 TEXT PRIMARY KEY,   -- trimmed, upper-case
+    found                    INTEGER NOT NULL,
+    origin_airport           TEXT,
+    origin_airport_name      TEXT,
+    origin_airport_lat       REAL,
+    origin_airport_lon       REAL,
+    destination_airport      TEXT,
+    destination_airport_name TEXT,
+    destination_airport_lat  REAL,
+    destination_airport_lon  REAL,
+    fetched_at               INTEGER NOT NULL    -- epoch millis
+);

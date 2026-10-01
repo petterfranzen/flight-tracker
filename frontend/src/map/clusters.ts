@@ -87,6 +87,11 @@ export function createClusterLayer(map: L.Map): ClusterLayerHandle {
 
   function update(clusters: ClusterPoint[]): void {
     const seen = new Set<string>();
+    // Fade new bubbles in only when the layer was empty (first paint, or
+    // coming from individual markers). On a zoom step every cell key
+    // changes, and fading the whole set in again read as the map redrawing
+    // from scratch each time.
+    const animateEntering = entries.size === 0;
     for (const c of clusters) {
       const key = `${c.lat},${c.lon}`;
       seen.add(key);
@@ -98,12 +103,12 @@ export function createClusterLayer(map: L.Map): ClusterLayerHandle {
           existing.iconKey = iconKey;
         }
       } else {
-        const marker = L.marker([c.lat, c.lon], { icon: clusterIcon(c.count, true) });
+        const marker = L.marker([c.lat, c.lon], { icon: clusterIcon(c.count, animateEntering) });
         marker.on("click", () => map.setView([c.lat, c.lon], map.getZoom() + 3, { animate: false }));
         marker.addTo(map);
         // The entering icon carries a one-shot fade-in; recorded under a key
         // that never matches so the first real change swaps in the plain one.
-        entries.set(key, { marker, iconKey: "entering" });
+        entries.set(key, { marker, iconKey: animateEntering ? "entering" : `${clusterPlaneCount(c.count)}|${clusterIconSize(c.count)}` });
       }
     }
     for (const [key, entry] of entries) {

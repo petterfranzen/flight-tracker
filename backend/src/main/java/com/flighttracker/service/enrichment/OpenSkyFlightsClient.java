@@ -96,17 +96,28 @@ public class OpenSkyFlightsClient {
         this.client = RestClient.builder().requestFactory(requestFactory).build();
     }
 
-    public Optional<Route> fetchRoute(String icao24) {
-        List<OpenSkyFlight> flights = fetchFlights(icao24);
-        if (flights.isEmpty()) return Optional.empty();
+    // Slack for OpenSky's firstSeen vs. our own leg start: its flight
+    // boundaries come from every receiver's data, ours from whatever our
+    // polls happened to catch, so the two rarely agree to the minute.
+    private static final Duration LEG_MATCH_TOLERANCE = Duration.ofMinutes(45);
 
-        OpenSkyFlight latest = flights.stream()
+    /**
+     * Origin/destination of the flight record that belongs to the current
+     * leg (started at {@code legStart}), or empty. /flights/aircraft only
+     * lists flights OpenSky has finished processing, so for an aircraft
+     * still in the air its newest record is the *previous* leg — taking
+     * "the latest one" regardless (as this used to) is how a finished
+     * leg's destination ended up displayed for the next flight. With no
+     * known leg start nothing can be matched, so nothing is returned.
+     */
+    public Optional<Route> fetchRoute(String icao24, Instant legStart) {
+        if (legStart == null) return Optional.empty();
+        Instant earliest = legStart.minus(LEG_MATCH_TOLERANCE);
+        return fetchFlights(icao24).stream()
+                .filter(f -> f.firstSeen() != null && !Instant.ofEpochSecond(f.firstSeen()).isBefore(earliest))
+                .filter(f -> f.estDepartureAirport() != null || f.estArrivalAirport() != null)
                 .max(Comparator.comparingLong(f -> f.lastSeen() == null ? 0 : f.lastSeen()))
-                .orElse(null);
-        if (latest == null) return Optional.empty();
-        if (latest.estDepartureAirport() == null && latest.estArrivalAirport() == null) return Optional.empty();
-
-        return Optional.of(new Route(latest.estDepartureAirport(), null, null, null, latest.estArrivalAirport(), null, null, null));
+                .map(f -> new Route(f.estDepartureAirport(), null, null, null, f.estArrivalAirport(), null, null, null));
     }
 
     /**
@@ -169,8 +180,10 @@ public class OpenSkyFlightsClient {
         } catch (HttpClientErrorException.NotFound e) {
             // OpenSky answers 404 for "no flights for this aircraft in the
             // window" — routine for anything not currently on a tracked leg,
-            // so not worth a WARN on every lookup.
-            synchronized (backoff) { backoff.recordFailure(MIN_BACKOFF, MAX_BACKOFF); }
+            // so not worth a WARN on every lookup — and not a failure either:
+            // OpenSky answered. Backing off on it used to stall the next
+            // aircraft's route/landing lookup for no reason.
+            synchronized (backoff) { backoff.recordSuccess(); }
             log.debug("OpenSky flights lookup failed for {}: {}", icao24, e.toString());
             return List.of();
         } catch (Exception e) {
@@ -180,6 +193,6 @@ public class OpenSkyFlightsClient {
         }
     }
 
-    private record OpenSkyFlight(String icao24, Long lastSeen, String estDepartureAirport, String estArrivalAirport) {
+    private record OpenSkyFlight(String icao24, Long firstSeen, Long lastSeen, String estDepartureAirport, String estArrivalAirport) {
     }
 }

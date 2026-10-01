@@ -9,8 +9,11 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
+import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Fills in the dossier fields (aircraft type/registration/operator,
@@ -32,10 +35,12 @@ import java.util.Optional;
  * lazily instead, via enrichSynchronously, the moment someone actually
  * asks to see that aircraft's dossier.
  *
- * One known tradeoff: origin/destination is fetched once and cached
- * indefinitely, so it can go stale if an aircraft we've seen before starts
- * a new flight later. Revisit with a TTL-based refresh if that matters in
- * practice — not done here to stay within OpenSky's daily credit budget.
+ * Origin/destination is no longer stored per aircraft (it used to be
+ * fetched once and kept forever, so an airframe kept showing its first
+ * leg's destination on every later flight). See routeFor(): the route
+ * follows the current callsign (CallsignRouteService), and OpenSky's
+ * per-aircraft fallback only ever answers for the current leg. The
+ * aircraft table's route columns are legacy and no longer read.
  */
 @Service
 public class AircraftEnrichmentService {
@@ -46,17 +51,31 @@ public class AircraftEnrichmentService {
     private final AdsbdbClient adsbdbClient;
     private final OpenSkyFlightsClient flightsClient;
     private final AirportLookupService airportLookupService;
+    private final CallsignRouteService callsignRoutes;
     private final Clock clock;
+
+    // After an OpenSky fallback lookup for a leg comes back empty, don't ask
+    // again for this long: the flight usually only appears in OpenSky's
+    // historical data once it has landed, and the endpoint costs credits.
+    static final Duration FALLBACK_RETRY_AFTER_MISS = Duration.ofMinutes(30);
+
+    /** OpenSky fallback result for one aircraft's leg — in memory only. */
+    private record FallbackEntry(Instant legStart, Route route, Instant fetchedAt) {
+    }
+
+    private final Map<String, FallbackEntry> fallbackRoutes = new ConcurrentHashMap<>();
 
     public AircraftEnrichmentService(AircraftRepository aircraftRepository,
                                       AdsbdbClient adsbdbClient,
                                       OpenSkyFlightsClient flightsClient,
                                       AirportLookupService airportLookupService,
+                                      CallsignRouteService callsignRoutes,
                                       Clock clock) {
         this.aircraftRepository = aircraftRepository;
         this.adsbdbClient = adsbdbClient;
         this.flightsClient = flightsClient;
         this.airportLookupService = airportLookupService;
+        this.callsignRoutes = callsignRoutes;
         this.clock = clock;
     }
 
@@ -106,48 +125,64 @@ public class AircraftEnrichmentService {
 
     private void doEnrich(String icao24, String callsign) {
         Optional<AircraftInfo> info = adsbdbClient.fetchAircraftInfo(icao24);
-        Optional<Route> route = fetchRoute(icao24, callsign).map(this::backfillNames);
+        // Warms the callsign cache so the dossier/search have a route ready.
+        callsignRoutes.resolve(callsign);
         // Aircraft is immutable (cloud migration A2) — no more
         // load/mutate-fields/save; updateEnrichment issues a single
         // targeted UPDATE, only touching the columns a lookup actually
         // found a value for (see that method's own javadoc). Runs
-        // unconditionally, even when both lookups came back empty: it
-        // still needs to stamp metadataFetchedAt so a data-less aircraft
-        // (no adsbdb record, no route) doesn't trigger a fresh external
-        // lookup every single time its dossier is viewed again.
+        // unconditionally, even when the lookup came back empty: it still
+        // needs to stamp metadataFetchedAt so a data-less aircraft (no
+        // adsbdb record) doesn't trigger a fresh external lookup every
+        // single time its dossier is viewed again. Route columns are no
+        // longer written — see the class javadoc.
         AircraftInfo i = info.orElse(null);
-        Route r = route.orElse(null);
         aircraftRepository.updateEnrichment(icao24,
                 i == null ? null : i.model(),
                 i == null ? null : i.registration(),
                 i == null ? null : i.operator(),
-                r == null ? null : r.originAirport(),
-                r == null ? null : r.originAirportName(),
-                r == null ? null : r.originAirportLat(),
-                r == null ? null : r.originAirportLon(),
-                r == null ? null : r.destinationAirport(),
-                r == null ? null : r.destinationAirportName(),
-                r == null ? null : r.destinationAirportLat(),
-                r == null ? null : r.destinationAirportLon(),
+                null, null, null, null, null, null, null, null,
                 clock.instant());
-        if (info.isEmpty() && route.isEmpty()) {
-            log.debug("No enrichment data found for {}", icao24);
+        if (info.isEmpty()) {
+            log.debug("No aircraft metadata found for {}", icao24);
         }
     }
 
     /**
-     * adsbdb's callsign-keyed flight-route database resolves destination
-     * even for aircraft still airborne (schedule-based, not waiting on the
-     * flight to land), so it's tried first. Falls back to OpenSky's
-     * estimated-arrival-airport lookup for callsigns adsbdb doesn't
-     * recognise — charter/GA/military — or when no callsign was reported.
+     * The route of the flight this aircraft is on now: by callsign first
+     * (schedule-based, resolves airborne flights, changes with each leg's
+     * flight number), else OpenSky's record for the leg that started at
+     * {@code legStart} — never an earlier leg's. Empty is the honest answer
+     * when neither knows; the dossier shows "—" rather than a stale airport.
+     * Blocking: may make one adsbdb and one OpenSky call, so only for a
+     * single user-triggered dossier request.
      */
-    private Optional<Route> fetchRoute(String icao24, String callsign) {
-        if (callsign != null && !callsign.isBlank()) {
-            Optional<Route> route = adsbdbClient.fetchRoute(callsign);
-            if (route.isPresent()) return route;
+    public Optional<Route> routeFor(String icao24, String callsign, Instant legStart) {
+        Optional<Route> byCallsign = callsignRoutes.resolve(callsign);
+        if (byCallsign.isPresent()) return byCallsign;
+        if (legStart == null) return Optional.empty();
+
+        Instant now = clock.instant();
+        FallbackEntry cached = fallbackRoutes.get(icao24);
+        if (cached != null && cached.legStart().equals(legStart)
+                && (cached.route() != null || Duration.between(cached.fetchedAt(), now).compareTo(FALLBACK_RETRY_AFTER_MISS) < 0)) {
+            return Optional.ofNullable(cached.route());
         }
-        return flightsClient.fetchRoute(icao24);
+        Optional<Route> route = flightsClient.fetchRoute(icao24, legStart).map(this::backfillNames);
+        fallbackRoutes.put(icao24, new FallbackEntry(legStart, route.orElse(null), now));
+        return route;
+    }
+
+    /**
+     * Route already known for this callsign, or for this aircraft's current
+     * leg via the fallback, without calling out — for bulk readers like
+     * airport search.
+     */
+    public Optional<Route> knownRoute(String icao24, String callsign) {
+        Optional<Route> byCallsign = callsignRoutes.cached(callsign);
+        if (byCallsign.isPresent()) return byCallsign;
+        FallbackEntry cached = fallbackRoutes.get(icao24);
+        return cached == null ? Optional.empty() : Optional.ofNullable(cached.route());
     }
 
     /**

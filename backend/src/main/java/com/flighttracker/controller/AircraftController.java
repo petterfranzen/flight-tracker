@@ -10,6 +10,7 @@ import com.flighttracker.service.FlightPhaseClassifier;
 import com.flighttracker.service.LiveVisibilityWindows;
 import com.flighttracker.service.enrichment.AircraftEnrichmentService;
 import com.flighttracker.service.enrichment.AirportLookupService;
+import com.flighttracker.service.enrichment.Route;
 import com.flighttracker.service.live.LiveStateStore;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -96,10 +97,18 @@ public class AircraftController {
     // reads as unknown instead.
     private static final long MAX_PLAUSIBLE_FLIGHT_MINUTES = 20 * 60;
 
-    private AircraftDossier toDossier(Aircraft a) {
+    private AircraftDossier toDossier(Aircraft stored) {
         Instant now = Instant.now();
-        Optional<Instant> legStart = positionRepository.findCurrentLegTakeoffTime(a.icao24());
-        FlightPosition current = liveStateStore.findLatestPosition(a.icao24()).orElse(null);
+        Optional<Instant> legStart = positionRepository.findCurrentLegTakeoffTime(stored.icao24());
+        FlightPosition current = liveStateStore.findLatestPosition(stored.icao24()).orElse(null);
+        // The route of *this* flight — by its current callsign, or OpenSky's
+        // record for the current leg — never the stored per-aircraft route,
+        // which was whatever leg the airframe was first enriched on.
+        String callsign = current != null && current.callsign() != null
+                ? current.callsign()
+                : liveStateStore.findLatestCallsign(stored.icao24()).orElse(null);
+        Route route = enrichmentService.routeFor(stored.icao24(), callsign, legStart.orElse(null)).orElse(null);
+        Aircraft a = withRoute(stored, route);
         // Raw (never coalesced with EstimatorAgent's estimate) — needed only
         // for describeLikelyStatus's "at last report" distance text below,
         // which is documented as describing the last real report, not a
@@ -184,6 +193,20 @@ public class AircraftController {
                 a.destinationAirport(), destination.name(), destination.iataCode(),
                 flightMinutes, etaMinutes, cruisingAltitudeM, phase == null ? null : phase.name(), staleExplanation,
                 legStart.orElse(null));
+    }
+
+    private static Aircraft withRoute(Aircraft a, Route r) {
+        return new Aircraft(a.icao24(), a.registration(), a.model(), a.operator(),
+                r == null ? null : r.originAirport(),
+                r == null ? null : r.originAirportName(),
+                r == null ? null : r.destinationAirport(),
+                r == null ? null : r.destinationAirportName(),
+                r == null ? null : r.originAirportLat(),
+                r == null ? null : r.originAirportLon(),
+                r == null ? null : r.destinationAirportLat(),
+                r == null ? null : r.destinationAirportLon(),
+                a.metadataFetchedAt(), a.landingCheckObservedAt(), a.landingConfirmedAt(),
+                a.firstSeenAt(), a.lastSeenAt());
     }
 
     private record AirportDisplay(String name, String iataCode) {
