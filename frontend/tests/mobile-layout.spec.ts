@@ -94,11 +94,18 @@ test.describe("mobile layout", () => {
     await expect(page.locator(".details-panel")).toBeVisible();
 
     // Expand arrow is at the top of the sheet, above the heading.
-    const panelBox = (await page.locator(".details-panel").boundingBox())!;
-    const toggleBox = (await page.locator(".details-panel-expand-toggle").boundingBox())!;
-    const eyebrowBox = (await page.locator(".details-panel-eyebrow").boundingBox())!;
-    expect(toggleBox.y - panelBox.y).toBeLessThan(10);
-    expect(toggleBox.y + toggleBox.height).toBeLessThanOrEqual(eyebrowBox.y + 1);
+    // Read all three rects in one evaluate: the panel is rebuilt on position
+    // updates, so separate locator lookups can land on a detached node.
+    await expect(page.locator(".details-panel-eyebrow")).toBeVisible();
+    const rects = await page.evaluate(() => {
+      const r = (sel: string) => document.querySelector(sel)!.getBoundingClientRect();
+      const panel = r(".details-panel");
+      const toggle = r(".details-panel-expand-toggle");
+      const eyebrow = r(".details-panel-eyebrow");
+      return { toggleTop: toggle.top - panel.top, toggleBottom: toggle.bottom, eyebrowTop: eyebrow.top };
+    });
+    expect(rects.toggleTop).toBeLessThan(10);
+    expect(rects.toggleBottom).toBeLessThanOrEqual(rects.eyebrowTop + 1);
   });
 
   test("map attribution is compact on mobile", async ({ page }) => {
