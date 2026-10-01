@@ -261,7 +261,7 @@ function boot(): void {
     const current = selectedId ? positions.get(selectedId) : null;
     if (current) {
       const prev = store.get("selectedPos");
-      store.set("selectedPos", prev ? { ...prev, ...current } : { ...current, altitudeM: null });
+      store.set("selectedPos", prev ? { ...prev, ...current } : { ...current, altitudeM: null, velocityMs: null, verticalRateMs: null });
       appendRoutePoint(current);
     }
   }
@@ -572,7 +572,7 @@ function boot(): void {
     store.set("airportDossier", null);
     store.set("selectedId", p.icao24); // no-op (and no effect re-run) if already selected — matches the original's state bail-out
     const prevSelectedPos = store.get("selectedPos");
-    store.set("selectedPos", prevSelectedPos && prevSelectedPos.icao24 === p.icao24 ? { ...prevSelectedPos, ...p } : { ...p, altitudeM: null });
+    store.set("selectedPos", prevSelectedPos && prevSelectedPos.icao24 === p.icao24 ? { ...prevSelectedPos, ...p } : { ...p, altitudeM: null, velocityMs: null, verticalRateMs: null });
     store.set("dossierExpanded", false);
   }
   function handleSelectAirport(ap: AirportSelection): void {
