@@ -11,6 +11,8 @@ import com.flighttracker.dto.Bounds;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.web.context.WebServerGracefulShutdownLifecycle;
+import org.springframework.context.SmartLifecycle;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.PingMessage;
 import org.springframework.web.socket.TextMessage;
@@ -24,9 +26,12 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * Fans out each newly-persisted position to every connected map client —
@@ -60,9 +65,13 @@ import java.util.concurrent.Executors;
  * map's periodic /live reconcile covers the gap), and one that can't drain
  * within SEND_TIME_LIMIT_MS is closed with 1011 so its client reconnects
  * cleanly instead of hanging half-open.
+ *
+ * On shutdown (every deploy restarts the service) every session is closed
+ * with 1001 going-away, so browsers start reconnecting at once instead of
+ * waiting to notice a dead socket. See stop().
  */
 @Component
-public class LiveFeedBroadcaster extends TextWebSocketHandler {
+public class LiveFeedBroadcaster extends TextWebSocketHandler implements SmartLifecycle {
 
     private static final Logger log = LoggerFactory.getLogger(LiveFeedBroadcaster.class);
 
@@ -71,11 +80,22 @@ public class LiveFeedBroadcaster extends TextWebSocketHandler {
     static final int SEND_TIME_LIMIT_MS = 10_000;
     // ~4k position frames. Beyond that the oldest are dropped, not the session.
     static final int BUFFER_SIZE_LIMIT_BYTES = 1024 * 1024;
+    // Lifecycle stop runs from the highest phase down. This sits between the
+    // graceful-shutdown phase (server socket closed, in-flight requests
+    // drained) and the phase that stops Tomcat, so a client told to go away
+    // can't reconnect to this instance, and Tomcat is still up to send the
+    // close frame.
+    static final int SHUTDOWN_PHASE = WebServerGracefulShutdownLifecycle.SMART_LIFECYCLE_PHASE - 512;
+    // Upper bound on waiting for close frames on shutdown. A close queues
+    // behind a stalled client's blocked write, so it can't be open-ended.
+    static final long CLOSE_TIMEOUT_MS = 2_000;
 
     // Decorated sessions, keyed by the raw session's id.
     private final Map<String, WebSocketSession> sessions = new ConcurrentHashMap<>();
     private final ExecutorService sendExecutor = Executors.newVirtualThreadPerTaskExecutor();
     private final ViewportService viewportService;
+    private volatile boolean running;
+    private volatile boolean stopping;
 
     // Inject Spring Boot's autoconfigured ObjectMapper bean — the exact same
     // one the REST controllers serialize through — rather than building a
@@ -91,6 +111,10 @@ public class LiveFeedBroadcaster extends TextWebSocketHandler {
 
     @Override
     public void afterConnectionEstablished(WebSocketSession session) {
+        if (stopping) {
+            closeQuietly(session, CloseStatus.GOING_AWAY);
+            return;
+        }
         sessions.put(session.getId(), new ConcurrentWebSocketSessionDecorator(
                 session, SEND_TIME_LIMIT_MS, BUFFER_SIZE_LIMIT_BYTES,
                 ConcurrentWebSocketSessionDecorator.OverflowStrategy.DROP));
@@ -180,6 +204,49 @@ public class LiveFeedBroadcaster extends TextWebSocketHandler {
         }
     }
 
+    @Override
+    public void start() {
+        running = true;
+    }
+
+    @Override
+    public boolean isRunning() {
+        return running;
+    }
+
+    @Override
+    public int getPhase() {
+        return SHUTDOWN_PHASE;
+    }
+
+    /**
+     * Closes every session with 1001 going-away. Closes run in parallel on
+     * the send executor and are waited for at most CLOSE_TIMEOUT_MS, so one
+     * stalled client can't hold up shutdown; shutdown() interrupts any left.
+     */
+    @Override
+    public void stop() {
+        stopping = true;
+        running = false;
+        List<WebSocketSession> open = new ArrayList<>(sessions.values());
+        sessions.clear();
+        if (open.isEmpty()) return;
+        CompletableFuture<?>[] closes = open.stream()
+                .map(s -> CompletableFuture.runAsync(() -> closeQuietly(s, CloseStatus.GOING_AWAY), sendExecutor))
+                .toArray(CompletableFuture[]::new);
+        try {
+            CompletableFuture.allOf(closes).get(CLOSE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            log.info("Closed {} live feed WebSocket session(s) for shutdown", open.size());
+        } catch (TimeoutException e) {
+            log.info("Closed live feed WebSocket sessions for shutdown; gave up waiting on some after {} ms", CLOSE_TIMEOUT_MS);
+        } catch (Exception e) {
+            if (e instanceof InterruptedException) Thread.currentThread().interrupt();
+            log.debug("Interrupted closing WebSocket sessions for shutdown: {}", e.toString());
+        }
+    }
+
+    // Virtual threads are daemon threads, so anything still running here
+    // can't hold up JVM exit either way.
     @PreDestroy
     void shutdown() {
         sendExecutor.shutdownNow();

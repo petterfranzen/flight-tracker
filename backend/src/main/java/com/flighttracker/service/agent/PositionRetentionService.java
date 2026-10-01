@@ -4,6 +4,8 @@ import com.flighttracker.repository.AircraftRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.event.ContextClosedEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -102,6 +104,13 @@ public class PositionRetentionService {
     @Value("${flighttracker.retention.max-batches-per-run:200}")
     private int maxBatchesPerRun;
 
+    // Set on context close, which fires before the scheduler drains its
+    // in-flight tasks (see spring.lifecycle.timeout-per-shutdown-phase in
+    // application.yml). A run in progress finishes its current batch and
+    // stops there instead of working through up to max-batches-per-run while
+    // systemd's TimeoutStopSec counts down; the rest waits for the next boot.
+    private volatile boolean stopping;
+
     // How long an aircraft with no remaining flight_position rows survives
     // in the `aircraft` table before its own dossier row is pruned too —
     // see AircraftRepository.deleteStaleWithNoPositions. Deliberately much
@@ -137,7 +146,7 @@ public class PositionRetentionService {
         int batches = 0;
         boolean moreRemaining = false;
 
-        while (batches < maxBatchesPerRun) {
+        while (batches < maxBatchesPerRun && !stopping) {
             Integer deleted = transactionTemplate.execute(status ->
                     jdbcTemplate.update(DELETE_BATCH_SQL, cutoffMillis, batchSize));
             batches++;
@@ -145,7 +154,7 @@ public class PositionRetentionService {
             // A short batch means the predicate is exhausted; a full one
             // means there is (probably) more behind it.
             if (deleted == null || deleted < batchSize) break;
-            if (batches == maxBatchesPerRun) moreRemaining = true;
+            if (batches == maxBatchesPerRun || stopping) moreRemaining = true;
         }
 
         int staleAircraftDeleted = aircraftRepository.deleteStaleWithNoPositions(now.minus(AIRCRAFT_STALE_AFTER));
@@ -166,7 +175,13 @@ public class PositionRetentionService {
         long ms = (System.nanoTime() - start) / 1_000_000;
         log.info("retention: deleted {} flight_position rows older than {}h and {} stale aircraft rows in {} batches ({} ms){}",
                 totalDeleted, retentionHours, staleAircraftDeleted, batches, ms,
-                moreRemaining ? " — hit max-batches-per-run, more remaining for next cycle" : "");
+                moreRemaining ? (stopping ? " — stopped early for shutdown, more remaining"
+                        : " — hit max-batches-per-run, more remaining for next cycle") : "");
+    }
+
+    @EventListener(ContextClosedEvent.class)
+    void stopAfterCurrentBatch() {
+        stopping = true;
     }
 
     /**
