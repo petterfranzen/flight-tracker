@@ -5,6 +5,8 @@ import com.flighttracker.model.FlightPosition;
 import com.flighttracker.service.live.PositionsPersistedEvent;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
+import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketMessage;
 import org.springframework.web.socket.WebSocketSession;
@@ -20,6 +22,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 
 /**
  * A client that stops reading (a browser whose main thread is saturated
@@ -92,6 +95,50 @@ class LiveFeedBroadcasterTest {
 
         Thread.sleep(300);
         assertThat(received).singleElement().asString().contains("aaaaaa");
+    }
+
+    @Test
+    void contextCloseClosesEverySessionWithGoingAway() throws Exception {
+        WebSocketSession a = session("a");
+        WebSocketSession b = session("b");
+        try (AnnotationConfigApplicationContext ctx = new AnnotationConfigApplicationContext()) {
+            ctx.registerBean(ObjectMapper.class, () -> new ObjectMapper().findAndRegisterModules());
+            ctx.registerBean(ViewportService.class);
+            ctx.registerBean(LiveFeedBroadcaster.class);
+            ctx.refresh();
+            LiveFeedBroadcaster live = ctx.getBean(LiveFeedBroadcaster.class);
+            live.afterConnectionEstablished(a);
+            live.afterConnectionEstablished(b);
+        }
+        verify(a).close(CloseStatus.GOING_AWAY);
+        verify(b).close(CloseStatus.GOING_AWAY);
+    }
+
+    @Test
+    void stalledClientDoesNotHoldUpShutdown() throws Exception {
+        WebSocketSession stalled = session("stalled");
+        doAnswer(inv -> {
+            release.await(30, TimeUnit.SECONDS); // a close queued behind a blocked write
+            return null;
+        }).when(stalled).close(any());
+        WebSocketSession healthy = session("healthy");
+        broadcaster.afterConnectionEstablished(stalled);
+        broadcaster.afterConnectionEstablished(healthy);
+
+        long start = System.nanoTime();
+        broadcaster.stop();
+        long stopMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
+
+        assertThat(stopMs).isLessThan(LiveFeedBroadcaster.CLOSE_TIMEOUT_MS + 1_000);
+        verify(healthy).close(CloseStatus.GOING_AWAY);
+    }
+
+    @Test
+    void connectionArrivingAfterStopIsTurnedAway() throws Exception {
+        broadcaster.stop();
+        WebSocketSession late = session("late");
+        broadcaster.afterConnectionEstablished(late);
+        verify(late).close(CloseStatus.GOING_AWAY);
     }
 
     private static WebSocketSession session(String id) {

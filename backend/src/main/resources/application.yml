@@ -9,8 +9,17 @@ spring:
   sql:
     init:
       mode: always           # runs schema.sql on startup
+  lifecycle:
+    # Per shutdown phase, and two phases can each use it in full (the
+    # scheduler draining in-flight @Scheduled runs, then the web server
+    # draining in-flight requests), so 2 x 10s plus the WebSocket close and
+    # JVM exit stays under the systemd unit's TimeoutStopSec=30.
+    timeout-per-shutdown-phase: 10s
   task:
     scheduling:
+      # No shutdown.await-termination on purpose: Spring's default already
+      # lets in-flight runs finish and starts no new ones, and that setting
+      # would undo it. See config/SchedulingShutdownConfig.
       pool:
         # AgentOrchestrator's pollAll() (every poll-interval-seconds) and
         # pollGlobalSweep() (every global-sweep-interval-seconds, ~13k
@@ -49,6 +58,9 @@ spring:
 
 server:
   port: 8080
+  # Stop accepting connections and let in-flight requests finish on a
+  # restart; see spring.lifecycle above for the time budget.
+  shutdown: graceful
   # Cloud migration: this process now sits behind a Cloudflare Tunnel
   # (cloudflared), which connects to it over loopback only — nothing should
   # ever need this bound to a non-loopback interface. Overridable (e.g. for
