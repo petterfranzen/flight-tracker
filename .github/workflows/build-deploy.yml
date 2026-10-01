@@ -54,6 +54,14 @@ jobs:
       - run: npm run test:e2e
         env:
           CI: "true"
+      # 10,000-aircraft fixture; fails on any main-thread task over 200ms
+      # while zooming/selecting (tests/perf.spec.ts). Its own step, one
+      # worker: timing assertions shouldn't share the CPU with the rest of
+      # the suite.
+      - name: Frontend perf budget
+        run: npm run test:perf
+        env:
+          CI: "true"
       - uses: actions/upload-artifact@v7
         with:
           name: frontend-dist

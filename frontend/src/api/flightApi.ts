@@ -2,18 +2,19 @@ import type { AircraftDossier, AirportInfo, AircraftUsage, Bounds, ClusterPoint,
 import { clusterMockFleet, filterByBounds, getMockFleet, getMockPlaneCount } from "./mockFleet";
 
 /**
- * Tracking is global, but a bounds-less call returns every aircraft being
- * tracked anywhere — the map always calls this with its current viewport,
- * which also reports that viewport as what the "hot" backend poll should
- * target next (see FlightController.live / ViewportService).
+ * Individual aircraft inside `bounds` — the map only calls this at or above
+ * CLUSTER_FETCH_MAX_ZOOM (see main.ts), always with its current viewport,
+ * which also reports that viewport as what the "hot" backend poll and the
+ * WebSocket broadcast should target next (see FlightController.live /
+ * ViewportService). `bounds` is required on purpose: the server's
+ * bounds-less form returns every tracked aircraft worldwide (~3 MB at
+ * 10k aircraft), which the map must never ask for.
  */
-export async function fetchLivePositions(bounds?: Bounds): Promise<LiveMarker[]> {
+export async function fetchLivePositions(bounds: Bounds, signal?: AbortSignal): Promise<LiveMarker[]> {
   const mockCount = getMockPlaneCount();
   if (mockCount != null) return filterByBounds(getMockFleet(mockCount), bounds);
-  const query = bounds
-    ? `?latMin=${bounds.latMin}&latMax=${bounds.latMax}&lonMin=${bounds.lonMin}&lonMax=${bounds.lonMax}`
-    : "";
-  const res = await fetch(`/api/flights/live${query}`);
+  const query = `?latMin=${bounds.latMin}&latMax=${bounds.latMax}&lonMin=${bounds.lonMin}&lonMax=${bounds.lonMax}`;
+  const res = await fetch(`/api/flights/live${query}`, { signal });
   if (!res.ok) throw new Error(`live fetch failed: ${res.status}`);
   return res.json();
 }
@@ -21,14 +22,14 @@ export async function fetchLivePositions(bounds?: Bounds): Promise<LiveMarker[]>
 /**
  * Aggregated counterpart to fetchLivePositions, for a viewport too wide to
  * usefully render individual aircraft — see CLUSTER_FETCH_MAX_ZOOM in
- * FlightMap.tsx for where the map switches over, and FlightController.
+ * main.ts for where the map switches over, and FlightController.
  * liveClusters for gridDeg's own clamping.
  */
-export async function fetchLiveClusters(bounds: Bounds, gridDeg: number): Promise<ClusterPoint[]> {
+export async function fetchLiveClusters(bounds: Bounds, gridDeg: number, signal?: AbortSignal): Promise<ClusterPoint[]> {
   const mockCount = getMockPlaneCount();
   if (mockCount != null) return clusterMockFleet(filterByBounds(getMockFleet(mockCount), bounds), gridDeg);
   const query = `?latMin=${bounds.latMin}&latMax=${bounds.latMax}&lonMin=${bounds.lonMin}&lonMax=${bounds.lonMax}&gridDeg=${gridDeg}`;
-  const res = await fetch(`/api/flights/live/clusters${query}`);
+  const res = await fetch(`/api/flights/live/clusters${query}`, { signal });
   if (!res.ok) throw new Error(`live clusters fetch failed: ${res.status}`);
   return res.json();
 }
@@ -138,12 +139,21 @@ export async function restartPolling(): Promise<RestartOutcome> {
   return { status: await res.json(), rateLimited: false, retryAfterSeconds: null };
 }
 
-// Capped exponential backoff for WS reconnects (B1.5): first retry after 1s,
-// doubling on every further consecutive failure, capped at 30s. Reset to the
-// floor the moment a connection actually opens, so one bad connect doesn't
-// leave every later reconnect slower than it needs to be.
+// Capped exponential backoff for WS reconnects: first retry after 1s,
+// doubling on every further consecutive failure, capped at 30s, with ±25%
+// jitter so a server restart doesn't get every open tab reconnecting in
+// lock-step.
 const WS_RECONNECT_MIN_MS = 1_000;
 const WS_RECONNECT_MAX_MS = 30_000;
+// Backoff only resets once a connection has *stayed* up this long. It used
+// to reset in onopen, so a socket the server accepted (101) and then
+// dropped — e.g. closing it 1011 after its send buffer to us overflowed —
+// reconnected every 1s forever instead of backing off.
+const WS_STABLE_AFTER_MS = 15_000;
+// Close codes where retrying the same request can never succeed (1002
+// protocol error, 1003 unsupported data, 1008 policy violation) — stop
+// instead of hammering the server; a reload starts over.
+const WS_FATAL_CLOSE_CODES = new Set([1002, 1003, 1008]);
 
 function isFlightPosition(data: unknown): data is FlightPosition {
   if (!data || typeof data !== "object") return false;
@@ -151,29 +161,56 @@ function isFlightPosition(data: unknown): data is FlightPosition {
   return typeof p.icao24 === "string" && typeof p.observedAt === "string";
 }
 
+/** Same-origin /ws/live, ws:// or wss:// to match the page (Cloudflare serves https, so wss). */
+export function liveFeedUrl(loc: Pick<Location, "href" | "protocol"> = location): string {
+  const url = new URL("/ws/live", loc.href);
+  url.protocol = loc.protocol === "https:" ? "wss:" : "ws:";
+  return url.toString();
+}
+
 /**
  * Subscribes to the live push feed; returns an unsubscribe function.
- * Reconnects on an unexpected close with capped exponential backoff (see
- * WS_RECONNECT_MIN_MS/MAX_MS), and silently ignores keepalive frames — the
- * backend sends either a real WS ping (invisible to `onmessage`, handled by
- * the browser) or, if the client can't see those, a tiny `{"type":"ping"}`
- * text frame (see A1's hand-off) — neither is a FlightPosition, so
- * `isFlightPosition` filters it out the same way a malformed frame is
- * already ignored.
+ *
+ * Keepalive: the backend sends native WS ping frames every 30s, which the
+ * browser answers itself — they never reach `onmessage`. A `{"type":"ping"}`
+ * text frame (the fallback PLAN.md §6 item 9 mentions) is also tolerated:
+ * it isn't a FlightPosition, so it's dropped like any other non-position
+ * frame.
+ *
+ * Reconnects on any unexpected close with capped, jittered exponential
+ * backoff (see the constants above). Never touches /api/agents/restart:
+ * reopening the poll window is a page-load / Resume-button decision only.
  */
 export function subscribeLiveFeed(onPosition: (p: FlightPosition) => void): () => void {
   let socket: WebSocket | null = null;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let stableTimer: ReturnType<typeof setTimeout> | null = null;
   let backoffMs = WS_RECONNECT_MIN_MS;
-  let closed = false;
+  let stopped = false;
 
   function connect(): void {
-    const proto = location.protocol === "https:" ? "wss" : "ws";
-    socket = new WebSocket(`${proto}://${location.host}/ws/live`);
-    socket.onopen = () => {
-      backoffMs = WS_RECONNECT_MIN_MS;
+    reconnectTimer = null;
+    if (stopped) return;
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(liveFeedUrl());
+    } catch {
+      scheduleReconnect();
+      return;
+    }
+    socket = ws;
+    // Every handler below checks `ws === socket`: events from a socket that
+    // has already been replaced must never touch the current one (the old
+    // onerror called `socket?.close()` on the shared variable, which could
+    // close the *new* connection).
+    ws.onopen = () => {
+      if (ws !== socket) return;
+      stableTimer = setTimeout(() => {
+        backoffMs = WS_RECONNECT_MIN_MS;
+      }, WS_STABLE_AFTER_MS);
     };
-    socket.onmessage = (event) => {
+    ws.onmessage = (event) => {
+      if (ws !== socket || typeof event.data !== "string") return;
       let data: unknown;
       try {
         data = JSON.parse(event.data);
@@ -182,25 +219,47 @@ export function subscribeLiveFeed(onPosition: (p: FlightPosition) => void): () =
       }
       if (isFlightPosition(data)) onPosition(data);
     };
-    socket.onclose = () => {
-      if (!closed) scheduleReconnect();
-    };
-    socket.onerror = () => {
-      socket?.close();
+    // onerror is always followed by onclose; reconnect is handled there, once.
+    ws.onerror = () => {};
+    ws.onclose = (event) => {
+      if (ws !== socket) return;
+      socket = null;
+      if (stableTimer) clearTimeout(stableTimer);
+      stableTimer = null;
+      if (stopped) return;
+      if (WS_FATAL_CLOSE_CODES.has(event.code)) {
+        console.warn(`live feed closed with ${event.code} (${event.reason || "no reason"}) — not reconnecting`);
+        return;
+      }
+      scheduleReconnect();
     };
   }
 
   function scheduleReconnect(): void {
-    const delay = backoffMs;
+    if (stopped || reconnectTimer) return;
+    const delay = Math.round(backoffMs * (0.75 + Math.random() * 0.5));
     backoffMs = Math.min(WS_RECONNECT_MAX_MS, backoffMs * 2);
     reconnectTimer = setTimeout(connect, delay);
   }
 
+  // Back online after a network drop: don't sit out the rest of a 30s backoff.
+  function onOnline(): void {
+    if (stopped || socket) return;
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+    backoffMs = WS_RECONNECT_MIN_MS;
+    connect();
+  }
+  window.addEventListener("online", onOnline);
+
   connect();
   return () => {
-    closed = true;
+    stopped = true;
+    window.removeEventListener("online", onOnline);
     if (reconnectTimer) clearTimeout(reconnectTimer);
-    socket?.close();
+    if (stableTimer) clearTimeout(stableTimer);
+    socket?.close(1000);
+    socket = null;
   };
 }
 

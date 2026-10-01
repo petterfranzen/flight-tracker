@@ -5,7 +5,7 @@ import { loadTheme, saveTheme } from "./theme";
 import type { Theme } from "./theme";
 import type { FavoriteAircraft, FavoriteRoute } from "./favorites";
 import { loadFavoriteAircraft, loadFavoriteRoutes, toggleFavoriteAircraft, toggleFavoriteRoute } from "./favorites";
-import type { AirportSelection, Bounds, ClusterPoint, LiveMarker, SelectedPosition } from "./types/flight";
+import type { AirportSelection, Bounds, ClusterPoint, FlightPosition, LiveMarker, SelectedPosition } from "./types/flight";
 import {
   fetchAircraftDossier,
   fetchAirportInfo,
@@ -44,6 +44,21 @@ const DIALOG_STOP_MS = 5 * 60_000;
 const CLUSTER_FETCH_MAX_ZOOM = 8;
 // Client-side backstop for an individual-marker zoom that's still too busy.
 const MAX_INDIVIDUAL_MARKERS = 500;
+
+// A drag or wheel-zoom fires a burst of moveends; only the one the user
+// settles on is worth a request.
+const VIEWPORT_DEBOUNCE_MS = 250;
+// WebSocket pushes arrive one aircraft per frame — hundreds to thousands per
+// poll cycle. They're coalesced (latest per icao24) and applied in one
+// render at most this often, instead of one full re-render per frame.
+const WS_FLUSH_MS = 250;
+// Matches .plane-icon's opacity transition (FlightMap.css): how long the
+// "exiting" fade gets before markers are actually dropped on zoom-out.
+const EXIT_FADE_MS = 300;
+
+function inBounds(b: Bounds, lat: number, lon: number): boolean {
+  return lat >= b.latMin && lat <= b.latMax && lon >= b.lonMin && lon <= b.lonMax;
+}
 
 function isNewer(a: { observedAt: string }, b: { observedAt: string }): boolean {
   return a.observedAt > b.observedAt;
@@ -114,7 +129,11 @@ function boot(): void {
   const store = new Store<AppState>(state);
 
   // ---- local mutable state (the original's useRef/useState-outside-store) ----
-  let positions: Record<string, LiveMarker> = {};
+  // Only ever holds the aircraft in the current individual-marker viewport
+  // (zoom >= CLUSTER_FETCH_MAX_ZOOM) plus the selected one — never "every
+  // aircraft we've heard about". Mutated in place: copying it per update
+  // was O(n) per WebSocket frame.
+  const positions = new Map<string, LiveMarker>();
   let clusters: ClusterPoint[] = [];
 
   let cycleStart = Date.now();
@@ -123,7 +142,14 @@ function boot(): void {
 
   let bounds: Bounds | null = null;
   let zoom = 6;
-  let liveRequestSeq = 0;
+  let viewportFetchTimer: ReturnType<typeof setTimeout> | null = null;
+  let viewportAbort: AbortController | null = null;
+  let exitFadeTimer: ReturnType<typeof setTimeout> | null = null;
+  // Whether the last render drew unselected aircraft as individual markers.
+  let individualMarkersShown = false;
+
+  const pendingWs = new Map<string, FlightPosition>();
+  let wsFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
   let route: [number, number][] = [];
   let lastRouteObservedAt: string | null = null;
@@ -152,7 +178,7 @@ function boot(): void {
   function renderAircraftLayer(): void {
     const selectedId = store.get("selectedId");
     const selectedPos = store.get("selectedPos");
-    const list = Object.values(positions);
+    const list = Array.from(positions.values());
     const unselectedList = selectedId ? list.filter((p) => p.icao24 !== selectedId) : list;
 
     const belowServerClusterZoom = zoom < CLUSTER_FETCH_MAX_ZOOM;
@@ -162,8 +188,20 @@ function boot(): void {
     else if (clientClustered) clusterLayer.update(clusterPositions(unselectedList, gridDegForZoom(zoom)));
     else clusterLayer.update([]);
 
+    // Below the cluster zoom, unselected markers only get the "exiting"
+    // fade if they were actually on screen as individual markers. Coming
+    // from a client-clustered view they never were, and handing the whole
+    // list over built every one of them (1,000+ DOM markers, each with
+    // its own fade-in animation) just to fade it straight back out — a
+    // ~1s main-thread stall on every zoom-out from a busy area.
+    const showIndividually = belowServerClusterZoom ? individualMarkersShown : !clientClustered;
+    // Stays true below the cluster zoom until the fade finishes (see
+    // dropIndividualMarkersAfterFade), so a cluster fetch landing mid-fade
+    // doesn't cut it short.
+    if (!belowServerClusterZoom) individualMarkersShown = !clientClustered;
+
     markerLayer.update({
-      unselected: clientClustered ? [] : unselectedList,
+      unselected: showIndividually ? unselectedList : [],
       selectedPos,
       zoom,
       exiting: belowServerClusterZoom,
@@ -171,58 +209,157 @@ function boot(): void {
   }
 
   // ---- fetch lifecycle ----
-  function applyLiveSnapshot(boundsArg: Bounds | null): Promise<void> {
-    const seq = ++liveRequestSeq;
-    return fetchLivePositions(boundsArg ?? undefined)
-      .then((list) => {
-        if (seq !== liveRequestSeq) return; // superseded by a newer request
-        const merged: Record<string, LiveMarker> = {};
-        for (const p of list) {
-          const existing = positions[p.icao24];
-          merged[p.icao24] = existing && isNewer(existing, p) ? existing : p;
-        }
-        positions = merged;
-        renderAircraftLayer();
-        const selectedId = store.get("selectedId");
-        const current = selectedId ? merged[selectedId] : null;
-        if (current) {
-          const prev = store.get("selectedPos");
-          store.set("selectedPos", prev ? { ...prev, ...current } : { ...current, altitudeM: null });
-          appendRoutePoint(current);
-        }
-      })
-      .finally(() => store.set("firstLoadDone", true));
+  function applyLiveSnapshot(list: LiveMarker[]): void {
+    const selectedId = store.get("selectedId");
+    const selectedKept = selectedId ? positions.get(selectedId) : undefined;
+    const previous = new Map(positions);
+    positions.clear();
+    for (const p of list) {
+      const existing = previous.get(p.icao24);
+      positions.set(p.icao24, existing && isNewer(existing, p) ? existing : p);
+    }
+    // The selected aircraft stays even if it just left the viewport — its
+    // own priority poll keeps it current.
+    if (selectedKept && !positions.has(selectedKept.icao24)) positions.set(selectedKept.icao24, selectedKept);
+    renderAircraftLayer();
+    const current = selectedId ? positions.get(selectedId) : null;
+    if (current) {
+      const prev = store.get("selectedPos");
+      store.set("selectedPos", prev ? { ...prev, ...current } : { ...current, altitudeM: null });
+      appendRoutePoint(current);
+    }
   }
 
-  function fetchForZoom(boundsArg: Bounds, zoomArg: number): void {
-    if (zoomArg < CLUSTER_FETCH_MAX_ZOOM) {
-      fetchLiveClusters(boundsArg, gridDegForZoom(zoomArg))
+  /**
+   * The one place viewport data is requested. Below CLUSTER_FETCH_MAX_ZOOM
+   * that's server-side clusters only — never /live, whose size grows with
+   * the whole tracked fleet; at or above it, /live for exactly the current
+   * viewport. One request at a time: a newer viewport aborts the one in
+   * flight, and a poll tick that finds one in flight skips (see
+   * fetchFreshData), so requests never overlap or land out of order.
+   */
+  function fetchViewport(): void {
+    if (viewportFetchTimer) clearTimeout(viewportFetchTimer);
+    viewportFetchTimer = null;
+    if (!bounds) return;
+    viewportAbort?.abort();
+    const controller = new AbortController();
+    viewportAbort = controller;
+    const requestBounds = bounds;
+    const clustered = zoom < CLUSTER_FETCH_MAX_ZOOM;
+    const done = (): void => {
+      if (viewportAbort === controller) viewportAbort = null;
+      store.set("firstLoadDone", true);
+    };
+    if (clustered) {
+      fetchLiveClusters(requestBounds, gridDegForZoom(zoom), controller.signal)
         .then((c) => {
+          if (controller.signal.aborted || zoom >= CLUSTER_FETCH_MAX_ZOOM) return;
           clusters = c;
           renderAircraftLayer();
         })
         .catch(() => {})
-        .finally(() => store.set("firstLoadDone", true));
+        .finally(done);
       return;
     }
-    clusters = [];
-    applyLiveSnapshot(boundsArg);
+    fetchLivePositions(requestBounds, controller.signal)
+      .then((list) => {
+        if (controller.signal.aborted || zoom < CLUSTER_FETCH_MAX_ZOOM) return;
+        applyLiveSnapshot(list);
+      })
+      .catch(() => {})
+      .finally(done);
   }
 
   function fetchFreshData(): void {
     fetchLiveCount()
       .then((n) => store.set("trackedCount", n))
       .catch(() => {});
-    if (!bounds) return;
-    fetchForZoom(bounds, zoom);
+    // A viewport request still in flight (or about to fire) already covers
+    // this tick — don't stack a second one on top of it.
+    if (viewportAbort || viewportFetchTimer) return;
+    fetchViewport();
   }
 
-  function handleViewportChange(nextBounds: Bounds, nextZoom: number): void {
+  function handleViewportChange(nextBounds: Bounds, nextZoom: number, immediate = false): void {
+    const wasClustered = zoom < CLUSTER_FETCH_MAX_ZOOM;
     bounds = nextBounds;
     zoom = nextZoom;
     store.set("zoom", nextZoom);
+    const clustered = nextZoom < CLUSTER_FETCH_MAX_ZOOM;
+    if (clustered !== wasClustered) clusters = [];
+    if (clustered && !wasClustered) dropIndividualMarkersAfterFade();
+    if (!clustered && exitFadeTimer) {
+      clearTimeout(exitFadeTimer);
+      exitFadeTimer = null;
+    }
     renderAircraftLayer(); // icon sizes/cluster mode update for the new zoom immediately, independent of the fetch below
-    fetchForZoom(nextBounds, nextZoom);
+
+    // Whatever is in flight was for a viewport that no longer exists.
+    viewportAbort?.abort();
+    viewportAbort = null;
+    if (viewportFetchTimer) clearTimeout(viewportFetchTimer);
+    viewportFetchTimer = null;
+    if (immediate) fetchViewport();
+    else viewportFetchTimer = setTimeout(fetchViewport, VIEWPORT_DEBOUNCE_MS);
+  }
+
+  // Zoomed out past CLUSTER_FETCH_MAX_ZOOM: the individual markers fade
+  // (renderAircraftLayer marks them exiting), then go — they used to stay
+  // in `positions` and the DOM, invisible, for the rest of the session,
+  // and every later render walked all of them.
+  function dropIndividualMarkersAfterFade(): void {
+    if (exitFadeTimer) clearTimeout(exitFadeTimer);
+    exitFadeTimer = setTimeout(() => {
+      exitFadeTimer = null;
+      if (zoom >= CLUSTER_FETCH_MAX_ZOOM) return;
+      const selectedId = store.get("selectedId");
+      for (const id of Array.from(positions.keys())) if (id !== selectedId) positions.delete(id);
+      individualMarkersShown = false;
+      renderAircraftLayer();
+    }, EXIT_FADE_MS);
+  }
+
+  // ---- live push feed ----
+  function onLivePush(p: FlightPosition): void {
+    // The server filters by the last viewport *anyone* reported (one shared
+    // viewport, see ViewportService) — keep only what this map is showing
+    // as individual markers, plus the selected aircraft.
+    const isSelected = p.icao24 === store.get("selectedId");
+    if (!isSelected && (zoom < CLUSTER_FETCH_MAX_ZOOM || !bounds || !inBounds(bounds, p.latitude, p.longitude))) return;
+    const queued = pendingWs.get(p.icao24);
+    if (queued && !isNewer(p, queued)) return;
+    pendingWs.set(p.icao24, p);
+    if (!wsFlushTimer) wsFlushTimer = setTimeout(flushLivePushes, WS_FLUSH_MS);
+  }
+
+  function flushLivePushes(): void {
+    wsFlushTimer = null;
+    if (pendingWs.size === 0) return;
+    const selectedId = store.get("selectedId");
+    let selectedUpdate: FlightPosition | null = null;
+    let changed = false;
+    for (const p of pendingWs.values()) {
+      const existing = positions.get(p.icao24);
+      if (existing && !isNewer(p, existing)) continue; // superseded by a /live reconcile already
+      if (p.icao24 !== selectedId && (zoom < CLUSTER_FETCH_MAX_ZOOM || !bounds || !inBounds(bounds, p.latitude, p.longitude))) continue;
+      positions.set(p.icao24, p);
+      changed = true;
+      if (p.icao24 === selectedId) selectedUpdate = p;
+    }
+    pendingWs.clear();
+    if (changed) renderAircraftLayer();
+    if (selectedUpdate) {
+      store.set("selectedPos", selectedUpdate);
+      appendRoutePoint(selectedUpdate);
+    }
+  }
+
+  function stopFetchCycle(): void {
+    if (fetchIntervalTimer) clearInterval(fetchIntervalTimer);
+    fetchIntervalTimer = null;
+    if (dialogTimer) clearTimeout(dialogTimer);
+    dialogTimer = null;
   }
 
   function restartFetchCycleTimers(): void {
@@ -236,23 +373,19 @@ function boot(): void {
       fetchFreshData();
     }, FETCH_INTERVAL_MS);
 
+    // At the end of the watch window, ask — don't silently reopen the
+    // backend's poll window. /api/agents/restart is called from exactly two
+    // places: page load (only if the window is closed) and the Resume
+    // button (startCycle). Never from a timer, a reconnect or an error path.
     if (dialogTimer) clearTimeout(dialogTimer);
     const dialogDelay = DIALOG_STOP_MS - (Date.now() - cycleStart);
     dialogTimer = setTimeout(() => {
-      restartPolling()
-        .then((outcome) => {
-          if (outcome.rateLimited) {
-            store.set("showResumeDialog", true);
-          } else {
-            cycleStart = Date.now();
-            fetchFreshData();
-            restartFetchCycleTimers();
-          }
-        })
-        .catch(() => store.set("showResumeDialog", true));
+      stopFetchCycle();
+      store.set("showResumeDialog", true);
     }, dialogDelay);
   }
 
+  /** The Resume button. */
   function startCycle(): void {
     cycleStart = Date.now();
     store.set("showResumeDialog", false);
@@ -267,18 +400,24 @@ function boot(): void {
     priorityPollTimer = null;
   }
   function startPriorityPoll(icao24: string): void {
+    let inFlight = false;
     function poll(): void {
+      if (inFlight) return; // never overlap with a slow previous poll
+      inFlight = true;
       fetchFlightLive(icao24)
         .then((p) => {
           if (!p || p.icao24 !== store.get("selectedId")) return;
-          const existing = positions[p.icao24];
+          const existing = positions.get(p.icao24);
           if (existing && !isNewer(p, existing)) return; // superseded already
-          positions = { ...positions, [p.icao24]: p };
+          positions.set(p.icao24, p);
           store.set("selectedPos", p);
           appendRoutePoint(p);
           renderAircraftLayer();
         })
-        .catch(() => {});
+        .catch(() => {})
+        .finally(() => {
+          inFlight = false;
+        });
     }
     poll();
     priorityPollTimer = setInterval(poll, FETCH_INTERVAL_MS);
@@ -506,6 +645,8 @@ function boot(): void {
   onSelectedIdChanged(); // selectedId starts null — harmless initial reset
 
   // ---- mount-only effects ----
+  // Page load is one of the two callers of /api/agents/restart (the other
+  // is the Resume button) — and only when the poll window is closed.
   fetchPollingStatus()
     .then((status) => {
       if (!status.active) return restartPolling();
@@ -515,23 +656,14 @@ function boot(): void {
     .then((n) => store.set("trackedCount", n))
     .catch(() => {});
 
-  subscribeLiveFeed((p) => {
-    const existing = positions[p.icao24];
-    if (existing && !isNewer(p, existing)) return; // superseded by a /live reconcile already
-    positions = { ...positions, [p.icao24]: p };
-    renderAircraftLayer();
-    if (p.icao24 === store.get("selectedId")) {
-      store.set("selectedPos", p);
-      appendRoutePoint(p);
-    }
-  });
+  subscribeLiveFeed(onLivePush);
 
   restartFetchCycleTimers(); // generation 0
 
   // Initial viewport report — equivalent to the original ViewportReporter's
   // own mount-time call, fired only now that every layer it can cascade
   // into (markers, clusters, route) exists.
-  handleViewportChange(boundsFromMap(map), map.getZoom());
+  handleViewportChange(boundsFromMap(map), map.getZoom(), true);
 }
 
 boot();

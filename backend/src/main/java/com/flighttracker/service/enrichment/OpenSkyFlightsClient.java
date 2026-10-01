@@ -166,6 +166,13 @@ public class OpenSkyFlightsClient {
             synchronized (backoff) { wait = backoff.recordFailure(MIN_BACKOFF, MAX_BACKOFF); }
             log.warn("OpenSky flights lookup throttled (429) — backing off {}s", wait.toSeconds());
             return List.of();
+        } catch (HttpClientErrorException.NotFound e) {
+            // OpenSky answers 404 for "no flights for this aircraft in the
+            // window" — routine for anything not currently on a tracked leg,
+            // so not worth a WARN on every lookup.
+            synchronized (backoff) { backoff.recordFailure(MIN_BACKOFF, MAX_BACKOFF); }
+            log.debug("OpenSky flights lookup failed for {}: {}", icao24, e.toString());
+            return List.of();
         } catch (Exception e) {
             synchronized (backoff) { backoff.recordFailure(MIN_BACKOFF, MAX_BACKOFF); }
             log.warn("OpenSky flights lookup failed for {}: {}", icao24, e.toString());

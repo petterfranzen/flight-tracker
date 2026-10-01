@@ -7,14 +7,26 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.event.TransactionPhase;
 import org.springframework.transaction.event.TransactionalEventListener;
+import com.flighttracker.dto.Bounds;
+import jakarta.annotation.PreDestroy;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.PingMessage;
 import org.springframework.web.socket.TextMessage;
+import org.springframework.web.socket.WebSocketMessage;
 import org.springframework.web.socket.WebSocketSession;
+import org.springframework.web.socket.handler.ConcurrentWebSocketSessionDecorator;
+import org.springframework.web.socket.handler.SessionLimitExceededException;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * Fans out each newly-persisted position to every connected map client —
@@ -34,11 +46,35 @@ import java.util.concurrent.ConcurrentHashMap;
  * PLAN.md §6 item 9): Cloudflare Tunnel closes a WebSocket idle for
  * roughly 100s, and a quiet map (nothing in view, or the poll window
  * closed) can easily go that long with nothing to broadcast.
+ *
+ * Every send goes through a per-session ConcurrentWebSocketSessionDecorator
+ * on a virtual thread, never directly on the caller's thread. Before this,
+ * sendMessage() was a blocking write on the persistence thread: one client
+ * that stopped reading (a browser whose main thread is saturated stops
+ * reading under WebSocket flow control) stalled the broadcast to *every*
+ * client, and the poll that triggered it, for Tomcat's ~20s write timeout
+ * per message — reproduced locally as a 19s gap on a healthy client — and
+ * the 30s keepalive ping could race a broadcast on the same session, which
+ * Tomcat rejects with IllegalStateException (TEXT_PARTIAL_WRITING). Now a
+ * slow client only fills its own bounded buffer (oldest frames dropped; the
+ * map's periodic /live reconcile covers the gap), and one that can't drain
+ * within SEND_TIME_LIMIT_MS is closed with 1011 so its client reconnects
+ * cleanly instead of hanging half-open.
  */
 @Component
 public class LiveFeedBroadcaster extends TextWebSocketHandler {
 
+    private static final Logger log = LoggerFactory.getLogger(LiveFeedBroadcaster.class);
+
+    // A client that hasn't drained a send in this long is gone for practical
+    // purposes — close it (1011) and let it reconnect.
+    static final int SEND_TIME_LIMIT_MS = 10_000;
+    // ~4k position frames. Beyond that the oldest are dropped, not the session.
+    static final int BUFFER_SIZE_LIMIT_BYTES = 1024 * 1024;
+
+    // Decorated sessions, keyed by the raw session's id.
     private final Map<String, WebSocketSession> sessions = new ConcurrentHashMap<>();
+    private final ExecutorService sendExecutor = Executors.newVirtualThreadPerTaskExecutor();
     private final ViewportService viewportService;
 
     // Inject Spring Boot's autoconfigured ObjectMapper bean — the exact same
@@ -55,11 +91,13 @@ public class LiveFeedBroadcaster extends TextWebSocketHandler {
 
     @Override
     public void afterConnectionEstablished(WebSocketSession session) {
-        sessions.put(session.getId(), session);
+        sessions.put(session.getId(), new ConcurrentWebSocketSessionDecorator(
+                session, SEND_TIME_LIMIT_MS, BUFFER_SIZE_LIMIT_BYTES,
+                ConcurrentWebSocketSessionDecorator.OverflowStrategy.DROP));
     }
 
     @Override
-    public void afterConnectionClosed(WebSocketSession session, org.springframework.web.socket.CloseStatus status) {
+    public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
         sessions.remove(session.getId());
     }
 
@@ -76,9 +114,19 @@ public class LiveFeedBroadcaster extends TextWebSocketHandler {
      */
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
     public void onPositionsPersisted(PositionsPersistedEvent event) {
+        if (sessions.isEmpty()) return;
+        Bounds viewport = viewportService.currentCached();
+        List<TextMessage> messages = new ArrayList<>();
         for (FlightPosition position : event.positions()) {
-            publish(position);
+            if (!viewport.contains(position.latitude(), position.longitude())) continue;
+            try {
+                messages.add(new TextMessage(mapper.writeValueAsString(position)));
+            } catch (IOException e) {
+                log.debug("Skipping unserializable position {}: {}", position.icao24(), e.toString());
+            }
         }
+        if (messages.isEmpty()) return;
+        sessions.values().forEach(s -> sendExecutor.execute(() -> sendAll(s, messages)));
     }
 
     // Cloudflare Tunnel's own idle-close window (~100s) is what this
@@ -97,30 +145,43 @@ public class LiveFeedBroadcaster extends TextWebSocketHandler {
     @Scheduled(fixedDelay = 30_000)
     void sendKeepalive() {
         if (sessions.isEmpty()) return;
-        PingMessage ping = new PingMessage();
-        sessions.values().forEach(s -> {
-            try {
-                if (s.isOpen()) s.sendMessage(ping);
-            } catch (IOException ignored) {
-                // a dead client will get pruned on its own close event
-            }
-        });
+        List<WebSocketMessage<?>> ping = List.of(new PingMessage());
+        sessions.values().forEach(s -> sendExecutor.execute(() -> sendAll(s, ping)));
     }
 
-    private void publish(FlightPosition position) {
-        if (sessions.isEmpty()) return;
-        if (!viewportService.currentCached().contains(position.latitude(), position.longitude())) return;
-        try {
-            String json = mapper.writeValueAsString(position);
-            TextMessage message = new TextMessage(json);
-            sessions.values().forEach(s -> {
-                try {
-                    if (s.isOpen()) s.sendMessage(message);
-                } catch (IOException ignored) {
-                    // a dead client will get pruned on its own close event
-                }
-            });
-        } catch (IOException ignored) {
+    /**
+     * Sends in order through the session's decorator. When another thread is
+     * already flushing this session, sendMessage() just buffers and returns,
+     * so only one virtual thread per session ever blocks on a slow socket.
+     */
+    void sendAll(WebSocketSession session, List<? extends WebSocketMessage<?>> messages) {
+        for (WebSocketMessage<?> message : messages) {
+            if (!session.isOpen()) return;
+            try {
+                session.sendMessage(message);
+            } catch (SessionLimitExceededException e) {
+                log.debug("Closing slow WebSocket client {}: {}", session.getId(), e.getMessage());
+                closeQuietly(session, e.getStatus());
+                return;
+            } catch (IOException | RuntimeException e) {
+                log.debug("Closing WebSocket client {} after send failure: {}", session.getId(), e.toString());
+                closeQuietly(session, CloseStatus.SESSION_NOT_RELIABLE);
+                return;
+            }
         }
+    }
+
+    private void closeQuietly(WebSocketSession session, CloseStatus status) {
+        sessions.remove(session.getId());
+        try {
+            session.close(status);
+        } catch (IOException | RuntimeException ignored) {
+            // already gone
+        }
+    }
+
+    @PreDestroy
+    void shutdown() {
+        sendExecutor.shutdownNow();
     }
 }

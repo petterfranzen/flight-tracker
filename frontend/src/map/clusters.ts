@@ -79,7 +79,11 @@ export interface ClusterLayerHandle {
  * in three levels, undamped.
  */
 export function createClusterLayer(map: L.Map): ClusterLayerHandle {
-  const entries = new Map<string, L.Marker>();
+  // iconKey: which cached icon the marker currently shows. setIcon() tears
+  // down and rebuilds the marker's DOM, so it's only called when the
+  // bucket's size/plane-count actually changed — previously every bubble
+  // was rebuilt on every update, including once per WebSocket frame.
+  const entries = new Map<string, { marker: L.Marker; iconKey: string }>();
 
   function update(clusters: ClusterPoint[]): void {
     const seen = new Set<string>();
@@ -87,27 +91,31 @@ export function createClusterLayer(map: L.Map): ClusterLayerHandle {
       const key = `${c.lat},${c.lon}`;
       seen.add(key);
       const existing = entries.get(key);
-      const entering = !existing;
-      const icon = clusterIcon(c.count, entering);
       if (existing) {
-        existing.setIcon(icon);
+        const iconKey = `${clusterPlaneCount(c.count)}|${clusterIconSize(c.count)}`;
+        if (iconKey !== existing.iconKey) {
+          existing.marker.setIcon(clusterIcon(c.count, false));
+          existing.iconKey = iconKey;
+        }
       } else {
-        const marker = L.marker([c.lat, c.lon], { icon });
+        const marker = L.marker([c.lat, c.lon], { icon: clusterIcon(c.count, true) });
         marker.on("click", () => map.setView([c.lat, c.lon], map.getZoom() + 3, { animate: false }));
         marker.addTo(map);
-        entries.set(key, marker);
+        // The entering icon carries a one-shot fade-in; recorded under a key
+        // that never matches so the first real change swaps in the plain one.
+        entries.set(key, { marker, iconKey: "entering" });
       }
     }
-    for (const [key, marker] of entries) {
+    for (const [key, entry] of entries) {
       if (!seen.has(key)) {
-        marker.remove();
+        entry.marker.remove();
         entries.delete(key);
       }
     }
   }
 
   function destroy(): void {
-    for (const marker of entries.values()) marker.remove();
+    for (const entry of entries.values()) entry.marker.remove();
     entries.clear();
   }
 
