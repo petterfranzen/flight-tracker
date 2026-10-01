@@ -1085,18 +1085,40 @@ html, body {
     display: grid;
   }
 
+  /* Rendered first inside .details-panel-inner (see dossierPanel.ts) and
+     sticky, so the expand/collapse arrow sits at the top of the sheet and
+     stays reachable however far the content is scrolled. The negative
+     top margin cancels .details-panel-inner's own top padding. */
   .details-panel-expand-toggle {
     display: flex;
     align-items: center;
     justify-content: center;
+    position: sticky;
+    top: -28px; /* sticky insets by the scroller's padding; offset it */
+    z-index: 1;
     width: 100%;
-    margin-top: 10px;
-    padding: 6px 0 2px;
-    background: none;
+    margin: -28px 0 8px;
+    padding: 8px 0;
+    background: var(--color-panel);
     border: none;
-    border-top: 1px solid var(--color-panel-border);
+    border-bottom: 1px solid var(--color-panel-border);
     color: var(--color-text-muted);
     font-size: 14px;
     cursor: pointer;
+  }
+
+  /* Above the sticky toggle, which spans the full sheet width. */
+  .details-panel-close-x {
+    z-index: 2;
+  }
+
+  /* Attribution is legally required but needn't be big: smaller type,
+     tighter padding, and capped width so it wraps to a slim strip. */
+  .leaflet-control-attribution {
+    font-size: 9px;
+    line-height: 1.3;
+    padding: 0 4px;
+    max-width: 60vw;
+    background: rgba(255, 255, 255, 0.55);
   }
 }

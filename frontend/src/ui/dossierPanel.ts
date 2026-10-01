@@ -196,13 +196,6 @@ function renderAircraftPanel(store: AppStore): { panel: HTMLElement; updatedLine
     h(
       "div",
       { className: "details-panel-inner" },
-      h("span", { className: "details-panel-eyebrow", id: "details-panel-heading" }, "Aircraft Details"),
-      heading,
-      focusButton,
-      h("div", { className: "details-panel-favorite-toggles" }, aircraftToggle, routeToggle),
-      h("p", { className: "details-panel-meta" }, `ICAO24 ${selectedPos.icao24.toUpperCase()} · last leg traced above`),
-      updatedLine,
-      fields,
       h(
         "button",
         {
@@ -213,6 +206,13 @@ function renderAircraftPanel(store: AppStore): { panel: HTMLElement; updatedLine
         },
         dossierExpanded ? "▲" : "▼",
       ),
+      h("span", { className: "details-panel-eyebrow", id: "details-panel-heading" }, "Aircraft Details"),
+      heading,
+      focusButton,
+      h("div", { className: "details-panel-favorite-toggles" }, aircraftToggle, routeToggle),
+      h("p", { className: "details-panel-meta" }, `ICAO24 ${selectedPos.icao24.toUpperCase()} · last leg traced above`),
+      updatedLine,
+      fields,
       h("button", { className: "details-panel-close", onClick: () => store.get("closeAircraftPanel")(), "aria-label": "Close aircraft details" }, "Close"),
     ),
   );
@@ -244,10 +244,6 @@ function renderAirportPanel(store: AppStore): HTMLElement {
     h(
       "div",
       { className: "details-panel-inner" },
-      h("span", { className: "details-panel-eyebrow", id: "airport-details-panel-heading" }, "Airport Details"),
-      h("h2", null, airportDossier.name || airportDossier.code),
-      h("p", { className: "details-panel-meta" }, `${airportInfo?.iataCode || airportDossier.code}${airportInfo?.icaoCode ? ` / ${airportInfo.icaoCode}` : ""}`),
-      fields,
       h(
         "button",
         {
@@ -258,6 +254,10 @@ function renderAirportPanel(store: AppStore): HTMLElement {
         },
         dossierExpanded ? "▲" : "▼",
       ),
+      h("span", { className: "details-panel-eyebrow", id: "airport-details-panel-heading" }, "Airport Details"),
+      h("h2", null, airportDossier.name || airportDossier.code),
+      h("p", { className: "details-panel-meta" }, `${airportInfo?.iataCode || airportDossier.code}${airportInfo?.icaoCode ? ` / ${airportInfo.icaoCode}` : ""}`),
+      fields,
       h("button", { className: "details-panel-close", onClick: () => store.get("closeAirportPanel")(), "aria-label": "Close airport details" }, "Close"),
     ),
   );

@@ -66,6 +66,54 @@ test.describe("mobile layout", () => {
     }
   });
 
+  test("selecting a favorite closes the favorites drawer, and the sheet's expand arrow sits at its top", async ({ page }) => {
+    await page.setViewportSize(MOBILE_VIEWPORT);
+    await mockFlightApi(page);
+    await page.goto("/");
+    await page.waitForSelector(".leaflet-container", { timeout: 10_000 });
+
+    const target = LIVE_FIXTURE.find((p) => p.icao24 === "4aad15")!;
+    await setMapView(page, target.latitude, target.longitude, 11);
+    await page.waitForSelector(".plane-icon", { timeout: 10_000 });
+    await page.waitForTimeout(500);
+    await (await findMarkerNear(page, target.latitude, target.longitude)).click();
+    await page.getByText(`ICAO24 ${target.icao24.toUpperCase()}`).waitFor({ timeout: 2_000 });
+    await page.getByRole("button", { name: "Favorite this aircraft", exact: true }).click();
+    await page.locator(".details-panel-close-x").click();
+    await expect(page.locator(".details-panel")).toHaveCount(0);
+
+    await page.locator(".favorites-panel-fab").click();
+    const body = page.locator(".favorites-panel-body");
+    await expect(body).toHaveClass(/favorites-panel-body--open/);
+    const item = page.locator(".favorites-panel-item", { hasText: target.callsign! });
+    await expect(item.locator(".favorites-panel-item-status")).toHaveText("live now", { timeout: 5_000 });
+    await item.locator(".favorites-panel-item-select").click();
+
+    // Drawer closes by itself so the selected plane is visible.
+    await expect(body).not.toHaveClass(/favorites-panel-body--open/);
+    await expect(page.locator(".details-panel")).toBeVisible();
+
+    // Expand arrow is at the top of the sheet, above the heading.
+    const panelBox = (await page.locator(".details-panel").boundingBox())!;
+    const toggleBox = (await page.locator(".details-panel-expand-toggle").boundingBox())!;
+    const eyebrowBox = (await page.locator(".details-panel-eyebrow").boundingBox())!;
+    expect(toggleBox.y - panelBox.y).toBeLessThan(10);
+    expect(toggleBox.y + toggleBox.height).toBeLessThanOrEqual(eyebrowBox.y + 1);
+  });
+
+  test("map attribution is compact on mobile", async ({ page }) => {
+    await page.setViewportSize(MOBILE_VIEWPORT);
+    await mockFlightApi(page);
+    await page.goto("/");
+    await page.waitForSelector(".leaflet-container", { timeout: 10_000 });
+    const attribution = page.locator(".leaflet-control-attribution");
+    await expect(attribution).toBeVisible();
+    await expect(attribution).not.toContainText("Leaflet");
+    const fontSize = await attribution.evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
+    expect(fontSize).toBeLessThanOrEqual(10);
+    expect((await attribution.boundingBox())!.width).toBeLessThanOrEqual(MOBILE_VIEWPORT.width * 0.6 + 1);
+  });
+
   test("selecting an aircraft opens the dossier as a bottom sheet, not a side panel", async ({ page }) => {
     await page.setViewportSize(MOBILE_VIEWPORT);
     await mockFlightApi(page);

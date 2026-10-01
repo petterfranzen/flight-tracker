@@ -89,6 +89,9 @@ export function createMap(
     // tick tracks ~1 level.
     wheelPxPerZoomLevel: 200,
   });
+  // Drops the "Leaflet" prefix (and flag) on phones, where the attribution
+  // strip otherwise takes two lines; the data credits stay.
+  if (window.matchMedia("(max-width: 768px)").matches) map.attributionControl.setPrefix(false);
 
   const containerEl = map.getContainer();
   containerEl.setAttribute("aria-label", "Live aircraft map");
