@@ -57,16 +57,21 @@ export interface LiveMarker {
 }
 
 /**
- * FlightMap's selectedPos: a LiveMarker plus the one extra field the
- * details panel reads directly (altitude — everything else it shows comes
- * from the separate AircraftDossier fetch). Populated instantly from
- * whatever LiveMarker triggered the selection (altitudeM starts null,
- * exactly like the dossier fields' own "—" until loaded convention), then
- * upgraded to the real value moments later by the dedicated priority
- * fetchFlightLive poll or a WebSocket push, both of which return a full
- * FlightPosition — again a structural superset, so no conversion needed.
+ * The details panel's selectedPos: a LiveMarker plus the extra fields the
+ * panel reads directly (altitude, speed, vertical rate — everything else
+ * it shows comes from the separate AircraftDossier fetch). Populated
+ * instantly from whatever LiveMarker triggered the selection (these all
+ * start null, exactly like the dossier fields' own "—" until loaded
+ * convention), then upgraded to the real values moments later by the
+ * dedicated priority fetchFlightLive poll or a WebSocket push, both of
+ * which return a full FlightPosition — again a structural superset, so no
+ * conversion needed.
  */
-export type SelectedPosition = LiveMarker & { altitudeM: number | null };
+export type SelectedPosition = LiveMarker & {
+  altitudeM: number | null;
+  velocityMs: number | null;
+  verticalRateMs: number | null;
+};
 
 export interface AircraftDossier {
   icao24: string;

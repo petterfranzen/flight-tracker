@@ -177,6 +177,10 @@ function renderAircraftPanel(store: AppStore): { panel: HTMLElement; updatedLine
     // aircraft reads as a bug, not as a precision artifact.
     ...field("Altitude", selectedPos.altitudeM != null ? `${Math.round(Math.max(0, selectedPos.altitudeM))} m` : "—"),
     ...field("Cruising altitude", dossier?.cruisingAltitudeM != null ? `${Math.round(dossier.cruisingAltitudeM)} m` : "—"),
+    ...field("Speed", selectedPos.velocityMs != null ? `${Math.round(selectedPos.velocityMs * 3.6)} km/h` : "—"),
+    // Signed, not just magnitude: the sign is the only thing that says
+    // climbing vs. descending. Level flight reads "+0.0 m/s", not a bare 0.
+    ...field("Vertical rate", selectedPos.verticalRateMs != null ? formatVerticalRate(selectedPos.verticalRateMs) : "—"),
     ...field("Flight time", dossier?.flightMinutes != null ? formatDurationMinutes(dossier.flightMinutes) : "—"),
     ...field("ETA", dossier?.etaMinutes != null ? formatDurationMinutes(dossier.etaMinutes) : "—"),
   );
@@ -257,4 +261,11 @@ function renderAirportPanel(store: AppStore): HTMLElement {
       h("button", { className: "details-panel-close", onClick: () => store.get("closeAirportPanel")(), "aria-label": "Close airport details" }, "Close"),
     ),
   );
+}
+
+function formatVerticalRate(ms: number): string {
+  const rounded = Math.round(ms * 10) / 10;
+  // Normalise -0 (e.g. -0.04 rounds to -0) so level flight reads "+0.0".
+  const value = rounded === 0 ? 0 : rounded;
+  return `${value >= 0 ? "+" : ""}${value.toFixed(1)} m/s`;
 }
