@@ -30,9 +30,9 @@ test.describe("favorites", () => {
     // gives each marker's container role="button" too, so a substring
     // match here would hit 20+ markers as well as this toggle.
     const aircraftToggle = page.getByRole("button", { name: "Favorite this aircraft", exact: true });
-    await expect(aircraftToggle).toHaveText("☆ Track Aircraft");
+    await expect(aircraftToggle).toHaveText("☆ Favorite aircraft");
     await aircraftToggle.click();
-    await expect(aircraftToggle).toHaveText("★ Track Aircraft");
+    await expect(aircraftToggle).toHaveText("★ Favorite aircraft");
 
     // Persisted client-side (see favorites.ts) — a reload must not lose it.
     await page.reload();

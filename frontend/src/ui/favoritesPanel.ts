@@ -108,6 +108,7 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     key: string,
     label: string,
     live: FlightPosition | undefined,
+    idleStatus: string,
     onSelect: () => void,
     onRemove: () => void,
   ): HTMLElement {
@@ -116,10 +117,10 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
       { className: live ? "favorites-panel-item favorites-panel-item--live" : "favorites-panel-item" },
       h(
         "button",
-        { type: "button", className: "favorites-panel-item-select", disabled: !live, onClick: () => live && onSelect() },
+        { type: "button", className: "favorites-panel-item-select", disabled: !live, title: live ? undefined : "Not live right now", onClick: () => live && onSelect() },
         h("span", { className: "favorites-panel-item-dot", "aria-hidden": "true" }),
         label,
-        h("span", { className: "favorites-panel-item-status" }, live ? "live now" : "not tracked"),
+        h("span", { className: "favorites-panel-item-status" }, live ? "live now" : idleStatus),
       ),
       h("button", { type: "button", className: "favorites-panel-item-remove", "aria-label": `Remove ${label} from favorites`, onClick: onRemove }, "✕"),
     );
@@ -132,7 +133,18 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     clear(content);
 
     if (totalCount === 0) {
-      content.append(h("p", { className: "favorites-panel-empty" }, "No favorites yet — star an aircraft or route from its details panel."));
+      content.append(h("p", { className: "favorites-panel-empty" }, "No favorites yet — use “Favorite aircraft” or “Favorite route” in a flight’s details panel."));
+    }
+    if (totalCount > 0) {
+      // Says what is actionable: only live favorites can be selected.
+      const liveCount = aircraft.filter((a) => liveAircraft[a.icao24]).length + routes.filter((r) => liveRoutes[routeKey(r.origin, r.destination)]).length;
+      content.append(
+        h(
+          "p",
+          { className: "favorites-panel-hint" },
+          liveCount > 0 ? "Tap a live favorite to jump to it." : "None live right now — they light up when a matching flight is in the air.",
+        ),
+      );
     }
     if (aircraft.length > 0) {
       const list = h("ul");
@@ -144,6 +156,7 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
             a.icao24,
             label,
             live,
+            "not live",
             () => live && selectAndClose(() => store.get("selectAircraft")(live)),
             () => store.get("removeFavoriteAircraft")(a),
           ),
@@ -162,6 +175,7 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
             key,
             label,
             live,
+            "no live flight",
             () => live && selectAndClose(() => store.get("selectAircraft")(live)),
             () => store.get("removeFavoriteRoute")(r),
           ),
