@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { WS_URL } from "./support/config.js";
-import { assertFlightPositionShape } from "./support/assertions.js";
+import { assertLiveMarkerShape } from "./support/assertions.js";
 
 // How long we're willing to wait for a single push frame before giving up
 // on the "did we get real data" check. Positions only flow when the agent
@@ -40,7 +40,7 @@ test("GET /ws/live upgrades and accepts a connection", { timeout: FRAME_WAIT_MS 
       );
     } else {
       const parsed = JSON.parse(firstFrame);
-      assertFlightPositionShape(parsed);
+      assertLiveMarkerShape(parsed);
     }
   } finally {
     // Must run even if the shape assertion above throws, or the socket
