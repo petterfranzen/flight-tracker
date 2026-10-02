@@ -71,11 +71,18 @@ async function fulfill(route: Route, json: unknown): Promise<number> {
  * burst of ~1,000 positions every 2s — the real hot poll is every 18s — and
  * a keepalive text frame after each burst.
  */
-async function mockTenThousand(page: Page, opts: { liveDelayMs?: number; liveFeed?: boolean } = {}) {
+async function mockTenThousand(page: Page, opts: { holdLive?: boolean; liveFeed?: boolean } = {}) {
   const fleet = fleet10k();
   const now = new Date().toISOString();
   const requests: ViewportRequest[] = [];
   const restarts: string[] = [];
+  // With holdLive, /live responses wait for releaseLive() instead of for a
+  // timer, so a test can keep a request "in flight" for exactly as long as it
+  // needs, however slow the machine running it is.
+  let releaseLive: () => void = () => {};
+  const liveGate = new Promise<void>((resolve) => {
+    releaseLive = resolve;
+  });
 
   await page.route("**/api/flights/live/count", (route) => route.fulfill({ json: FLEET_SIZE }));
   await page.route("**/api/flights/live/clusters*", async (route) => {
@@ -99,7 +106,7 @@ async function mockTenThousand(page: Page, opts: { liveDelayMs?: number; liveFee
     const list = fleet
       .filter((a) => !b || (a.latitude >= b.latMin && a.latitude <= b.latMax && a.longitude >= b.lonMin && a.longitude <= b.lonMax))
       .map((a) => marker(a, now));
-    if (opts.liveDelayMs) await new Promise((r) => setTimeout(r, opts.liveDelayMs));
+    if (opts.holdLive) await liveGate;
     const entry: ViewportRequest = { kind: "live", bbox: b, bytes: 0 };
     requests.push(entry);
     entry.bytes = await fulfill(route, list);
@@ -177,7 +184,7 @@ async function mockTenThousand(page: Page, opts: { liveDelayMs?: number; liveFee
     await page.routeWebSocket("**/ws/live", () => {});
   }
 
-  return { requests, restarts, hotCount: hot.length };
+  return { requests, restarts, hotCount: hot.length, releaseLive: () => releaseLive() };
 }
 
 async function startLongTaskObserver(page: Page) {
@@ -289,7 +296,9 @@ test.describe("performance with 10,000 live aircraft @perf", () => {
 
   test("a burst of viewport changes makes one request, and a newer viewport aborts the one in flight", async ({ page }) => {
     test.setTimeout(60_000);
-    await mockTenThousand(page, { liveDelayMs: 1_500 });
+    // The first /live response is held until released: "in flight" lasts as
+    // long as the test says, not as long as a timer happens to.
+    const api = await mockTenThousand(page, { holdLive: true });
     const started: string[] = [];
     const aborted: string[] = [];
     page.on("request", (r) => {
@@ -301,26 +310,25 @@ test.describe("performance with 10,000 live aircraft @perf", () => {
     await page.goto("/");
     await page.waitForSelector(".cluster-icon", { timeout: 15_000 });
 
-    // Five moveends inside the debounce window → one request.
-    // In-page, 50ms apart — like wheel ticks; separate page.evaluate round
-    // trips would each take longer than the debounce window on their own.
-    await withMap(page, async (map) => {
-      for (const lon of [-0.9, -0.7, -0.5, -0.3, -0.1]) {
-        map.setView([51.5, lon], 9, { animate: false });
-        await new Promise((r) => setTimeout(r, 50));
-      }
+    // Five moveends in a single task, so they are inside the debounce window
+    // however slow the machine: one request.
+    await withMap(page, (map) => {
+      for (const lon of [-0.9, -0.7, -0.5, -0.3, -0.1]) map.setView([51.5, lon], 9, { animate: false });
     });
-    await page.waitForTimeout(700);
+    await expect.poll(() => started.length, { timeout: 10_000 }).toBe(1);
+    // Past the debounce window, still just the one.
+    await page.waitForTimeout(600);
     expect(started).toHaveLength(1);
     expect(new URL(started[0]).searchParams.get("lonMin")).toBe(String(await withMap(page, (map) => map.getBounds().getWest())));
 
-    // While that (slow) request is in flight, move again: it gets aborted,
-    // and only the newer viewport is requested after it.
+    // That request is still held, i.e. in flight: move again. It gets
+    // aborted, and only the newer viewport is requested after it.
     await withMap(page, (map) => {
       map.setView([51.6, 0.2], 9, { animate: false });
     });
-    await expect.poll(() => aborted.length, { timeout: 5_000 }).toBe(1);
-    await expect.poll(() => started.length, { timeout: 5_000 }).toBe(2);
+    await expect.poll(() => aborted.length, { timeout: 10_000 }).toBe(1);
+    await expect.poll(() => started.length, { timeout: 10_000 }).toBe(2);
     expect(aborted[0]).toBe(started[0]);
+    api.releaseLive();
   });
 });
