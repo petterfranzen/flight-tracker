@@ -40,6 +40,16 @@ public final class LiveVisibilityWindows {
     // window as everything else.
     public static final Duration PRESUMED_LANDED_SILENCE = Duration.ofMinutes(30);
 
+    // "Active traffic": in the air and reported within this long. What the
+    // zoomed-out cluster bubbles count, so a cluster means flights in
+    // progress rather than every aircraft the map still remembers (a plane
+    // parked at a gate stays visible for LANDED_VISIBILITY, which would
+    // otherwise make an airport look like a busy sky). Everything else is
+    // still returned by /live and drawn individually once zoomed in. Equal to
+    // the frontend's DIM_AFTER_MS (map/staleness.ts), so the aircraft drawn
+    // dimmed up close are exactly the ones left out of the bubbles.
+    public static final Duration ACTIVE_TRAFFIC_WINDOW = Duration.ofHours(2);
+
     private LiveVisibilityWindows() {
     }
 }

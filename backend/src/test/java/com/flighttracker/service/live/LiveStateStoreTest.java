@@ -278,7 +278,7 @@ class LiveStateStoreTest {
         // A lone aircraft in another cell sits exactly where it is, not at its cell's centre.
         store.upsert("ccc333", "C3", T0, 30.2, -40.7, null, null, null, null, false, "opensky");
 
-        List<ClusterPoint> clusters = store.clustered(T0.minusSeconds(1), T0.minusSeconds(1), WORLD, 2.0);
+        List<ClusterPoint> clusters = store.clustered(T0.minusSeconds(1), T0.minusSeconds(1), T0.minusSeconds(1), WORLD, 2.0);
 
         assertThat(clusters).hasSize(2);
         ClusterPoint pair = clusters.stream().filter(c -> c.getCount() == 2).findFirst().orElseThrow();
@@ -295,9 +295,42 @@ class LiveStateStoreTest {
         store.upsert("aaa111", "A1", T0, 10.0, 20.0, null, null, null, null, false, "opensky");
         store.upsert("bbb222", "B2", T0, 11.99, 21.99, null, null, null, null, false, "opensky");
 
-        ClusterPoint c = store.clustered(T0.minusSeconds(1), T0.minusSeconds(1), WORLD, 2.0).get(0);
+        ClusterPoint c = store.clustered(T0.minusSeconds(1), T0.minusSeconds(1), T0.minusSeconds(1), WORLD, 2.0).get(0);
 
         assertThat(c.getLat()).isBetween(10.0, 12.0);
         assertThat(c.getLon()).isBetween(20.0, 22.0);
+    }
+
+    @Test
+    void clustered_countsActiveTrafficOnly_notParkedOrSilentAircraft() {
+        LiveStateStore store = store();
+        Instant activeSince = T0.minusSeconds(7200); // "2 h before T0"
+        // Active: airborne, reported recently.
+        store.upsert("air111", "AIR1", T0, 10.1, 20.1, null, null, null, null, false, "opensky");
+        store.upsert("air222", "AIR2", T0.minusSeconds(60), 10.3, 20.3, null, null, null, null, false, "opensky");
+        // Same cell, but parked at a gate: live (shown when zoomed in) yet not "traffic".
+        store.upsert("gnd333", "GND3", T0, 10.2, 20.2, null, null, 0.0, null, true, "opensky");
+        // Same cell, airborne but silent for over 2 h.
+        store.upsert("old444", "OLD4", T0.minusSeconds(7201), 10.9, 20.9, null, null, null, null, false, "opensky");
+
+        List<ClusterPoint> clusters = store.clustered(T0.minusSeconds(100_000), T0.minusSeconds(100_000), activeSince, WORLD, 2.0);
+
+        assertThat(clusters).hasSize(1);
+        ClusterPoint c = clusters.get(0);
+        assertThat(c.getCount()).isEqualTo(2);
+        // Centroid of the two active aircraft only: the parked and silent ones don't pull it.
+        assertThat(c.getLat()).isCloseTo(10.2, within(1e-9));
+        assertThat(c.getLon()).isCloseTo(20.2, within(1e-9));
+        // The parked and silent aircraft are still live — only the bubbles ignore them.
+        assertThat(store.countLive(T0.minusSeconds(100_000), T0.minusSeconds(100_000))).isEqualTo(4);
+    }
+
+    @Test
+    void clustered_aCellOfOnlyParkedAircraftProducesNoCluster() {
+        LiveStateStore store = store();
+        store.upsert("gnd111", "GND1", T0, 10.1, 20.1, null, null, 0.0, null, true, "opensky");
+        store.upsert("gnd222", "GND2", T0, 10.2, 20.2, null, null, 0.0, null, true, "opensky");
+
+        assertThat(store.clustered(T0.minusSeconds(1), T0.minusSeconds(1), T0.minusSeconds(7200), WORLD, 2.0)).isEmpty();
     }
 }
