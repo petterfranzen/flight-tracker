@@ -108,6 +108,46 @@ test.describe("mobile layout", () => {
     expect(rects.toggleBottom).toBeLessThanOrEqual(rects.eyebrowTop + 1);
   });
 
+  test("sheet sizing tracks the visible viewport (dvh) and the expand arrow is a real touch target", async ({ page }) => {
+    await page.setViewportSize(MOBILE_VIEWPORT);
+    await mockFlightApi(page);
+    await page.goto("/");
+    await page.waitForSelector(".leaflet-container", { timeout: 10_000 });
+
+    // Chromium's dvh equals vh, so this can't be observed by measuring: on iOS
+    // Safari 100vh is the viewport with toolbars collapsed, which pushes the
+    // bottom of the sheet under the toolbar. Guard the rules themselves.
+    const usesDvh = await page.evaluate(() => {
+      const found = new Set<string>();
+      const walk = (rules: CSSRuleList) => {
+        for (const rule of Array.from(rules)) {
+          if (rule instanceof CSSStyleRule && /dvh/.test(rule.style.cssText)) found.add(rule.selectorText);
+          else if ("cssRules" in rule) walk((rule as CSSGroupingRule).cssRules);
+        }
+      };
+      for (const sheet of Array.from(document.styleSheets)) {
+        try {
+          walk(sheet.cssRules);
+        } catch {
+          /* cross-origin sheet */
+        }
+      }
+      return Array.from(found);
+    });
+    expect(usesDvh).toContain(".app-shell");
+    expect(usesDvh).toContain(".details-panel");
+    expect(usesDvh).toContain(".details-panel--expanded");
+
+    const target = LIVE_FIXTURE.find((p) => p.icao24 === "4aad15")!;
+    await setMapView(page, target.latitude, target.longitude, 11);
+    await page.waitForSelector(".plane-icon", { timeout: 10_000 });
+    await page.waitForTimeout(500);
+    await (await findMarkerNear(page, target.latitude, target.longitude)).click();
+    await expect(page.locator(".details-panel-expand-toggle")).toBeVisible();
+    const height = await page.locator(".details-panel-expand-toggle").evaluate((el) => el.getBoundingClientRect().height);
+    expect(height).toBeGreaterThanOrEqual(44);
+  });
+
   test("map attribution is compact on mobile", async ({ page }) => {
     await page.setViewportSize(MOBILE_VIEWPORT);
     await mockFlightApi(page);
