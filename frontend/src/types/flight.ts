@@ -20,6 +20,12 @@ export interface ClusterPoint {
   count: number;
 }
 
+/** Zoomed-out payload: the most active aircraft drawn individually, everything else as clusters. */
+export interface LiveOverview {
+  planes: LiveMarker[];
+  clusters: ClusterPoint[];
+}
+
 export interface FlightPosition {
   id: number;
   icao24: string;

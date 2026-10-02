@@ -1,4 +1,4 @@
-import type { AircraftDossier, AirportInfo, AircraftUsage, Bounds, ClusterPoint, FlightPosition, LiveMarker, PollingStatus } from "../types/flight";
+import type { AircraftDossier, AirportInfo, AircraftUsage, Bounds, ClusterPoint, FlightPosition, LiveMarker, LiveOverview, PollingStatus } from "../types/flight";
 import { clusterMockFleet, filterByBounds, getMockFleet, getMockPlaneCount } from "./mockFleet";
 
 /**
@@ -31,6 +31,25 @@ export async function fetchLiveClusters(bounds: Bounds, gridDeg: number, signal?
   const query = `?latMin=${bounds.latMin}&latMax=${bounds.latMax}&lonMin=${bounds.lonMin}&lonMax=${bounds.lonMax}&gridDeg=${gridDeg}`;
   const res = await fetch(`/api/flights/live/clusters${query}`, { signal });
   if (!res.ok) throw new Error(`live clusters fetch failed: ${res.status}`);
+  return res.json();
+}
+
+/**
+ * The zoomed-out view: the most active aircraft as individual markers plus
+ * clusters for everything else. Replaces fetchLiveClusters for the map's
+ * own zoomed-out fetch so the world doesn't look empty — see
+ * LiveStateStore.overview for the ranking.
+ */
+export async function fetchLiveOverview(bounds: Bounds, gridDeg: number, signal?: AbortSignal): Promise<LiveOverview> {
+  const mockCount = getMockPlaneCount();
+  if (mockCount != null) {
+    const inView = filterByBounds(getMockFleet(mockCount), bounds);
+    const planes = inView.slice(0, 200);
+    return { planes, clusters: clusterMockFleet(inView.slice(200), gridDeg) };
+  }
+  const query = `?latMin=${bounds.latMin}&latMax=${bounds.latMax}&lonMin=${bounds.lonMin}&lonMax=${bounds.lonMax}&gridDeg=${gridDeg}`;
+  const res = await fetch(`/api/flights/live/overview${query}`, { signal });
+  if (!res.ok) throw new Error(`live overview fetch failed: ${res.status}`);
   return res.json();
 }
 

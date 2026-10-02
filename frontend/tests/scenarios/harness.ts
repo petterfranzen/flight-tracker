@@ -80,16 +80,17 @@ export async function startHarness(page: Page, testInfo: TestInfo): Promise<Harn
     const json = (body: unknown, status = 200) => route.fulfill({ status, json: body });
 
     if (path === "/api/flights/live/count") return json(world.aircraft.length);
-    if (path === "/api/flights/live/clusters") {
+    if (path === "/api/flights/live/clusters" || path === "/api/flights/live/overview") {
       const b = bboxOf(u)!;
       const g = Math.min(25, Math.max(0.5, +(u.searchParams.get("gridDeg") ?? 2)));
       // The server's own bucketing (clusters at the mean position of their aircraft).
       const inView: LiveMarker[] = [];
       for (const a of world.aircraft) {
         if (!world.inBounds(a, b, now)) continue;
-        const p = world.positionAt(a, now);
-        inView.push({ icao24: a.icao24, callsign: null, observedAt: "", latitude: p.lat, longitude: p.lon, headingDeg: null });
+        const p = world.flightPosition(a, now);
+        inView.push({ icao24: p.icao24, callsign: p.callsign, observedAt: p.observedAt, latitude: p.latitude, longitude: p.longitude, headingDeg: p.headingDeg });
       }
+      if (path.endsWith("/overview")) return json({ planes: inView.slice(0, 20), clusters: clusterPositions(inView.slice(20), g) });
       return json(clusterPositions(inView, g));
     }
     if (path === "/api/flights/live") {

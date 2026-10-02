@@ -10,7 +10,7 @@ test.describe("view cache", () => {
     await mockFlightApi(page, { clusters: [{ lat: 59.5, lon: 18.5, count: 12 }] }); // under the opening-view threshold, so the map keeps its default (cluster) view
     const clusterRequests: string[] = [];
     page.on("request", (r) => {
-      if (r.url().includes("/api/flights/live/clusters")) clusterRequests.push(r.url());
+      if (r.url().includes("/api/flights/live/overview")) clusterRequests.push(r.url());
     });
     await page.goto("/");
     await page.waitForSelector(".cluster-icon", { timeout: 10_000 });

@@ -3,13 +3,13 @@ import type { ClusterPoint } from "../types/flight";
 import { clusterCellKey } from "./clusterMath";
 import { PLANE_SVG } from "./markers";
 
-const CLUSTER_ICON_MIN_PX = 22;
-const CLUSTER_ICON_MAX_PX = 56;
+const CLUSTER_ICON_MIN_PX = 30;
+const CLUSTER_ICON_MAX_PX = 84;
 
 // Square-root, not linear: a cell's on-screen *area* tracks its aircraft
 // count, so a cell with 4x the traffic reads as roughly 2x the size.
 function clusterIconSize(count: number): number {
-  return Math.round(Math.min(CLUSTER_ICON_MAX_PX, CLUSTER_ICON_MIN_PX + 6 * Math.sqrt(count)));
+  return Math.round(Math.min(CLUSTER_ICON_MAX_PX, CLUSTER_ICON_MIN_PX + 8 * Math.sqrt(count)));
 }
 
 // A coarse, 3-bucket read of "how much traffic," not the exact count.
