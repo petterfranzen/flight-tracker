@@ -114,6 +114,10 @@ html, body {
   position: relative;
   width: 100%;
   height: 100vh;
+  /* iOS Safari's 100vh is the viewport with the toolbars collapsed, so the
+     bottom of the app (the mobile sheet) hides under the toolbar; dvh tracks
+     what is actually visible. */
+  height: 100dvh;
   background: var(--color-bg);
   font-family: var(--font-ui);
   color: var(--color-text);
@@ -1000,6 +1004,7 @@ html, body {
     flex: 0 0 auto;
     width: 100%;
     height: 33.334vh; /* collapsed default: map gets the other 2/3 */
+    height: 33.334dvh;
     /* Scrolling lives on .details-panel-inner below, not here: this
        element also carries cyberpunk theme's clip-path (faceted corner),
        and clip-path plus overflow-y:auto on the same element forces the
@@ -1023,6 +1028,7 @@ html, body {
 
   .details-panel--expanded {
     height: 66.667vh; /* map shrinks to the remaining 1/3 */
+    height: 66.667dvh;
   }
 
   /* Live report (with screenshot): ScaleBar (see ScaleBar.tsx) is a real
@@ -1098,12 +1104,13 @@ html, body {
     z-index: 1;
     width: 100%;
     margin: -28px 0 8px;
+    min-height: 44px; /* comfortable touch target */
     padding: 8px 0;
     background: var(--color-panel);
     border: none;
     border-bottom: 1px solid var(--color-panel-border);
     color: var(--color-text-muted);
-    font-size: 14px;
+    font-size: 20px;
     cursor: pointer;
   }
 
