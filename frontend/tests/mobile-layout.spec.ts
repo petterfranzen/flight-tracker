@@ -148,6 +148,64 @@ test.describe("mobile layout", () => {
     expect(height).toBeGreaterThanOrEqual(44);
   });
 
+  test("expand arrow points the way the sheet will move, and the expanded sheet shows the whole dossier without scrolling", async ({ page }) => {
+    await page.setViewportSize(MOBILE_VIEWPORT);
+    await mockFlightApi(page);
+    await page.route("**/api/aircraft/4aad15*", (route) =>
+      route.fulfill({
+        json: {
+          icao24: "4aad15",
+          registration: "TC-RSC",
+          model: "Bombardier Learjet 45 XR",
+          operator: "Redstar Aviation",
+          originAirport: "LEAL",
+          originAirportName: "Alicante-Elche Miguel Hernández Airport",
+          originAirportIata: "ALC",
+          destinationAirport: "ESSA",
+          destinationAirportName: "Stockholm Arlanda Airport",
+          destinationAirportIata: "ARN",
+          flightMinutes: 135,
+          etaMinutes: 20,
+          cruisingAltitudeM: 13106,
+          flightPhase: "DESCENDING",
+          staleExplanation: null,
+          legStartAt: null,
+        },
+      }),
+    );
+    await page.goto("/");
+    await page.waitForSelector(".leaflet-container", { timeout: 10_000 });
+    const target = LIVE_FIXTURE.find((p) => p.icao24 === "4aad15")!;
+    await setMapView(page, target.latitude, target.longitude, 11);
+    await page.waitForSelector(".plane-icon", { timeout: 10_000 });
+    await page.waitForTimeout(500);
+    await (await findMarkerNear(page, target.latitude, target.longitude)).click();
+    await page.getByText("ICAO24 4AAD15").waitFor({ timeout: 5_000 });
+    await expect(page.locator(".details-panel-field", { hasText: "Registration" })).toContainText("TC-RSC", { timeout: 5_000 });
+
+    // Bottom-sheet convention: collapsed shows an up arrow (pull up to expand),
+    // expanded shows a down arrow (push down to collapse).
+    const toggle = page.locator(".details-panel-expand-toggle");
+    await expect(toggle).toHaveText("▲");
+    await expect(toggle).toHaveAttribute("aria-label", "Show more");
+    await toggle.click();
+    await expect(toggle).toHaveText("▼");
+    await expect(toggle).toHaveAttribute("aria-label", "Show less");
+    await page.waitForTimeout(500);
+
+    const m = await page.evaluate(() => {
+      const inner = document.querySelector(".details-panel-inner")!;
+      const top = (label: string) => {
+        const dt = Array.from(document.querySelectorAll(".details-panel-fields dt")).find((e) => e.textContent === label)!;
+        return dt.getBoundingClientRect().top;
+      };
+      return { overflow: inner.scrollHeight - inner.clientHeight, regTop: top("Registration"), typeTop: top("Type"), originTop: top("Origin"), destTop: top("Destination") };
+    });
+    expect(m.overflow, "expanded sheet needs no scrolling").toBeLessThanOrEqual(1);
+    expect(Math.abs(m.regTop - m.typeTop), "Type and Registration share a row").toBeLessThan(2);
+    expect(m.destTop, "long Origin/Destination get their own rows").toBeGreaterThan(m.originTop);
+  });
+
   test("map attribution is compact on mobile", async ({ page }) => {
     await page.setViewportSize(MOBILE_VIEWPORT);
     await mockFlightApi(page);
@@ -201,13 +259,15 @@ test.describe("mobile layout", () => {
 
     await page.screenshot({ path: "/tmp/mobile-layout-dossier-collapsed.png" });
 
-    // Expand: sheet grows to 2/3, map shrinks to 1/3, plane re-centers
+    // Expand: sheet grows to fit its content, map shrinks, plane re-centers
     // within that smaller area and must still clear the (now much taller) sheet.
     await page.locator(".details-panel-expand-toggle").click();
     await page.waitForTimeout(800); // CSS height transition (250ms) + panTo's 500ms
     await expect(page.locator(".details-panel-fields")).toBeVisible();
     const expandedBox = await panel.boundingBox();
-    expect(Math.abs(expandedBox!.height - (MOBILE_VIEWPORT.height * 2) / 3)).toBeLessThan(15);
+    // Content-sized, between the collapsed third and the 78% cap.
+    expect(expandedBox!.height).toBeGreaterThan(box!.height);
+    expect(expandedBox!.height).toBeLessThanOrEqual(MOBILE_VIEWPORT.height * 0.78 + 1);
 
     const expandedMarker = await findMarkerNear(page, target.latitude, target.longitude);
     const expandedMarkerBox = await expandedMarker.boundingBox();

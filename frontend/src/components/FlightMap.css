@@ -885,6 +885,9 @@ html, body {
   border-top: 1px solid var(--color-panel-border);
   font-size: 13px;
 }
+/* Invisible on desktop: dt/dd stay direct grid items of .details-panel-fields.
+   The mobile sheet turns it into a real box (see the media query below). */
+.details-panel-field { display: contents; }
 .details-panel-fields dt { color: var(--color-text-muted); }
 .details-panel-fields dd { margin: 0; text-align: right; }
 
@@ -1026,9 +1029,18 @@ html, body {
        movement visual smoothness even though the sheet itself snaps. */
   }
 
+  /* Sized to its content (the dossier is laid out to fit without
+     scrolling), capped so the map always keeps a strip above it. Leaflet
+     keeps the plane centred as the map's height changes (invalidateSize). */
   .details-panel--expanded {
-    height: 66.667vh; /* map shrinks to the remaining 1/3 */
-    height: 66.667dvh;
+    height: auto;
+    max-height: 78vh;
+    max-height: 78dvh;
+  }
+  .details-panel--expanded .details-panel-inner {
+    height: auto;
+    max-height: 78vh;
+    max-height: 78dvh;
   }
 
   /* Live report (with screenshot): ScaleBar (see ScaleBar.tsx) is a real
@@ -1089,6 +1101,35 @@ html, body {
   }
   .details-panel--expanded .details-panel-fields {
     display: grid;
+  }
+
+  /* Two fields to a row, label above value, so the whole dossier fits the
+     expanded sheet without scrolling. `dense` lets the narrow fields after
+     a full-width one (Origin/Destination) back-fill the gap it leaves. */
+  .details-panel-fields {
+    grid-template-columns: 1fr 1fr;
+    grid-auto-flow: row dense;
+    column-gap: 16px;
+    row-gap: 8px;
+    margin-top: 6px;
+    padding-top: 10px;
+    font-size: 14px;
+  }
+  .details-panel-field {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+  }
+  .details-panel-field--wide {
+    grid-column: 1 / -1;
+  }
+  .details-panel-fields dt {
+    font-size: 11px;
+  }
+  .details-panel-fields dd {
+    text-align: left;
+    overflow-wrap: anywhere;
   }
 
   /* Rendered first inside .details-panel-inner (see dossierPanel.ts) and

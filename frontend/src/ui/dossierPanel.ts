@@ -43,8 +43,11 @@ function formatAirport(name: string | null | undefined, icao: string | null | un
   return codes || "—";
 }
 
-function field(dt: string, dd: string): [HTMLElement, HTMLElement] {
-  return [h("dt", null, dt), h("dd", null, dd)];
+// Wrapped in a div (valid inside <dl>) so the mobile sheet can lay fields out
+// two to a row; on desktop the wrapper is `display: contents`, i.e. invisible.
+// `wide` fields (long values like airport names) take a full row on mobile.
+function field(dt: string, dd: string, wide = false): HTMLElement {
+  return h("div", { className: `details-panel-field${wide ? " details-panel-field--wide" : ""}` }, h("dt", null, dt), h("dd", null, dd));
 }
 
 /**
@@ -166,23 +169,23 @@ function renderAircraftPanel(store: AppStore): { panel: HTMLElement; updatedLine
   const fields = h(
     "dl",
     { className: "details-panel-fields" },
-    ...field("Type", dossier?.model || "—"),
-    ...field("Registration", dossier?.registration || "—"),
-    ...field("Operator", dossier?.operator || "—"),
-    ...field("Origin", formatAirport(dossier?.originAirportName, dossier?.originAirport, dossier?.originAirportIata)),
-    ...field("Destination", formatAirport(dossier?.destinationAirportName, dossier?.destinationAirport, dossier?.destinationAirportIata)),
-    ...field("Phase", formatFlightPhase(dossier?.flightPhase)),
+    field("Type", dossier?.model || "—"),
+    field("Registration", dossier?.registration || "—"),
+    field("Operator", dossier?.operator || "—"),
+    field("Origin", formatAirport(dossier?.originAirportName, dossier?.originAirport, dossier?.originAirportIata), true),
+    field("Destination", formatAirport(dossier?.destinationAirportName, dossier?.destinationAirport, dossier?.destinationAirportIata), true),
+    field("Phase", formatFlightPhase(dossier?.flightPhase)),
     // Clamped at 0: barometric altitude reads a few meters negative on the
     // ground fairly often (sensor noise), and "-23 m" for a parked
     // aircraft reads as a bug, not as a precision artifact.
-    ...field("Altitude", selectedPos.altitudeM != null ? `${Math.round(Math.max(0, selectedPos.altitudeM))} m` : "—"),
-    ...field("Cruising altitude", dossier?.cruisingAltitudeM != null ? `${Math.round(dossier.cruisingAltitudeM)} m` : "—"),
-    ...field("Speed", selectedPos.velocityMs != null ? `${Math.round(selectedPos.velocityMs * 3.6)} km/h` : "—"),
+    field("Altitude", selectedPos.altitudeM != null ? `${Math.round(Math.max(0, selectedPos.altitudeM))} m` : "—"),
+    field("Cruising altitude", dossier?.cruisingAltitudeM != null ? `${Math.round(dossier.cruisingAltitudeM)} m` : "—"),
+    field("Speed", selectedPos.velocityMs != null ? `${Math.round(selectedPos.velocityMs * 3.6)} km/h` : "—"),
     // Signed, not just magnitude: the sign is the only thing that says
     // climbing vs. descending. Level flight reads "+0.0 m/s", not a bare 0.
-    ...field("Vertical rate", selectedPos.verticalRateMs != null ? formatVerticalRate(selectedPos.verticalRateMs) : "—"),
-    ...field("Flight time", dossier?.flightMinutes != null ? formatDurationMinutes(dossier.flightMinutes) : "—"),
-    ...field("ETA", dossier?.etaMinutes != null ? formatDurationMinutes(dossier.etaMinutes) : "—"),
+    field("Vertical rate", selectedPos.verticalRateMs != null ? formatVerticalRate(selectedPos.verticalRateMs) : "—"),
+    field("Flight time", dossier?.flightMinutes != null ? formatDurationMinutes(dossier.flightMinutes) : "—"),
+    field("ETA", dossier?.etaMinutes != null ? formatDurationMinutes(dossier.etaMinutes) : "—"),
   );
 
   const panel = h(
@@ -204,7 +207,7 @@ function renderAircraftPanel(store: AppStore): { panel: HTMLElement; updatedLine
           "aria-expanded": String(dossierExpanded),
           "aria-label": dossierExpanded ? "Show less" : "Show more",
         },
-        dossierExpanded ? "▲" : "▼",
+        dossierExpanded ? "▼" : "▲",
       ),
       h("span", { className: "details-panel-eyebrow", id: "details-panel-heading" }, "Aircraft Details"),
       heading,
@@ -227,10 +230,10 @@ function renderAirportPanel(store: AppStore): HTMLElement {
   const fields = h(
     "dl",
     { className: "details-panel-fields" },
-    ...field("Municipality", airportInfo?.municipality || "—"),
-    ...field("Country", airportInfo?.country || "—"),
-    ...field("Latitude", `${airportDossier.lat.toFixed(4)}°`),
-    ...field("Longitude", `${airportDossier.lon.toFixed(4)}°`),
+    field("Municipality", airportInfo?.municipality || "—"),
+    field("Country", airportInfo?.country || "—"),
+    field("Latitude", `${airportDossier.lat.toFixed(4)}°`),
+    field("Longitude", `${airportDossier.lon.toFixed(4)}°`),
   );
 
   return h(
@@ -252,7 +255,7 @@ function renderAirportPanel(store: AppStore): HTMLElement {
           "aria-expanded": String(dossierExpanded),
           "aria-label": dossierExpanded ? "Show less" : "Show more",
         },
-        dossierExpanded ? "▲" : "▼",
+        dossierExpanded ? "▼" : "▲",
       ),
       h("span", { className: "details-panel-eyebrow", id: "airport-details-panel-heading" }, "Airport Details"),
       h("h2", null, airportDossier.name || airportDossier.code),
