@@ -26,6 +26,10 @@ const OSM_ATTRIBUTION = "&copy; OpenStreetMap contributors";
 // (no shared constant module for a single shared number).
 export const SELECTED_MIN_ZOOM = 10;
 
+// Where the map starts when nothing better is known (see map/initialView.ts,
+// which moves it to where the traffic is once the first data arrives).
+export const DEFAULT_VIEW = { lat: 59.33, lon: 18.06, zoom: 6 };
+
 // A selected aircraft that is on the ground and moving slower than this
 // (taxiing, parked, pushing back — not a landing roll) gets a much closer
 // zoom, so it is visible against the airport layout.
@@ -82,8 +86,8 @@ export function createMap(
   // latMin === latMax.
   container.classList.add("map-container");
   const map = L.map(container, {
-    center: [59.33, 18.06],
-    zoom: 6,
+    center: [DEFAULT_VIEW.lat, DEFAULT_VIEW.lon],
+    zoom: DEFAULT_VIEW.zoom,
     // Past this, the world starts wrapping into multiple side-by-side
     // copies — keeps the view to a single, unambiguous world (see
     // boundsFromMap's own comment on the same hole from the other side).
