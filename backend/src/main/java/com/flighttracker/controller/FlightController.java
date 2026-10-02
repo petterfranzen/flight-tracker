@@ -183,10 +183,10 @@ public class FlightController {
                 bounds, clampedGridDeg);
     }
 
-    private static final int DEFAULT_OVERVIEW_PLANES = 200;
-    private static final int MAX_OVERVIEW_PLANES = 500;
-    private static final int DEFAULT_OVERVIEW_PER_CELL = 3;
-    private static final int MAX_OVERVIEW_PER_CELL = 10;
+    private static final int DEFAULT_OVERVIEW_PLANES = 250;
+    private static final int MAX_OVERVIEW_PLANES = 1000;
+    private static final int DEFAULT_OVERVIEW_PER_CELL = 6;
+    private static final int MAX_OVERVIEW_PER_CELL = 20;
 
     /**
      * The zoomed-out map (below CLUSTER_FETCH_MAX_ZOOM) in one response: the
