@@ -21,6 +21,7 @@ import {
 import { boundsFromMap, createFollowSelected, createMap } from "./map/map";
 import { createMarkerLayer } from "./map/markers";
 import { clusterPositions, createClusterLayer, gridDegForZoom } from "./map/clusters";
+import { dropStaleOverlaps, OVERLAP_MIN_ZOOM } from "./map/overlap";
 import { createRouteLayer } from "./map/route";
 import { snapBounds, ViewCache, type CachedView } from "./map/viewCache";
 import * as scaleBar from "./ui/scaleBar";
@@ -226,7 +227,10 @@ function boot(): void {
     // MAX_INDIVIDUAL_MARKERS decision has to be about what's visible.
     const view = bounds ? padBounds(bounds, RENDER_MARGIN) : null;
     const list = Array.from(positions.values()).filter((p) => !view || inBounds(view, p.latitude, p.longitude));
-    const unselectedList = selectedId ? list.filter((p) => p.icao24 !== selectedId) : list;
+    const withoutSelected = selectedId ? list.filter((p) => p.icao24 !== selectedId) : list;
+    // Ghosts parked under a newer aircraft (see overlap.ts) — only where the
+    // overlap is actually visible.
+    const unselectedList = zoom >= OVERLAP_MIN_ZOOM ? dropStaleOverlaps(withoutSelected) : withoutSelected;
 
     const belowServerClusterZoom = zoom < CLUSTER_FETCH_MAX_ZOOM;
     const clientClustered = !belowServerClusterZoom && unselectedList.length > MAX_INDIVIDUAL_MARKERS;
