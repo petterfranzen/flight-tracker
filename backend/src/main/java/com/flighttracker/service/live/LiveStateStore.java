@@ -285,15 +285,26 @@ public class LiveStateStore {
     }
 
     /**
-     * Mirrors FlightPositionRepository.findLiveClusteredInBounds — same
-     * floor(coalesced-lat/gridDeg)*gridDeg bucketing, same cell-center
-     * offset, just computed in Java instead of a GROUP BY. gridDeg is
-     * trusted as already clamped by the caller (see FlightController's
-     * MIN/MAX_CLUSTER_GRID_DEG).
+     * Aggregates the live aircraft in {@code bounds} into grid cells of
+     * {@code gridDeg} (the same floor(coalesced-lat/gridDeg)*gridDeg
+     * bucketing FlightPositionRepository.findLiveClusteredInBounds used),
+     * but each cluster is placed at the <em>mean position of the aircraft
+     * in it</em>, not the cell's centre. A centre-placed bubble can sit in
+     * empty sea, or over a different country than its traffic, and jumps
+     * whenever the zoom (and so the grid) changes; the centroid sits where
+     * the traffic is. The cell itself is still the grouping unit, so counts
+     * are unchanged and a cluster's position stays inside its own cell.
+     * gridDeg is trusted as already clamped by the caller (see
+     * FlightController's MIN/MAX_CLUSTER_GRID_DEG).
      */
     public List<ClusterPoint> clustered(Instant staleAirborneCutoff, Instant landedCutoff, Bounds bounds, double gridDeg) {
         record BucketKey(double lat, double lon) { }
-        Map<BucketKey, Long> counts = new HashMap<>();
+        final class Sum {
+            long count;
+            double lat;
+            double lon;
+        }
+        Map<BucketKey, Sum> cells = new HashMap<>();
         for (LiveAircraft a : byIcao24.values()) {
             if (!isLive(a, staleAirborneCutoff, landedCutoff)) continue;
             double lat = a.displayLatitude();
@@ -301,11 +312,14 @@ public class LiveStateStore {
             if (!bounds.contains(lat, lon)) continue;
             double bucketLat = Math.floor(lat / gridDeg) * gridDeg;
             double bucketLon = Math.floor(lon / gridDeg) * gridDeg;
-            counts.merge(new BucketKey(bucketLat, bucketLon), 1L, Long::sum);
+            Sum sum = cells.computeIfAbsent(new BucketKey(bucketLat, bucketLon), k -> new Sum());
+            sum.count++;
+            sum.lat += lat;
+            sum.lon += lon;
         }
-        List<ClusterPoint> out = new ArrayList<>(counts.size());
-        for (var entry : counts.entrySet()) {
-            out.add(new ClusterPointView(entry.getKey().lat() + gridDeg / 2, entry.getKey().lon() + gridDeg / 2, entry.getValue()));
+        List<ClusterPoint> out = new ArrayList<>(cells.size());
+        for (Sum sum : cells.values()) {
+            out.add(new ClusterPointView(sum.lat / sum.count, sum.lon / sum.count, sum.count));
         }
         return out;
     }

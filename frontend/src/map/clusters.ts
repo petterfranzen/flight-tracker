@@ -1,5 +1,6 @@
 import L from "leaflet";
-import type { ClusterPoint, LiveMarker } from "../types/flight";
+import type { ClusterPoint } from "../types/flight";
+import { clusterCellKey } from "./clusterMath";
 import { PLANE_SVG } from "./markers";
 
 const CLUSTER_ICON_MIN_PX = 22;
@@ -36,37 +37,9 @@ function clusterIcon(count: number, entering: boolean): L.DivIcon {
   return icon;
 }
 
-// Web Mercator tile math (256px tiles, doubling every zoom level) —
-// approximate (real px/degree varies with latitude), same simplification
-// this app's other zoom-driven sizing uses.
-const CLUSTER_TARGET_PX = 110;
-
-export function gridDegForZoom(zoom: number): number {
-  const degPerPixel = 360 / (256 * Math.pow(2, zoom));
-  return CLUSTER_TARGET_PX * degPerPixel;
-}
-
-/**
- * MAX_INDIVIDUAL_MARKERS' own client-side bucketing — mirrors
- * FlightPositionRepository.findLiveClusteredInBounds's bucket-then-center
- * math exactly, run in JS against a list already in memory (no network
- * round trip) instead of a SQL GROUP BY.
- */
-export function clusterPositions(list: LiveMarker[], gridDeg: number): ClusterPoint[] {
-  const buckets = new Map<string, ClusterPoint>();
-  for (const p of list) {
-    const bucketLat = Math.floor(p.latitude / gridDeg) * gridDeg;
-    const bucketLon = Math.floor(p.longitude / gridDeg) * gridDeg;
-    const key = `${bucketLat},${bucketLon}`;
-    const existing = buckets.get(key);
-    if (existing) existing.count++;
-    else buckets.set(key, { lat: bucketLat + gridDeg / 2, lon: bucketLon + gridDeg / 2, count: 1 });
-  }
-  return Array.from(buckets.values());
-}
-
 export interface ClusterLayerHandle {
-  update(clusters: ClusterPoint[]): void;
+  /** `gridDeg`: the grid these clusters were computed with (see clusterCellKey). */
+  update(clusters: ClusterPoint[], gridDeg: number): void;
   destroy(): void;
 }
 
@@ -83,9 +56,13 @@ export function createClusterLayer(map: L.Map): ClusterLayerHandle {
   // down and rebuilds the marker's DOM, so it's only called when the
   // bucket's size/plane-count actually changed — previously every bubble
   // was rebuilt on every update, including once per WebSocket frame.
-  const entries = new Map<string, { marker: L.Marker; iconKey: string }>();
+  // lat/lon: where the marker currently sits (clusters sit at the mean
+  // position of their aircraft, so it drifts); the click handler reads
+  // `cluster` so it always zooms to the latest position, not the one the
+  // marker was created at.
+  const entries = new Map<string, { marker: L.Marker; iconKey: string; lat: number; lon: number; cluster: ClusterPoint }>();
 
-  function update(clusters: ClusterPoint[]): void {
+  function update(clusters: ClusterPoint[], gridDeg: number): void {
     const seen = new Set<string>();
     // Fade new bubbles in only when the layer was empty (first paint, or
     // coming from individual markers). On a zoom step every cell key
@@ -93,10 +70,16 @@ export function createClusterLayer(map: L.Map): ClusterLayerHandle {
     // from scratch each time.
     const animateEntering = entries.size === 0;
     for (const c of clusters) {
-      const key = `${c.lat},${c.lon}`;
+      const key = clusterCellKey(c, gridDeg);
       seen.add(key);
       const existing = entries.get(key);
       if (existing) {
+        existing.cluster = c;
+        if (existing.lat !== c.lat || existing.lon !== c.lon) {
+          existing.marker.setLatLng([c.lat, c.lon]);
+          existing.lat = c.lat;
+          existing.lon = c.lon;
+        }
         const iconKey = `${clusterPlaneCount(c.count)}|${clusterIconSize(c.count)}`;
         if (iconKey !== existing.iconKey) {
           existing.marker.setIcon(clusterIcon(c.count, false));
@@ -104,11 +87,18 @@ export function createClusterLayer(map: L.Map): ClusterLayerHandle {
         }
       } else {
         const marker = L.marker([c.lat, c.lon], { icon: clusterIcon(c.count, animateEntering) });
-        marker.on("click", () => map.setView([c.lat, c.lon], map.getZoom() + 3, { animate: false }));
+        const entry = {
+          marker,
+          // The entering icon carries a one-shot fade-in; recorded under a key
+          // that never matches so the first real change swaps in the plain one.
+          iconKey: animateEntering ? "entering" : `${clusterPlaneCount(c.count)}|${clusterIconSize(c.count)}`,
+          lat: c.lat,
+          lon: c.lon,
+          cluster: c,
+        };
+        marker.on("click", () => map.setView([entry.cluster.lat, entry.cluster.lon], map.getZoom() + 3, { animate: false }));
         marker.addTo(map);
-        // The entering icon carries a one-shot fade-in; recorded under a key
-        // that never matches so the first real change swaps in the plain one.
-        entries.set(key, { marker, iconKey: animateEntering ? "entering" : `${clusterPlaneCount(c.count)}|${clusterIconSize(c.count)}` });
+        entries.set(key, entry);
       }
     }
     for (const [key, entry] of entries) {
