@@ -61,10 +61,11 @@ interface IconParams {
   zoom: number;
   entering: boolean;
   exiting: boolean;
+  dimmed: boolean;
 }
 
 function iconParamsKey(p: IconParams): string {
-  return `${p.known}|${p.selected}|${p.zoom}|${p.entering}|${p.exiting}`;
+  return `${p.known}|${p.selected}|${p.zoom}|${p.entering}|${p.exiting}|${p.dimmed}`;
 }
 
 // Icon *options* (className/html/size) are cacheable across markers sharing
@@ -74,8 +75,8 @@ function iconParamsKey(p: IconParams): string {
 // these shared, immutable options.
 const iconOptionsCache = new Map<string, L.DivIconOptions>();
 
-function planeIconOptions(known: boolean, selected: boolean, zoom: number, entering: boolean, exiting: boolean): L.DivIconOptions {
-  const key = iconParamsKey({ known, selected, zoom, entering, exiting });
+function planeIconOptions(known: boolean, selected: boolean, zoom: number, entering: boolean, exiting: boolean, dimmed: boolean): L.DivIconOptions {
+  const key = iconParamsKey({ known, selected, zoom, entering, exiting, dimmed });
   const cached = iconOptionsCache.get(key);
   if (cached) return cached;
 
@@ -85,7 +86,7 @@ function planeIconOptions(known: boolean, selected: boolean, zoom: number, enter
   const size = selected ? Math.max(scaleIconSize(baseSize, zoom), 16) : scaleIconSize(baseSize, zoom);
 
   const options: L.DivIconOptions = {
-    className: `plane-icon${selected ? " plane-icon--selected" : ""}${entering ? " plane-icon--entering" : ""}${exiting ? " plane-icon--exiting" : ""}`,
+    className: `plane-icon${selected ? " plane-icon--selected" : ""}${entering ? " plane-icon--entering" : ""}${exiting ? " plane-icon--exiting" : ""}${dimmed ? " plane-icon--dimmed" : ""}`,
     html: `<div class="plane-icon-halo" aria-hidden="true"></div><div class="plane-icon-mark" aria-hidden="true"></div><div class="${glyphClass}" role="img" aria-label="Aircraft position marker">${PLANE_SVG}</div><div class="plane-icon-label" aria-hidden="true"></div>`,
     iconSize: [size, size],
     iconAnchor: [size / 2, size / 2],
@@ -114,17 +115,25 @@ interface MarkerEntry {
   lon: number;
   rotationDeg: number;
   selected: boolean;
+  dimmed: boolean;
 }
 
-function compareKey(known: boolean, selected: boolean, zoom: number, exiting: boolean): string {
-  return `${known}|${selected}|${zoom}|${exiting}`;
+function compareKey(known: boolean, selected: boolean, zoom: number, exiting: boolean, dimmed: boolean): string {
+  return `${known}|${selected}|${zoom}|${exiting}|${dimmed}`;
+}
+
+// Below the normal z-order (0) so a dimmed ghost never paints over live traffic.
+const DIMMED_Z_OFFSET = -1000;
+const SELECTED_Z_OFFSET = 10_000;
+function zOffset(selected: boolean, dimmed: boolean): number {
+  return selected ? SELECTED_Z_OFFSET : dimmed ? DIMMED_Z_OFFSET : 0;
 }
 
 // Same tuple minus zoom: when only the zoom changed, the icon's markup is
 // identical and just its size differs — see resizeInPlace.
 function styleKey(key: string): string {
-  const [known, selected, , exiting] = key.split("|");
-  return `${known}|${selected}|${exiting}`;
+  const [known, selected, , exiting, dimmed] = key.split("|");
+  return `${known}|${selected}|${exiting}|${dimmed}`;
 }
 
 /**
@@ -159,6 +168,8 @@ export interface MarkerLayerUpdate {
   zoom: number;
   /** Below CLUSTER_FETCH_MAX_ZOOM: fade unselected markers out rather than cutting them. */
   exiting: boolean;
+  /** icao24s of unselected aircraft to draw dimmed (reports older than 2 h). Never applied to the selected one. */
+  dimmed?: ReadonlySet<string>;
 }
 
 export interface MarkerLayerHandle {
@@ -176,31 +187,32 @@ export interface MarkerLayerHandle {
 export function createMarkerLayer(map: L.Map, onSelect: (p: LiveMarker) => void): MarkerLayerHandle {
   const entries = new Map<string, MarkerEntry>();
 
-  function buildEntry(p: LiveMarker, selected: boolean, roundedZoom: number, exiting: boolean): MarkerEntry {
+  function buildEntry(p: LiveMarker, selected: boolean, roundedZoom: number, exiting: boolean, dimmed: boolean): MarkerEntry {
     const known = p.headingDeg != null;
     const headingRef = { current: known ? (p.headingDeg as number) : 0 };
     const callsignRef = { current: p.callsign?.trim() || p.icao24.toUpperCase() };
-    const options = planeIconOptions(known, selected, roundedZoom, true, exiting);
+    const options = planeIconOptions(known, selected, roundedZoom, true, exiting, dimmed);
     const icon = new RotatingPlaneIcon(options, headingRef, callsignRef);
     const marker = L.marker([p.latitude, p.longitude], { icon });
     const entry = {} as MarkerEntry;
     marker.on("click", () => onSelect(entry.latest));
     marker.addTo(map);
-    if (selected) marker.setZIndexOffset(10_000);
+    if (selected || dimmed) marker.setZIndexOffset(zOffset(selected, dimmed));
     return Object.assign(entry, {
       marker,
       latest: p,
       headingRef,
       callsignRef,
-      compareKey: compareKey(known, selected, roundedZoom, exiting),
+      compareKey: compareKey(known, selected, roundedZoom, exiting, dimmed),
       lat: p.latitude,
       lon: p.longitude,
       rotationDeg: headingRef.current,
       selected,
+      dimmed,
     });
   }
 
-  function applyEntry(entry: MarkerEntry, p: LiveMarker, selected: boolean, roundedZoom: number, exiting: boolean): void {
+  function applyEntry(entry: MarkerEntry, p: LiveMarker, selected: boolean, roundedZoom: number, exiting: boolean, dimmed: boolean): void {
     const known = p.headingDeg != null;
     const rotationDeg = known ? (p.headingDeg as number) : 0;
     entry.latest = p;
@@ -210,14 +222,15 @@ export function createMarkerLayer(map: L.Map, onSelect: (p: LiveMarker) => void)
       entry.lat = p.latitude;
       entry.lon = p.longitude;
     }
-    if (selected !== entry.selected) {
-      entry.marker.setZIndexOffset(selected ? 10_000 : 0);
+    if (selected !== entry.selected || dimmed !== entry.dimmed) {
+      entry.marker.setZIndexOffset(zOffset(selected, dimmed));
       entry.selected = selected;
+      entry.dimmed = dimmed;
     }
 
-    const nextKey = compareKey(known, selected, roundedZoom, exiting);
+    const nextKey = compareKey(known, selected, roundedZoom, exiting, dimmed);
     if (nextKey !== entry.compareKey) {
-      const options = planeIconOptions(known, selected, roundedZoom, false, exiting);
+      const options = planeIconOptions(known, selected, roundedZoom, false, exiting, dimmed);
       if (styleKey(nextKey) === styleKey(entry.compareKey) && resizeInPlace(entry.marker, options)) {
         entry.compareKey = nextKey;
       } else {
@@ -238,7 +251,7 @@ export function createMarkerLayer(map: L.Map, onSelect: (p: LiveMarker) => void)
     }
   }
 
-  function update({ unselected, selectedPos, zoom, exiting }: MarkerLayerUpdate): void {
+  function update({ unselected, selectedPos, zoom, exiting, dimmed }: MarkerLayerUpdate): void {
     const roundedZoom = Math.round(zoom);
     const seen = new Set<string>();
 
@@ -246,12 +259,12 @@ export function createMarkerLayer(map: L.Map, onSelect: (p: LiveMarker) => void)
       const existing = entries.get(p.icao24);
       if (existing) {
         seen.add(p.icao24);
-        applyEntry(existing, p, false, roundedZoom, exiting);
+        applyEntry(existing, p, false, roundedZoom, exiting, dimmed?.has(p.icao24) ?? false);
       } else if (!exiting) {
         // Never build a marker just to fade it out: an exiting render only
         // fades what is already on the map.
         seen.add(p.icao24);
-        entries.set(p.icao24, buildEntry(p, false, roundedZoom, exiting));
+        entries.set(p.icao24, buildEntry(p, false, roundedZoom, exiting, dimmed?.has(p.icao24) ?? false));
       }
     }
 
@@ -259,8 +272,8 @@ export function createMarkerLayer(map: L.Map, onSelect: (p: LiveMarker) => void)
       seen.add(selectedPos.icao24);
       const existing = entries.get(selectedPos.icao24);
       // Selected marker never fades (exiting is always false for it).
-      if (existing) applyEntry(existing, selectedPos, true, roundedZoom, false);
-      else entries.set(selectedPos.icao24, buildEntry(selectedPos, true, roundedZoom, false));
+      if (existing) applyEntry(existing, selectedPos, true, roundedZoom, false, false);
+      else entries.set(selectedPos.icao24, buildEntry(selectedPos, true, roundedZoom, false, false));
     }
 
     for (const [icao24, entry] of entries) {

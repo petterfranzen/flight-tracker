@@ -21,7 +21,7 @@ import {
 import { boundsFromMap, createFollowSelected, createMap } from "./map/map";
 import { createMarkerLayer } from "./map/markers";
 import { clusterPositions, createClusterLayer, gridDegForZoom } from "./map/clusters";
-import { dropStaleOverlaps, OVERLAP_MIN_ZOOM } from "./map/overlap";
+import { agedIds, findShadowedIds, OVERLAP_MIN_ZOOM } from "./map/staleness";
 import { createRouteLayer } from "./map/route";
 import { snapBounds, ViewCache, type CachedView } from "./map/viewCache";
 import * as scaleBar from "./ui/scaleBar";
@@ -228,9 +228,10 @@ function boot(): void {
     const view = bounds ? padBounds(bounds, RENDER_MARGIN) : null;
     const list = Array.from(positions.values()).filter((p) => !view || inBounds(view, p.latitude, p.longitude));
     const withoutSelected = selectedId ? list.filter((p) => p.icao24 !== selectedId) : list;
-    // Ghosts parked under a newer aircraft (see overlap.ts) — only where the
-    // overlap is actually visible.
-    const unselectedList = zoom >= OVERLAP_MIN_ZOOM ? dropStaleOverlaps(withoutSelected) : withoutSelected;
+    // An aircraft with a newer one on top of it is a ghost: not drawn at all
+    // (see map/staleness.ts). Only where 20 m is visible.
+    const shadowed = zoom >= OVERLAP_MIN_ZOOM ? findShadowedIds(withoutSelected) : null;
+    const unselectedList = shadowed && shadowed.size > 0 ? withoutSelected.filter((p) => !shadowed.has(p.icao24)) : withoutSelected;
 
     const belowServerClusterZoom = zoom < CLUSTER_FETCH_MAX_ZOOM;
     const clientClustered = !belowServerClusterZoom && unselectedList.length > MAX_INDIVIDUAL_MARKERS;
@@ -256,6 +257,9 @@ function boot(): void {
       selectedPos,
       zoom,
       exiting: belowServerClusterZoom,
+      // Reports older than 2 h are drawn dimmed (see map/staleness.ts); only
+      // worth computing when individual markers are actually shown.
+      dimmed: showIndividually ? agedIds(unselectedList, Date.now()) : undefined,
     });
   }
 
