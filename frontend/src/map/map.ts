@@ -26,6 +26,16 @@ const OSM_ATTRIBUTION = "&copy; OpenStreetMap contributors";
 // (no shared constant module for a single shared number).
 export const SELECTED_MIN_ZOOM = 10;
 
+// A selected aircraft that is on the ground and moving slower than this
+// (taxiing, parked, pushing back — not a landing roll) gets a much closer
+// zoom, so it is visible against the airport layout.
+export const GROUND_MAX_SPEED_MS = 15;
+export const GROUND_SELECTED_ZOOM = 16;
+
+export function isTaxiing(onGround: boolean | null | undefined, velocityMs: number | null | undefined): boolean {
+  return onGround === true && (velocityMs == null || velocityMs < GROUND_MAX_SPEED_MS);
+}
+
 export function boundsFromMap(map: L.Map): Bounds {
   const b = map.getBounds();
   const lonMin = b.getWest();
@@ -180,6 +190,9 @@ export interface FollowSelectedUpdate {
   positionFresh: boolean;
   lat: number | null;
   lon: number | null;
+  /** From the full position (absent on a marker-only selection that hasn't been refreshed yet). */
+  onGround?: boolean | null;
+  velocityMs?: number | null;
   /** Mobile bottom-sheet collapsed/expanded state — irrelevant on desktop. */
   sheetExpanded: boolean;
   /** Bumped by the details panel's "Focus Plane" button. */
@@ -212,7 +225,7 @@ export function createFollowSelected(map: L.Map, onOffScreenChange: (offScreen: 
   map.on("moveend", checkOffScreen);
   map.on("zoomend", checkOffScreen);
 
-  function update({ selectedId, positionId, positionFresh, lat, lon, sheetExpanded, focusRequest }: FollowSelectedUpdate): void {
+  function update({ selectedId, positionId, positionFresh, lat, lon, onGround, velocityMs, sheetExpanded, focusRequest }: FollowSelectedUpdate): void {
     // Switching from aircraft A to B updates selectedId and selectedPos one
     // after the other, so for a moment selectedId is B while lat/lon are
     // still A's. Treating that as "B's position" flew the map to A and
@@ -248,7 +261,8 @@ export function createFollowSelected(map: L.Map, onOffScreenChange: (offScreen: 
     lastSheetExpanded = sheetExpanded;
 
     if (isNewSelection || isFocusRequest) {
-      const targetZoom = Math.max(map.getZoom(), SELECTED_MIN_ZOOM);
+      const minZoom = isTaxiing(onGround, velocityMs) ? GROUND_SELECTED_ZOOM : SELECTED_MIN_ZOOM;
+      const targetZoom = Math.max(map.getZoom(), minZoom);
       map.flyTo([lat, lon], targetZoom, { duration: 0.8 });
     } else if (isSheetToggle) {
       map.panTo([lat, lon], { animate: true, duration: 0.5 });
