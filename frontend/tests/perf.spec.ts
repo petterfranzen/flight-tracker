@@ -1,4 +1,5 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
+import { clusterPositions } from "../src/map/clusterMath";
 import { fleet10k, FLEET_SIZE, type FleetAircraft } from "./fixtures/fleet10k";
 import { withMap } from "./helpers";
 
@@ -121,17 +122,9 @@ async function mockTenThousand(page: Page, opts: { holdLive?: boolean; liveFeed?
     const url = new URL(route.request().url());
     const b = bboxOf(url)!;
     const grid = Math.min(25, Math.max(0.5, Number(url.searchParams.get("gridDeg") ?? 2)));
-    const cells = new Map<string, { lat: number; lon: number; count: number }>();
-    for (const a of fleet) {
-      if (a.latitude < b.latMin || a.latitude > b.latMax || a.longitude < b.lonMin || a.longitude > b.lonMax) continue;
-      const lat = Math.floor(a.latitude / grid) * grid;
-      const lon = Math.floor(a.longitude / grid) * grid;
-      const key = `${lat},${lon}`;
-      const cell = cells.get(key);
-      if (cell) cell.count++;
-      else cells.set(key, { lat: lat + grid / 2, lon: lon + grid / 2, count: 1 });
-    }
-    requests.push({ kind: "clusters", bbox: b, bytes: await fulfill(route, [...cells.values()]) });
+    // The server's own bucketing (clusters at the mean position of their aircraft).
+    const inView = fleet.filter((a) => a.latitude >= b.latMin && a.latitude <= b.latMax && a.longitude >= b.lonMin && a.longitude <= b.lonMax).map((a) => marker(a, now));
+    requests.push({ kind: "clusters", bbox: b, bytes: await fulfill(route, clusterPositions(inView, grid)) });
   });
   await page.route(/\/api\/flights\/live(\?|$)/, async (route) => {
     const b = bboxOf(new URL(route.request().url()));

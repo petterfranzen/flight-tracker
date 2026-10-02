@@ -1,4 +1,6 @@
 import { expect, type Page, type TestInfo } from "@playwright/test";
+import { clusterPositions } from "../../src/map/clusterMath";
+import type { LiveMarker } from "../../src/types/flight";
 import { SPEED_DEG_PER_S, World, type SimAircraft } from "./world";
 
 /**
@@ -81,18 +83,14 @@ export async function startHarness(page: Page, testInfo: TestInfo): Promise<Harn
     if (path === "/api/flights/live/clusters") {
       const b = bboxOf(u)!;
       const g = Math.min(25, Math.max(0.5, +(u.searchParams.get("gridDeg") ?? 2)));
-      const cells = new Map<string, { lat: number; lon: number; count: number }>();
+      // The server's own bucketing (clusters at the mean position of their aircraft).
+      const inView: LiveMarker[] = [];
       for (const a of world.aircraft) {
         if (!world.inBounds(a, b, now)) continue;
         const p = world.positionAt(a, now);
-        const la = Math.floor(p.lat / g) * g;
-        const lo = Math.floor(p.lon / g) * g;
-        const key = `${la},${lo}`;
-        const c = cells.get(key);
-        if (c) c.count++;
-        else cells.set(key, { lat: la + g / 2, lon: lo + g / 2, count: 1 });
+        inView.push({ icao24: a.icao24, callsign: null, observedAt: "", latitude: p.lat, longitude: p.lon, headingDeg: null });
       }
-      return json([...cells.values()]);
+      return json(clusterPositions(inView, g));
     }
     if (path === "/api/flights/live") {
       const b = bboxOf(u);

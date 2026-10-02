@@ -20,7 +20,8 @@ import {
 } from "./api/flightApi";
 import { boundsFromMap, createFollowSelected, createMap } from "./map/map";
 import { createMarkerLayer } from "./map/markers";
-import { clusterPositions, createClusterLayer, gridDegForZoom } from "./map/clusters";
+import { clusterPositions, gridDegForZoom } from "./map/clusterMath";
+import { createClusterLayer } from "./map/clusters";
 import { agedIds, findShadowedIds, OVERLAP_MIN_ZOOM } from "./map/staleness";
 import { createRouteLayer } from "./map/route";
 import { snapBounds, ViewCache, type CachedView } from "./map/viewCache";
@@ -171,6 +172,9 @@ function boot(): void {
   // was O(n) per WebSocket frame.
   const positions = new Map<string, LiveMarker>();
   let clusters: ClusterPoint[] = [];
+  // The grid `clusters` was computed with (a cached or in-flight view can be
+  // for a different zoom than the one now on screen) — keys cluster markers.
+  let clustersGridDeg = serverGridDeg(6);
 
   let cycleStart = Date.now();
   let fetchIntervalTimer: ReturnType<typeof setInterval> | null = null;
@@ -236,9 +240,11 @@ function boot(): void {
     const belowServerClusterZoom = zoom < CLUSTER_FETCH_MAX_ZOOM;
     const clientClustered = !belowServerClusterZoom && unselectedList.length > MAX_INDIVIDUAL_MARKERS;
 
-    if (belowServerClusterZoom) clusterLayer.update(clusters);
-    else if (clientClustered) clusterLayer.update(clusterPositions(unselectedList, gridDegForZoom(zoom)));
-    else clusterLayer.update([]);
+    if (belowServerClusterZoom) clusterLayer.update(clusters, clustersGridDeg);
+    else if (clientClustered) {
+      const grid = gridDegForZoom(zoom);
+      clusterLayer.update(clusterPositions(unselectedList, grid), grid);
+    } else clusterLayer.update([], clustersGridDeg);
 
     // Below the cluster zoom, unselected markers only get the "exiting"
     // fade if they were actually on screen as individual markers. Coming
@@ -299,6 +305,7 @@ function boot(): void {
     lastAppliedView = hit;
     if (zoom < CLUSTER_FETCH_MAX_ZOOM) {
       clusters = hit.data as ClusterPoint[];
+      clustersGridDeg = serverGridDeg(hit.zoom);
       renderAircraftLayer();
     } else {
       applyLiveSnapshot(hit.data as LiveMarker[]);
@@ -346,6 +353,7 @@ function boot(): void {
           if (controller.signal.aborted || zoom !== requestZoom) return;
           lastAppliedView = entry;
           clusters = c;
+          clustersGridDeg = grid;
           renderAircraftLayer();
         })
         .catch(() => {})

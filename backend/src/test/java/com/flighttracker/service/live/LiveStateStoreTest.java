@@ -1,5 +1,7 @@
 package com.flighttracker.service.live;
 
+import com.flighttracker.dto.Bounds;
+import com.flighttracker.dto.ClusterPoint;
 import com.flighttracker.model.FlightPosition;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -14,6 +16,7 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.within;
 
 /**
  * Ports FlightPositionRepository.upsertLatestPosition's and
@@ -262,5 +265,39 @@ class LiveStateStoreTest {
         store.writeEstimate("abc123", T0, 59.5, 18.5, T0.plusSeconds(5));
 
         assertThat(store.icao24sWithEstimate()).containsExactly("abc123");
+    }
+
+    private static final Bounds WORLD = new Bounds(-90, 90, -180, 180);
+
+    @Test
+    void clustered_placesEachClusterAtTheMeanPositionOfItsAircraft_notTheCellCentre() {
+        LiveStateStore store = store();
+        // Grid 2 deg: both fall in the cell lat [10,12) x lon [20,22), whose centre is (11, 21).
+        store.upsert("aaa111", "A1", T0, 10.1, 20.1, null, null, null, null, false, "opensky");
+        store.upsert("bbb222", "B2", T0, 10.3, 20.5, null, null, null, null, false, "opensky");
+        // A lone aircraft in another cell sits exactly where it is, not at its cell's centre.
+        store.upsert("ccc333", "C3", T0, 30.2, -40.7, null, null, null, null, false, "opensky");
+
+        List<ClusterPoint> clusters = store.clustered(T0.minusSeconds(1), T0.minusSeconds(1), WORLD, 2.0);
+
+        assertThat(clusters).hasSize(2);
+        ClusterPoint pair = clusters.stream().filter(c -> c.getCount() == 2).findFirst().orElseThrow();
+        assertThat(pair.getLat()).isCloseTo(10.2, within(1e-9));
+        assertThat(pair.getLon()).isCloseTo(20.3, within(1e-9));
+        ClusterPoint lone = clusters.stream().filter(c -> c.getCount() == 1).findFirst().orElseThrow();
+        assertThat(lone.getLat()).isCloseTo(30.2, within(1e-9));
+        assertThat(lone.getLon()).isCloseTo(-40.7, within(1e-9));
+    }
+
+    @Test
+    void clustered_aClusterStaysInsideItsOwnCell() {
+        LiveStateStore store = store();
+        store.upsert("aaa111", "A1", T0, 10.0, 20.0, null, null, null, null, false, "opensky");
+        store.upsert("bbb222", "B2", T0, 11.99, 21.99, null, null, null, null, false, "opensky");
+
+        ClusterPoint c = store.clustered(T0.minusSeconds(1), T0.minusSeconds(1), WORLD, 2.0).get(0);
+
+        assertThat(c.getLat()).isBetween(10.0, 12.0);
+        assertThat(c.getLon()).isBetween(20.0, 22.0);
     }
 }
