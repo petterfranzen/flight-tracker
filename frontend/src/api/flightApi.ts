@@ -40,12 +40,15 @@ export async function fetchLiveClusters(bounds: Bounds, gridDeg: number, signal?
  * own zoomed-out fetch so the world doesn't look empty — see
  * LiveStateStore.overview for the ranking.
  */
+// Mirrors the server's default overview size (FlightController DEFAULT_OVERVIEW_PLANES).
+const OVERVIEW_PLANES = 250;
+
 export async function fetchLiveOverview(bounds: Bounds, gridDeg: number, signal?: AbortSignal): Promise<LiveOverview> {
   const mockCount = getMockPlaneCount();
   if (mockCount != null) {
     const inView = filterByBounds(getMockFleet(mockCount), bounds);
-    const planes = inView.slice(0, 200);
-    return { planes, clusters: clusterMockFleet(inView.slice(200), gridDeg) };
+    const planes = inView.slice(0, OVERVIEW_PLANES);
+    return { planes, clusters: clusterMockFleet(inView.slice(OVERVIEW_PLANES), gridDeg) };
   }
   const query = `?latMin=${bounds.latMin}&latMax=${bounds.latMax}&lonMin=${bounds.lonMin}&lonMax=${bounds.lonMax}&gridDeg=${gridDeg}`;
   const res = await fetch(`/api/flights/live/overview${query}`, { signal });

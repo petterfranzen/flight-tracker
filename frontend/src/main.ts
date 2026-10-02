@@ -54,7 +54,7 @@ const DIALOG_STOP_MS = 5 * 60_000;
 // of individual aircraft markers (server-side).
 const CLUSTER_FETCH_MAX_ZOOM = 8;
 // Client-side backstop for an individual-marker zoom that's still too busy.
-const MAX_INDIVIDUAL_MARKERS = 500;
+const MAX_INDIVIDUAL_MARKERS = 800;
 
 // A drag or wheel-zoom fires a burst of moveends; only the one the user
 // settles on is worth a request.

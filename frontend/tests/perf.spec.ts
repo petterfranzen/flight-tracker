@@ -30,6 +30,7 @@ const MAX_LIVE_LON_SPAN = (VIEWPORT.width / 256 / 2 ** CLUSTER_FETCH_MAX_ZOOM) *
 const API_LATENCY_MS = 80;
 
 const LONDON = { lat: 51.5, lon: -0.5 };
+const OVERVIEW_PLANES = 250; // the server's default overview size
 
 /** >= 1; how many times slower than the reference machine this one is right now. */
 async function cpuSlowdown(page: Page): Promise<number> {
@@ -125,8 +126,8 @@ async function mockTenThousand(page: Page, opts: { holdLive?: boolean; liveFeed?
     const b = bboxOf(url)!;
     const grid = Math.min(25, Math.max(0.5, Number(url.searchParams.get("gridDeg") ?? 2)));
     const inView = fleet.filter((a) => a.latitude >= b.latMin && a.latitude <= b.latMax && a.longitude >= b.lonMin && a.longitude <= b.lonMax).map((a) => marker(a, now));
-    const planes = inView.slice(0, 200);
-    requests.push({ kind: "clusters", bbox: b, bytes: await fulfill(route, { planes, clusters: clusterPositions(inView.slice(200), grid) }) });
+    const planes = inView.slice(0, OVERVIEW_PLANES);
+    requests.push({ kind: "clusters", bbox: b, bytes: await fulfill(route, { planes, clusters: clusterPositions(inView.slice(OVERVIEW_PLANES), grid) }) });
   });
   await page.route("**/api/flights/live/clusters*", async (route) => {
     const url = new URL(route.request().url());

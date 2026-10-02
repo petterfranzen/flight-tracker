@@ -149,7 +149,7 @@ class FlightControllerTest {
                 .thenReturn(new LiveOverview(List.of(), List.of()));
 
         controller().liveOverview(-90, 90, -180, 180, 2.0, 99_999, 99);
-        verify(liveStateStore).overview(any(), any(), any(), any(), eq(2.0), eq(500), eq(10)); // capped
+        verify(liveStateStore).overview(any(), any(), any(), any(), eq(2.0), eq(1000), eq(20)); // capped
 
         controller().liveOverview(-90, 90, -180, 180, 2.0, -5, 0);
         verify(liveStateStore).overview(any(), any(), any(), any(), eq(2.0), eq(0), eq(1)); // floored
