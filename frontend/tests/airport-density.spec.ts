@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { mockFlightApi, setMapView } from "./helpers";
+import { mockFlightApi, setMapView, withMap } from "./helpers";
 
 // Two real entries from worldMapData.ts, picked because they sit close
 // together in southern Sweden but at opposite ends of Natural Earth's
@@ -64,31 +64,66 @@ test.describe("airport density by zoom", () => {
     await expect(airportLabel(page, ALWAYS_SHOWN)).toHaveCount(1);
   });
 
-  test("the drawn count grows monotonically as you zoom in", async ({ page }) => {
+  test("the drawn count grows as you zoom in", async ({ page }) => {
     await mockFlightApi(page);
     await page.goto("/");
     await page.waitForSelector(".leaflet-container", { timeout: 10_000 });
 
+    // Airports are only drawn near the viewport, so the raw DOM count shrinks
+    // as the view narrows. Count inside one fixed geographic box instead (the
+    // view at the closest zoom), which every zoom's viewport contains.
+    await setMapView(page, SWEDEN.lat, SWEDEN.lon, CLOSE_ZOOM);
+    const box = await withMap(page, (map) => {
+      const b = map.getBounds();
+      return { s: b.getSouth(), n: b.getNorth(), w: b.getWest(), e: b.getEast() };
+    });
+    const countInBox = (page2: import("@playwright/test").Page) =>
+      withMap(
+        page2,
+        (map, box: { s: number; n: number; w: number; e: number }) => {
+          let n = 0;
+          document.querySelectorAll<HTMLElement & { _leaflet_pos?: { x: number; y: number } }>(".default-airport-icon").forEach((el) => {
+            if (!el._leaflet_pos) return;
+            const ll = map.layerPointToLatLng(el._leaflet_pos as never);
+            if (ll.lat >= box.s && ll.lat <= box.n && ll.lng >= box.w && ll.lng <= box.e) n++;
+          });
+          return n;
+        },
+        box,
+      );
+
     const counts: number[] = [];
     for (const zoom of [WORLD_ZOOM, 5, 7, CLOSE_ZOOM]) {
       await setMapView(page, SWEDEN.lat, SWEDEN.lon, zoom);
-      // Settle: the filter runs on "zoomend", so the DOM lags setView by a
-      // tick. Waiting on the count itself rather than a fixed sleep.
-      await expect
-        .poll(async () => allAirports(page).count(), { timeout: 10_000 })
-        .toBeGreaterThan(0);
-      counts.push(await allAirports(page).count());
+      await expect.poll(async () => allAirports(page).count(), { timeout: 10_000 }).toBeGreaterThan(0);
+      counts.push(await countInBox(page));
     }
 
-    // Deliberately not asserting exact counts (65/284/480/878 today):
-    // those move whenever the Natural Earth source or the filter in
-    // generate_world_map_data.py changes, and this test is about the
-    // behaviour, not the dataset.
+    // Not asserting exact counts: they move with the Natural Earth source and
+    // the rank filter. The behaviour is "never fewer, and more by the end".
     for (let i = 1; i < counts.length; i++) {
-      expect(counts[i], `zoom step ${i} should draw more than the previous`).toBeGreaterThan(
-        counts[i - 1],
-      );
+      expect(counts[i], `zoom step ${i} should not draw fewer than the previous`).toBeGreaterThanOrEqual(counts[i - 1]);
     }
+    expect(counts[counts.length - 1]).toBeGreaterThan(counts[0]);
+  });
+
+  test("only airports near the viewport get a DOM marker, and panning brings in the next ones", async ({ page }) => {
+    await mockFlightApi(page);
+    await page.goto("/");
+    await page.waitForSelector(".leaflet-container", { timeout: 10_000 });
+
+    // At the closest zoom every one of the 878 airports passes the rank rule;
+    // each is a DOM node Leaflet restyles on every zoom frame, so only those
+    // near the view may exist. (Was 878 markers for a view of ~10.)
+    await setMapView(page, SWEDEN.lat, SWEDEN.lon, CLOSE_ZOOM);
+    await expect(airportLabel(page, ALWAYS_SHOWN)).toHaveCount(1);
+    await expect.poll(async () => allAirports(page).count(), { timeout: 10_000 }).toBeLessThan(100);
+    await expect(airportLabel(page, "LHR")).toHaveCount(0);
+
+    // Panning far away swaps the set (moveend, not just zoomend).
+    await setMapView(page, 51.47, -0.45, CLOSE_ZOOM);
+    await expect(airportLabel(page, "LHR")).toHaveCount(1);
+    await expect(airportLabel(page, ALWAYS_SHOWN)).toHaveCount(0);
   });
 
   test("an airport stays clickable once it appears", async ({ page }) => {

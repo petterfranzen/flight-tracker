@@ -17,6 +17,10 @@ const AIRPORT_PANE_Z_INDEX = "650";
  */
 const MAX_RANK_BY_ZOOM = [2, 2, 2, 2, 3, 4, 6, 7, 8];
 
+// Fraction of the viewport kept beyond each edge, so a short pan doesn't
+// reveal bare edges before the next moveend refreshes the set.
+const VIEW_PAD = 0.5;
+
 /**
  * Every airport on the map, on both themes: a dot plus its IATA code,
  * clickable to open the airport dossier. Loaded lazily (see map.ts) so
@@ -24,9 +28,14 @@ const MAX_RANK_BY_ZOOM = [2, 2, 2, 2, 3, 4, 6, 7, 8];
  *
  * Markers are reused by AIRPORTS index (stable across re-renders; a
  * handful of IATA codes repeat in the source data, so code itself isn't a
- * safe key) and only added/removed when the zoom-driven visible set
- * actually changes — recomputed on "zoomend" only, not "zoom", so a pinch
- * or wheel zoom doesn't remount markers mid-animation.
+ * safe key) and only added/removed when the visible set actually changes —
+ * recomputed on "moveend" (which also fires after every zoom), not "zoom",
+ * so a pinch or wheel zoom doesn't remount markers mid-animation.
+ *
+ * Only airports inside the viewport (plus VIEW_PAD) get a DOM marker. From
+ * zoom 5 up the rank rule alone allowed 284 -> 878 markers worldwide, almost
+ * all far off screen; Leaflet restyles and transforms every marker on each
+ * zoom frame, so that alone made zooming stutter.
  */
 export function mount(map: L.Map, onAirportSelect: (ap: AirportSelection) => void): () => void {
   if (!map.getPane(AIRPORT_PANE)) {
@@ -41,9 +50,11 @@ export function mount(map: L.Map, onAirportSelect: (ap: AirportSelection) => voi
     const level = Math.max(0, Math.floor(zoom));
     const maxRank = level >= MAX_RANK_BY_ZOOM.length ? Infinity : MAX_RANK_BY_ZOOM[level];
     const seen = new Set<number>();
+    const view = map.getBounds().pad(VIEW_PAD);
 
     AIRPORTS.forEach((ap, index) => {
       if (ap.rank > maxRank) return;
+      if (!view.contains([ap.pos[1], ap.pos[0]])) return;
       seen.add(index);
       if (markers.has(index)) return;
       const icon = new L.DivIcon({
@@ -86,10 +97,10 @@ export function mount(map: L.Map, onAirportSelect: (ap: AirportSelection) => voi
   }
 
   render();
-  map.on("zoomend", render);
+  map.on("moveend", render);
 
   return () => {
-    map.off("zoomend", render);
+    map.off("moveend", render);
     for (const marker of markers.values()) marker.remove();
     markers.clear();
   };
