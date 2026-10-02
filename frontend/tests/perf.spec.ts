@@ -7,6 +7,16 @@ import { withMap } from "./helpers";
 // suite existed, a zoom-out from a busy area produced ~1s tasks here at 10k
 // aircraft and the page hung outright at 100k.
 const LONG_TASK_BUDGET_MS = 200;
+// A wall-clock budget means different things on different machines, and on
+// the same machine under load: a shared CI runner that is descheduled for 100
+// ms inflates a task the app only needed 60 ms of CPU for. So the budget is
+// 200 ms *on the reference machine* and is scaled by how slow this one is
+// right now, measured with a fixed CPU benchmark in a throwaway page (a
+// separate renderer, so it never lands in the observed page's long tasks).
+// The scale is capped: a real regression (the ~1 s tasks this suite was
+// written for) must still fail.
+const CALIBRATION_REFERENCE_MS = 15; // median of the benchmark on an idle reference machine
+const MAX_SLOWDOWN = 4;
 // CLUSTER_FETCH_MAX_ZOOM in main.ts.
 const CLUSTER_FETCH_MAX_ZOOM = 8;
 const VIEWPORT = { width: 1280, height: 800 };
@@ -19,6 +29,28 @@ const MAX_LIVE_LON_SPAN = (VIEWPORT.width / 256 / 2 ** CLUSTER_FETCH_MAX_ZOOM) *
 const API_LATENCY_MS = 80;
 
 const LONDON = { lat: 51.5, lon: -0.5 };
+
+/** >= 1; how many times slower than the reference machine this one is right now. */
+async function cpuSlowdown(page: Page): Promise<number> {
+  const scratch = await page.context().newPage();
+  try {
+    const medianMs = await scratch.evaluate(async () => {
+      const runs: number[] = [];
+      for (let k = 0; k < 9; k++) {
+        const t0 = performance.now();
+        let x = 0;
+        for (let i = 0; i < 1_500_000; i++) x += Math.sqrt(i) * Math.sin(i);
+        runs.push(performance.now() - t0 + (x === 42 ? 1 : 0));
+        await new Promise((r) => setTimeout(r, 0)); // yield, so each run is its own task
+      }
+      runs.sort((a, b) => a - b);
+      return runs[4];
+    });
+    return Math.min(MAX_SLOWDOWN, Math.max(1, medianMs / CALIBRATION_REFERENCE_MS));
+  } finally {
+    await scratch.close();
+  }
+}
 
 // The budget measures this app's own main-thread work, so it runs on the
 // plain theme. The cyberpunk theme (the default since it became one) adds
@@ -229,6 +261,7 @@ test.describe("performance with 10,000 live aircraft @perf", () => {
 
   test("zooming and selecting never blocks the main thread for more than 200ms", async ({ page }, testInfo) => {
     test.setTimeout(120_000);
+    const slowdownBefore = await cpuSlowdown(page);
     await startLongTaskObserver(page);
     const api = await mockTenThousand(page, { liveFeed: true });
     await page.goto("/");
@@ -270,8 +303,12 @@ test.describe("performance with 10,000 live aircraft @perf", () => {
     await page.waitForTimeout(1_500);
     longTasks.push(...(await takeLongTasks(page)));
 
+    const slowdown = Math.max(slowdownBefore, await cpuSlowdown(page));
+    const budgetMs = LONG_TASK_BUDGET_MS * slowdown;
+
     const live = api.requests.filter((r) => r.kind === "live");
     const metrics = {
+      slowdown: Number(slowdown.toFixed(2)),
       longTasks: longTasks.length,
       maxLongTaskMs: Math.max(0, ...longTasks),
       selectMs,
@@ -283,8 +320,8 @@ test.describe("performance with 10,000 live aircraft @perf", () => {
     testInfo.annotations.push({ type: "perf", description: JSON.stringify(metrics) });
     console.log("perf:", JSON.stringify(metrics));
 
-    expect(longTasks.filter((d) => d > LONG_TASK_BUDGET_MS), `long tasks: ${longTasks.join(", ")}ms`).toEqual([]);
-    expect(selectMs).toBeLessThan(1_000);
+    expect(longTasks.filter((d) => d > budgetMs), `long tasks: ${longTasks.join(", ")}ms (budget ${Math.round(budgetMs)}ms = ${LONG_TASK_BUDGET_MS}ms x ${slowdown.toFixed(2)} slowdown)`).toEqual([]);
+    expect(selectMs).toBeLessThan(1_000 * slowdown);
     // /live only ever for an individual-marker viewport — never bbox-less
     // (world-wide), never below the cluster zoom.
     for (const r of live) {
