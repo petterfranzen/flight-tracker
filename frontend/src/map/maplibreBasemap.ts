@@ -69,7 +69,7 @@ const BUFFER_OPTIONS = {
 const BASEMAP_READY_CAP_MS = 5_000;
 
 export function createMaplibreLayer(): L.Layer {
-  return (
+  const layer = (
     L as unknown as {
       maplibreGL: (opts: Record<string, unknown>) => L.Layer;
     }
@@ -79,6 +79,66 @@ export function createMaplibreLayer(): L.Layer {
     attribution:
       '&copy; <a href="https://openfreemap.org">OpenFreeMap</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
   });
+  patchZoomOutAnimation(layer);
+  return layer;
+}
+
+interface GlLayerInternals {
+  _map: L.Map;
+  _glMap: MaplibreMap;
+  _offset: L.Point;
+  _container: HTMLElement;
+  _animateZoom(e: L.ZoomAnimEvent): void;
+  getSize(): L.Point;
+}
+
+/**
+ * maplibre-gl-leaflet draws the canvas at the starting zoom and only
+ * CSS-scales it during Leaflet's zoom animation. Its canvas is
+ * (1 + 2 * padding) times the viewport, so zooming out shrinks it below
+ * the viewport (a one-level zoom-out is 0.75x) and the dark container
+ * shows as bands along the edges until the zoom ends.
+ *
+ * For zoom-outs this renders the canvas at the target zoom up front, shown
+ * magnified to match the starting view, and animates the magnification
+ * down to 1. The canvas is then never smaller than the viewport, whichever
+ * the distance. The cost is the first frames being the target zoom's
+ * tiles scaled up, as a raster layer's already are; zoom-ins keep the
+ * plugin's own animation (their scale is above 1, so no gap).
+ */
+function patchZoomOutAnimation(layer: L.Layer): void {
+  const gl = layer as unknown as GlLayerInternals;
+  const original = gl._animateZoom;
+  gl._animateZoom = function (this: GlLayerInternals, e: L.ZoomAnimEvent): void {
+    const map = this._map;
+    const canvas = (this._glMap as unknown as { _actualCanvas?: HTMLCanvasElement })._actualCanvas;
+    const scale = map.getZoomScale(e.zoom); // target / current, < 1 for a zoom-out
+    if (!canvas || scale >= 1) return original.call(this, e);
+
+    // The plugin's own end state for this animation, as if the canvas were
+    // still rendered at the starting zoom.
+    const padding = map.getSize().multiplyBy(BUFFER_OPTIONS.padding * scale);
+    const viewHalf = this.getSize().divideBy(2);
+    const topLeft = map.project(e.center, e.zoom).subtract(viewHalf).add((map as unknown as { _getMapPanePos(): L.Point })._getMapPanePos().add(padding)).round();
+    const offset = map.project(map.getBounds().getNorthWest(), e.zoom).subtract(topLeft).subtract(this._offset);
+
+    // The same canvas content rendered at the target zoom is the old one
+    // scaled by `scale` about its centre, so its end state is the old one's
+    // translated by (scale - 1) * centre, with no scale of its own.
+    const half = this.getSize().divideBy(2);
+    const end = offset.add(half.multiplyBy(scale - 1));
+    const start = half.multiplyBy(1 - 1 / scale);
+
+    const center = map.getCenter();
+    this._glMap.jumpTo({ center: [center.lng, center.lat], zoom: e.zoom - 1 });
+    // Placed at the matching start without a transition, then released to
+    // animate to the end state.
+    canvas.style.transition = "none";
+    L.DomUtil.setTransform(canvas, start, 1 / scale);
+    void canvas.offsetWidth;
+    canvas.style.transition = "";
+    L.DomUtil.setTransform(canvas, end, 1);
+  };
 }
 
 /**
