@@ -164,6 +164,8 @@ public class FlightController {
      * fields every LiveStateStore reader uses — see LiveStateStore.clustered
      * — so a dead-reckoned aircraft lands in the same cell here as its
      * marker would render at once zoomed in past CLUSTER_FETCH_MAX_ZOOM.
+     * Clusters count active traffic only (in the air, reported within
+     * ACTIVE_TRAFFIC_WINDOW); parked or silent aircraft appear once zoomed in.
      */
     @GetMapping("/live/clusters")
     public List<ClusterPoint> liveClusters(@RequestParam double latMin,
@@ -176,6 +178,7 @@ public class FlightController {
         double clampedGridDeg = Math.min(MAX_CLUSTER_GRID_DEG, Math.max(MIN_CLUSTER_GRID_DEG, gridDeg));
         return liveStateStore.clustered(
                 now.minus(LiveVisibilityWindows.STALE_AIRBORNE_BOUND), now.minus(LiveVisibilityWindows.LANDED_VISIBILITY),
+                now.minus(LiveVisibilityWindows.ACTIVE_TRAFFIC_WINDOW),
                 bounds, clampedGridDeg);
     }
 

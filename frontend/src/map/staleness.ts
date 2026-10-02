@@ -78,3 +78,13 @@ export function agedIds(list: LiveMarker[], nowMs: number): Set<string> {
   }
   return aged;
 }
+
+/**
+ * "Active traffic": in the air and reported within DIM_AFTER_MS. The same
+ * rule the server uses for what cluster bubbles count
+ * (LiveVisibilityWindows.ACTIVE_TRAFFIC_WINDOW), so a bubble means flights in
+ * progress. A marker without `onGround` is taken to be airborne.
+ */
+export function isActiveTraffic(p: LiveMarker, nowMs: number): boolean {
+  return p.onGround !== true && nowMs - Date.parse(p.observedAt) <= DIM_AFTER_MS;
+}

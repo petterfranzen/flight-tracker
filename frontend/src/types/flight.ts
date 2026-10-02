@@ -54,6 +54,8 @@ export interface LiveMarker {
   latitude: number;
   longitude: number;
   headingDeg: number | null;
+  /** Sent by the bulk /live response (LiveMarker.java); absent on markers built from older or partial sources. */
+  onGround?: boolean;
 }
 
 /**

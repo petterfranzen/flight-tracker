@@ -22,7 +22,7 @@ import { boundsFromMap, createFollowSelected, createMap } from "./map/map";
 import { createMarkerLayer } from "./map/markers";
 import { clusterPositions, gridDegForZoom } from "./map/clusterMath";
 import { createClusterLayer } from "./map/clusters";
-import { agedIds, findShadowedIds, OVERLAP_MIN_ZOOM } from "./map/staleness";
+import { agedIds, findShadowedIds, isActiveTraffic, OVERLAP_MIN_ZOOM } from "./map/staleness";
 import { createRouteLayer } from "./map/route";
 import { snapBounds, ViewCache, type CachedView } from "./map/viewCache";
 import * as scaleBar from "./ui/scaleBar";
@@ -238,12 +238,19 @@ function boot(): void {
     const unselectedList = shadowed && shadowed.size > 0 ? withoutSelected.filter((p) => !shadowed.has(p.icao24)) : withoutSelected;
 
     const belowServerClusterZoom = zoom < CLUSTER_FETCH_MAX_ZOOM;
-    const clientClustered = !belowServerClusterZoom && unselectedList.length > MAX_INDIVIDUAL_MARKERS;
+    // A busy view (over MAX_INDIVIDUAL_MARKERS) shows active traffic only —
+    // individually if that fits, as clusters if not — and holds parked or
+    // silent aircraft back until the view is sparse enough (zoom in). The
+    // server's zoomed-out bubbles follow the same rule (see isActiveTraffic).
+    const nowMs = Date.now();
+    const overCap = !belowServerClusterZoom && unselectedList.length > MAX_INDIVIDUAL_MARKERS;
+    const drawnList = overCap ? unselectedList.filter((p) => isActiveTraffic(p, nowMs)) : unselectedList;
+    const clientClustered = overCap && drawnList.length > MAX_INDIVIDUAL_MARKERS;
 
     if (belowServerClusterZoom) clusterLayer.update(clusters, clustersGridDeg);
     else if (clientClustered) {
       const grid = gridDegForZoom(zoom);
-      clusterLayer.update(clusterPositions(unselectedList, grid), grid);
+      clusterLayer.update(clusterPositions(drawnList, grid), grid);
     } else clusterLayer.update([], clustersGridDeg);
 
     // Below the cluster zoom, unselected markers only get the "exiting"
@@ -259,13 +266,13 @@ function boot(): void {
     if (!belowServerClusterZoom) individualMarkersShown = !clientClustered;
 
     markerLayer.update({
-      unselected: showIndividually ? unselectedList : [],
+      unselected: showIndividually ? (belowServerClusterZoom ? unselectedList : drawnList) : [],
       selectedPos,
       zoom,
       exiting: belowServerClusterZoom,
       // Reports older than 2 h are drawn dimmed (see map/staleness.ts); only
       // worth computing when individual markers are actually shown.
-      dimmed: showIndividually ? agedIds(unselectedList, Date.now()) : undefined,
+      dimmed: showIndividually ? agedIds(drawnList, nowMs) : undefined,
     });
   }
 

@@ -294,10 +294,16 @@ public class LiveStateStore {
      * whenever the zoom (and so the grid) changes; the centroid sits where
      * the traffic is. The cell itself is still the grouping unit, so counts
      * are unchanged and a cluster's position stays inside its own cell.
+     *
+     * Only <em>active traffic</em> is counted: in the air and reported at or
+     * after {@code activeSince} (see LiveVisibilityWindows.ACTIVE_TRAFFIC_WINDOW).
+     * Parked aircraft, and ones that have gone silent, are still live (they
+     * are returned individually and drawn once zoomed in) but would make an
+     * airport read as a busy sky if they were bubbled with the flights.
      * gridDeg is trusted as already clamped by the caller (see
      * FlightController's MIN/MAX_CLUSTER_GRID_DEG).
      */
-    public List<ClusterPoint> clustered(Instant staleAirborneCutoff, Instant landedCutoff, Bounds bounds, double gridDeg) {
+    public List<ClusterPoint> clustered(Instant staleAirborneCutoff, Instant landedCutoff, Instant activeSince, Bounds bounds, double gridDeg) {
         record BucketKey(double lat, double lon) { }
         final class Sum {
             long count;
@@ -307,6 +313,7 @@ public class LiveStateStore {
         Map<BucketKey, Sum> cells = new HashMap<>();
         for (LiveAircraft a : byIcao24.values()) {
             if (!isLive(a, staleAirborneCutoff, landedCutoff)) continue;
+            if (a.onGround() || a.observedAt().isBefore(activeSince)) continue;
             double lat = a.displayLatitude();
             double lon = a.displayLongitude();
             if (!bounds.contains(lat, lon)) continue;
