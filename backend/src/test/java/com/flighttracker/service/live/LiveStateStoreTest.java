@@ -2,6 +2,8 @@ package com.flighttracker.service.live;
 
 import com.flighttracker.dto.Bounds;
 import com.flighttracker.dto.ClusterPoint;
+import com.flighttracker.dto.LiveMarker;
+import com.flighttracker.dto.LiveOverview;
 import com.flighttracker.model.FlightPosition;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -332,5 +334,72 @@ class LiveStateStoreTest {
         store.upsert("gnd222", "GND2", T0, 10.2, 20.2, null, null, 0.0, null, true, "opensky");
 
         assertThat(store.clustered(T0.minusSeconds(1), T0.minusSeconds(1), T0.minusSeconds(7200), WORLD, 2.0)).isEmpty();
+    }
+
+    @Test
+    void overview_drawsTheFastestActiveAircraftAsPlanes_andBubblesTheRestWithoutDoubleCounting() {
+        LiveStateStore store = store();
+        Instant cut = T0.minusSeconds(100_000);
+        Instant activeSince = T0.minusSeconds(7200);
+        // One cell (lat [10,12) x lon [20,22)): four active aircraft at different speeds.
+        store.upsert("slow11", "SLOW", T0, 10.1, 20.1, null, 60.0, null, null, false, "opensky");
+        store.upsert("mid222", "MID", T0, 10.3, 20.3, null, 150.0, null, null, false, "opensky");
+        store.upsert("fast33", "FAST", T0, 10.5, 20.5, null, 250.0, null, null, false, "opensky");
+        store.upsert("noVel4", "NOVEL", T0, 10.7, 20.7, null, null, null, null, false, "opensky");
+        // Never part of the overview: parked, and silent for over 2 h.
+        store.upsert("gnd555", "GND", T0, 10.9, 20.9, null, 0.0, null, null, true, "opensky");
+        store.upsert("old666", "OLD", T0.minusSeconds(7201), 11.1, 21.1, null, 300.0, null, null, false, "opensky");
+
+        // Two planes allowed (any number per cell): the two fastest.
+        LiveOverview o = store.overview(cut, cut, activeSince, WORLD, 2.0, 2, 10);
+
+        assertThat(o.planes()).extracting(LiveMarker::getIcao24).containsExactly("fast33", "mid222");
+        // The other two active aircraft are bubbled, and the planes are NOT counted again.
+        assertThat(o.clusters()).hasSize(1);
+        assertThat(o.clusters().get(0).getCount()).isEqualTo(2);
+        assertThat(o.clusters().get(0).getLat()).isCloseTo(10.4, within(1e-9)); // mean of 10.1 and 10.7
+    }
+
+    @Test
+    void overview_perCellCapSpreadsPlanesAcrossCells_soAHubCannotUseUpTheWholeAllowance() {
+        LiveStateStore store = store();
+        Instant cut = T0.minusSeconds(100_000);
+        // Four fast aircraft in one cell, one slower in another.
+        store.upsert("hub111", "H1", T0, 10.1, 20.1, null, 250.0, null, null, false, "opensky");
+        store.upsert("hub222", "H2", T0, 10.2, 20.2, null, 240.0, null, null, false, "opensky");
+        store.upsert("hub333", "H3", T0, 10.3, 20.3, null, 230.0, null, null, false, "opensky");
+        store.upsert("hub444", "H4", T0, 10.4, 20.4, null, 220.0, null, null, false, "opensky");
+        store.upsert("far555", "F5", T0, 40.1, 60.1, null, 100.0, null, null, false, "opensky");
+
+        LiveOverview o = store.overview(cut, cut, T0.minusSeconds(7200), WORLD, 2.0, 10, 2);
+
+        assertThat(o.planes()).extracting(LiveMarker::getIcao24).containsExactlyInAnyOrder("hub111", "hub222", "far555");
+        assertThat(o.clusters()).hasSize(1);
+        assertThat(o.clusters().get(0).getCount()).isEqualTo(2); // the hub's other two
+    }
+
+    @Test
+    void overview_serializesToTheShapeTheMapReads() throws Exception {
+        LiveStateStore store = store();
+        Instant cut = T0.minusSeconds(100_000);
+        store.upsert("fast33", "FAST", T0, 10.5, 20.5, null, 250.0, 90.0, null, false, "opensky");
+        store.upsert("slow11", "SLOW", T0, 10.1, 20.1, null, 60.0, null, null, false, "opensky");
+
+        String json = new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules()
+                .writeValueAsString(store.overview(cut, cut, T0.minusSeconds(7200), WORLD, 2.0, 1, 3));
+        com.fasterxml.jackson.databind.JsonNode root = new com.fasterxml.jackson.databind.ObjectMapper().readTree(json);
+
+        com.fasterxml.jackson.databind.JsonNode plane = root.get("planes").get(0);
+        assertThat(plane.get("icao24").asText()).isEqualTo("fast33");
+        assertThat(plane.get("callsign").asText()).isEqualTo("FAST");
+        assertThat(plane.get("latitude").asDouble()).isEqualTo(10.5);
+        assertThat(plane.get("longitude").asDouble()).isEqualTo(20.5);
+        assertThat(plane.get("headingDeg").asDouble()).isEqualTo(90.0);
+        assertThat(plane.has("observedAt")).isTrue();
+        assertThat(plane.get("onGround").asBoolean()).isFalse();
+        com.fasterxml.jackson.databind.JsonNode cluster = root.get("clusters").get(0);
+        assertThat(cluster.get("lat").asDouble()).isEqualTo(10.1);
+        assertThat(cluster.get("lon").asDouble()).isEqualTo(20.1);
+        assertThat(cluster.get("count").asLong()).isEqualTo(1);
     }
 }

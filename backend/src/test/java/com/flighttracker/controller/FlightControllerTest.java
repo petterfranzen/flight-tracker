@@ -1,5 +1,6 @@
 package com.flighttracker.controller;
 
+import com.flighttracker.dto.LiveOverview;
 import com.flighttracker.model.FlightPosition;
 import com.flighttracker.repository.AirportRepository;
 import com.flighttracker.repository.FlightPositionRepository;
@@ -20,6 +21,7 @@ import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyDouble;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
@@ -139,5 +141,28 @@ class FlightControllerTest {
         controller().search("50%", null);
 
         verify(liveStateStore).searchByCallsign(eq("50%"), any(), any(), eq(8));
+    }
+
+    @Test
+    void liveOverview_clampsLimitAndPerCell_andUsesTheActiveTrafficWindow() {
+        when(liveStateStore.overview(any(), any(), any(), any(), eq(2.0), anyInt(), anyInt()))
+                .thenReturn(new LiveOverview(List.of(), List.of()));
+
+        controller().liveOverview(-90, 90, -180, 180, 2.0, 99_999, 99);
+        verify(liveStateStore).overview(any(), any(), any(), any(), eq(2.0), eq(500), eq(10)); // capped
+
+        controller().liveOverview(-90, 90, -180, 180, 2.0, -5, 0);
+        verify(liveStateStore).overview(any(), any(), any(), any(), eq(2.0), eq(0), eq(1)); // floored
+    }
+
+    @Test
+    void liveOverview_neverTouchesTheReportedViewport() {
+        when(liveStateStore.overview(any(), any(), any(), any(), anyDouble(), anyInt(), anyInt()))
+                .thenReturn(new LiveOverview(List.of(), List.of()));
+
+        controller().liveOverview(-90, 90, -180, 180, 2.0, 200, 3);
+
+        // A world-sized bbox must not become "the current viewport" (hot poll / broadcaster).
+        verifyNoInteractions(viewportService);
     }
 }

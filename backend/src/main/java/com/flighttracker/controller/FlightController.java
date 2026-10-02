@@ -3,6 +3,7 @@ package com.flighttracker.controller;
 import com.flighttracker.dto.Bounds;
 import com.flighttracker.dto.ClusterPoint;
 import com.flighttracker.dto.LiveMarker;
+import com.flighttracker.dto.LiveOverview;
 import com.flighttracker.model.FlightPosition;
 import com.flighttracker.repository.AirportRepository;
 import com.flighttracker.repository.FlightPositionRepository;
@@ -180,6 +181,41 @@ public class FlightController {
                 now.minus(LiveVisibilityWindows.STALE_AIRBORNE_BOUND), now.minus(LiveVisibilityWindows.LANDED_VISIBILITY),
                 now.minus(LiveVisibilityWindows.ACTIVE_TRAFFIC_WINDOW),
                 bounds, clampedGridDeg);
+    }
+
+    private static final int DEFAULT_OVERVIEW_PLANES = 200;
+    private static final int MAX_OVERVIEW_PLANES = 500;
+    private static final int DEFAULT_OVERVIEW_PER_CELL = 3;
+    private static final int MAX_OVERVIEW_PER_CELL = 10;
+
+    /**
+     * The zoomed-out map (below CLUSTER_FETCH_MAX_ZOOM) in one response: the
+     * most active aircraft in the viewport, to be drawn as individual planes,
+     * plus cluster bubbles for the rest of the active traffic — see
+     * LiveStateStore.overview for the ranking and why the two never overlap.
+     * Same bbox/gridDeg contract as /live/clusters, and like it deliberately
+     * does not touch the reported viewport (a world-sized bbox must not
+     * become "the current viewport" for the hot poll and the broadcaster).
+     * {@code limit} caps the planes returned, {@code perCell} the planes
+     * taken from any one grid cell.
+     */
+    @GetMapping("/live/overview")
+    public LiveOverview liveOverview(@RequestParam double latMin,
+                                      @RequestParam double latMax,
+                                      @RequestParam double lonMin,
+                                      @RequestParam double lonMax,
+                                      @RequestParam(defaultValue = "2") double gridDeg,
+                                      @RequestParam(defaultValue = "" + DEFAULT_OVERVIEW_PLANES) int limit,
+                                      @RequestParam(defaultValue = "" + DEFAULT_OVERVIEW_PER_CELL) int perCell) {
+        Instant now = Instant.now();
+        Bounds bounds = new Bounds(latMin, latMax, lonMin, lonMax);
+        double clampedGridDeg = Math.min(MAX_CLUSTER_GRID_DEG, Math.max(MIN_CLUSTER_GRID_DEG, gridDeg));
+        return liveStateStore.overview(
+                now.minus(LiveVisibilityWindows.STALE_AIRBORNE_BOUND), now.minus(LiveVisibilityWindows.LANDED_VISIBILITY),
+                now.minus(LiveVisibilityWindows.ACTIVE_TRAFFIC_WINDOW),
+                bounds, clampedGridDeg,
+                Math.min(MAX_OVERVIEW_PLANES, Math.max(0, limit)),
+                Math.min(MAX_OVERVIEW_PER_CELL, Math.max(1, perCell)));
     }
 
     private static final int SEARCH_RESULT_LIMIT = 8;
