@@ -21,6 +21,11 @@ export const WS_PUSH_INTERVAL_MS = 2_000;
 // batching, and slack for a busy CI runner.
 const MAX_LAG_S = (WS_PUSH_INTERVAL_MS + 2_500) / 1000;
 export const POSITION_TOLERANCE_DEG = SPEED_DEG_PER_S * MAX_LAG_S;
+// Zoomed out (below the individual-marker zoom) the drawn aircraft come from
+// the overview, refetched every OVERVIEW_REFRESH_MS rather than pushed, so
+// they may trail by that plus a request and CI slack: ~2 km, under 2 px there.
+const OVERVIEW_MAX_LAG_S = 10 + 5;
+const OVERVIEW_ZOOM_BELOW = 8;
 
 // cyberpunkMapStyle.ts LAND, the background every rendered frame shows.
 const LAND_RGB: [number, number, number] = [0x6b, 0x14, 0x20];
@@ -295,6 +300,7 @@ export async function checkHealth(page: Page, h: Harness, step: string): Promise
 
   const now = Date.now();
   const wrong: string[] = [];
+  const zoomedOut = (await mapEval<number>(page, "return map.getZoom();")) < OVERVIEW_ZOOM_BELOW;
   for (const m of await planeMarkers(page)) {
     if (m.exiting) continue;
     const a = h.world.byCallsign(m.callsign);
@@ -304,7 +310,8 @@ export async function checkHealth(page: Page, h: Harness, step: string): Promise
     }
     const truth = h.world.positionAt(a, now);
     const off = Math.hypot(m.lat - truth.lat, m.lon - truth.lon);
-    if (off > POSITION_TOLERANCE_DEG) wrong.push(`${m.callsign} drawn ${off.toFixed(4)}° from its true position (${(off / SPEED_DEG_PER_S).toFixed(0)}s stale)`);
+    const tolerance = zoomedOut ? SPEED_DEG_PER_S * OVERVIEW_MAX_LAG_S : POSITION_TOLERANCE_DEG;
+    if (off > tolerance) wrong.push(`${m.callsign} drawn ${off.toFixed(4)}° from its true position (${(off / SPEED_DEG_PER_S).toFixed(0)}s stale)`);
   }
   expect(wrong, `[${step}] plane markers not at their true positions`).toEqual([]);
   expect(h.pageErrors, `[${step}] page errors`).toEqual([]);

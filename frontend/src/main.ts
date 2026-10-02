@@ -76,7 +76,10 @@ const INITIAL_SUMMARY_GRID_DEG = 5;
 // asking the server again; older but still usable ones are shown at once
 // and revalidated in the background; past VIEW_CACHE_MAX_AGE_MS they're
 // not shown at all.
-const VIEW_CACHE_FRESH_MS = 15_000;
+const VIEW_CACHE_FRESH_MS = 8_000;
+// Zoomed out, the overview's aircraft get no live pushes (the server only
+// pushes the individual-marker viewport), so it is refetched on this cadence.
+const OVERVIEW_REFRESH_MS = 10_000;
 // Individual positions go stale much faster than cluster counts: a cached
 // /live view is still drawn at once, but older than this it's re-fetched
 // in the background so markers correct within one round trip.
@@ -182,12 +185,19 @@ function boot(): void {
   let clusters: ClusterPoint[] = [];
   // Zoomed out: the most active aircraft, drawn individually next to the clusters (see fetchLiveOverview).
   let overviewPlanes: LiveMarker[] = [];
+  const overviewIndex = new Map<string, number>(); // icao24 -> index in overviewPlanes
+  function setOverviewPlanes(list: LiveMarker[]): void {
+    overviewPlanes = list;
+    overviewIndex.clear();
+    list.forEach((p, i) => overviewIndex.set(p.icao24, i));
+  }
   // The grid `clusters` was computed with (a cached or in-flight view can be
   // for a different zoom than the one now on screen) — keys cluster markers.
   let clustersGridDeg = serverGridDeg(6);
 
   let cycleStart = Date.now();
   let fetchIntervalTimer: ReturnType<typeof setInterval> | null = null;
+  let overviewTimer: ReturnType<typeof setInterval> | null = null;
   let dialogTimer: ReturnType<typeof setTimeout> | null = null;
 
   let bounds: Bounds | null = null;
@@ -326,7 +336,7 @@ function boot(): void {
     if (zoom < CLUSTER_FETCH_MAX_ZOOM) {
       const overview = hit.data as LiveOverview;
       clusters = overview.clusters;
-      overviewPlanes = overview.planes;
+      setOverviewPlanes(overview.planes);
       clustersGridDeg = serverGridDeg(hit.zoom);
       renderAircraftLayer();
     } else {
@@ -375,7 +385,7 @@ function boot(): void {
           if (controller.signal.aborted || zoom !== requestZoom) return;
           lastAppliedView = entry;
           clusters = overview.clusters;
-          overviewPlanes = overview.planes;
+          setOverviewPlanes(overview.planes);
           clustersGridDeg = grid;
           renderAircraftLayer();
         })
@@ -414,7 +424,7 @@ function boot(): void {
     const clustered = nextZoom < CLUSTER_FETCH_MAX_ZOOM;
     if (clustered !== wasClustered) {
       clusters = [];
-      overviewPlanes = [];
+      setOverviewPlanes([]);
       lastAppliedView = null;
     }
     if (clustered && !wasClustered) dropIndividualMarkersAfterFade();
@@ -466,7 +476,7 @@ function boot(): void {
     // viewport, see ViewportService) — keep only what this map is showing
     // as individual markers, plus the selected aircraft.
     const isSelected = p.icao24 === store.get("selectedId");
-    if (!isSelected && !inDrawnArea(p)) return;
+    if (!isSelected && !inDrawnArea(p) && !overviewIndex.has(p.icao24)) return;
     const queued = pendingWs.get(p.icao24);
     if (queued && !isNewer(p, queued)) return;
     pendingWs.set(p.icao24, p);
@@ -479,7 +489,16 @@ function boot(): void {
     const selectedId = store.get("selectedId");
     let selectedUpdate: FlightPosition | null = null;
     let changed = false;
+    // The overview's aircraft (zoomed out) move with the feed too, on a copy:
+    // the array is shared with the view cache.
+    let overviewNext: LiveMarker[] | null = null;
     for (const p of pendingWs.values()) {
+      const overviewAt = overviewIndex.get(p.icao24);
+      if (overviewAt !== undefined && zoom < CLUSTER_FETCH_MAX_ZOOM && isNewer(p, overviewPlanes[overviewAt])) {
+        overviewNext ??= overviewPlanes.slice();
+        overviewNext[overviewAt] = p;
+        changed = true;
+      }
       const existing = positions.get(p.icao24);
       if (existing && !isNewer(p, existing)) continue; // superseded by a /live reconcile already
       if (p.icao24 !== selectedId && !inDrawnArea(p)) continue;
@@ -488,6 +507,7 @@ function boot(): void {
       if (p.icao24 === selectedId) selectedUpdate = p;
     }
     pendingWs.clear();
+    if (overviewNext) overviewPlanes = overviewNext; // same ids and order, so overviewIndex still holds
     if (changed) renderAircraftLayer();
     if (selectedUpdate) {
       store.set("selectedPos", selectedUpdate);
@@ -499,6 +519,8 @@ function boot(): void {
   function stopFetchCycle(): void {
     if (fetchIntervalTimer) clearInterval(fetchIntervalTimer);
     fetchIntervalTimer = null;
+    if (overviewTimer) clearInterval(overviewTimer);
+    overviewTimer = null;
     if (dialogTimer) clearTimeout(dialogTimer);
     dialogTimer = null;
   }
@@ -513,6 +535,16 @@ function boot(): void {
       }
       fetchFreshData();
     }, FETCH_INTERVAL_MS);
+
+    if (overviewTimer) clearInterval(overviewTimer);
+    overviewTimer = setInterval(() => {
+      if (Date.now() - cycleStart >= FETCH_STOP_MS) {
+        if (overviewTimer) clearInterval(overviewTimer);
+        overviewTimer = null;
+        return;
+      }
+      if (zoom < CLUSTER_FETCH_MAX_ZOOM && !document.hidden && !viewportAbort && !viewportFetchTimer) fetchViewport();
+    }, OVERVIEW_REFRESH_MS);
 
     // At the end of the watch window, ask — don't silently reopen the
     // backend's poll window. /api/agents/restart is called from exactly two
