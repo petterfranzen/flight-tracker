@@ -844,6 +844,12 @@ html, body {
   cursor: pointer;
 }
 
+.details-panel-favorite-hint {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
 .details-panel-favorite-toggle:hover:not(:disabled) {
   border-color: var(--color-text-muted);
   color: var(--color-text);

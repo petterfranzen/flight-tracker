@@ -121,6 +121,14 @@ function renderAircraftPanel(store: AppStore): { panel: HTMLElement; updatedLine
   const routeFavorited =
     dossier?.originAirport && dossier?.destinationAirport ? isRouteFavorited(favoriteRoutes, dossier.originAirport, dossier.destinationAirport) : false;
   const routeKnown = Boolean(dossier?.originAirport && dossier?.destinationAirport);
+  const routeLabel = routeKnown ? `${dossier!.originAirportIata ?? dossier!.originAirport} → ${dossier!.destinationAirportIata ?? dossier!.destinationAirport}` : "";
+  // Says what the two buttons do (and why "route" may be unavailable), since
+  // a disabled button with only a hover title is a dead end on a phone.
+  const favoriteHint = !routeKnown
+    ? "Route unknown for this flight, so it can't be favorited yet"
+    : routeFavorited
+      ? `Saved: ${routeLabel} shows in Favorites when a flight is live`
+      : `Favorite the route to see any live ${routeLabel} flight in Favorites`;
   const stale = nowMs - new Date(selectedPos.observedAt).getTime() > STALE_POSITION_WARN_MS;
 
   const heading = h("h2", null, selectedPos.callsign?.trim() || selectedPos.icao24.toUpperCase());
@@ -142,7 +150,7 @@ function renderAircraftPanel(store: AppStore): { panel: HTMLElement; updatedLine
       "aria-pressed": String(aircraftFavorited),
       "aria-label": "Favorite this aircraft",
     },
-    `${aircraftFavorited ? "★" : "☆"} Track Aircraft`,
+    `${aircraftFavorited ? "★" : "☆"} Favorite aircraft`,
   );
   const routeToggle = h(
     "button",
@@ -153,9 +161,9 @@ function renderAircraftPanel(store: AppStore): { panel: HTMLElement; updatedLine
       disabled: !routeKnown,
       "aria-pressed": String(routeFavorited),
       "aria-label": "Favorite this route",
-      title: routeKnown ? undefined : "Route not known for this aircraft yet",
+      title: routeKnown ? `Show any live ${routeLabel} flight in Favorites` : "Route not known for this aircraft yet",
     },
-    `${routeFavorited ? "★" : "☆"} Track Route`,
+    `${routeFavorited ? "★" : "☆"} Favorite route`,
   );
 
   const updatedLine = h(
@@ -213,6 +221,7 @@ function renderAircraftPanel(store: AppStore): { panel: HTMLElement; updatedLine
       heading,
       focusButton,
       h("div", { className: "details-panel-favorite-toggles" }, aircraftToggle, routeToggle),
+      h("p", { className: "details-panel-favorite-hint" }, favoriteHint),
       h("p", { className: "details-panel-meta" }, `ICAO24 ${selectedPos.icao24.toUpperCase()} · last leg traced above`),
       updatedLine,
       fields,
