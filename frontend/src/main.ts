@@ -18,9 +18,11 @@ import {
   restartPolling,
   subscribeLiveFeed,
 } from "./api/flightApi";
-import { boundsFromMap, createFollowSelected, createMap } from "./map/map";
+import { boundsFromMap, createFollowSelected, createMap, DEFAULT_VIEW } from "./map/map";
 import { createMarkerLayer } from "./map/markers";
 import { clusterPositions, gridDegForZoom } from "./map/clusterMath";
+import { pickInitialView } from "./map/initialView";
+import { getMockPlaneCount } from "./api/mockFleet";
 import { createClusterLayer } from "./map/clusters";
 import { agedIds, findShadowedIds, isActiveTraffic, OVERLAP_MIN_ZOOM } from "./map/staleness";
 import { createRouteLayer } from "./map/route";
@@ -63,6 +65,11 @@ const WS_FLUSH_MS = 250;
 // Matches .plane-icon's opacity transition (FlightMap.css): how long the
 // "exiting" fade gets before markers are actually dropped on zoom-out.
 const EXIT_FADE_MS = 300;
+
+// Opening view (see applyInitialView): how long boot waits for the world
+// summary, and the grid it asks for (coarse: a few hundred cells at most).
+const INITIAL_VIEW_TIMEOUT_MS = 1_500;
+const INITIAL_SUMMARY_GRID_DEG = 5;
 
 // View cache (map/viewCache.ts): a cached view this fresh is shown without
 // asking the server again; older but still usable ones are shown at once
@@ -810,10 +817,33 @@ function boot(): void {
 
   restartFetchCycleTimers(); // generation 0
 
+  // Opening view: move the map to where the traffic is, at a zoom that draws
+  // individual aircraft, before the first viewport report (see
+  // map/initialView.ts). One coarse world summary, at most
+  // INITIAL_VIEW_TIMEOUT_MS; anything going wrong keeps the default view.
+  // The boot screen is still up meanwhile (it waits on the first load).
+  function applyInitialView(): Promise<void> {
+    if (getMockPlaneCount() != null) return Promise.resolve(); // the ?mockPlanes dev tool frames its own view
+    const startCenter = map.getCenter();
+    const startZoom = map.getZoom();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), INITIAL_VIEW_TIMEOUT_MS);
+    return fetchLiveClusters({ latMin: -90, latMax: 90, lonMin: -180, lonMax: 180 }, INITIAL_SUMMARY_GRID_DEG, controller.signal)
+      .then((summary) => {
+        // Someone (the user, a test) already moved the map: leave it alone.
+        const c = map.getCenter();
+        if (map.getZoom() !== startZoom || c.lat !== startCenter.lat || c.lng !== startCenter.lng) return;
+        const view = pickInitialView(summary, DEFAULT_VIEW, { width: mapRoot.clientWidth, height: mapRoot.clientHeight });
+        if (view) map.setView([view.lat, view.lon], view.zoom, { animate: false });
+      })
+      .catch(() => {})
+      .finally(() => clearTimeout(timer));
+  }
+
   // Initial viewport report — equivalent to the original ViewportReporter's
   // own mount-time call, fired only now that every layer it can cascade
   // into (markers, clusters, route) exists.
-  handleViewportChange(boundsFromMap(map), map.getZoom(), true);
+  applyInitialView().then(() => handleViewportChange(boundsFromMap(map), map.getZoom(), true));
 }
 
 boot();

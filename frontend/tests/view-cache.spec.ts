@@ -7,7 +7,7 @@ import { mockFlightApi, setMapView, withMap } from "./helpers";
 
 test.describe("view cache", () => {
   test("returning to a zoom level just seen makes no new cluster request", async ({ page }) => {
-    await mockFlightApi(page, { clusters: [{ lat: 59.5, lon: 18.5, count: 42 }] });
+    await mockFlightApi(page, { clusters: [{ lat: 59.5, lon: 18.5, count: 12 }] }); // under the opening-view threshold, so the map keeps its default (cluster) view
     const clusterRequests: string[] = [];
     page.on("request", (r) => {
       if (r.url().includes("/api/flights/live/clusters")) clusterRequests.push(r.url());

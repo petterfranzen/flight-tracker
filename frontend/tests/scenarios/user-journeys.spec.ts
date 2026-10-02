@@ -31,7 +31,7 @@ async function boot(page: import("@playwright/test").Page) {
   await page.goto("/");
   await page.waitForSelector(".boot-screen");
   await page.waitForSelector(".boot-screen--hidden, body:not(:has(.boot-screen))", { timeout: 20_000 });
-  await page.waitForSelector(".cluster-icon", { timeout: 10_000 });
+  await page.waitForSelector(".cluster-icon, .plane-icon", { timeout: 10_000 });
 }
 
 test.describe("user journeys @scenario", () => {

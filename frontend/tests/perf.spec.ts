@@ -104,7 +104,7 @@ async function fulfill(route: Route, json: unknown): Promise<number> {
  * burst of ~1,000 positions every 2s — the real hot poll is every 18s — and
  * a keepalive text frame after each burst.
  */
-async function mockTenThousand(page: Page, opts: { holdLive?: boolean; liveFeed?: boolean } = {}) {
+async function mockTenThousand(page: Page, opts: { holdLive?: boolean; liveFeed?: boolean; quietWorldSummary?: boolean } = {}) {
   const fleet = fleet10k();
   const now = new Date().toISOString();
   const requests: ViewportRequest[] = [];
@@ -122,6 +122,14 @@ async function mockTenThousand(page: Page, opts: { holdLive?: boolean; liveFeed?
     const url = new URL(route.request().url());
     const b = bboxOf(url)!;
     const grid = Math.min(25, Math.max(0.5, Number(url.searchParams.get("gridDeg") ?? 2)));
+    // The boot-time world summary (see map/initialView.ts) decides where the
+    // map opens. quietWorldSummary answers it with nothing, so the map keeps
+    // its default clustered view: for tests about viewport changes *from* that
+    // view, not about the opening view (which has its own tests).
+    if (opts.quietWorldSummary && b.latMin <= -89 && b.latMax >= 89) {
+      requests.push({ kind: "clusters", bbox: b, bytes: await fulfill(route, []) });
+      return;
+    }
     // The server's own bucketing (clusters at the mean position of their aircraft).
     const inView = fleet.filter((a) => a.latitude >= b.latMin && a.latitude <= b.latMax && a.longitude >= b.lonMin && a.longitude <= b.lonMax).map((a) => marker(a, now));
     requests.push({ kind: "clusters", bbox: b, bytes: await fulfill(route, clusterPositions(inView, grid)) });
@@ -258,7 +266,7 @@ test.describe("performance with 10,000 live aircraft @perf", () => {
     await startLongTaskObserver(page);
     const api = await mockTenThousand(page, { liveFeed: true });
     await page.goto("/");
-    await page.waitForSelector(".cluster-icon", { timeout: 15_000 });
+    await page.waitForSelector(".cluster-icon, .plane-icon", { timeout: 15_000 });
     await page.waitForTimeout(500);
 
     const longTasks: number[] = [...(await takeLongTasks(page))];
@@ -328,7 +336,7 @@ test.describe("performance with 10,000 live aircraft @perf", () => {
     test.setTimeout(60_000);
     // The first /live response is held until released: "in flight" lasts as
     // long as the test says, not as long as a timer happens to.
-    const api = await mockTenThousand(page, { holdLive: true });
+    const api = await mockTenThousand(page, { holdLive: true, quietWorldSummary: true });
     const started: string[] = [];
     const aborted: string[] = [];
     page.on("request", (r) => {
@@ -338,7 +346,7 @@ test.describe("performance with 10,000 live aircraft @perf", () => {
       if (/\/api\/flights\/live\?/.test(r.url())) aborted.push(r.url());
     });
     await page.goto("/");
-    await page.waitForSelector(".cluster-icon", { timeout: 15_000 });
+    await page.waitForSelector(".cluster-icon, .plane-icon", { timeout: 15_000 });
 
     // Five moveends in a single task, so they are inside the debounce window
     // however slow the machine: one request.
