@@ -74,6 +74,13 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     refreshTimer = null;
   }
 
+  // On mobile the open drawer covers the whole map, so selecting a favorite
+  // would otherwise leave the user staring at the list with the plane hidden.
+  function selectAndClose(select: () => void): void {
+    select();
+    if (window.matchMedia("(max-width: 768px)").matches) setOpen(false);
+  }
+
   function setOpen(next: boolean): void {
     if (open === next) return;
     open = next;
@@ -137,7 +144,7 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
             a.icao24,
             label,
             live,
-            () => live && store.get("selectAircraft")(live),
+            () => live && selectAndClose(() => store.get("selectAircraft")(live)),
             () => store.get("removeFavoriteAircraft")(a),
           ),
         );
@@ -155,7 +162,7 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
             key,
             label,
             live,
-            () => live && store.get("selectAircraft")(live),
+            () => live && selectAndClose(() => store.get("selectAircraft")(live)),
             () => store.get("removeFavoriteRoute")(r),
           ),
         );
