@@ -168,7 +168,7 @@ export interface MarkerLayerUpdate {
   zoom: number;
   /** Below CLUSTER_FETCH_MAX_ZOOM: fade unselected markers out rather than cutting them. */
   exiting: boolean;
-  /** icao24s of unselected aircraft to draw dimmed (old or shadowed reports). Never applied to the selected one. */
+  /** icao24s of unselected aircraft to draw dimmed (reports older than 2 h). Never applied to the selected one. */
   dimmed?: ReadonlySet<string>;
 }
 

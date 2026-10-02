@@ -3,9 +3,10 @@ import type { LiveMarker } from "../types/flight";
 // The server keeps landed aircraft visible for 48 h (LiveVisibilityWindows),
 // and a parked plane often stops reporting. So the map can show positions that
 // are hours old, or a plane that has since left a stand under whatever parked
-// there next. Those are drawn dimmed rather than hidden: they may still be
-// right (a plane really can sit at a gate for a day), they just must not look
-// like live traffic.
+// there next. Two rules keep that from looking like live traffic:
+//  - a report older than DIM_AFTER_MS is drawn dimmed (it may still be right:
+//    a plane can sit at a gate for a day, it just isn't live);
+//  - an aircraft with a newer one on top of it is not drawn at all.
 
 // A report older than this means the aircraft has been silent (parked, or
 // out of coverage) for that long.
@@ -13,7 +14,7 @@ export const DIM_AFTER_MS = 2 * 60 * 60 * 1000;
 
 // Two aircraft cannot be this close: wingspans alone are 35-80 m and stands
 // are laid out further apart than that. Of any group within this distance,
-// only the newest report is live; the rest are ghosts.
+// only the newest report is real; the rest are ghosts.
 export const OVERLAP_METERS = 20;
 
 // Below this zoom 20 m is under a pixel, so the overlap isn't visible and
@@ -69,15 +70,11 @@ export function findShadowedIds(list: LiveMarker[]): Set<string> {
   return shadowed;
 }
 
-/**
- * Which of these aircraft to draw dimmed: reports older than DIM_AFTER_MS at
- * any zoom, plus (from OVERLAP_MIN_ZOOM) any with a newer aircraft on top.
- */
-export function dimmedIds(list: LiveMarker[], zoom: number, nowMs: number): Set<string> {
-  const dimmed = new Set<string>();
+/** icao24s whose last report is older than DIM_AFTER_MS. */
+export function agedIds(list: LiveMarker[], nowMs: number): Set<string> {
+  const aged = new Set<string>();
   for (const p of list) {
-    if (nowMs - Date.parse(p.observedAt) > DIM_AFTER_MS) dimmed.add(p.icao24);
+    if (nowMs - Date.parse(p.observedAt) > DIM_AFTER_MS) aged.add(p.icao24);
   }
-  if (zoom >= OVERLAP_MIN_ZOOM) for (const id of findShadowedIds(list)) dimmed.add(id);
-  return dimmed;
+  return aged;
 }

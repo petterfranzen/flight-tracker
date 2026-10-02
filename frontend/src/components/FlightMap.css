@@ -555,7 +555,7 @@ html, body {
   transition: opacity 250ms ease-in;
 }
 
-/* Old or shadowed report (see map/staleness.ts): still drawn, but not like
+/* Report older than 2 h (see map/staleness.ts): still drawn, but not like
    live traffic. Declared before --exiting so a fading-out marker still ends
    fully transparent. */
 .plane-icon--dimmed {
