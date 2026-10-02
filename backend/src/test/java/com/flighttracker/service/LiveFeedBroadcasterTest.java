@@ -98,6 +98,24 @@ class LiveFeedBroadcasterTest {
     }
 
     @Test
+    void framesCarryOnlyMarkerFields() throws Exception {
+        WebSocketSession healthy = session("healthy");
+        List<String> received = new CopyOnWriteArrayList<>();
+        doAnswer(inv -> {
+            received.add(((TextMessage) inv.getArgument(0)).getPayload());
+            return null;
+        }).when(healthy).sendMessage(any(WebSocketMessage.class));
+        broadcaster.afterConnectionEstablished(healthy);
+
+        broadcaster.onPositionsPersisted(new PositionsPersistedEvent(List.of(position("aaaaaa", 59.0, 18.0))));
+
+        Thread.sleep(300);
+        assertThat(received).singleElement().asString()
+                .contains("\"icao24\"", "\"callsign\"", "\"observedAt\"", "\"latitude\"", "\"longitude\"", "\"headingDeg\"", "\"onGround\"")
+                .doesNotContain("altitudeM", "velocityMs", "verticalRateMs", "agentSource", "\"id\"");
+    }
+
+    @Test
     void contextCloseClosesEverySessionWithGoingAway() throws Exception {
         WebSocketSession a = session("a");
         WebSocketSession b = session("b");

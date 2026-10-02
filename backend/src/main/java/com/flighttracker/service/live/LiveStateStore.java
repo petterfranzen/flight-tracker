@@ -3,6 +3,7 @@ package com.flighttracker.service.live;
 import com.flighttracker.dto.Bounds;
 import com.flighttracker.dto.ClusterPoint;
 import com.flighttracker.dto.LiveMarker;
+import com.flighttracker.dto.LiveOverview;
 import com.flighttracker.model.FlightPosition;
 import com.flighttracker.repository.Timestamps;
 import com.flighttracker.service.LiveVisibilityWindows;
@@ -284,6 +285,43 @@ public class LiveStateStore {
         return count;
     }
 
+    private List<LiveAircraft> activeInBounds(Instant staleAirborneCutoff, Instant landedCutoff, Instant activeSince, Bounds bounds) {
+        List<LiveAircraft> out = new ArrayList<>();
+        for (LiveAircraft a : byIcao24.values()) {
+            if (!isLive(a, staleAirborneCutoff, landedCutoff)) continue;
+            if (a.onGround() || a.observedAt().isBefore(activeSince)) continue;
+            if (!bounds.contains(a.displayLatitude(), a.displayLongitude())) continue;
+            out.add(a);
+        }
+        return out;
+    }
+
+    /** Groups aircraft into {@code gridDeg} cells; each cluster sits at the mean position of its members. */
+    private static List<ClusterPoint> bucket(List<LiveAircraft> aircraft, double gridDeg) {
+        record BucketKey(double lat, double lon) { }
+        final class Sum {
+            long count;
+            double lat;
+            double lon;
+        }
+        Map<BucketKey, Sum> cells = new HashMap<>();
+        for (LiveAircraft a : aircraft) {
+            double lat = a.displayLatitude();
+            double lon = a.displayLongitude();
+            double bucketLat = Math.floor(lat / gridDeg) * gridDeg;
+            double bucketLon = Math.floor(lon / gridDeg) * gridDeg;
+            Sum sum = cells.computeIfAbsent(new BucketKey(bucketLat, bucketLon), k -> new Sum());
+            sum.count++;
+            sum.lat += lat;
+            sum.lon += lon;
+        }
+        List<ClusterPoint> out = new ArrayList<>(cells.size());
+        for (Sum sum : cells.values()) {
+            out.add(new ClusterPointView(sum.lat / sum.count, sum.lon / sum.count, sum.count));
+        }
+        return out;
+    }
+
     /**
      * Aggregates the live aircraft in {@code bounds} into grid cells of
      * {@code gridDeg} (the same floor(coalesced-lat/gridDeg)*gridDeg
@@ -304,31 +342,49 @@ public class LiveStateStore {
      * FlightController's MIN/MAX_CLUSTER_GRID_DEG).
      */
     public List<ClusterPoint> clustered(Instant staleAirborneCutoff, Instant landedCutoff, Instant activeSince, Bounds bounds, double gridDeg) {
-        record BucketKey(double lat, double lon) { }
-        final class Sum {
-            long count;
-            double lat;
-            double lon;
+        return bucket(activeInBounds(staleAirborneCutoff, landedCutoff, activeSince, bounds), gridDeg);
+    }
+
+    /**
+     * The zoomed-out map in one answer: up to {@code maxPlanes} of the
+     * <em>most active</em> aircraft in {@code bounds}, to be drawn as planes,
+     * and {@link #clustered}-style bubbles for all the rest of the active
+     * traffic. An aircraft returned as a plane is not counted in any bubble,
+     * so planes plus bubble counts is the active traffic in view.
+     *
+     * "Most active" is the fastest airborne aircraft (cruising jets over
+     * slow light aircraft and helicopters), newest report as the tie-break.
+     * At most {@code perCell} are taken from any one grid cell, so a hub
+     * can't use up the whole allowance and every populated area of the
+     * viewport shows some real planes alongside its bubble. gridDeg is
+     * trusted as already clamped by the caller.
+     */
+    public LiveOverview overview(Instant staleAirborneCutoff, Instant landedCutoff, Instant activeSince, Bounds bounds,
+                                 double gridDeg, int maxPlanes, int perCell) {
+        List<LiveAircraft> active = activeInBounds(staleAirborneCutoff, landedCutoff, activeSince, bounds);
+        active.sort((a, b) -> {
+            double va = a.velocityMs() != null ? a.velocityMs() : -1;
+            double vb = b.velocityMs() != null ? b.velocityMs() : -1;
+            if (va != vb) return Double.compare(vb, va);
+            int byRecency = b.observedAt().compareTo(a.observedAt());
+            return byRecency != 0 ? byRecency : a.icao24().compareTo(b.icao24());
+        });
+
+        List<LiveMarker> planes = new ArrayList<>();
+        List<LiveAircraft> rest = new ArrayList<>();
+        Map<String, Integer> perCellTaken = new HashMap<>();
+        for (LiveAircraft a : active) {
+            String cell = Math.floor(a.displayLatitude() / gridDeg) + "," + Math.floor(a.displayLongitude() / gridDeg);
+            int taken = perCellTaken.getOrDefault(cell, 0);
+            if (planes.size() < maxPlanes && taken < perCell) {
+                perCellTaken.put(cell, taken + 1);
+                planes.add(new LiveMarkerView(a.icao24(), a.callsign(), a.observedAt(),
+                        a.displayLatitude(), a.displayLongitude(), a.headingDeg(), a.onGround()));
+            } else {
+                rest.add(a);
+            }
         }
-        Map<BucketKey, Sum> cells = new HashMap<>();
-        for (LiveAircraft a : byIcao24.values()) {
-            if (!isLive(a, staleAirborneCutoff, landedCutoff)) continue;
-            if (a.onGround() || a.observedAt().isBefore(activeSince)) continue;
-            double lat = a.displayLatitude();
-            double lon = a.displayLongitude();
-            if (!bounds.contains(lat, lon)) continue;
-            double bucketLat = Math.floor(lat / gridDeg) * gridDeg;
-            double bucketLon = Math.floor(lon / gridDeg) * gridDeg;
-            Sum sum = cells.computeIfAbsent(new BucketKey(bucketLat, bucketLon), k -> new Sum());
-            sum.count++;
-            sum.lat += lat;
-            sum.lon += lon;
-        }
-        List<ClusterPoint> out = new ArrayList<>(cells.size());
-        for (Sum sum : cells.values()) {
-            out.add(new ClusterPointView(sum.lat / sum.count, sum.lon / sum.count, sum.count));
-        }
-        return out;
+        return new LiveOverview(planes, bucket(rest, gridDeg));
     }
 
     /**

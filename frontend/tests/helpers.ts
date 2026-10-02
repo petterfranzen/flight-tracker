@@ -46,7 +46,7 @@ export interface ClusterPointFixture {
  */
 export async function mockFlightApi(
   page: Page,
-  opts?: { historyDelayMs?: Record<string, number>; clusters?: ClusterPointFixture[]; appDefaultTheme?: boolean },
+  opts?: { historyDelayMs?: Record<string, number>; clusters?: ClusterPointFixture[]; overviewPlanes?: unknown[]; appDefaultTheme?: boolean },
 ) {
   // Pin the plain theme unless a test is about the app's default (cyberpunk)
   // theme: the cyberpunk boot screen waits for a WebGL basemap, which in CI
@@ -62,6 +62,10 @@ export async function mockFlightApi(
     });
   }
   await page.route("**/api/flights/live/clusters*", (route: Route) => route.fulfill({ json: opts?.clusters ?? [] }));
+  // The zoomed-out fetch: top active aircraft (none by default) plus the same clusters.
+  await page.route("**/api/flights/live/overview*", (route: Route) =>
+    route.fulfill({ json: { planes: opts?.overviewPlanes ?? [], clusters: opts?.clusters ?? [] } }),
+  );
   await page.route("**/api/flights/live*", (route: Route) => route.fulfill({ json: LIVE_FIXTURE }));
 
   // FlightMap's dedicated priority poll for the selected aircraft (see

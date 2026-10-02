@@ -5,13 +5,14 @@ import { loadTheme, saveTheme } from "./theme";
 import type { Theme } from "./theme";
 import type { FavoriteAircraft, FavoriteRoute } from "./favorites";
 import { loadFavoriteAircraft, loadFavoriteRoutes, toggleFavoriteAircraft, toggleFavoriteRoute } from "./favorites";
-import type { AirportSelection, Bounds, ClusterPoint, FlightPosition, LiveMarker, SelectedPosition } from "./types/flight";
+import type { AirportSelection, Bounds, ClusterPoint, FlightPosition, LiveMarker, LiveOverview, SelectedPosition } from "./types/flight";
 import {
   fetchAircraftDossier,
   fetchAirportInfo,
   fetchFlightLive,
   fetchHistory,
   fetchLiveClusters,
+  fetchLiveOverview,
   fetchLiveCount,
   fetchLivePositions,
   fetchPollingStatus,
@@ -179,6 +180,8 @@ function boot(): void {
   // was O(n) per WebSocket frame.
   const positions = new Map<string, LiveMarker>();
   let clusters: ClusterPoint[] = [];
+  // Zoomed out: the most active aircraft, drawn individually next to the clusters (see fetchLiveOverview).
+  let overviewPlanes: LiveMarker[] = [];
   // The grid `clusters` was computed with (a cached or in-flight view can be
   // for a different zoom than the one now on screen) — keys cluster markers.
   let clustersGridDeg = serverGridDeg(6);
@@ -198,7 +201,7 @@ function boot(): void {
   // Per zoom for clusters (the grid depends on it); for individual aircraft
   // any z>=CLUSTER_FETCH_MAX_ZOOM entry whose bbox covers the view will do,
   // so zooming in is served entirely from the parent view's data.
-  const clusterCache = new ViewCache<ClusterPoint[]>(VIEW_CACHE_MAX_ENTRIES, VIEW_CACHE_MAX_AGE_MS);
+  const clusterCache = new ViewCache<LiveOverview>(VIEW_CACHE_MAX_ENTRIES, VIEW_CACHE_MAX_AGE_MS);
   const liveCache = new ViewCache<LiveMarker[]>(VIEW_CACHE_MAX_ENTRIES, VIEW_CACHE_MAX_AGE_MS);
   let lastAppliedView: CachedView<unknown> | null = null;
 
@@ -272,14 +275,17 @@ function boot(): void {
     // doesn't cut it short.
     if (!belowServerClusterZoom) individualMarkersShown = !clientClustered;
 
+    // Zoomed out, the overview's top aircraft stand in for the individual
+    // markers; until one arrives the zoom-out fade above plays as before.
+    const overviewList = belowServerClusterZoom && overviewPlanes.length > 0 ? overviewPlanes.filter((p) => p.icao24 !== selectedId) : null;
     markerLayer.update({
-      unselected: showIndividually ? (belowServerClusterZoom ? unselectedList : drawnList) : [],
+      unselected: overviewList ?? (showIndividually ? (belowServerClusterZoom ? unselectedList : drawnList) : []),
       selectedPos,
       zoom,
-      exiting: belowServerClusterZoom,
+      exiting: belowServerClusterZoom && !overviewList,
       // Reports older than 2 h are drawn dimmed (see map/staleness.ts); only
       // worth computing when individual markers are actually shown.
-      dimmed: showIndividually ? agedIds(drawnList, nowMs) : undefined,
+      dimmed: overviewList ? agedIds(overviewList, nowMs) : showIndividually ? agedIds(drawnList, nowMs) : undefined,
     });
   }
 
@@ -305,7 +311,7 @@ function boot(): void {
     }
   }
 
-  function findCachedView(now: number): CachedView<ClusterPoint[]> | CachedView<LiveMarker[]> | null {
+  function findCachedView(now: number): CachedView<LiveOverview> | CachedView<LiveMarker[]> | null {
     if (!bounds) return null;
     return zoom < CLUSTER_FETCH_MAX_ZOOM
       ? clusterCache.find(bounds, (z) => z === zoom, now)
@@ -318,7 +324,9 @@ function boot(): void {
     if (!hit || hit === lastAppliedView) return hit;
     lastAppliedView = hit;
     if (zoom < CLUSTER_FETCH_MAX_ZOOM) {
-      clusters = hit.data as ClusterPoint[];
+      const overview = hit.data as LiveOverview;
+      clusters = overview.clusters;
+      overviewPlanes = overview.planes;
       clustersGridDeg = serverGridDeg(hit.zoom);
       renderAircraftLayer();
     } else {
@@ -360,13 +368,14 @@ function boot(): void {
     if (requestZoom < CLUSTER_FETCH_MAX_ZOOM) {
       const grid = serverGridDeg(requestZoom);
       const requestBounds = snapBounds(bounds, grid * 2);
-      fetchLiveClusters(requestBounds, grid, controller.signal)
-        .then((c) => {
-          const entry = { zoom: requestZoom, bbox: requestBounds, data: c, fetchedAt: Date.now() };
+      fetchLiveOverview(requestBounds, grid, controller.signal)
+        .then((overview) => {
+          const entry = { zoom: requestZoom, bbox: requestBounds, data: overview, fetchedAt: Date.now() };
           clusterCache.put(entry);
           if (controller.signal.aborted || zoom !== requestZoom) return;
           lastAppliedView = entry;
-          clusters = c;
+          clusters = overview.clusters;
+          overviewPlanes = overview.planes;
           clustersGridDeg = grid;
           renderAircraftLayer();
         })
@@ -405,6 +414,7 @@ function boot(): void {
     const clustered = nextZoom < CLUSTER_FETCH_MAX_ZOOM;
     if (clustered !== wasClustered) {
       clusters = [];
+      overviewPlanes = [];
       lastAppliedView = null;
     }
     if (clustered && !wasClustered) dropIndividualMarkersAfterFade();

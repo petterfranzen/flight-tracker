@@ -22,8 +22,8 @@ into the same jar. `README.md` covers the architecture.
   table's `origin_*`/`destination_*` columns are legacy.
   `AircraftEnrichmentService` writes them as null, and `AircraftController`
   overrides them with the callsign route (`withRoute`). Don't read them.
-- **WebSocket wire format: one `FlightPosition` JSON per frame**
-  (`LiveFeedBroadcaster`). `blackbox-tests/live-feed.test.js` and the
+- **WebSocket wire format: one `LiveFrame` JSON per frame**
+  (`LiveFeedBroadcaster`): marker fields only, no altitude/speed/vertical rate (the selected plane polls those). `blackbox-tests/live-feed.test.js` and the
   frontend depend on it.
 - **`/api/health` `version` is the git SHA** (`-Dgit.sha` → build-info →
   `HealthController`). `deploy/hetzner/deploy.sh` waits for exactly that

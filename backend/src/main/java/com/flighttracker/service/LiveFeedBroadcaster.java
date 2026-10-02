@@ -8,6 +8,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.event.TransactionPhase;
 import org.springframework.transaction.event.TransactionalEventListener;
 import com.flighttracker.dto.Bounds;
+import com.flighttracker.dto.LiveFrame;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -144,7 +145,7 @@ public class LiveFeedBroadcaster extends TextWebSocketHandler implements SmartLi
         for (FlightPosition position : event.positions()) {
             if (!viewport.contains(position.latitude(), position.longitude())) continue;
             try {
-                messages.add(new TextMessage(mapper.writeValueAsString(position)));
+                messages.add(new TextMessage(mapper.writeValueAsString(LiveFrame.of(position))));
             } catch (IOException e) {
                 log.debug("Skipping unserializable position {}: {}", position.icao24(), e.toString());
             }
