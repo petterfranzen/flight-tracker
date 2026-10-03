@@ -67,11 +67,20 @@ const BUFFER_OPTIONS = {
   maxTileCacheZoomLevels: 8,
   fadeDuration: 0,
   refreshExpiredTiles: false,
+  // The canvas is rendered at the device pixel ratio by default; a 3x phone
+  // shades 2.25x the pixels of a 2x one for detail the eye can't tell on a
+  // map. Desktop and 2x displays are unchanged.
+  pixelRatio: Math.min(window.devicePixelRatio || 1, 2),
 };
+
+// Phones (same breakpoint as the rest of the mobile layout): a slower GPU and
+// CPU and a slower network, where the boot screen's wait is felt most.
+export const isSmallScreen = (): boolean => window.matchMedia("(max-width: 768px)").matches;
 
 // Upper bound on holding the boot screen for the basemap: a slow or
 // unreachable tile server must never trap anyone behind it.
 const BASEMAP_READY_CAP_MS = 5_000;
+const BASEMAP_READY_CAP_SMALL_MS = 3_000;
 
 export function createMaplibreLayer(): L.Layer {
   const layer = (
@@ -158,7 +167,7 @@ function patchZoomOutAnimation(layer: L.Layer): void {
 export async function whenBasemapReady(layer: L.Layer, warmNeighbourZooms: boolean): Promise<void> {
   const gl = (layer as unknown as { getMaplibreMap(): MaplibreMap | null }).getMaplibreMap();
   if (!gl) return;
-  const deadline = Date.now() + BASEMAP_READY_CAP_MS;
+  const deadline = Date.now() + (isSmallScreen() ? BASEMAP_READY_CAP_SMALL_MS : BASEMAP_READY_CAP_MS);
   const rendered = (): Promise<void> =>
     new Promise((resolve) => {
       if (gl.loaded() && gl.areTilesLoaded()) return resolve();

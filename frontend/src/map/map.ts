@@ -135,7 +135,7 @@ export function createMap(
     if (maplibreLayer || maplibreLoading) return;
     onBasemapReady(false);
     maplibreLoading = import("./maplibreBasemap")
-      .then(({ createMaplibreLayer, whenBasemapReady }) => {
+      .then(({ createMaplibreLayer, whenBasemapReady, isSmallScreen }) => {
         maplibreLoading = null;
         // setTheme may have flipped back to default while the chunk was
         // loading — guard against mounting a layer nobody wants anymore.
@@ -143,7 +143,9 @@ export function createMap(
         const layer = createMaplibreLayer();
         maplibreLayer = layer;
         layer.addTo(map);
-        return whenBasemapReady(layer, atBoot);
+        // Warming the neighbouring zoom levels is two more rounds of tile
+        // loading and rendering; worth it on a desktop, not on a phone.
+        return whenBasemapReady(layer, atBoot && !isSmallScreen());
       })
       .catch(() => {})
       .finally(() => onBasemapReady(true));
