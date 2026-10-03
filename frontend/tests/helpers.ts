@@ -46,7 +46,7 @@ export interface ClusterPointFixture {
  */
 export async function mockFlightApi(
   page: Page,
-  opts?: { historyDelayMs?: Record<string, number>; clusters?: ClusterPointFixture[]; overviewPlanes?: unknown[]; appDefaultTheme?: boolean },
+  opts?: { historyDelayMs?: Record<string, number>; clusters?: ClusterPointFixture[]; overviewPlanes?: unknown[]; geo?: { lat: number; lon: number } | null; appDefaultTheme?: boolean },
 ) {
   // Pin the plain theme unless a test is about the app's default (cyberpunk)
   // theme: the cyberpunk boot screen waits for a WebGL basemap, which in CI
@@ -62,6 +62,8 @@ export async function mockFlightApi(
     });
   }
   await page.route("**/api/flights/live/clusters*", (route: Route) => route.fulfill({ json: opts?.clusters ?? [] }));
+  // The visitor's approximate location: none (204) unless a test supplies one.
+  await page.route("**/api/geo", (route: Route) => (opts?.geo ? route.fulfill({ json: { ...opts.geo, precision: "city" } }) : route.fulfill({ status: 204 })));
   // The zoomed-out fetch: top active aircraft (none by default) plus the same clusters.
   await page.route("**/api/flights/live/overview*", (route: Route) =>
     route.fulfill({ json: { planes: opts?.overviewPlanes ?? [], clusters: opts?.clusters ?? [] } }),

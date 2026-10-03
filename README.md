@@ -42,6 +42,19 @@ independent of the always-on global sweep
 (`flighttracker.agents.global-sweep-interval-seconds`), which keeps the
 database current everywhere regardless of what anyone's looking at.
 
+## Where the map opens
+
+The map opens near the visitor rather than on a fixed view. `GET /api/geo`
+(`GeoLocator`) reads Cloudflare's visitor-location headers: `CF-IPLatitude` /
+`CF-IPLongitude` when the zone's **"Add visitor location headers"** managed
+transform is on (city level), otherwise `CF-IPCountry` (always sent), mapped
+to the country's capital. The result is coarse (rounded to 0.1 degree),
+never stored or logged, and answered `no-store`. With no headers (local dev)
+it returns 204 and the frontend keeps its default view (Stockholm). The
+frontend fetches it alongside the world traffic summary under the same short
+boot timeout, so it never delays the boot screen (`applyInitialView` in
+`main.ts`, `map/initialView.ts`). A VPN shows its exit location.
+
 ## Deploying
 
 GitHub Actions builds a single jar (backend + the built frontend bundled
