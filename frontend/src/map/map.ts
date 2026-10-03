@@ -179,8 +179,26 @@ export function createMap(
   }
   map.on("moveend", report);
 
+  // Leaflet caches the container's size and only re-reads it on a window
+  // resize. On a phone the container's size also changes with no window
+  // resize: the dynamic toolbars (dvh), the flex layout settling once other
+  // parts of the shell mount, a page restored from the back/forward cache.
+  // A stale size means tiles (and the GL basemap) cover only part of the
+  // screen. Re-measure on any change to the container or the visual viewport;
+  // invalidateSize is a no-op when nothing changed.
+  const remeasure = (): void => {
+    map.invalidateSize({ debounceMoveend: true });
+  };
+  const resizeObserver = typeof ResizeObserver !== "undefined" ? new ResizeObserver(remeasure) : null;
+  resizeObserver?.observe(container);
+  window.visualViewport?.addEventListener("resize", remeasure);
+  window.addEventListener("pageshow", remeasure);
+
   function destroy(): void {
     map.off("moveend", report);
+    resizeObserver?.disconnect();
+    window.visualViewport?.removeEventListener("resize", remeasure);
+    window.removeEventListener("pageshow", remeasure);
     unmountMaplibre();
     map.remove();
   }
