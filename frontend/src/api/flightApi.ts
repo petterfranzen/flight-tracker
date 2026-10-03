@@ -57,6 +57,23 @@ export async function fetchLiveOverview(bounds: Bounds, gridDeg: number, signal?
 }
 
 /**
+ * The visitor's approximate location (server: GeoLocator, from Cloudflare's
+ * visitor-location headers), or null when there is none (204: local dev, no
+ * headers) or the request fails. Coarse, ~11 km. Only ever used to choose the
+ * opening view, so every failure is just "no location".
+ */
+export async function fetchGeo(signal?: AbortSignal): Promise<{ lat: number; lon: number } | null> {
+  try {
+    const res = await fetch("/api/geo", { signal });
+    if (res.status !== 200) return null;
+    const g = (await res.json()) as { lat?: unknown; lon?: unknown };
+    return typeof g.lat === "number" && typeof g.lon === "number" ? { lat: g.lat, lon: g.lon } : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Worldwide count, independent of viewport — the "TRACKED" chip's own
  * number, not derived from whatever fetchLivePositions last returned for
  * the current viewport (that only ever covers what's on screen). A plain

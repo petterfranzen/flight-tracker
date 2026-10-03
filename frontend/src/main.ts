@@ -13,6 +13,7 @@ import {
   fetchHistory,
   fetchLiveClusters,
   fetchLiveOverview,
+  fetchGeo,
   fetchLiveCount,
   fetchLivePositions,
   fetchPollingStatus,
@@ -872,14 +873,21 @@ function boot(): void {
     const startZoom = map.getZoom();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), INITIAL_VIEW_TIMEOUT_MS);
-    return fetchLiveClusters({ latMin: -90, latMax: 90, lonMin: -180, lonMax: 180 }, INITIAL_SUMMARY_GRID_DEG, controller.signal)
-      .then((summary) => {
+    // The visitor's approximate location (when the server has one) replaces
+    // the fixed default centre; fetched alongside the summary, under the same
+    // timeout, so it never holds the boot screen longer than the summary does.
+    const summaryRequest = fetchLiveClusters({ latMin: -90, latMax: 90, lonMin: -180, lonMax: 180 }, INITIAL_SUMMARY_GRID_DEG, controller.signal).catch(() => null);
+    return Promise.all([summaryRequest, fetchGeo(controller.signal)])
+      .then(([summary, geo]) => {
         // Someone (the user, a test) already moved the map: leave it alone.
-        const c = map.getCenter();
         // (Not strict equality: re-measuring the container can nudge the centre by a fraction of a pixel.)
+        const c = map.getCenter();
         if (map.getZoom() !== startZoom || Math.abs(c.lat - startCenter.lat) > 0.01 || Math.abs(c.lng - startCenter.lng) > 0.01) return;
-        const view = pickInitialView(summary, DEFAULT_VIEW, { width: mapRoot.clientWidth, height: mapRoot.clientHeight });
+        const center = geo ?? DEFAULT_VIEW;
+        const view = summary ? pickInitialView(summary, center, { width: mapRoot.clientWidth, height: mapRoot.clientHeight }) : null;
         if (view) map.setView([view.lat, view.lon], view.zoom, { animate: false });
+        // No traffic data to choose a zoom from: still open where the visitor is.
+        else if (geo) map.setView([geo.lat, geo.lon], DEFAULT_VIEW.zoom, { animate: false });
       })
       .catch(() => {})
       .finally(() => clearTimeout(timer));

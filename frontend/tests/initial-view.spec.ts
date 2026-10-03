@@ -70,8 +70,8 @@ test.describe("pickInitialView (pure)", () => {
   });
 });
 
-async function open(page: import("@playwright/test").Page, clusters: ReturnType<typeof cell>[]) {
-  await mockFlightApi(page, { clusters });
+async function open(page: import("@playwright/test").Page, clusters: ReturnType<typeof cell>[], geo?: { lat: number; lon: number } | null) {
+  await mockFlightApi(page, { clusters, geo });
   await page.setViewportSize(DESKTOP);
   await page.goto("/");
   await page.waitForSelector(".leaflet-container", { timeout: 10_000 });
@@ -89,6 +89,31 @@ test.describe("opening view in the app", () => {
   test("opens at the default centre, zoom 8, when it already has enough traffic", async ({ page }) => {
     await open(page, [cell(59.4, 18.1, 60)]);
     await expect.poll(() => withMap(page, (m) => m.getZoom()), { timeout: 10_000 }).toBe(8);
+    const c = await withMap(page, (m) => m.getCenter());
+    expect(c.lat).toBeCloseTo(59.33, 1);
+    expect(c.lng).toBeCloseTo(18.06, 1);
+  });
+
+  const MANCHESTER = { lat: 53.5, lon: -2.2 };
+
+  test("opens near the visitor's location instead of the default, at a zoom with traffic", async ({ page }) => {
+    // Plenty of traffic around Stockholm too: without the visitor's location the default centre would win.
+    await open(page, [cell(53.4, -2.3, 40), cell(53.6, -2.1, 40), cell(59.4, 18.1, 120)], MANCHESTER);
+    await expect.poll(() => withMap(page, (m) => m.getCenter().lat), { timeout: 10_000 }).toBeCloseTo(53.5, 0);
+    const c = await withMap(page, (m) => m.getCenter());
+    expect(c.lng).toBeCloseTo(-2.2, 0);
+    expect(await withMap(page, (m) => m.getZoom())).toBeGreaterThanOrEqual(6);
+  });
+
+  test("a visitor's location with no traffic data still opens there, at the default zoom", async ({ page }) => {
+    await open(page, [], MANCHESTER);
+    await expect.poll(() => withMap(page, (m) => m.getCenter().lat), { timeout: 10_000 }).toBeCloseTo(53.5, 0);
+    expect(await withMap(page, (m) => m.getZoom())).toBe(6);
+  });
+
+  test("no location from the server keeps the default view", async ({ page }) => {
+    await open(page, [], null);
+    await page.waitForTimeout(1_500);
     const c = await withMap(page, (m) => m.getCenter());
     expect(c.lat).toBeCloseTo(59.33, 1);
     expect(c.lng).toBeCloseTo(18.06, 1);
