@@ -55,4 +55,17 @@ test.describe("active traffic vs parked aircraft", () => {
     await expect.poll(async () => page.locator(".cluster-icon").count(), { timeout: 10_000 }).toBeGreaterThan(0);
     await expect(page.locator(".plane-icon")).toHaveCount(0);
   });
+
+  test("a few arriving aircraft fade in; a big batch just appears", async ({ page }) => {
+    // One fade-in animation per marker is a long task when hundreds arrive at once (see MAX_FADE_IN_BATCH).
+    await serve(page, patch("a", 20, { onGround: false, ageMinutes: 1 }));
+    await expect.poll(async () => page.locator(".plane-icon").count(), { timeout: 10_000 }).toBe(20);
+    await expect(page.locator(".plane-icon--entering")).toHaveCount(20);
+  });
+
+  test("a big batch of arriving aircraft appears without a fade-in", async ({ page }) => {
+    await serve(page, patch("a", 120, { onGround: false, ageMinutes: 1 }));
+    await expect.poll(async () => page.locator(".plane-icon").count(), { timeout: 10_000 }).toBe(120);
+    await expect(page.locator(".plane-icon--entering")).toHaveCount(0);
+  });
 });

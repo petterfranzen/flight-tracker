@@ -129,10 +129,13 @@ export const CYBERPUNK_STYLE: StyleSpecification = {
       type: "line",
       source: "openmaptiles",
       "source-layer": "water",
+      // Gone by z14: every outline there is a pond or inlet, and the layer
+      // otherwise keeps drawing every water edge in view.
+      maxzoom: 14,
       paint: {
         "line-color": LAND_OUTLINE,
         "line-width": ["interpolate", ["linear"], ["zoom"], 2, 0.8, 10, 1.6],
-        "line-opacity": ["interpolate", ["linear"], ["zoom"], 8, 0.9, 13, 0.35],
+        "line-opacity": ["interpolate", ["linear"], ["zoom"], 8, 0.9, 13, 0.35, 14, 0],
       },
     },
     {
@@ -155,6 +158,8 @@ export const CYBERPUNK_STYLE: StyleSpecification = {
       id: "graticule-coarse",
       type: "line",
       source: "graticuleCoarse",
+      // Fully faded at z9 (below), so nothing past it needs drawing.
+      maxzoom: 9,
       paint: {
         "line-color": GRID_COLOR,
         "line-width": 1,
@@ -166,6 +171,7 @@ export const CYBERPUNK_STYLE: StyleSpecification = {
       type: "line",
       source: "graticuleFine",
       minzoom: 6,
+      maxzoom: 13, // fully faded at z13 (below)
       paint: {
         "line-color": GRID_COLOR,
         "line-width": 1,

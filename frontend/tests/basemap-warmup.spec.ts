@@ -48,7 +48,7 @@ test("the GL canvas renders a margin around the viewport", async ({ page }) => {
     canvas.evaluate((c) => c.getBoundingClientRect().width),
     page.evaluate(() => document.querySelector(".leaflet-container")!.getBoundingClientRect().width),
   ]);
-  expect(cw / vw).toBeCloseTo(1.5, 1);
+  expect(cw / vw).toBeCloseTo(1.2, 1); // padding 0.1 on each side
 });
 
 test("an unreachable tile server can't hold the boot screen forever", async ({ page }) => {
