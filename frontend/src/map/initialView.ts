@@ -13,6 +13,15 @@ export const INITIAL_MIN_PLANES = 25;
 export const INITIAL_MAX_PLANES = 300;
 export const INITIAL_ZOOM = 8;
 export const INITIAL_ZOOM_DENSE = 9;
+/**
+ * Zooms tried, in order, around the default centre before leaving the area:
+ * a phone's small window (or a quiet night) can hold too few planes at zoom 8
+ * and still plenty one or two levels out (the zoomed-out map draws the most
+ * active aircraft individually, so these are not bubbles-only views).
+ */
+export const LOCAL_ZOOMS = [INITIAL_ZOOM, 7, 6];
+/** Below this many planes even at the widest local zoom, the area is empty: look elsewhere. */
+export const LOCAL_EMPTY_BELOW = 10;
 
 export interface LatLon {
   lat: number;
@@ -45,12 +54,20 @@ function zoomFor(planes: number): number {
 
 /**
  * The opening view, or null to keep the default (no usable traffic data).
- * Prefers the default centre when it already has enough planes; otherwise
- * the busiest window in the world, ties going to the one nearest the default.
+ * Stays where the default centre is: the first of LOCAL_ZOOMS that has enough
+ * planes (one level closer if crowded at zoom 8). Only when that area is empty
+ * even at the widest local zoom does it move to the busiest window in the
+ * world (at zoom 8), ties going to the one nearest the default. A sparse but
+ * not empty area keeps the default view.
  */
 export function pickInitialView(clusters: ClusterPoint[], defaultCenter: LatLon, viewport: { width: number; height: number }): InitialView | null {
-  const here = planesInWindow(clusters, defaultCenter, INITIAL_ZOOM, viewport);
-  if (here >= INITIAL_MIN_PLANES) return { ...defaultCenter, zoom: zoomFor(here), planes: here };
+  let widest = 0;
+  for (const zoom of LOCAL_ZOOMS) {
+    const here = planesInWindow(clusters, defaultCenter, zoom, viewport);
+    widest = here;
+    if (here >= INITIAL_MIN_PLANES) return { ...defaultCenter, zoom: zoom === INITIAL_ZOOM ? zoomFor(here) : zoom, planes: here };
+  }
+  if (widest >= LOCAL_EMPTY_BELOW) return null;
 
   let best: InitialView | null = null;
   let bestDist = Infinity;

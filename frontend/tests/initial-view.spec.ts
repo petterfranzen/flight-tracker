@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { INITIAL_MAX_PLANES, INITIAL_MIN_PLANES, pickInitialView, planesInWindow } from "../src/map/initialView";
+import { INITIAL_MAX_PLANES, INITIAL_MIN_PLANES, LOCAL_EMPTY_BELOW, pickInitialView, planesInWindow } from "../src/map/initialView";
 import { mockFlightApi, setMapView, withMap } from "./helpers";
 
 // The map opens where there is traffic, at a zoom that draws individual
@@ -33,9 +33,23 @@ test.describe("pickInitialView (pure)", () => {
     expect(v.planes).toBe(200);
   });
 
+  test("a quiet window zooms out around the default centre before leaving the area", () => {
+    // 20 planes at zoom 8 (< 25), but 80 within reach one level out: stay in Stockholm at zoom 7.
+    const summary = [cell(59.33, 18.06, 20), cell(59.33, 23.5, 30), cell(59.33, 12.6, 30), cell(40, -3, 900)];
+    expect(planesInWindow(summary, DEFAULT, 8, DESKTOP)).toBe(20);
+    const v = pickInitialView(summary, DEFAULT, DESKTOP)!;
+    expect(v.lat).toBe(DEFAULT.lat);
+    expect(v.zoom).toBe(7);
+    expect(v.planes).toBe(80);
+  });
+
+  test("a sparse (not empty) area keeps the default view instead of leaving", () => {
+    expect(pickInitialView([cell(59.4, 18.1, LOCAL_EMPTY_BELOW + 2), cell(40, -3, 900)], DEFAULT, DESKTOP)).toBeNull();
+  });
+
   test("equally busy areas: the one nearest the default wins", () => {
-    const v = pickInitialView([cell(35, 139, 100), cell(55, 10, 100)], DEFAULT, DESKTOP)!;
-    expect(v.lat).toBe(55);
+    const v = pickInitialView([cell(35, 139, 100), cell(50, 8, 100)], DEFAULT, DESKTOP)!;
+    expect(v.lat).toBe(50);
   });
 
   test("returns null (keep the default view) when nowhere has enough traffic", () => {
@@ -48,8 +62,11 @@ test.describe("pickInitialView (pure)", () => {
     const summary = [cell(59.33, 16.06, 10), cell(59.33, 18.06, 10), cell(59.33, 20.06, 10)];
     expect(planesInWindow(summary, DEFAULT, 8, DESKTOP)).toBe(30);
     expect(planesInWindow(summary, DEFAULT, 8, PHONE)).toBe(10);
-    expect(pickInitialView(summary, DEFAULT, DESKTOP)).not.toBeNull();
-    expect(pickInitialView(summary, DEFAULT, PHONE)).toBeNull();
+    expect(pickInitialView(summary, DEFAULT, DESKTOP)!.zoom).toBe(8);
+    // The phone zooms out around the same centre rather than jumping elsewhere (the Stockholm-to-Orlando bug).
+    const phone = pickInitialView([...summary, cell(28.4, -81.3, 900)], DEFAULT, PHONE)!;
+    expect(phone.lat).toBe(DEFAULT.lat);
+    expect(phone.zoom).toBe(7);
   });
 });
 
