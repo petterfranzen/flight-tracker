@@ -752,6 +752,8 @@ function boot(): void {
   // ---- map + layers ----
   const mapController = createMap(mapRoot, initialTheme, handleViewportChange, (ready) => store.set("basemapReady", ready));
   const map = mapController.map;
+  // ?debug: a read-only diagnostics panel for a misbehaving device (ui/debugOverlay.ts).
+  if (new URLSearchParams(location.search).has("debug")) import("./ui/debugOverlay").then((m) => m.mountDebugOverlay(map)).catch(() => {});
   const markerLayer = createMarkerLayer(map, handleSelectAircraft);
   const clusterLayer = createClusterLayer(map);
   const routeLayer = createRouteLayer(map);
@@ -874,7 +876,8 @@ function boot(): void {
       .then((summary) => {
         // Someone (the user, a test) already moved the map: leave it alone.
         const c = map.getCenter();
-        if (map.getZoom() !== startZoom || c.lat !== startCenter.lat || c.lng !== startCenter.lng) return;
+        // (Not strict equality: re-measuring the container can nudge the centre by a fraction of a pixel.)
+        if (map.getZoom() !== startZoom || Math.abs(c.lat - startCenter.lat) > 0.01 || Math.abs(c.lng - startCenter.lng) > 0.01) return;
         const view = pickInitialView(summary, DEFAULT_VIEW, { width: mapRoot.clientWidth, height: mapRoot.clientHeight });
         if (view) map.setView([view.lat, view.lon], view.zoom, { animate: false });
       })
