@@ -172,6 +172,9 @@ export interface MarkerLayerUpdate {
   dimmed?: ReadonlySet<string>;
 }
 
+// Most aircraft that may fade in together; a bigger batch appears at once.
+const MAX_FADE_IN_BATCH = 40;
+
 export interface MarkerLayerHandle {
   update(params: MarkerLayerUpdate): void;
   destroy(): void;
@@ -187,11 +190,11 @@ export interface MarkerLayerHandle {
 export function createMarkerLayer(map: L.Map, onSelect: (p: LiveMarker) => void): MarkerLayerHandle {
   const entries = new Map<string, MarkerEntry>();
 
-  function buildEntry(p: LiveMarker, selected: boolean, roundedZoom: number, exiting: boolean, dimmed: boolean): MarkerEntry {
+  function buildEntry(p: LiveMarker, selected: boolean, roundedZoom: number, exiting: boolean, dimmed: boolean, entering: boolean): MarkerEntry {
     const known = p.headingDeg != null;
     const headingRef = { current: known ? (p.headingDeg as number) : 0 };
     const callsignRef = { current: p.callsign?.trim() || p.icao24.toUpperCase() };
-    const options = planeIconOptions(known, selected, roundedZoom, true, exiting, dimmed);
+    const options = planeIconOptions(known, selected, roundedZoom, entering, exiting, dimmed);
     const icon = new RotatingPlaneIcon(options, headingRef, callsignRef);
     const marker = L.marker([p.latitude, p.longitude], { icon });
     const entry = {} as MarkerEntry;
@@ -254,6 +257,13 @@ export function createMarkerLayer(map: L.Map, onSelect: (p: LiveMarker) => void)
   function update({ unselected, selectedPos, zoom, exiting, dimmed }: MarkerLayerUpdate): void {
     const roundedZoom = Math.round(zoom);
     const seen = new Set<string>();
+    // A one-shot fade-in per marker is a compositor layer and an animation
+    // each: fine for a few aircraft appearing, a long task for hundreds at
+    // once (a zoom or a fetch that replaces most of the view), so a big
+    // batch just appears.
+    let arriving = 0;
+    for (const p of unselected) if (!entries.has(p.icao24)) arriving++;
+    const fadeIn = arriving <= MAX_FADE_IN_BATCH;
 
     for (const p of unselected) {
       const existing = entries.get(p.icao24);
@@ -264,7 +274,7 @@ export function createMarkerLayer(map: L.Map, onSelect: (p: LiveMarker) => void)
         // Never build a marker just to fade it out: an exiting render only
         // fades what is already on the map.
         seen.add(p.icao24);
-        entries.set(p.icao24, buildEntry(p, false, roundedZoom, exiting, dimmed?.has(p.icao24) ?? false));
+        entries.set(p.icao24, buildEntry(p, false, roundedZoom, exiting, dimmed?.has(p.icao24) ?? false, fadeIn));
       }
     }
 
@@ -273,7 +283,7 @@ export function createMarkerLayer(map: L.Map, onSelect: (p: LiveMarker) => void)
       const existing = entries.get(selectedPos.icao24);
       // Selected marker never fades (exiting is always false for it).
       if (existing) applyEntry(existing, selectedPos, true, roundedZoom, false, false);
-      else entries.set(selectedPos.icao24, buildEntry(selectedPos, true, roundedZoom, false, false));
+      else entries.set(selectedPos.icao24, buildEntry(selectedPos, true, roundedZoom, false, false, true));
     }
 
     for (const [icao24, entry] of entries) {

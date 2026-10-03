@@ -51,6 +51,11 @@ setWorkerUrl(maplibreWorkerUrl);
 // Buffers that keep zooming and panning from looking like a redraw:
 //  - padding: the GL canvas is this fraction of the viewport larger on every
 //    side, so a pan reveals map that's already rendered (plugin default 0.1).
+//    Every layer's fill cost scales with the canvas area ((1 + 2p)^2: 2.25x
+//    the viewport at 0.25, 1.44x at 0.1), and measured on the live basemap
+//    0.25 -> 0.1 cut a frame by 27-37% at z6/z9/z12. Zoom-outs no longer
+//    lean on the margin (see patchZoomOutAnimation), so it only has to
+//    cover a pan.
 //  - maxTileCacheZoomLevels: how many zoom levels of tiles stay cached
 //    (MapLibre default 5), so zooming back out or in redraws from memory.
 //  - fadeDuration 0: labels appear at once instead of fading in again after
@@ -58,7 +63,7 @@ setWorkerUrl(maplibreWorkerUrl);
 //  - refreshExpiredTiles false: tiles already loaded aren't re-fetched just
 //    because their cache headers expired mid-session.
 const BUFFER_OPTIONS = {
-  padding: 0.25,
+  padding: 0.1,
   maxTileCacheZoomLevels: 8,
   fadeDuration: 0,
   refreshExpiredTiles: false,
