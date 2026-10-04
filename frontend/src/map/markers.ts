@@ -10,22 +10,36 @@ export const PLANE_SVG = `<svg viewBox="0 0 24 24" aria-hidden="true">
   <path d="M12 2 L19 20 L12 16 L5 20 Z" />
 </svg>`;
 
-const ICON_SIZE = 30;
-const SELECTED_ICON_SIZE = 44;
+const ICON_SIZE = 36;
+const SELECTED_ICON_SIZE = 50;
 const MOBILE_BREAKPOINT_PX = 768;
-const MOBILE_ICON_SIZE = 40;
-const MOBILE_SELECTED_ICON_SIZE = 54;
+const MOBILE_ICON_SIZE = 46;
+const MOBILE_SELECTED_ICON_SIZE = 60;
 
 // Aircraft icons shrink toward this floor as you zoom out; full size from
 // FULL_SIZE_ZOOM (== SELECTED_MIN_ZOOM in map.ts) upward.
 const MIN_ICON_SIZE_PX = 9;
 const FULL_SIZE_ZOOM = 10;
 
+// Zoomed in there is room (and a bigger target to hit): icons keep growing
+// past full size, up to GROWN_ICON_FACTOR times it at GROWN_ICON_ZOOM.
+const GROWN_ICON_ZOOM = 14;
+const GROWN_ICON_FACTOR = 1.4;
+
 function scaleIconSize(base: number, zoom: number): number {
-  if (zoom >= FULL_SIZE_ZOOM) return base;
+  if (zoom >= FULL_SIZE_ZOOM) {
+    const t = Math.min(1, (zoom - FULL_SIZE_ZOOM) / (GROWN_ICON_ZOOM - FULL_SIZE_ZOOM));
+    return Math.round(base * (1 + (GROWN_ICON_FACTOR - 1) * t));
+  }
   const t = Math.max(0, zoom) / FULL_SIZE_ZOOM;
   return Math.round(MIN_ICON_SIZE_PX + (base - MIN_ICON_SIZE_PX) * t);
 }
+
+// A plane with nothing near it gets an invisible click margin of this many
+// px on every side (the `plane-icon--roomy` class, see FlightMap.css).
+// "Nothing near": no other marker whose box the margin would touch.
+const HIT_PAD_PX = 14;
+const HIT_PAD_MOBILE_PX = 20;
 
 /**
  * A DivIcon that stamps the current rotation onto its glyph the moment
@@ -75,6 +89,8 @@ function iconParamsKey(p: IconParams): string {
 // these shared, immutable options.
 const iconOptionsCache = new Map<string, L.DivIconOptions>();
 
+const isMobileScreen = (): boolean => window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT_PX}px)`).matches;
+
 function planeIconOptions(known: boolean, selected: boolean, zoom: number, entering: boolean, exiting: boolean, dimmed: boolean): L.DivIconOptions {
   const key = iconParamsKey({ known, selected, zoom, entering, exiting, dimmed });
   const cached = iconOptionsCache.get(key);
@@ -116,6 +132,8 @@ interface MarkerEntry {
   rotationDeg: number;
   selected: boolean;
   dimmed: boolean;
+  // Whether the extra click margin is on right now (see markRoomy).
+  roomy: boolean;
 }
 
 function compareKey(known: boolean, selected: boolean, zoom: number, exiting: boolean, dimmed: boolean): string {
@@ -212,6 +230,7 @@ export function createMarkerLayer(map: L.Map, onSelect: (p: LiveMarker) => void)
       rotationDeg: headingRef.current,
       selected,
       dimmed,
+      roomy: false,
     });
   }
 
@@ -239,6 +258,7 @@ export function createMarkerLayer(map: L.Map, onSelect: (p: LiveMarker) => void)
       } else {
         // Rebuilt icon picks the heading up from headingRef in createIcon.
         entry.marker.setIcon(new RotatingPlaneIcon(options, entry.headingRef, entry.callsignRef));
+        entry.roomy = false; // the new element has no margin class yet; markRoomy re-adds it
         entry.compareKey = nextKey;
         entry.rotationDeg = rotationDeg;
         return;
@@ -252,6 +272,58 @@ export function createMarkerLayer(map: L.Map, onSelect: (p: LiveMarker) => void)
       if (glyph) glyph.style.transform = `rotate(${rotationDeg}deg)`;
       entry.rotationDeg = rotationDeg;
     }
+  }
+
+  /**
+   * Gives every marker with open space around it a bigger click target.
+   * Markers are bucketed on a screen-space grid (cell = the distance under
+   * which two markers' margins could meet), so each only looks at the nine
+   * cells around it: linear in the marker count, not quadratic. Symmetric by
+   * construction: if A is close to B, neither is roomy.
+   */
+  function markRoomy(exiting: boolean): void {
+    const pad = isMobileScreen() ? HIT_PAD_MOBILE_PX : HIT_PAD_PX;
+    const pts: { entry: MarkerEntry; x: number; y: number; reach: number }[] = [];
+    let maxReach = 0;
+    for (const entry of entries.values()) {
+      const size = (entry.marker.options.icon?.options.iconSize as [number, number] | undefined)?.[0] ?? ICON_SIZE;
+      const { x, y } = map.latLngToContainerPoint(entry.marker.getLatLng());
+      const reach = size + 2 * pad; // centre distance under which this marker's margin touches a neighbour's glyph box
+      if (reach > maxReach) maxReach = reach;
+      pts.push({ entry, x, y, reach });
+    }
+    const cell = Math.max(maxReach, 1);
+    const grid = new Map<string, number[]>();
+    pts.forEach((p, i) => {
+      const key = `${Math.floor(p.x / cell)},${Math.floor(p.y / cell)}`;
+      const bucket = grid.get(key);
+      if (bucket) bucket.push(i);
+      else grid.set(key, [i]);
+    });
+    pts.forEach((p, i) => {
+      let roomy = !exiting;
+      const cx = Math.floor(p.x / cell);
+      const cy = Math.floor(p.y / cell);
+      for (let dx = -1; roomy && dx <= 1; dx++) {
+        for (let dy = -1; roomy && dy <= 1; dy++) {
+          for (const j of grid.get(`${cx + dx},${cy + dy}`) ?? []) {
+            if (j === i) continue;
+            const q = pts[j];
+            const reach = Math.max(p.reach, q.reach);
+            if (Math.abs(p.x - q.x) < reach && Math.abs(p.y - q.y) < reach) {
+              roomy = false;
+              break;
+            }
+          }
+        }
+      }
+      if (roomy === p.entry.roomy) return;
+      const el = p.entry.marker.getElement();
+      if (!el) return;
+      p.entry.roomy = roomy;
+      el.classList.toggle("plane-icon--roomy", roomy);
+      if (roomy) el.style.setProperty("--hit-pad", `${pad}px`);
+    });
   }
 
   function update({ unselected, selectedPos, zoom, exiting, dimmed }: MarkerLayerUpdate): void {
@@ -292,6 +364,7 @@ export function createMarkerLayer(map: L.Map, onSelect: (p: LiveMarker) => void)
         entries.delete(icao24);
       }
     }
+    markRoomy(exiting);
   }
 
   function destroy(): void {
