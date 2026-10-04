@@ -1,6 +1,8 @@
 package com.flighttracker.service.agent;
 
 import com.flighttracker.repository.AircraftRepository;
+import com.flighttracker.service.LiveVisibilityWindows;
+import com.flighttracker.service.live.LiveStateStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -81,6 +83,7 @@ public class PositionRetentionService {
     private final JdbcTemplate jdbcTemplate;
     private final AircraftRepository aircraftRepository;
     private final Clock clock;
+    private final LiveStateStore liveStateStore;
     // Each batch commits on its own. Deliberately a TransactionTemplate
     // rather than a @Transactional method on this class: Spring's
     // @Transactional works through a proxy, so a self-invoked call from the
@@ -122,11 +125,13 @@ public class PositionRetentionService {
     public PositionRetentionService(JdbcTemplate jdbcTemplate,
                                      AircraftRepository aircraftRepository,
                                      TransactionTemplate transactionTemplate,
-                                     Clock clock) {
+                                     Clock clock,
+                                     LiveStateStore liveStateStore) {
         this.jdbcTemplate = jdbcTemplate;
         this.aircraftRepository = aircraftRepository;
         this.transactionTemplate = transactionTemplate;
         this.clock = clock;
+        this.liveStateStore = liveStateStore;
     }
 
     /**
@@ -158,6 +163,12 @@ public class PositionRetentionService {
         }
 
         int staleAircraftDeleted = aircraftRepository.deleteStaleWithNoPositions(now.minus(AIRCRAFT_STALE_AFTER));
+
+        // The in-memory live set is pruned on the same cadence: an aircraft
+        // silent past every visibility window can't be live again without a
+        // new report, and keeping it only makes every request scan it.
+        int evicted = liveStateStore.evictSilentBefore(now.minus(LiveVisibilityWindows.LONGEST_VISIBILITY));
+        if (evicted > 0) log.info("live state: forgot {} aircraft silent for over {}", evicted, LiveVisibilityWindows.LONGEST_VISIBILITY);
 
         if (totalDeleted > 0) {
             // Reclaims pages the DELETE above just freed, in small,

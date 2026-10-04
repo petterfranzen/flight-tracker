@@ -81,12 +81,10 @@ public class LiveStateStore {
      * aircraft_latest_position was a real table surviving the restart on
      * its own; now that it's in memory, without this the map would show
      * nothing until each aircraft's next real report came in. Only rows
-     * newer than the longest LiveVisibilityWindows cutoff (48h — both
-     * STALE_AIRBORNE_BOUND and LANDED_VISIBILITY) are worth considering;
-     * anything older could never be "live" anyway. In practice this window
-     * is further bounded by whatever PositionRetentionService has left in
-     * flight_position (24h by default), so the query below never actually
-     * has to scan a full 48h of history.
+     * newer than the longest LiveVisibilityWindows cutoff
+     * (LONGEST_VISIBILITY) are worth considering; anything older could never
+     * be "live" anyway. In practice this window is further bounded by
+     * whatever PositionRetentionService has left in flight_position.
      *
      * One SQL statement, not one query per icao24: the landed_since streak
      * start (see LiveAircraft's own javadoc for what that means) is
@@ -103,7 +101,7 @@ public class LiveStateStore {
      */
     @PostConstruct
     void warmUp() {
-        Instant cutoff = clock.instant().minus(LiveVisibilityWindows.STALE_AIRBORNE_BOUND);
+        Instant cutoff = clock.instant().minus(LiveVisibilityWindows.LONGEST_VISIBILITY);
         String sql = """
             WITH windowed AS (
                 SELECT icao24, callsign, observed_at, latitude, longitude, altitude_m,
@@ -274,6 +272,31 @@ public class LiveStateStore {
                     a.displayLatitude(), a.displayLongitude(), a.headingDeg(), a.onGround()));
         }
         return out;
+    }
+
+    /**
+     * Forgets every aircraft whose last report is older than `cutoff`. The map
+     * used to only ever grow (aircraft were filtered when read, never
+     * removed), so every request scanned every aircraft seen since the last
+     * restart. With `cutoff` = now - LONGEST_VISIBILITY this never changes
+     * what isLive says: an aircraft silent that long is not live under
+     * either rule. One that reports again simply starts a new entry.
+     *
+     * @return how many were removed
+     */
+    public int evictSilentBefore(Instant cutoff) {
+        int before = byIcao24.size();
+        byIcao24.values().removeIf(a -> a.observedAt().isBefore(cutoff));
+        return before - byIcao24.size();
+    }
+
+    /** Aircraft in the air that reported since `activeSince` (the "active traffic" rule used by the clusters). */
+    public long countActive(Instant activeSince) {
+        long count = 0;
+        for (LiveAircraft a : byIcao24.values()) {
+            if (!a.onGround() && !a.observedAt().isBefore(activeSince)) count++;
+        }
+        return count;
     }
 
     /** Mirrors FlightPositionRepository.countLive. */

@@ -74,17 +74,19 @@ export async function fetchGeo(signal?: AbortSignal): Promise<{ lat: number; lon
 }
 
 /**
- * Worldwide count, independent of viewport — the "TRACKED" chip's own
- * number, not derived from whatever fetchLivePositions last returned for
- * the current viewport (that only ever covers what's on screen). A plain
- * count rather than reusing the bbox-less form of fetchLivePositions,
- * which would fetch every tracked aircraft's full row just to measure
- * how many there are.
+ * Worldwide count of *active* aircraft (in the air, reported within the last
+ * 2 h), independent of viewport — the "ACTIVE" chip's own number, not derived
+ * from whatever fetchLivePositions last returned for the current viewport
+ * (that only ever covers what's on screen). The server still remembers many
+ * more (landed or silent ones, shown dimmed up close); those are not what the
+ * chip counts. A plain count rather than reusing the bbox-less form of
+ * fetchLivePositions, which would fetch every row just to measure how many
+ * there are.
  */
 export async function fetchLiveCount(): Promise<number> {
   const mockCount = getMockPlaneCount();
   if (mockCount != null) return mockCount;
-  const res = await fetch("/api/flights/live/count");
+  const res = await fetch("/api/flights/live/count?active=true");
   if (!res.ok) throw new Error(`live count fetch failed: ${res.status}`);
   return res.json();
 }

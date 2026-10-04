@@ -95,8 +95,12 @@ public class FlightController {
      * plain count rather than reusing the bbox-less list endpoint.
      */
     @GetMapping("/live/count")
-    public long liveCount() {
+    public long liveCount(@RequestParam(defaultValue = "false") boolean active) {
         Instant now = Instant.now();
+        // active=true: only aircraft in the air that reported within
+        // ACTIVE_TRAFFIC_WINDOW (what the map's "ACTIVE" chip shows), not
+        // everything still remembered.
+        if (active) return liveStateStore.countActive(now.minus(LiveVisibilityWindows.ACTIVE_TRAFFIC_WINDOW));
         return liveStateStore.countLive(
                 now.minus(LiveVisibilityWindows.STALE_AIRBORNE_BOUND),
                 now.minus(LiveVisibilityWindows.LANDED_VISIBILITY));

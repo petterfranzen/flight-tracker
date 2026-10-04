@@ -14,20 +14,34 @@ import java.time.Duration;
  */
 public final class LiveVisibilityWindows {
 
-    // Outer bound for an airborne aircraft that's gone silent (feed gap or
-    // truly lost) — past this, presume it's no longer worth showing rather
-    // than keep it on the map indefinitely. Aircraft don't vanish — they
-    // land, sit at a gate, and eventually depart again under the same or a
-    // new callsign — so this is deliberately generous rather than tuned to
-    // "how long can an ADS-B gap plausibly last": 48 hours comfortably
-    // covers a plane sitting on the ground long after its last airborne
-    // report, not just a coverage gap mid-flight.
-    public static final Duration STALE_AIRBORNE_BOUND = Duration.ofHours(48);
+    // Outer bound for an airborne aircraft that has gone silent (feed gap or
+    // truly lost) — past this it is presumed to be on the ground somewhere
+    // and is dropped from the live set. 12 hours, measured on the live
+    // data: about 59,000 aircraft carried the "airborne" flag, of which only
+    // 13% had reported in the previous 30 minutes and 55% had been silent
+    // for over 12 hours. No flight stays in the air that long (the longest
+    // scheduled legs are about 18 hours, and a coverage gap covers only the
+    // ocean in the middle of one), so those are planes that landed and
+    // switched their transponder off; their last report still says
+    // "airborne, descending". Keeping them for 48 hours put ~70,000 aircraft
+    // on the map, most of them parked ghosts, and made every request scan
+    // them. Aircraft that land are not lost: LANDED_VISIBILITY covers the
+    // ones that report from the ground, and any aircraft is back as soon as
+    // it reports again.
+    public static final Duration STALE_AIRBORNE_BOUND = Duration.ofHours(12);
 
-    // How long a landed aircraft stays visible after touching down. Matched
-    // to STALE_AIRBORNE_BOUND for the same reason — a plane parked at the
-    // gate is exactly the case we want to keep showing, not prune quickly.
-    public static final Duration LANDED_VISIBILITY = Duration.ofHours(48);
+    // How long a landed aircraft stays visible after touching down: a plane
+    // parked at the gate is the case worth showing for a while, but a day
+    // (not two) is plenty — one that has been on the ground for 24 hours
+    // reappears the moment it reports again.
+    public static final Duration LANDED_VISIBILITY = Duration.ofHours(24);
+
+    // The longest of the two windows above: an aircraft silent for longer
+    // than this can never be live again without a new report, so it is safe
+    // to forget (LiveStateStore.evictSilentBefore) and is not worth loading
+    // back from the database after a restart.
+    public static final Duration LONGEST_VISIBILITY =
+            STALE_AIRBORNE_BOUND.compareTo(LANDED_VISIBILITY) >= 0 ? STALE_AIRBORNE_BOUND : LANDED_VISIBILITY;
 
     // An airborne aircraft that's gone silent this long *and* was
     // descending on its last report is presumed to have landed (and
@@ -36,8 +50,7 @@ public final class LiveVisibilityWindows {
     // freezes the flight-time counter and switches its status text to
     // "likely landed" once this fires — not to prune the aircraft from the
     // live view; it keeps showing (dead-reckoned to its destination, then
-    // parked there) for the same STALE_AIRBORNE_BOUND/LANDED_VISIBILITY
-    // window as everything else.
+    // parked there) until STALE_AIRBORNE_BOUND runs out.
     public static final Duration PRESUMED_LANDED_SILENCE = Duration.ofMinutes(30);
 
     // "Active traffic": in the air and reported within this long. What the
