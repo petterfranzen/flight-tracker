@@ -232,17 +232,33 @@ function boot(): void {
   let priorityPollTimer: ReturnType<typeof setInterval> | null = null;
 
   // ---- route ----
-  function appendRoutePoint(p: LiveMarker): void {
-    // Strictly-older only, not <=: the server can report an updated
-    // position for the same last-known fix without observedAt itself
-    // advancing (a dead-reckoned estimate projected further forward).
-    if (lastRouteObservedAt != null && p.observedAt < lastRouteObservedAt) return;
-    lastRouteObservedAt = p.observedAt;
-    const last = routePoints[routePoints.length - 1];
-    if (last && last.lat === p.latitude && last.lon === p.longitude) return;
-    routePoints = [...routePoints, { lat: p.latitude, lon: p.longitude, observedAt: p.observedAt }];
-    route = [...route, [p.latitude, p.longitude]];
+  // The trail is the real reports (routePoints) plus, at the end, one
+  // movable tip. The server dead-reckons a position forward from the last
+  // real report and sends it with that report's own observedAt, so a point
+  // with an unchanged observedAt is an estimate, not a new fix. Baking each
+  // one into the trail (as this used to) made it run past the real track
+  // whenever only polls were arriving (zoomed out, no live pushes), then
+  // zigzag back when the next real report landed.
+  let routeTip: [number, number] | null = null;
+  function drawRoute(): void {
+    route = routePoints.map((pt): [number, number] => [pt.lat, pt.lon]);
+    if (routeTip) route.push(routeTip);
     routeLayer.update(route);
+  }
+  function appendRoutePoint(p: LiveMarker): void {
+    if (lastRouteObservedAt != null && p.observedAt < lastRouteObservedAt) return;
+    const last = routePoints[routePoints.length - 1];
+    const sameSpot = last != null && last.lat === p.latitude && last.lon === p.longitude;
+    if (lastRouteObservedAt == null || p.observedAt > lastRouteObservedAt) {
+      // A new real report: it joins the trail and replaces any estimate.
+      lastRouteObservedAt = p.observedAt;
+      routeTip = null;
+      if (!sameSpot) routePoints = [...routePoints, { lat: p.latitude, lon: p.longitude, observedAt: p.observedAt }];
+    } else {
+      // Same report as the trail's last: an estimate, or the report itself.
+      routeTip = sameSpot ? null : [p.latitude, p.longitude];
+    }
+    drawRoute();
   }
 
   // ---- aircraft/cluster rendering ----
@@ -626,6 +642,7 @@ function boot(): void {
     route = [];
     lastRouteObservedAt = null;
     routePoints = [];
+    routeTip = null;
     legStartAt = null;
     routeLayer.update(route);
 
@@ -646,8 +663,8 @@ function boot(): void {
       const filtered = legStartAt ? track.filter((p) => p.observedAt >= legStartAt!) : track;
       if (filtered.length > 0) lastRouteObservedAt = filtered[filtered.length - 1].observedAt;
       routePoints = filtered.map((p) => ({ lat: p.latitude, lon: p.longitude, observedAt: p.observedAt }));
-      route = filtered.map((p): [number, number] => [p.latitude, p.longitude]);
-      routeLayer.update(route);
+      routeTip = null;
+      drawRoute();
       const currentSelectedPos = store.get("selectedPos");
       if (currentSelectedPos) appendRoutePoint(currentSelectedPos);
     });
@@ -662,8 +679,7 @@ function boot(): void {
           const trimmed = routePoints.filter((pt) => pt.observedAt >= legStartAt!);
           if (trimmed.length !== routePoints.length) {
             routePoints = trimmed;
-            route = trimmed.map((pt): [number, number] => [pt.lat, pt.lon]);
-            routeLayer.update(route);
+            drawRoute();
           }
         }
       })
