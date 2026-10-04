@@ -7,6 +7,7 @@ import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import type { Bounds } from "../types/flight";
 import type { Theme } from "../theme";
+import { minZoomFor, WORLD_BOUNDS } from "./zoomLimits";
 
 // Cyberpunk theme's TileLayer points here instead of OpenStreetMap — a
 // transparent 1x1 PNG as a data: URI, so Leaflet never makes a real network
@@ -91,11 +92,10 @@ export function createMap(
     // Past this, the world starts wrapping into multiple side-by-side
     // copies — keeps the view to a single, unambiguous world (see
     // boundsFromMap's own comment on the same hole from the other side).
+    // minZoom starts at the floor and is raised to fit the screen as soon as
+    // it is measured (see fitMinZoom).
     minZoom: 2,
-    maxBounds: [
-      [-90, -180],
-      [90, 180],
-    ],
+    maxBounds: WORLD_BOUNDS,
     maxBoundsViscosity: 1.0,
     zoomControl: false,
     // Leaflet's default (60) reads as ~3 zoom levels per physical
@@ -179,6 +179,16 @@ export function createMap(
   }
   map.on("moveend", report);
 
+  // A screen wider (or taller) than one world would show the world repeating
+  // beside itself, so zooming out stops where one world just fills the screen.
+  function fitMinZoom(): void {
+    const { x, y } = map.getSize();
+    if (x === 0 || y === 0) return; // not laid out yet; the next remeasure fixes it
+    const min = minZoomFor(x, y);
+    if (min !== map.getMinZoom()) map.setMinZoom(min);
+  }
+  map.whenReady(fitMinZoom);
+
   // Leaflet caches the container's size and only re-reads it on a window
   // resize. On a phone the container's size also changes with no window
   // resize: the dynamic toolbars (dvh), the flex layout settling once other
@@ -188,6 +198,7 @@ export function createMap(
   // invalidateSize is a no-op when nothing changed.
   const remeasure = (): void => {
     map.invalidateSize({ debounceMoveend: true });
+    fitMinZoom();
   };
   const resizeObserver = typeof ResizeObserver !== "undefined" ? new ResizeObserver(remeasure) : null;
   resizeObserver?.observe(container);
