@@ -45,10 +45,15 @@ database current everywhere regardless of what anyone's looking at.
 ## Where the map opens
 
 The map opens near the visitor rather than on a fixed view. `GET /api/geo`
-(`GeoLocator`) reads Cloudflare's visitor-location headers: `CF-IPLatitude` /
-`CF-IPLongitude` when the zone's **"Add visitor location headers"** managed
-transform is on (city level), otherwise `CF-IPCountry` (always sent), mapped
-to the country's capital. The result is coarse (rounded to 0.1 degree),
+(`GeoLocator`) reads Cloudflare's visitor-location headers: `cf-iplatitude` /
+`cf-iplongitude` (header names are case-insensitive) when the zone's **"Add
+visitor location headers"** managed transform is on (Cloudflare dashboard:
+Rules > Settings > Managed Transforms, or Rules > Transform Rules > Managed
+Transforms in the older layout); that transform also adds `cf-ipcity`,
+`cf-ipcountry`, `cf-ipcontinent`, `cf-region`, `cf-region-code`,
+`cf-metro-code`, `cf-postal-code` and `cf-timezone`. Otherwise `cf-ipcountry`,
+which is only sent when the transform or the **Network > IP Geolocation**
+toggle (country only) is on, mapped to the country's capital. The result is coarse (rounded to 0.1 degree),
 never stored or logged, and answered `no-store`. With no headers (local dev)
 it returns 204 and the frontend keeps its default view (Stockholm). The
 frontend fetches it alongside the world traffic summary under the same short

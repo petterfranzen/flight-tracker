@@ -13,10 +13,14 @@ import java.util.function.Function;
  * also why ClientIpResolver trusts CF-Connecting-IP).
  *
  * <ul>
- *   <li>CF-IPLatitude / CF-IPLongitude: present when the zone has the "Add
- *       visitor location headers" managed transform on. City-level.</li>
- *   <li>CF-IPCountry: always present. Used as a fallback, mapped to the
- *       country's capital, so the feature works before that transform is on.</li>
+ *   <li>cf-iplatitude / cf-iplongitude: added when the zone has the "Add
+ *       visitor location headers" managed transform on (which also adds
+ *       cf-ipcity, cf-ipcountry, cf-ipcontinent, cf-region, cf-region-code,
+ *       cf-metro-code, cf-postal-code and cf-timezone). City-level.</li>
+ *   <li>cf-ipcountry: sent when that transform or the Network > IP
+ *       Geolocation toggle (country only) is on, not unconditionally. Used as
+ *       a fallback, mapped to the country's capital, so the feature works with
+ *       just the country toggle.</li>
  * </ul>
  *
  * Pure (takes a header lookup), nothing stored or logged. Coordinates are
