@@ -621,6 +621,17 @@ html, body {
   stroke-linejoin: round;
 }
 
+/* An invisible, larger click target around a plane that has open space
+   around it (markRoomy in map/markers.ts decides, per update, and sets
+   --hit-pad). A pseudo-element on the marker's own element, so a click on it
+   is a click on the marker. */
+.plane-icon--roomy::after {
+  content: "";
+  position: absolute;
+  inset: calc(var(--hit-pad, 14px) * -1);
+  border-radius: 50%;
+}
+
 .plane-glyph {
   display: flex;
   align-items: center;
