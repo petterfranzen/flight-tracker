@@ -1,22 +1,47 @@
 import L from "leaflet";
 import type { ClusterPoint } from "../types/flight";
 import { clusterCellKey } from "./clusterMath";
-import { PLANE_SVG } from "./markers";
 
-const CLUSTER_ICON_MIN_PX = 30;
-const CLUSTER_ICON_MAX_PX = 84;
+const CLUSTER_ICON_MIN_PX = 48;
+const CLUSTER_ICON_MAX_PX = 112;
 
 // Square-root, not linear: a cell's on-screen *area* tracks its aircraft
 // count, so a cell with 4x the traffic reads as roughly 2x the size.
 function clusterIconSize(count: number): number {
-  return Math.round(Math.min(CLUSTER_ICON_MAX_PX, CLUSTER_ICON_MIN_PX + 8 * Math.sqrt(count)));
+  return Math.round(Math.min(CLUSTER_ICON_MAX_PX, CLUSTER_ICON_MIN_PX + 7 * Math.sqrt(count)));
 }
 
-// A coarse, 3-bucket read of "how much traffic," not the exact count.
-function clusterPlaneCount(count: number): 2 | 3 | 4 {
-  if (count < 10) return 2;
-  if (count < 50) return 3;
-  return 4;
+// A scattered swarm, not a formation: [x, y, heading°, scale] per plane in a
+// 100x100 box, ordered centre-outward so a bigger bucket is the same swarm
+// with more planes around it, never a different shape. Headings share a loose
+// north-east drift with a lot of spread. Fixed, hand-rolled data so every
+// cluster of a bucket renders identically and its icon can be cached.
+const SWARM: ReadonlyArray<readonly [number, number, number, number]> = [
+  [47, 56, 7, 1.08], [60, 52, 38, 0.87], [41, 42, 94, 1.05], [56, 38, 10, 1.05],
+  [33, 54, 23, 1.13], [59, 65, 16, 0.93], [71, 45, 66, 1.03], [73, 58, -3, 0.92],
+  [35, 69, -4, 0.85], [28, 33, 6, 0.94], [69, 28, 99, 1.01], [15, 53, -1, 0.89],
+  [47, 81, 81, 0.91], [88, 40, 48, 0.9], [36, 16, 19, 0.98], [72, 83, 75, 1.04],
+];
+
+// Coarse buckets of "how much traffic", not the exact count.
+function clusterPlaneCount(count: number): number {
+  if (count < 10) return 5;
+  if (count < 50) return 8;
+  if (count < 200) return 11;
+  if (count < 1000) return 14;
+  return SWARM.length;
+}
+
+// Same dart as PLANE_SVG (markers.ts), centred on (12, 11) and placed with
+// one transform per plane. One <svg> with N <path>s rather than N nested
+// <svg>s: a zoomed-out map shows hundreds of these.
+const DART = "M12 2 L19 20 L12 16 L5 20 Z";
+
+function swarmSvg(planes: number): string {
+  const paths = SWARM.slice(0, planes)
+    .map(([x, y, heading, scale]) => `<path d="${DART}" transform="translate(${x} ${y}) rotate(${heading}) scale(${scale * 1.15}) translate(-12 -11)"/>`)
+    .join("");
+  return `<svg viewBox="0 0 100 100" aria-hidden="true">${paths}</svg>`;
 }
 
 const clusterIconCache = new Map<string, L.DivIcon>();
@@ -29,7 +54,7 @@ function clusterIcon(count: number, entering: boolean): L.DivIcon {
   if (cached) return cached;
   const icon = new L.DivIcon({
     className: `cluster-icon${entering ? " plane-icon--entering" : ""}`,
-    html: `<div class="cluster-icon-mark cluster-icon-mark--${planes}">${PLANE_SVG.repeat(planes)}</div>`,
+    html: `<div class="cluster-icon-mark cluster-icon-mark--${planes}">${swarmSvg(planes)}</div>`,
     iconSize: [size, size],
     iconAnchor: [size / 2, size / 2],
   });

@@ -7,7 +7,7 @@ import { mockFlightApi, setMapView } from "./helpers";
 // LiveVisibilityWindows.ACTIVE_TRAFFIC_WINDOW on the server.
 
 const BASE = { lat: 59.65, lon: 17.93 };
-const CAP = 800; // MAX_INDIVIDUAL_MARKERS in main.ts
+const CAP = 500; // MAX_INDIVIDUAL_MARKERS in main.ts
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
 
 /** `n` aircraft spread over a ~2 x 1 degree patch, so they all sit in a zoom-9 viewport. */
