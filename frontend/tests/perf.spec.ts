@@ -118,7 +118,7 @@ async function mockTenThousand(page: Page, opts: { holdLive?: boolean; liveFeed?
     releaseLive = resolve;
   });
 
-  await page.route("**/api/flights/live/count", (route) => route.fulfill({ json: FLEET_SIZE }));
+  await page.route("**/api/flights/live/count*", (route) => route.fulfill({ json: FLEET_SIZE }));
   // Zoomed-out fetch: the server's overview — top OVERVIEW_PLANES by speed as
   // markers, the rest clustered.
   await page.route("**/api/flights/live/overview*", async (route) => {

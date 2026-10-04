@@ -165,4 +165,13 @@ class FlightControllerTest {
         // A world-sized bbox must not become "the current viewport" (hot poll / broadcaster).
         verifyNoInteractions(viewportService);
     }
+
+    @Test
+    void liveCount_activeAsksForTheActiveTrafficWindowOnly() {
+        when(liveStateStore.countActive(any())).thenReturn(7L);
+        when(liveStateStore.countLive(any(), any())).thenReturn(70L);
+
+        assertThat(controller().liveCount(true)).isEqualTo(7L);
+        assertThat(controller().liveCount(false)).isEqualTo(70L);
+    }
 }

@@ -817,7 +817,7 @@ function boot(): void {
         "div",
         { className: "tracked-chip" },
         h("span", { className: "tracked-chip-dot", "aria-hidden": "true" }),
-        h("span", { className: "tracked-chip-label" }, "Tracked"),
+        h("span", { className: "tracked-chip-label" }, "Active"),
         h("span", { className: "tracked-chip-value" }, store.get("trackedCount").toLocaleString()),
       ),
     );

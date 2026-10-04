@@ -402,4 +402,49 @@ class LiveStateStoreTest {
         assertThat(cluster.get("lon").asDouble()).isEqualTo(20.1);
         assertThat(cluster.get("count").asLong()).isEqualTo(1);
     }
+
+    @Test
+    void evictSilentBefore_forgetsOnlyAircraftWhoseLastReportIsOlderThanTheCutoff() {
+        LiveStateStore store = store();
+        store.upsert("old111", "OLD1", T0, 59.0, 18.0, 10_000.0, 200.0, 90.0, 0.0, false, "opensky");
+        store.upsert("new222", "NEW2", T0.plus(Duration.ofHours(20)), 59.0, 18.0, 10_000.0, 200.0, 90.0, 0.0, false, "opensky");
+
+        int removed = store.evictSilentBefore(T0.plus(Duration.ofHours(10)));
+
+        assertThat(removed).isEqualTo(1);
+        assertThat(store.findLatestPosition("old111")).isEmpty();
+        assertThat(store.findLatestPosition("new222")).isPresent();
+    }
+
+    @Test
+    void evictingBeyondTheLongestVisibilityWindowNeverChangesWhatIsLive() {
+        LiveStateStore store = store();
+        Instant now = T0.plus(Duration.ofDays(3));
+        Instant airborneCutoff = now.minus(com.flighttracker.service.LiveVisibilityWindows.STALE_AIRBORNE_BOUND);
+        Instant landedCutoff = now.minus(com.flighttracker.service.LiveVisibilityWindows.LANDED_VISIBILITY);
+        store.upsert("air001", "A1", now.minus(Duration.ofHours(3)), 59.0, 18.0, 10_000.0, 200.0, 90.0, 0.0, false, "opensky");
+        store.upsert("air002", "A2", now.minus(Duration.ofHours(13)), 59.0, 18.0, 10_000.0, 200.0, 90.0, 0.0, false, "opensky");
+        store.upsert("gnd001", "G1", now.minus(Duration.ofHours(5)), 59.0, 18.0, 0.0, 0.0, 90.0, 0.0, true, "opensky");
+        store.upsert("gnd002", "G2", now.minus(Duration.ofHours(30)), 59.0, 18.0, 0.0, 0.0, 90.0, 0.0, true, "opensky");
+
+        long before = store.countLive(airborneCutoff, landedCutoff);
+        store.evictSilentBefore(now.minus(com.flighttracker.service.LiveVisibilityWindows.LONGEST_VISIBILITY));
+
+        assertThat(before).isEqualTo(2); // air001 and gnd001: the 13 h airborne and 30 h landed ones are past their windows
+        assertThat(store.countLive(airborneCutoff, landedCutoff)).isEqualTo(before);
+        assertThat(store.findLatestPosition("gnd002")).isEmpty(); // 30 h silent: forgotten
+        assertThat(store.findLatestPosition("air002")).isPresent(); // 13 h silent but inside the 24 h longest window: kept, just not live
+    }
+
+    @Test
+    void countActive_countsOnlyAircraftInTheAirThatReportedRecently() {
+        LiveStateStore store = store();
+        Instant now = T0.plus(Duration.ofHours(10));
+        store.upsert("act001", "A1", now.minus(Duration.ofMinutes(5)), 59.0, 18.0, 10_000.0, 200.0, 90.0, 0.0, false, "opensky");
+        store.upsert("act002", "A2", now.minus(Duration.ofMinutes(119)), 59.0, 18.0, 10_000.0, 200.0, 90.0, 0.0, false, "opensky");
+        store.upsert("old003", "A3", now.minus(Duration.ofHours(3)), 59.0, 18.0, 10_000.0, 200.0, 90.0, 0.0, false, "opensky");
+        store.upsert("gnd004", "G4", now.minus(Duration.ofMinutes(5)), 59.0, 18.0, 0.0, 0.0, 90.0, 0.0, true, "opensky");
+
+        assertThat(store.countActive(now.minus(Duration.ofHours(2)))).isEqualTo(2);
+    }
 }

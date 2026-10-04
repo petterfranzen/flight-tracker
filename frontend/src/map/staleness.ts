@@ -1,6 +1,6 @@
 import type { LiveMarker } from "../types/flight";
 
-// The server keeps landed aircraft visible for 48 h (LiveVisibilityWindows),
+// The server keeps landed aircraft visible for 24 h and silent airborne ones for 12 h (LiveVisibilityWindows),
 // and a parked plane often stops reporting. So the map can show positions that
 // are hours old, or a plane that has since left a stand under whatever parked
 // there next. Two rules keep that from looking like live traffic:
