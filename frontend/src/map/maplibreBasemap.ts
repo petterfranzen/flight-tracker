@@ -1,4 +1,5 @@
 import L from "leaflet";
+import { isSmallScreen } from "./screen";
 import { setWorkerUrl, type Map as MaplibreMap } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 // Vite bundles this as a worker entry (its own imports pulled in with it)
@@ -75,7 +76,7 @@ const BUFFER_OPTIONS = {
 
 // Phones (same breakpoint as the rest of the mobile layout): a slower GPU and
 // CPU and a slower network, where the boot screen's wait is felt most.
-export const isSmallScreen = (): boolean => window.matchMedia("(max-width: 768px)").matches;
+export { isSmallScreen };
 
 // Upper bound on holding the boot screen for the basemap: a slow or
 // unreachable tile server must never trap anyone behind it.

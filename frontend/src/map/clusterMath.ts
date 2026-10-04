@@ -6,10 +6,17 @@ import type { ClusterPoint, LiveMarker } from "../types/flight";
 // approximate (real px/degree varies with latitude), same simplification
 // this app's other zoom-driven sizing uses.
 const CLUSTER_TARGET_PX = 110;
+// A phone screen is ~3x narrower than a laptop's, so the same swarm icons
+// would crowd it: cells are coarser there.
+const CLUSTER_TARGET_PX_SMALL = 150;
 
-export function gridDegForZoom(zoom: number): number {
+export function clusterTargetPx(smallScreen: boolean): number {
+  return smallScreen ? CLUSTER_TARGET_PX_SMALL : CLUSTER_TARGET_PX;
+}
+
+export function gridDegForZoom(zoom: number, targetPx = CLUSTER_TARGET_PX): number {
   const degPerPixel = 360 / (256 * Math.pow(2, zoom));
-  return CLUSTER_TARGET_PX * degPerPixel;
+  return targetPx * degPerPixel;
 }
 
 /**

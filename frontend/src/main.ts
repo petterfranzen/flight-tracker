@@ -13,6 +13,7 @@ import {
   fetchHistory,
   fetchLiveClusters,
   fetchLiveOverview,
+  OVERVIEW_PLANES_SMALL,
   fetchGeo,
   fetchLiveCount,
   fetchLivePositions,
@@ -22,7 +23,8 @@ import {
 } from "./api/flightApi";
 import { boundsFromMap, createFollowSelected, createMap, DEFAULT_VIEW } from "./map/map";
 import { createMarkerLayer } from "./map/markers";
-import { clusterPositions, gridDegForZoom } from "./map/clusterMath";
+import { clusterPositions, clusterTargetPx, gridDegForZoom } from "./map/clusterMath";
+import { isSmallScreen } from "./map/screen";
 import { pickInitialView } from "./map/initialView";
 import { getMockPlaneCount } from "./api/mockFleet";
 import { createClusterLayer } from "./map/clusters";
@@ -91,7 +93,7 @@ const VIEW_CACHE_MAX_ENTRIES = 40;
 // FlightController.liveClusters clamps gridDeg to this range (0.5–40°); snapping the
 // request to the grid the server actually uses keeps every cell complete.
 function serverGridDeg(zoom: number): number {
-  return Math.min(40, Math.max(0.5, gridDegForZoom(zoom)));
+  return Math.min(40, Math.max(0.5, gridDegForZoom(zoom, clusterTargetPx(isSmallScreen()))));
 }
 
 // Fraction of the view's size drawn beyond each edge.
@@ -271,7 +273,7 @@ function boot(): void {
 
     if (belowServerClusterZoom) clusterLayer.update(clusters, clustersGridDeg);
     else if (clientClustered) {
-      const grid = gridDegForZoom(zoom);
+      const grid = gridDegForZoom(zoom, clusterTargetPx(isSmallScreen()));
       clusterLayer.update(clusterPositions(drawnList, grid), grid);
     } else clusterLayer.update([], clustersGridDeg);
 
@@ -380,7 +382,7 @@ function boot(): void {
     if (requestZoom < CLUSTER_FETCH_MAX_ZOOM) {
       const grid = serverGridDeg(requestZoom);
       const requestBounds = snapBounds(bounds, grid * 2);
-      fetchLiveOverview(requestBounds, grid, controller.signal)
+      fetchLiveOverview(requestBounds, grid, controller.signal, isSmallScreen() ? OVERVIEW_PLANES_SMALL : undefined)
         .then((overview) => {
           const entry = { zoom: requestZoom, bbox: requestBounds, data: overview, fetchedAt: Date.now() };
           clusterCache.put(entry);

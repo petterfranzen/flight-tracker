@@ -52,4 +52,28 @@ test.describe("zoomed-out overview", () => {
     push({ ...first, latitude: 59.2, longitude: 19.4, observedAt: new Date(Date.now() + 5_000).toISOString() });
     await expect.poll(async () => (await marker.boundingBox())?.x ?? 0, { timeout: 5_000 }).toBeGreaterThan(before!.x + 20);
   });
+
+  test("a phone asks for fewer loose planes and coarser cells than a laptop", async ({ browser }) => {
+    const ask = async (width: number, height: number) => {
+      const ctx = await browser.newContext({ viewport: { width, height } });
+      const page = await ctx.newPage();
+      const urls: string[] = [];
+      page.on("request", (r) => {
+        if (r.url().includes("/api/flights/live/overview")) urls.push(r.url());
+      });
+      await mockFlightApi(page, { clusters: [{ lat: 59.5, lon: 18.5, count: 12 }] });
+      await page.goto("/");
+      await page.waitForSelector(".cluster-icon", { timeout: 10_000 });
+      await setMapView(page, 59.3, 18.0, 5);
+      await expect.poll(() => urls.length, { timeout: 5_000 }).toBeGreaterThan(0);
+      const q = new URL(urls[urls.length - 1]).searchParams;
+      await ctx.close();
+      return { limit: q.get("limit"), gridDeg: Number(q.get("gridDeg")) };
+    };
+    const laptop = await ask(1280, 800);
+    const phone = await ask(400, 800);
+    expect(laptop.limit).toBeNull(); // the server default
+    expect(phone.limit).toBe("40");
+    expect(phone.gridDeg).toBeGreaterThan(laptop.gridDeg);
+  });
 });

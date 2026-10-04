@@ -42,15 +42,17 @@ export async function fetchLiveClusters(bounds: Bounds, gridDeg: number, signal?
  */
 // Mirrors the server's default overview size (FlightController DEFAULT_OVERVIEW_PLANES).
 const OVERVIEW_PLANES = 120;
+/** Phones draw fewer loose planes next to the clusters: the screen is small and so is the budget. */
+export const OVERVIEW_PLANES_SMALL = 40;
 
-export async function fetchLiveOverview(bounds: Bounds, gridDeg: number, signal?: AbortSignal): Promise<LiveOverview> {
+export async function fetchLiveOverview(bounds: Bounds, gridDeg: number, signal?: AbortSignal, limit = OVERVIEW_PLANES): Promise<LiveOverview> {
   const mockCount = getMockPlaneCount();
   if (mockCount != null) {
     const inView = filterByBounds(getMockFleet(mockCount), bounds);
-    const planes = inView.slice(0, OVERVIEW_PLANES);
-    return { planes, clusters: clusterMockFleet(inView.slice(OVERVIEW_PLANES), gridDeg) };
+    const planes = inView.slice(0, limit);
+    return { planes, clusters: clusterMockFleet(inView.slice(limit), gridDeg) };
   }
-  const query = `?latMin=${bounds.latMin}&latMax=${bounds.latMax}&lonMin=${bounds.lonMin}&lonMax=${bounds.lonMax}&gridDeg=${gridDeg}`;
+  const query = `?latMin=${bounds.latMin}&latMax=${bounds.latMax}&lonMin=${bounds.lonMin}&lonMax=${bounds.lonMax}&gridDeg=${gridDeg}${limit === OVERVIEW_PLANES ? "" : `&limit=${limit}`}`;
   const res = await fetch(`/api/flights/live/overview${query}`, { signal });
   if (!res.ok) throw new Error(`live overview fetch failed: ${res.status}`);
   return res.json();
