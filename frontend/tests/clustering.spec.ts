@@ -15,13 +15,12 @@ test.describe("clustering", () => {
     await setMapView(page, 20, 10, BELOW_CLUSTER_THRESHOLD_ZOOM);
     await page.waitForSelector(".cluster-icon", { timeout: 10_000 });
 
-    // No exact count on the mark anymore (see clusterIcon/clusterPlaneCount
-    // in FlightMap.tsx) — just a coarse read of "how much traffic" via how
-    // many overlapping plane glyphs it shows. count: 42 falls in the
-    // 10-49 bucket, i.e. 3 planes.
+    // No exact count on the mark — just a coarse read of "how much traffic"
+    // via how many planes the swarm has (clusterPlaneCount in map/clusters.ts).
+    // count: 42 falls in the 10-49 bucket, i.e. 8 planes.
     const mark = page.locator(".cluster-icon-mark");
-    await expect(mark).toHaveClass(/cluster-icon-mark--3/);
-    await expect(mark.locator("svg")).toHaveCount(3);
+    await expect(mark).toHaveClass(/cluster-icon-mark--8/);
+    await expect(mark.locator("svg path")).toHaveCount(8);
     await expect(page.locator(".cluster-icon-count")).toHaveCount(0);
   });
 

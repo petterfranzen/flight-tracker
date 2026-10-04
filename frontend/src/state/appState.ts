@@ -14,7 +14,10 @@ import type { Store } from "./store";
 export interface AppState extends Record<string, unknown> {
   theme: Theme;
   zoom: number;
+  /** Aircraft in the air and heard from recently (the chip's "Active"). */
   trackedCount: number;
+  /** Every aircraft the server still holds, parked or silent included (the chip's "Seen"). */
+  seenCount: number;
   firstLoadDone: boolean;
   /** The basemap has drawn its first view (always true on the plain theme). The boot screen waits on it. */
   basemapReady: boolean;

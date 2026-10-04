@@ -176,6 +176,22 @@ html, body {
   text-transform: uppercase;
   color: var(--color-text-muted);
 }
+.tracked-chip-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.tracked-chip-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+}
+.tracked-chip-value--seen {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
 .tracked-chip-value {
   font-family: var(--font-data);
   font-weight: 700;
@@ -592,48 +608,18 @@ html, body {
   height: 100%;
 }
 
-/* 2/3/4 of planeIcon's own PLANE_SVG (clusterPlaneCount in FlightMap.tsx
-   picks which), all rotated to the same northeast heading — a flying-V
-   formation (geese, not a scattered fan): one leader at the northeast
-   tip with the rest trailing behind it in two diverging arms, each
-   overlapping its neighbor enough to be partly obscured by it, the way
-   real formation flying reads at a glance. Percentage sizes (not fixed
-   px) so this scales with clusterIconSize's own size, same convention as
-   .plane-glyph. The translate(-50%,-50%) centers each glyph on its own
-   top/left anchor point before the shared rotation. */
+/* A swarm of dart glyphs (SWARM in map/clusters.ts): one <svg> whose paths
+   are already placed, rotated and scaled, so all that's left is the paint.
+   More traffic = more planes in the same scatter, in a bigger icon. */
 .cluster-icon-mark svg {
-  position: absolute;
-  width: 54%;
-  height: 54%;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
   fill: var(--color-marker);
   stroke: rgba(0, 0, 0, 0.7);
   stroke-width: 1;
   stroke-linejoin: round;
-  transform: translate(-50%, -50%) rotate(45deg);
 }
-
-/* Source order is back-to-front (trailing arms first, leader last) so
-   the leader — frontmost, at the NE tip — paints on top and partly
-   obscures whichever wingman is directly behind it, same as a real V's
-   lead bird. The two arms diverge from the leader at roughly ±60° off
-   the reverse-of-travel line (one trailing more west, the other more
-   south) rather than both sitting close behind it, so the V actually
-   reads as a V — still close enough for real overlap between neighbors.
-   Each later variant keeps the previous one's positions and only adds a
-   wingman further out along the west arm, rather than recomputing the
-   whole formation, so a bigger cluster reads as the same V one bird
-   longer, not a different shape. */
-.cluster-icon-mark--2 svg:nth-child(1) { top: 51%; left: 60%; } /* wingman (south arm) */
-.cluster-icon-mark--2 svg:nth-child(2) { top: 30%; left: 66%; } /* leader */
-
-.cluster-icon-mark--3 svg:nth-child(1) { top: 36%; left: 45%; } /* wingman (west arm) */
-.cluster-icon-mark--3 svg:nth-child(2) { top: 51%; left: 60%; } /* wingman (south arm) */
-.cluster-icon-mark--3 svg:nth-child(3) { top: 30%; left: 66%; } /* leader */
-
-.cluster-icon-mark--4 svg:nth-child(1) { top: 42%; left: 24%; } /* far wingman (west arm, extended) */
-.cluster-icon-mark--4 svg:nth-child(2) { top: 36%; left: 45%; } /* wingman (west arm) */
-.cluster-icon-mark--4 svg:nth-child(3) { top: 51%; left: 60%; } /* wingman (south arm) */
-.cluster-icon-mark--4 svg:nth-child(4) { top: 30%; left: 66%; } /* leader */
 
 .plane-glyph {
   display: flex;

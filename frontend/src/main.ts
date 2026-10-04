@@ -55,7 +55,7 @@ const DIALOG_STOP_MS = 5 * 60_000;
 // of individual aircraft markers (server-side).
 const CLUSTER_FETCH_MAX_ZOOM = 8;
 // Client-side backstop for an individual-marker zoom that's still too busy.
-const MAX_INDIVIDUAL_MARKERS = 800;
+const MAX_INDIVIDUAL_MARKERS = 500;
 
 // A drag or wheel-zoom fires a burst of moveends; only the one the user
 // settles on is worth a request.
@@ -88,10 +88,10 @@ const LIVE_CACHE_FRESH_MS = 3_000;
 const VIEW_CACHE_MAX_AGE_MS = 5 * 60_000;
 const VIEW_CACHE_MAX_ENTRIES = 40;
 
-// FlightController.liveClusters clamps gridDeg to this range; snapping the
+// FlightController.liveClusters clamps gridDeg to this range (0.5–40°); snapping the
 // request to the grid the server actually uses keeps every cell complete.
 function serverGridDeg(zoom: number): number {
-  return Math.min(25, Math.max(0.5, gridDegForZoom(zoom)));
+  return Math.min(40, Math.max(0.5, gridDegForZoom(zoom)));
 }
 
 // Fraction of the view's size drawn beyond each edge.
@@ -139,6 +139,7 @@ function boot(): void {
     theme: initialTheme,
     zoom: 6,
     trackedCount: 0,
+    seenCount: 0,
     firstLoadDone: false,
     basemapReady: initialTheme !== "cyberpunk",
     showResumeDialog: false,
@@ -410,6 +411,9 @@ function boot(): void {
   function fetchFreshData(): void {
     fetchLiveCount()
       .then((n) => store.set("trackedCount", n))
+      .catch(() => {});
+    fetchLiveCount(false)
+      .then((n) => store.set("seenCount", n))
       .catch(() => {});
     // A viewport request still in flight (or about to fire) already covers
     // this tick — don't stack a second one on top of it.
@@ -817,13 +821,27 @@ function boot(): void {
         "div",
         { className: "tracked-chip" },
         h("span", { className: "tracked-chip-dot", "aria-hidden": "true" }),
-        h("span", { className: "tracked-chip-label" }, "Active"),
-        h("span", { className: "tracked-chip-value" }, store.get("trackedCount").toLocaleString()),
+        h(
+          "div",
+          { className: "tracked-chip-rows" },
+          h(
+            "div",
+            { className: "tracked-chip-row tracked-chip-row--active" },
+            h("span", { className: "tracked-chip-label" }, "Active"),
+            h("span", { className: "tracked-chip-value" }, store.get("trackedCount").toLocaleString()),
+          ),
+          h(
+            "div",
+            { className: "tracked-chip-row tracked-chip-row--seen" },
+            h("span", { className: "tracked-chip-label" }, "Seen"),
+            h("span", { className: "tracked-chip-value tracked-chip-value--seen" }, store.get("seenCount").toLocaleString()),
+          ),
+        ),
       ),
     );
   }
   renderTrackedChip();
-  store.subscribeMany(["theme", "trackedCount"], renderTrackedChip);
+  store.subscribeMany(["theme", "trackedCount", "seenCount"], renderTrackedChip);
 
   // ---- follow-selected wiring ----
   function syncFollowSelected(): void {
@@ -856,6 +874,9 @@ function boot(): void {
     .catch(() => {});
   fetchLiveCount()
     .then((n) => store.set("trackedCount", n))
+    .catch(() => {});
+  fetchLiveCount(false)
+    .then((n) => store.set("seenCount", n))
     .catch(() => {});
 
   subscribeLiveFeed(onLivePush);

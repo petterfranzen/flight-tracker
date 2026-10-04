@@ -5,7 +5,7 @@ import type { ClusterPoint, LiveMarker } from "../types/flight";
 // Web Mercator tile math (256px tiles, doubling every zoom level) —
 // approximate (real px/degree varies with latitude), same simplification
 // this app's other zoom-driven sizing uses.
-const CLUSTER_TARGET_PX = 80;
+const CLUSTER_TARGET_PX = 110;
 
 export function gridDegForZoom(zoom: number): number {
   const degPerPixel = 360 / (256 * Math.pow(2, zoom));

@@ -145,7 +145,7 @@ public class FlightController {
     // it down and re-introducing the overlapping-cluster crowding that
     // sizing was specifically computed to avoid.
     private static final double MIN_CLUSTER_GRID_DEG = 0.5;
-    private static final double MAX_CLUSTER_GRID_DEG = 25;
+    private static final double MAX_CLUSTER_GRID_DEG = 40;
 
     /**
      * Aggregated view of /live for viewports too large to usefully show
@@ -187,7 +187,7 @@ public class FlightController {
                 bounds, clampedGridDeg);
     }
 
-    private static final int DEFAULT_OVERVIEW_PLANES = 250;
+    private static final int DEFAULT_OVERVIEW_PLANES = 120;
     private static final int MAX_OVERVIEW_PLANES = 1000;
     private static final int DEFAULT_OVERVIEW_PER_CELL = 6;
     private static final int MAX_OVERVIEW_PER_CELL = 20;

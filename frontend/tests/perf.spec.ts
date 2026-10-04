@@ -30,7 +30,7 @@ const MAX_LIVE_LON_SPAN = (VIEWPORT.width / 256 / 2 ** CLUSTER_FETCH_MAX_ZOOM) *
 const API_LATENCY_MS = 80;
 
 const LONDON = { lat: 51.5, lon: -0.5 };
-const OVERVIEW_PLANES = 250; // the server's default overview size
+const OVERVIEW_PLANES = 120; // the server's default overview size
 
 /** >= 1; how many times slower than the reference machine this one is right now. */
 async function cpuSlowdown(page: Page): Promise<number> {

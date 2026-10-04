@@ -41,7 +41,7 @@ export async function fetchLiveClusters(bounds: Bounds, gridDeg: number, signal?
  * LiveStateStore.overview for the ranking.
  */
 // Mirrors the server's default overview size (FlightController DEFAULT_OVERVIEW_PLANES).
-const OVERVIEW_PLANES = 250;
+const OVERVIEW_PLANES = 120;
 
 export async function fetchLiveOverview(bounds: Bounds, gridDeg: number, signal?: AbortSignal): Promise<LiveOverview> {
   const mockCount = getMockPlaneCount();
@@ -83,10 +83,11 @@ export async function fetchGeo(signal?: AbortSignal): Promise<{ lat: number; lon
  * fetchLivePositions, which would fetch every row just to measure how many
  * there are.
  */
-export async function fetchLiveCount(): Promise<number> {
+/** `active`: only aircraft in the air and heard from recently; otherwise everything the server still holds. */
+export async function fetchLiveCount(active = true): Promise<number> {
   const mockCount = getMockPlaneCount();
   if (mockCount != null) return mockCount;
-  const res = await fetch("/api/flights/live/count?active=true");
+  const res = await fetch(`/api/flights/live/count${active ? "?active=true" : ""}`);
   if (!res.ok) throw new Error(`live count fetch failed: ${res.status}`);
   return res.json();
 }
