@@ -23,15 +23,17 @@ const MOBILE_SELECTED_ICON_SIZE = 115;
 const MIN_ICON_SIZE_PX = 18;
 const FULL_SIZE_ZOOM = 10;
 
-// Zoomed in there is room (and a bigger target to hit): icons keep growing
-// past full size, up to GROWN_ICON_FACTOR times it at GROWN_ICON_ZOOM.
-const GROWN_ICON_ZOOM = 14;
-const GROWN_ICON_FACTOR = 1.4;
+// Zoomed in far enough to see individual stands (airports), a plane has to fit
+// by its gate: stands are ~50 m apart, about 40 px at z16, so the icons taper
+// off from full size at z13 (as a fraction of base) instead of growing.
+// Rounded zoom -> fraction; z18 and beyond share the last entry.
+const CLOSE_ZOOM_FRACTION: Record<number, number> = { 14: 0.88, 15: 0.75, 16: 0.6, 17: 0.55, 18: 0.6 };
+const CLOSE_ZOOM_MAX = 18;
 
 function scaleIconSize(base: number, zoom: number): number {
-  if (zoom >= FULL_SIZE_ZOOM) {
-    const t = Math.min(1, (zoom - FULL_SIZE_ZOOM) / (GROWN_ICON_ZOOM - FULL_SIZE_ZOOM));
-    return Math.round(base * (1 + (GROWN_ICON_FACTOR - 1) * t));
+  if (zoom > FULL_SIZE_ZOOM) {
+    const fraction = zoom >= 14 ? CLOSE_ZOOM_FRACTION[Math.min(zoom, CLOSE_ZOOM_MAX)] : 1;
+    return Math.round(base * fraction);
   }
   const t = Math.max(0, zoom) / FULL_SIZE_ZOOM;
   return Math.round(MIN_ICON_SIZE_PX + (base - MIN_ICON_SIZE_PX) * t);

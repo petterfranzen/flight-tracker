@@ -4,8 +4,8 @@
 // discovered is stable (a plane keeps its place in line for the whole
 // session), so a plane doesn't swap with its neighbour on every update.
 
-/** Two icons overlap when their centres are closer than this fraction of the icon's box size (the dart fills about 80% of it). */
-export const OVERLAP_FRACTION = 0.8;
+/** Two icons overlap when their centres are closer than this fraction of the icon's box size (the dart fills well under 70% of it, even rotated). */
+export const OVERLAP_FRACTION = 0.7;
 
 const ranks = new Map<string, number>();
 let nextRank = 0;
