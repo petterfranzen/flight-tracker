@@ -411,6 +411,33 @@ public class LiveStateStore {
     }
 
     /**
+     * The zoomed-out map without clustering: the active aircraft in
+     * {@code bounds}, at most one per {@code cellDeg} cell, the
+     * <em>first discovered</em> one wins its cell (lowest {@link LiveAircraft#id()},
+     * the sequence number assigned the first time this process saw the
+     * aircraft). Returned in that same order, so a client can treat list order
+     * as discovery order. A cell is about half a plane icon wide, so planes
+     * dropped here would have been drawn underneath the one that is kept; the
+     * client's exact overlap pass takes it from there. At most
+     * {@code maxPlanes} are returned. cellDeg is trusted as already clamped.
+     */
+    public LiveOverview discovered(Instant staleAirborneCutoff, Instant landedCutoff, Instant activeSince, Bounds bounds,
+                                   double cellDeg, int maxPlanes) {
+        List<LiveAircraft> active = activeInBounds(staleAirborneCutoff, landedCutoff, activeSince, bounds);
+        active.sort((a, b) -> Long.compare(a.id(), b.id()));
+        List<LiveMarker> planes = new ArrayList<>();
+        Set<String> taken = new HashSet<>();
+        for (LiveAircraft a : active) {
+            if (planes.size() >= maxPlanes) break;
+            String cell = Math.floor(a.displayLatitude() / cellDeg) + "," + Math.floor(a.displayLongitude() / cellDeg);
+            if (!taken.add(cell)) continue;
+            planes.add(new LiveMarkerView(a.icao24(), a.callsign(), a.observedAt(),
+                    a.displayLatitude(), a.displayLongitude(), a.headingDeg(), a.onGround()));
+        }
+        return new LiveOverview(planes, List.of());
+    }
+
+    /**
      * Callsign search, mirroring FlightPositionRepository.searchLive:
      * live aircraft whose callsign contains query (case-insensitive),
      * prefix matches ranked first, then alphabetical, limited. query is

@@ -1,5 +1,5 @@
 import { expect, type Page, type TestInfo } from "@playwright/test";
-import { clusterPositions } from "../../src/map/clusterMath";
+import { clusterMockFleet, onePerCell } from "../../src/api/mockFleet";
 import type { LiveMarker } from "../../src/types/flight";
 import { SPEED_DEG_PER_S, World, type SimAircraft } from "./world";
 
@@ -87,7 +87,7 @@ export async function startHarness(page: Page, testInfo: TestInfo): Promise<Harn
     if (path === "/api/flights/live/count") return json(world.aircraft.length);
     if (path === "/api/flights/live/clusters" || path === "/api/flights/live/overview") {
       const b = bboxOf(u)!;
-      const g = Math.min(25, Math.max(0.5, +(u.searchParams.get("gridDeg") ?? 2)));
+      const g = Math.min(40, Math.max(0.5, +(u.searchParams.get("gridDeg") ?? 2)));
       // The server's own bucketing (clusters at the mean position of their aircraft).
       const inView: LiveMarker[] = [];
       for (const a of world.aircraft) {
@@ -95,8 +95,8 @@ export async function startHarness(page: Page, testInfo: TestInfo): Promise<Harn
         const p = world.flightPosition(a, now);
         inView.push({ icao24: p.icao24, callsign: p.callsign, observedAt: p.observedAt, latitude: p.latitude, longitude: p.longitude, headingDeg: p.headingDeg });
       }
-      if (path.endsWith("/overview")) return json({ planes: inView.slice(0, 20), clusters: clusterPositions(inView.slice(20), g) });
-      return json(clusterPositions(inView, g));
+      if (path.endsWith("/overview")) return json({ planes: onePerCell(inView, g), clusters: [] });
+      return json(clusterMockFleet(inView, g));
     }
     if (path === "/api/flights/live") {
       const b = bboxOf(u);

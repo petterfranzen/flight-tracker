@@ -35,24 +35,19 @@ export async function fetchLiveClusters(bounds: Bounds, gridDeg: number, signal?
 }
 
 /**
- * The zoomed-out view: the most active aircraft as individual markers plus
- * clusters for everything else. Replaces fetchLiveClusters for the map's
- * own zoomed-out fetch so the world doesn't look empty — see
- * LiveStateStore.overview for the ranking.
+ * The zoomed-out view: active aircraft, at most one per cell of `cellDeg`
+ * (half an icon), first discovered first — see LiveStateStore.discovered.
+ * No clusters; the map hides whatever still overlaps (map/declutter.ts).
  */
-// Mirrors the server's default overview size (FlightController DEFAULT_OVERVIEW_PLANES).
-const OVERVIEW_PLANES = 120;
-/** Phones draw fewer loose planes next to the clusters: the screen is small and so is the budget. */
-export const OVERVIEW_PLANES_SMALL = 40;
+// A generous cap: one plane per half-icon cell is a few hundred on a laptop screen, so this is a safety net.
+const OVERVIEW_PLANES = 1500;
 
-export async function fetchLiveOverview(bounds: Bounds, gridDeg: number, signal?: AbortSignal, limit = OVERVIEW_PLANES): Promise<LiveOverview> {
+export async function fetchLiveOverview(bounds: Bounds, cellDeg: number, signal?: AbortSignal): Promise<LiveOverview> {
   const mockCount = getMockPlaneCount();
   if (mockCount != null) {
-    const inView = filterByBounds(getMockFleet(mockCount), bounds);
-    const planes = inView.slice(0, limit);
-    return { planes, clusters: clusterMockFleet(inView.slice(limit), gridDeg) };
+    return { planes: filterByBounds(getMockFleet(mockCount), bounds).slice(0, OVERVIEW_PLANES), clusters: [] };
   }
-  const query = `?latMin=${bounds.latMin}&latMax=${bounds.latMax}&lonMin=${bounds.lonMin}&lonMax=${bounds.lonMax}&gridDeg=${gridDeg}${limit === OVERVIEW_PLANES ? "" : `&limit=${limit}`}`;
+  const query = `?latMin=${bounds.latMin}&latMax=${bounds.latMax}&lonMin=${bounds.lonMin}&lonMax=${bounds.lonMax}&gridDeg=${cellDeg}&limit=${OVERVIEW_PLANES}&declutter=true`;
   const res = await fetch(`/api/flights/live/overview${query}`, { signal });
   if (!res.ok) throw new Error(`live overview fetch failed: ${res.status}`);
   return res.json();

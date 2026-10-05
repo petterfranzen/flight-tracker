@@ -1,4 +1,3 @@
-import { clusterPositions } from "../map/clusterMath";
 import type { Bounds, ClusterPoint, FlightPosition } from "../types/flight";
 
 /**
@@ -100,7 +99,25 @@ export function filterByBounds(positions: FlightPosition[], bounds?: Bounds): Fl
   );
 }
 
-/** Mirrors LiveStateStore.clustered (same bucketing, clusters at the mean position of their aircraft) so the mock-fleet dev tool (?mockPlanes=N) still has something to show once zoomed out past CLUSTER_FETCH_MAX_ZOOM. */
+/** Mirrors LiveStateStore.clustered (bucket, then mean position) — the world summary the opening view reads (/live/clusters). */
 export function clusterMockFleet(positions: FlightPosition[], gridDeg: number): ClusterPoint[] {
-  return clusterPositions(positions, gridDeg);
+  const cells = new Map<string, { lat: number; lon: number; count: number }>();
+  for (const p of positions) {
+    const key = `${Math.floor(p.latitude / gridDeg)},${Math.floor(p.longitude / gridDeg)}`;
+    const cell = cells.get(key);
+    if (cell) {
+      cell.lat += p.latitude;
+      cell.lon += p.longitude;
+      cell.count++;
+    } else {
+      cells.set(key, { lat: p.latitude, lon: p.longitude, count: 1 });
+    }
+  }
+  return Array.from(cells.values(), (c) => ({ lat: c.lat / c.count, lon: c.lon / c.count, count: c.count }));
+}
+
+/** Mirrors LiveStateStore.discovered: the first aircraft in list order for each cellDeg cell (list order stands in for discovery order). */
+export function onePerCell<T extends { latitude: number; longitude: number }>(positions: T[], cellDeg: number): T[] {
+  const taken = new Set<string>();
+  return positions.filter((p) => taken.add(`${Math.floor(p.latitude / cellDeg)},${Math.floor(p.longitude / cellDeg)}`));
 }

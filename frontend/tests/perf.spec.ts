@@ -1,5 +1,5 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
-import { clusterPositions } from "../src/map/clusterMath";
+import { clusterMockFleet, onePerCell } from "../src/api/mockFleet";
 import { fleet10k, FLEET_SIZE, type FleetAircraft } from "./fixtures/fleet10k";
 import { withMap } from "./helpers";
 
@@ -30,7 +30,7 @@ const MAX_LIVE_LON_SPAN = (VIEWPORT.width / 256 / 2 ** CLUSTER_FETCH_MAX_ZOOM) *
 const API_LATENCY_MS = 80;
 
 const LONDON = { lat: 51.5, lon: -0.5 };
-const OVERVIEW_PLANES = 120; // the server's default overview size
+const OVERVIEW_PLANES = 1500; // the server's overview cap
 
 /** >= 1; how many times slower than the reference machine this one is right now. */
 async function cpuSlowdown(page: Page): Promise<number> {
@@ -119,15 +119,14 @@ async function mockTenThousand(page: Page, opts: { holdLive?: boolean; liveFeed?
   });
 
   await page.route("**/api/flights/live/count*", (route) => route.fulfill({ json: FLEET_SIZE }));
-  // Zoomed-out fetch: the server's overview — top OVERVIEW_PLANES by speed as
-  // markers, the rest clustered.
+  // Zoomed-out fetch: the server's overview — one plane per cell, no clusters.
   await page.route("**/api/flights/live/overview*", async (route) => {
     const url = new URL(route.request().url());
     const b = bboxOf(url)!;
-    const grid = Math.min(25, Math.max(0.5, Number(url.searchParams.get("gridDeg") ?? 2)));
+    const grid = Math.min(40, Math.max(0.5, Number(url.searchParams.get("gridDeg") ?? 2)));
     const inView = fleet.filter((a) => a.latitude >= b.latMin && a.latitude <= b.latMax && a.longitude >= b.lonMin && a.longitude <= b.lonMax).map((a) => marker(a, now));
-    const planes = inView.slice(0, OVERVIEW_PLANES);
-    requests.push({ kind: "clusters", bbox: b, bytes: await fulfill(route, { planes, clusters: clusterPositions(inView.slice(OVERVIEW_PLANES), grid) }) });
+    const planes = onePerCell(inView, grid).slice(0, OVERVIEW_PLANES);
+    requests.push({ kind: "clusters", bbox: b, bytes: await fulfill(route, { planes, clusters: [] }) });
   });
   await page.route("**/api/flights/live/clusters*", async (route) => {
     const url = new URL(route.request().url());
@@ -143,7 +142,7 @@ async function mockTenThousand(page: Page, opts: { holdLive?: boolean; liveFeed?
     }
     // The server's own bucketing (clusters at the mean position of their aircraft).
     const inView = fleet.filter((a) => a.latitude >= b.latMin && a.latitude <= b.latMax && a.longitude >= b.lonMin && a.longitude <= b.lonMax).map((a) => marker(a, now));
-    requests.push({ kind: "clusters", bbox: b, bytes: await fulfill(route, clusterPositions(inView, grid)) });
+    requests.push({ kind: "clusters", bbox: b, bytes: await fulfill(route, clusterMockFleet(inView, grid)) });
   });
   await page.route(/\/api\/flights\/live(\?|$)/, async (route) => {
     const b = bboxOf(new URL(route.request().url()));
