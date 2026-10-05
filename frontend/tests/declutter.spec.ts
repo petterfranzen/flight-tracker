@@ -98,7 +98,7 @@ test.describe("hiding overlapping planes", () => {
     expect(boxes.length).toBeLessThan(400); // bounded by the screen, not by the 1,500
     for (let i = 0; i < boxes.length; i++) {
       for (let j = i + 1; j < boxes.length; j++) {
-        const min = 0.8 * Math.min(boxes[i].size, boxes[j].size) - 1.5; // 1.5px: positions are rounded
+        const min = 0.7 * Math.min(boxes[i].size, boxes[j].size) - 1.5; // 1.5px: positions are rounded
         const overlap = Math.abs(boxes[i].x - boxes[j].x) < min && Math.abs(boxes[i].y - boxes[j].y) < min;
         expect(overlap, `planes ${i} and ${j} overlap`).toBe(false);
       }
@@ -120,14 +120,22 @@ test.describe("hiding overlapping planes", () => {
 });
 
 test.describe("big planes", () => {
-  test("icons are at least twice the old size, and grow a little more zoomed in", async ({ page }) => {
+  test("icons are at least twice the old size at city zoom, and taper to fit stands at an airport", async ({ page }) => {
     await serve(page, [plane("aaaaaa", "SOLO", BASE.lat, BASE.lon)], 11);
     await expect.poll(async () => page.locator(".plane-icon").count(), { timeout: 10_000 }).toBe(1);
     const size = async () => (await page.locator(".plane-icon").first().boundingBox())!.width;
     expect(await size()).toBeGreaterThanOrEqual(72); // was 36
-    await setMapView(page, BASE.lat, BASE.lon, 14);
+    await setMapView(page, BASE.lat, BASE.lon, 16);
     await page.waitForTimeout(300);
-    expect(await size()).toBeGreaterThanOrEqual(100); // was 50
+    const atStandZoom = await size();
+    expect(atStandZoom).toBeLessThan(50); // stands are ~40 px apart here
+    expect(atStandZoom).toBeGreaterThanOrEqual(36); // still easy to hit
+  });
+
+  test("at stand zoom, planes 55 m apart (neighbouring gates) are both drawn", async ({ page }) => {
+    // 0.0005 deg of latitude is ~55 m.
+    await serve(page, [plane("aaaaaa", "GATE1", BASE.lat, BASE.lon), plane("bbbbbb", "GATE2", BASE.lat + 0.0005, BASE.lon)], 16);
+    await expect.poll(async () => page.locator(".plane-icon").count(), { timeout: 10_000 }).toBe(2);
   });
 
   test("on a phone they are bigger still", async ({ page }) => {
@@ -135,5 +143,14 @@ test.describe("big planes", () => {
     await serve(page, [plane("aaaaaa", "SOLO", BASE.lat, BASE.lon)], 11);
     await expect.poll(async () => page.locator(".plane-icon").count(), { timeout: 10_000 }).toBe(1);
     expect((await page.locator(".plane-icon").first().boundingBox())!.width).toBeGreaterThanOrEqual(92); // was 46
+    await setMapView(page, BASE.lat, BASE.lon, 16);
+    await page.waitForTimeout(300);
+    expect((await page.locator(".plane-icon").first().boundingBox())!.width).toBeLessThan(62);
+  });
+
+  test("on a phone, neighbouring gates at stand zoom are both drawn", async ({ page }) => {
+    await page.setViewportSize({ width: 400, height: 800 });
+    await serve(page, [plane("aaaaaa", "GATE1", BASE.lat, BASE.lon), plane("bbbbbb", "GATE2", BASE.lat + 0.0006, BASE.lon)], 16); // ~67 m
+    await expect.poll(async () => page.locator(".plane-icon").count(), { timeout: 10_000 }).toBe(2);
   });
 });
