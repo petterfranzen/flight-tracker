@@ -209,7 +209,6 @@ html, body {
 [data-theme="cyberpunk"] .app-header,
 [data-theme="cyberpunk"] .details-panel,
 [data-theme="cyberpunk"] .flight-search-input,
-[data-theme="cyberpunk"] .flight-search-advanced-toggle,
 [data-theme="cyberpunk"] .favorites-panel-toggle,
 [data-theme="cyberpunk"] .favorites-panel-content,
 [data-theme="cyberpunk"] .resume-dialog,
@@ -232,7 +231,6 @@ html, body {
    entirely). The elements below have no explicit position in their own
    base rules, so adding position:relative here is purely additive. */
 [data-theme="cyberpunk"] .flight-search-input,
-[data-theme="cyberpunk"] .flight-search-advanced-toggle,
 [data-theme="cyberpunk"] .favorites-panel-toggle,
 [data-theme="cyberpunk"] .favorites-panel-content,
 [data-theme="cyberpunk"] .resume-dialog,
@@ -394,7 +392,7 @@ html, body {
 /* Stacks FlightSearch and FavoritesPanel in the same top-left corner,
    FlightSearch first — this wrapper now owns the positioning both used to
    set independently, so FlightSearch's fixed top offset can't overlap a
-   second panel once its own advanced-search panel expands its height.
+   second panel once its own airport box is added to its height.
    Overrides .flight-search's own position:absolute rather than editing
    FlightSearch.css directly — its mobile fixed-full-screen-overlay
    behavior lives on a grandchild (.flight-search-panel--open), which

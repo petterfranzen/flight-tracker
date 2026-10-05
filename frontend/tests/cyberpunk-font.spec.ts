@@ -18,7 +18,6 @@ test("cyberpunk theme renders all DOM text in JetBrains Mono, self-hosted", asyn
   await (await findMarkerNear(page, target.latitude, target.longitude)).click();
   await page.getByText(`ICAO24 ${target.icao24.toUpperCase()}`).waitFor({ timeout: 5_000 });
 
-  await page.locator(".flight-search-advanced-toggle").click();
   const legendToggle = page.locator(".map-legend-toggle");
   if (await legendToggle.isVisible()) await legendToggle.click();
   await page.locator(".favorites-panel-toggle").click();

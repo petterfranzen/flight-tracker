@@ -117,7 +117,7 @@ test.describe("user journeys @scenario", () => {
     const h = await startHarness(page, testInfo);
     await h.step("boot", () => boot(page));
 
-    await h.step("type a flight number", () => page.locator(".flight-search-input").fill("BRX10"));
+    await h.step("type a flight number", () => page.getByPlaceholder("Search by flight number…").fill("BRX10"));
     const hits = page.locator("#flight-search-listbox .flight-search-callsign");
     await expect(hits.first()).toBeVisible();
     const pickedByNumber = (await hits.first().textContent())!.trim();
@@ -128,9 +128,7 @@ test.describe("user journeys @scenario", () => {
 
     for (const query of ["KLR", "Kalmar", "ESMQ"]) {
       await h.step(`airport search: ${query}`, async () => {
-        const toggle = page.locator(".flight-search-advanced-toggle");
-        if ((await toggle.getAttribute("aria-expanded")) !== "true") await toggle.click();
-        await page.getByPlaceholder("Search by airport (name, IATA, or ICAO)…").fill(query);
+        await page.getByPlaceholder("Search by airport…").fill(query);
         await expect(page.locator("#flight-search-route-listbox .flight-search-callsign").first()).toBeVisible();
       });
       const shown = await page.locator("#flight-search-route-listbox .flight-search-callsign").allTextContents();
