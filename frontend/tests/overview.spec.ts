@@ -39,14 +39,13 @@ test.describe("zoomed-out overview", () => {
     await mockFlightApi(page, { clusters: QUIET_SUMMARY });
     await page.goto("/");
     await page.waitForSelector(".leaflet-container", { timeout: 10_000 });
-    await setMapView(page, 59.3, 18.0, 5);
-    await expect.poll(() => urls.length, { timeout: 5_000 }).toBeGreaterThan(0);
-    const q = new URL(urls[urls.length - 1]).searchParams;
-    expect(q.get("declutter")).toBe("true");
-    const cellDeg = Number(q.get("gridDeg"));
-    // z5: an icon box is ~45px, half of it ~22px = 22 * 360 / (256 * 32) deg.
-    expect(cellDeg).toBeGreaterThan(0.5);
-    expect(cellDeg).toBeLessThan(2.5);
+    await setMapView(page, 59.3, 18.0, 4);
+    // The boot view's request (z6) comes first; wait for the z4 one: an icon box is ~25px, half of it
+    // ~12px = 12 * 360 / (256 * 16) = ~1.1 deg.
+    const lastCell = () => (urls.length ? Number(new URL(urls[urls.length - 1]).searchParams.get("gridDeg")) : 0);
+    await expect.poll(lastCell, { timeout: 5_000 }).toBeGreaterThan(0.8);
+    expect(lastCell()).toBeLessThan(1.6);
+    expect(new URL(urls[urls.length - 1]).searchParams.get("declutter")).toBe("true");
   });
 
   test("an overview aircraft moves when the live feed reports it", async ({ page }) => {

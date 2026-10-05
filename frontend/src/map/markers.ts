@@ -10,39 +10,37 @@ export const PLANE_SVG = `<svg viewBox="0 0 24 24" aria-hidden="true">
   <path d="M12 2 L19 20 L12 16 L5 20 Z" />
 </svg>`;
 
-// Big on purpose: with overlapping planes hidden (see map/declutter.ts) rather
-// than clustered, every plane drawn has to be easy to see and to hit.
-const ICON_SIZE = 72;
-const SELECTED_ICON_SIZE = 90;
+// Plane icon box size (px) per rounded zoom level, desktop. One number per
+// zoom, so a size is easy to read and to tune. Overlapping planes are hidden
+// (map/declutter.ts) rather than clustered, so icons are clearly bigger than
+// the old 30-36 px dart, but they grow gradually from the world view up to
+// city zoom (z14) and then taper again so that planes fit by their gates
+// (stands are ~50 m apart, about 40 px at z16).
+const ICON_SIZE_BY_ZOOM: readonly number[] = [
+  /* z0  */ 18, 18, 20,
+  /* z3  */ 22, 25, 28, 30, 33, 37,
+  /* z9  */ 40, 43, 46, 50, 54,
+  /* z14 */ 58,
+  /* z15 */ 52,
+  /* z16 */ 43,
+  /* z17 */ 40,
+  /* z18 */ 43,
+];
 const MOBILE_BREAKPOINT_PX = 768;
-const MOBILE_ICON_SIZE = 92;
-const MOBILE_SELECTED_ICON_SIZE = 115;
+// Phones get larger targets for a finger.
+const MOBILE_FACTOR = 1.2;
+// The selected plane stands out by size as well as colour.
+const SELECTED_FACTOR = 1.25;
 
-// Aircraft icons shrink toward this floor as you zoom out; full size from
-// FULL_SIZE_ZOOM (== SELECTED_MIN_ZOOM in map.ts) upward.
-const MIN_ICON_SIZE_PX = 18;
-const FULL_SIZE_ZOOM = 10;
-
-// Zoomed in far enough to see individual stands (airports), a plane has to fit
-// by its gate: stands are ~50 m apart, about 40 px at z16, so the icons taper
-// off from full size at z13 (as a fraction of base) instead of growing.
-// Rounded zoom -> fraction; z18 and beyond share the last entry.
-const CLOSE_ZOOM_FRACTION: Record<number, number> = { 14: 0.88, 15: 0.75, 16: 0.6, 17: 0.55, 18: 0.6 };
-const CLOSE_ZOOM_MAX = 18;
-
-function scaleIconSize(base: number, zoom: number): number {
-  if (zoom > FULL_SIZE_ZOOM) {
-    const fraction = zoom >= 14 ? CLOSE_ZOOM_FRACTION[Math.min(zoom, CLOSE_ZOOM_MAX)] : 1;
-    return Math.round(base * fraction);
-  }
-  const t = Math.max(0, zoom) / FULL_SIZE_ZOOM;
-  return Math.round(MIN_ICON_SIZE_PX + (base - MIN_ICON_SIZE_PX) * t);
+function scaleIconSize(zoom: number, mobile: boolean, selected: boolean): number {
+  const z = Math.max(0, Math.min(ICON_SIZE_BY_ZOOM.length - 1, Math.round(zoom)));
+  return Math.round(ICON_SIZE_BY_ZOOM[z] * (mobile ? MOBILE_FACTOR : 1) * (selected ? SELECTED_FACTOR : 1));
 }
 
 /** The side of an unselected plane's icon box at this zoom, px (what overlap is measured against). */
 export function planeBoxSize(zoom: number): number {
   const mobile = window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT_PX}px)`).matches;
-  return scaleIconSize(mobile ? MOBILE_ICON_SIZE : ICON_SIZE, Math.round(zoom));
+  return scaleIconSize(zoom, mobile, false);
 }
 
 /**
@@ -100,8 +98,7 @@ function planeIconOptions(known: boolean, selected: boolean, zoom: number, enter
 
   const glyphClass = known ? "plane-glyph" : "plane-glyph plane-glyph--unknown-heading";
   const isMobile = window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT_PX}px)`).matches;
-  const baseSize = selected ? (isMobile ? MOBILE_SELECTED_ICON_SIZE : SELECTED_ICON_SIZE) : isMobile ? MOBILE_ICON_SIZE : ICON_SIZE;
-  const size = selected ? Math.max(scaleIconSize(baseSize, zoom), 16) : scaleIconSize(baseSize, zoom);
+  const size = Math.max(scaleIconSize(zoom, isMobile, selected), 16);
 
   const options: L.DivIconOptions = {
     className: `plane-icon${selected ? " plane-icon--selected" : ""}${entering ? " plane-icon--entering" : ""}${exiting ? " plane-icon--exiting" : ""}${dimmed ? " plane-icon--dimmed" : ""}`,

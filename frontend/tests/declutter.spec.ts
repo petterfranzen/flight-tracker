@@ -120,16 +120,29 @@ test.describe("hiding overlapping planes", () => {
 });
 
 test.describe("big planes", () => {
-  test("icons are at least twice the old size at city zoom, and taper to fit stands at an airport", async ({ page }) => {
-    await serve(page, [plane("aaaaaa", "SOLO", BASE.lat, BASE.lon)], 11);
+  test("icons are bigger than the old dart but grow gradually with zoom, and taper to fit stands at an airport", async ({ page }) => {
+    await serve(page, [plane("aaaaaa", "SOLO", BASE.lat, BASE.lon)], 8);
     await expect.poll(async () => page.locator(".plane-icon").count(), { timeout: 10_000 }).toBe(1);
     const size = async () => (await page.locator(".plane-icon").first().boundingBox())!.width;
-    expect(await size()).toBeGreaterThanOrEqual(72); // was 36
-    await setMapView(page, BASE.lat, BASE.lon, 16);
-    await page.waitForTimeout(300);
-    const atStandZoom = await size();
-    expect(atStandZoom).toBeLessThan(50); // stands are ~40 px apart here
-    expect(atStandZoom).toBeGreaterThanOrEqual(36); // still easy to hit
+    const sizeAt = async (zoom: number) => {
+      await setMapView(page, BASE.lat, BASE.lon, zoom);
+      await page.waitForTimeout(300);
+      return size();
+    };
+    const z8 = await sizeAt(8);
+    const z10 = await sizeAt(10);
+    const z14 = await sizeAt(14);
+    const z16 = await sizeAt(16);
+    // Intermediate zooms are modest (the old dart was 31 px at z8, 36 at z10), not huge.
+    expect(z8).toBeGreaterThanOrEqual(34);
+    expect(z8).toBeLessThanOrEqual(40);
+    expect(z10).toBeGreaterThan(z8);
+    expect(z10).toBeLessThanOrEqual(50);
+    expect(z14).toBeGreaterThan(z10);
+    expect(z14).toBeLessThanOrEqual(62);
+    // At stand zoom (~40 px between gates at z16) they taper so each plane fits its gate.
+    expect(z16).toBeLessThan(50);
+    expect(z16).toBeGreaterThanOrEqual(36); // still easy to hit
   });
 
   test("at stand zoom, planes 55 m apart (neighbouring gates) are both drawn", async ({ page }) => {
@@ -138,11 +151,13 @@ test.describe("big planes", () => {
     await expect.poll(async () => page.locator(".plane-icon").count(), { timeout: 10_000 }).toBe(2);
   });
 
-  test("on a phone they are bigger still", async ({ page }) => {
+  test("on a phone they are about 20% bigger, for a finger", async ({ page }) => {
     await page.setViewportSize({ width: 400, height: 800 });
-    await serve(page, [plane("aaaaaa", "SOLO", BASE.lat, BASE.lon)], 11);
+    await serve(page, [plane("aaaaaa", "SOLO", BASE.lat, BASE.lon)], 10);
     await expect.poll(async () => page.locator(".plane-icon").count(), { timeout: 10_000 }).toBe(1);
-    expect((await page.locator(".plane-icon").first().boundingBox())!.width).toBeGreaterThanOrEqual(92); // was 46
+    const z10 = (await page.locator(".plane-icon").first().boundingBox())!.width;
+    expect(z10).toBeGreaterThanOrEqual(50); // 43 on a laptop
+    expect(z10).toBeLessThanOrEqual(56);
     await setMapView(page, BASE.lat, BASE.lon, 16);
     await page.waitForTimeout(300);
     expect((await page.locator(".plane-icon").first().boundingBox())!.width).toBeLessThan(62);
