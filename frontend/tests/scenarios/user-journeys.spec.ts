@@ -31,14 +31,14 @@ async function boot(page: import("@playwright/test").Page) {
   await page.goto("/");
   await page.waitForSelector(".boot-screen");
   await page.waitForSelector(".boot-screen--hidden, body:not(:has(.boot-screen))", { timeout: 20_000 });
-  await page.waitForSelector(".cluster-icon, .plane-icon", { timeout: 10_000 });
+  await page.waitForSelector(".plane-icon", { timeout: 10_000 });
 }
 
 test.describe("user journeys @scenario", () => {
   test("first visit: boot, pan around, zoom in and out", async ({ page }, testInfo) => {
     test.setTimeout(120_000);
     const h = await startHarness(page, testInfo);
-    await h.step("boot screen gone, clusters on the cyberpunk map", () => boot(page));
+    await h.step("boot screen gone, planes on the cyberpunk map", () => boot(page));
     await expect(page.locator("html")).toHaveAttribute("data-theme", "cyberpunk");
 
     await h.step("pan east", () => drag(page, -300, 0));
@@ -51,8 +51,9 @@ test.describe("user journeys @scenario", () => {
     await h.step("zoom in further", () => wheelZoom(page, 2));
     expect((await planeMarkers(page)).length, "individual planes at z10 near ARN").toBeGreaterThan(0);
     await h.step("pan around zoomed in", () => drag(page, -250, 120));
-    await h.step("zoom back out past the cluster threshold", () => wheelZoom(page, -4));
-    await expect(page.locator(".cluster-icon").first()).toBeVisible();
+    await h.step("zoom back out to the overview", () => wheelZoom(page, -4));
+    await expect(page.locator(".plane-icon").first()).toBeVisible();
+    await expect(page.locator(".cluster-icon")).toHaveCount(0);
     await h.step("zoom in again: drawn from cache, still correct", () => wheelZoom(page, 4));
     expect(h.restarts, "restart only on page load (status says the window is open, so never)").toBe(0);
   });
