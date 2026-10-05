@@ -588,50 +588,6 @@ html, body {
   .plane-icon { transition: none; }
 }
 
-/* Below CLUSTER_FETCH_MAX_ZOOM (see FlightMap.tsx): one bubble per
-   populated grid cell instead of individual plane-icons. Reuses
-   --color-marker (the same color an ordinary unselected aircraft renders
-   in) rather than inventing a third marker color — these bubbles stand in
-   for exactly that traffic, aggregated. */
-.cluster-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-/* No circle backing and no count anywhere on the mark (see clusterIcon's
-   own comment) — just the plane glyphs below, positioned by their own
-   .cluster-icon-mark--N rule. */
-.cluster-icon-mark {
-  position: relative;
-  width: 100%;
-  height: 100%;
-}
-
-/* A swarm of dart glyphs (SWARM in map/clusters.ts): one <svg> whose paths
-   are already placed, rotated and scaled, so all that's left is the paint.
-   More traffic = more planes in the same scatter, in a bigger icon. */
-.cluster-icon-mark svg {
-  width: 100%;
-  height: 100%;
-  overflow: visible;
-  fill: var(--color-marker);
-  stroke: rgba(0, 0, 0, 0.7);
-  stroke-width: 1;
-  stroke-linejoin: round;
-}
-
-/* An invisible, larger click target around a plane that has open space
-   around it (markRoomy in map/markers.ts decides, per update, and sets
-   --hit-pad). A pseudo-element on the marker's own element, so a click on it
-   is a click on the marker. */
-.plane-icon--roomy::after {
-  content: "";
-  position: absolute;
-  inset: calc(var(--hit-pad, 14px) * -1);
-  border-radius: 50%;
-}
-
 .plane-glyph {
   display: flex;
   align-items: center;

@@ -361,6 +361,37 @@ class LiveStateStoreTest {
     }
 
     @Test
+    void discovered_oneActivePlanePerCell_firstDiscoveredWins_inDiscoveryOrder_noClusters() {
+        LiveStateStore store = store();
+        Instant cut = T0.minusSeconds(100_000);
+        // Discovery order is upsert order: "late" is discovered after "early", though it is faster and newer.
+        store.upsert("early1", "EARLY", T0.minusSeconds(60), 10.1, 20.1, null, 60.0, null, null, false, "opensky");
+        store.upsert("other2", "OTHER", T0, 40.1, 60.1, null, 100.0, null, null, false, "opensky");
+        store.upsert("late33", "LATE", T0, 10.2, 20.2, null, 250.0, null, null, false, "opensky"); // same 0.5° cell as early1
+        store.upsert("gnd444", "GND", T0, 70.1, 80.1, null, 0.0, null, null, true, "opensky");     // parked: never in the overview
+        // Discovered first, but silent for over 2 h: not active.
+        store.upsert("old555", "OLD", T0.minusSeconds(7201), 55.1, 5.1, null, 200.0, null, null, false, "opensky");
+
+        LiveOverview o = store.discovered(cut, cut, T0.minusSeconds(7200), WORLD, 0.5, 10);
+
+        assertThat(o.planes()).extracting(LiveMarker::getIcao24).containsExactly("early1", "other2");
+        assertThat(o.clusters()).isEmpty();
+    }
+
+    @Test
+    void discovered_stopsAtMaxPlanes_keepingTheEarliestDiscovered() {
+        LiveStateStore store = store();
+        Instant cut = T0.minusSeconds(100_000);
+        store.upsert("aaa111", "A", T0, 10.0, 20.0, null, 100.0, null, null, false, "opensky");
+        store.upsert("bbb222", "B", T0, 20.0, 30.0, null, 100.0, null, null, false, "opensky");
+        store.upsert("ccc333", "C", T0, 30.0, 40.0, null, 100.0, null, null, false, "opensky");
+
+        LiveOverview o = store.discovered(cut, cut, T0.minusSeconds(7200), WORLD, 0.5, 2);
+
+        assertThat(o.planes()).extracting(LiveMarker::getIcao24).containsExactly("aaa111", "bbb222");
+    }
+
+    @Test
     void overview_perCellCapSpreadsPlanesAcrossCells_soAHubCannotUseUpTheWholeAllowance() {
         LiveStateStore store = store();
         Instant cut = T0.minusSeconds(100_000);

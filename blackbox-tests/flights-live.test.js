@@ -53,3 +53,20 @@ test("GET /api/flights/live without a bbox can return more than any single bbox 
   const [globalBody, boundedBody] = await Promise.all([globalRes.json(), boundedRes.json()]);
   assert.ok(globalBody.length >= boundedBody.length);
 });
+
+test("GET /api/flights/live/overview?declutter=true returns one plane per cell and no clusters", async () => {
+  // The cluster-free zoomed-out view: well-shaped markers, no two in the same
+  // 1-degree cell, and nothing clustered (see LiveStateStore.discovered).
+  const res = await fetch(apiUrl("/api/flights/live/overview?latMin=-90&latMax=90&lonMin=-180&lonMax=180&gridDeg=1&limit=2000&declutter=true"));
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.ok(Array.isArray(body.planes), "planes must be an array");
+  assert.deepEqual(body.clusters, []);
+  const cells = new Set();
+  for (const pos of body.planes) {
+    assertLiveMarkerShape(pos);
+    const cell = `${Math.floor(pos.latitude)},${Math.floor(pos.longitude)}`;
+    assert.ok(!cells.has(cell), `two planes in cell ${cell}`);
+    cells.add(cell);
+  }
+});

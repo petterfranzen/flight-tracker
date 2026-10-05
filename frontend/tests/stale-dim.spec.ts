@@ -40,8 +40,8 @@ test.describe("dimming stale aircraft", () => {
       marker("aaaaaa", "FRESH1", 0, 1), // newest, on the stand
       marker("bbbbbb", "GHOST1", 0.00003, 60), // ~3 m away, 1 h old
       marker("cccccc", "GHOST2", -0.00002, 600), // ~2 m away, 10 h old: hidden, not merely dimmed
-      marker("dddddd", "NEXT1", 0.0005, 5), // ~55 m away: a different stand
-      marker("eeeeee", "FAR1", 0.0011, 10), // ~120 m away
+      marker("dddddd", "NEXT1", 0.0012, 5), // ~130 m away (110 px here): room for its own icon
+      marker("eeeeee", "FAR1", 0.0026, 10), // ~290 m away
     ]);
     await setMapView(page, BASE.lat, BASE.lon, 16);
     const { dimmed, live } = await drawn(page, 3);
@@ -52,8 +52,8 @@ test.describe("dimming stale aircraft", () => {
   test("a report older than 2 hours is dimmed even with nothing on top of it; a 90 minute one is not", async ({ page }) => {
     await serve(page, [
       marker("aaaaaa", "AGED1", 0, 180), // 3 h
-      marker("bbbbbb", "RECENT1", 0.0005, 90), // 1.5 h, 55 m away
-      marker("cccccc", "FRESH1", 0.0011, 1),
+      marker("bbbbbb", "RECENT1", 0.0012, 90), // 1.5 h, 130 m away
+      marker("cccccc", "FRESH1", 0.0026, 1),
     ]);
     await setMapView(page, BASE.lat, BASE.lon, 16);
     const { dimmed, live } = await drawn(page, 3);
@@ -61,16 +61,15 @@ test.describe("dimming stale aircraft", () => {
     expect(live).toEqual(["FRESH1", "RECENT1"]);
   });
 
-  test("zoomed out, age still dims but nothing is hidden for overlap", async ({ page }) => {
+  test("zoomed out, age still dims", async ({ page }) => {
     await serve(page, [
       marker("aaaaaa", "FRESH1", 0, 1),
-      marker("bbbbbb", "GHOST1", 0.00003, 60), // would be hidden at z16; 20 m is under a pixel here
-      marker("cccccc", "AGED1", 0.01, 180),
+      marker("cccccc", "AGED1", 0.1, 180), // ~11 km away: its own icon at z11
     ]);
     await setMapView(page, BASE.lat, BASE.lon, 11);
-    const { dimmed, live } = await drawn(page, 3);
+    const { dimmed, live } = await drawn(page, 2);
     expect(dimmed).toEqual(["AGED1"]);
-    expect(live).toEqual(["FRESH1", "GHOST1"]);
+    expect(live).toEqual(["FRESH1"]);
   });
 
   test("the selected aircraft is never dimmed, even when its report is old", async ({ page }) => {

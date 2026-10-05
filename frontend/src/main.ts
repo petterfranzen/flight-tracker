@@ -5,7 +5,7 @@ import { loadTheme, saveTheme } from "./theme";
 import type { Theme } from "./theme";
 import type { FavoriteAircraft, FavoriteRoute } from "./favorites";
 import { loadFavoriteAircraft, loadFavoriteRoutes, toggleFavoriteAircraft, toggleFavoriteRoute } from "./favorites";
-import type { AirportSelection, Bounds, ClusterPoint, FlightPosition, LiveMarker, LiveOverview, SelectedPosition } from "./types/flight";
+import type { AirportSelection, Bounds, FlightPosition, LiveMarker, LiveOverview, SelectedPosition } from "./types/flight";
 import {
   fetchAircraftDossier,
   fetchAirportInfo,
@@ -13,7 +13,6 @@ import {
   fetchHistory,
   fetchLiveClusters,
   fetchLiveOverview,
-  OVERVIEW_PLANES_SMALL,
   fetchGeo,
   fetchLiveCount,
   fetchLivePositions,
@@ -22,12 +21,10 @@ import {
   subscribeLiveFeed,
 } from "./api/flightApi";
 import { boundsFromMap, createFollowSelected, createMap, DEFAULT_VIEW } from "./map/map";
-import { createMarkerLayer } from "./map/markers";
-import { clusterPositions, clusterTargetPx, gridDegForZoom } from "./map/clusterMath";
-import { isSmallScreen } from "./map/screen";
+import { createMarkerLayer, planeBoxSize } from "./map/markers";
+import { declutterCellDeg, pickNonOverlapping, type Candidate } from "./map/declutter";
 import { pickInitialView } from "./map/initialView";
 import { getMockPlaneCount } from "./api/mockFleet";
-import { createClusterLayer } from "./map/clusters";
 import { agedIds, findShadowedIds, isActiveTraffic, OVERLAP_MIN_ZOOM } from "./map/staleness";
 import { createRouteLayer } from "./map/route";
 import { snapBounds, ViewCache, type CachedView } from "./map/viewCache";
@@ -53,11 +50,11 @@ const FETCH_INTERVAL_MS = 72_000;
 const FETCH_STOP_MS = 5 * 60_000;
 const DIALOG_STOP_MS = 5 * 60_000;
 
-// Below this zoom, the map switches to aggregated cluster bubbles instead
-// of individual aircraft markers (server-side).
+// Below this zoom the map asks the server for a thinned-out set (one plane per
+// half-icon cell, first discovered first — see fetchLiveOverview) instead of
+// every aircraft in view. There are no clusters: planes whose icons would
+// overlap are hidden, the first discovered one stays (map/declutter.ts).
 const CLUSTER_FETCH_MAX_ZOOM = 8;
-// Client-side backstop for an individual-marker zoom that's still too busy.
-const MAX_INDIVIDUAL_MARKERS = 500;
 
 // A drag or wheel-zoom fires a burst of moveends; only the one the user
 // settles on is worth a request.
@@ -66,9 +63,6 @@ const VIEWPORT_DEBOUNCE_MS = 250;
 // poll cycle. They're coalesced (latest per icao24) and applied in one
 // render at most this often, instead of one full re-render per frame.
 const WS_FLUSH_MS = 250;
-// Matches .plane-icon's opacity transition (FlightMap.css): how long the
-// "exiting" fade gets before markers are actually dropped on zoom-out.
-const EXIT_FADE_MS = 300;
 
 // Opening view (see applyInitialView): how long boot waits for the world
 // summary, and the grid it asks for (coarse: a few hundred cells at most).
@@ -89,12 +83,6 @@ const OVERVIEW_REFRESH_MS = 10_000;
 const LIVE_CACHE_FRESH_MS = 3_000;
 const VIEW_CACHE_MAX_AGE_MS = 5 * 60_000;
 const VIEW_CACHE_MAX_ENTRIES = 40;
-
-// FlightController.liveClusters clamps gridDeg to this range (0.5–40°); snapping the
-// request to the grid the server actually uses keeps every cell complete.
-function serverGridDeg(zoom: number): number {
-  return Math.min(40, Math.max(0.5, gridDegForZoom(zoom, clusterTargetPx(isSmallScreen()))));
-}
 
 // Fraction of the view's size drawn beyond each edge.
 const RENDER_MARGIN = 0.2;
@@ -186,8 +174,7 @@ function boot(): void {
   // aircraft we've heard about". Mutated in place: copying it per update
   // was O(n) per WebSocket frame.
   const positions = new Map<string, LiveMarker>();
-  let clusters: ClusterPoint[] = [];
-  // Zoomed out: the most active aircraft, drawn individually next to the clusters (see fetchLiveOverview).
+  // Zoomed out: the thinned-out set of active aircraft the server sent (see fetchLiveOverview).
   let overviewPlanes: LiveMarker[] = [];
   const overviewIndex = new Map<string, number>(); // icao24 -> index in overviewPlanes
   function setOverviewPlanes(list: LiveMarker[]): void {
@@ -195,9 +182,6 @@ function boot(): void {
     overviewIndex.clear();
     list.forEach((p, i) => overviewIndex.set(p.icao24, i));
   }
-  // The grid `clusters` was computed with (a cached or in-flight view can be
-  // for a different zoom than the one now on screen) — keys cluster markers.
-  let clustersGridDeg = serverGridDeg(6);
 
   let cycleStart = Date.now();
   let fetchIntervalTimer: ReturnType<typeof setInterval> | null = null;
@@ -208,11 +192,8 @@ function boot(): void {
   let zoom = 6;
   let viewportFetchTimer: ReturnType<typeof setTimeout> | null = null;
   let viewportAbort: AbortController | null = null;
-  let exitFadeTimer: ReturnType<typeof setTimeout> | null = null;
-  // Whether the last render drew unselected aircraft as individual markers.
-  let individualMarkersShown = false;
 
-  // Per zoom for clusters (the grid depends on it); for individual aircraft
+  // Per zoom for the overview (its cell size depends on it); for individual aircraft
   // any z>=CLUSTER_FETCH_MAX_ZOOM entry whose bbox covers the view will do,
   // so zooming in is served entirely from the parent view's data.
   const clusterCache = new ViewCache<LiveOverview>(VIEW_CACHE_MAX_ENTRIES, VIEW_CACHE_MAX_AGE_MS);
@@ -261,66 +242,50 @@ function boot(): void {
     drawRoute();
   }
 
-  // ---- aircraft/cluster rendering ----
+  // ---- aircraft rendering ----
   function renderAircraftLayer(): void {
     const selectedId = store.get("selectedId");
     const selectedPos = store.get("selectedPos");
+    const nowMs = Date.now();
     // Only what's on screen (plus a margin, so a short drag doesn't reveal
     // empty edges before moveend re-renders). `positions` can hold a wider
-    // area than the view — a cached parent view when zooming in — and the
-    // MAX_INDIVIDUAL_MARKERS decision has to be about what's visible.
+    // area than the view — a cached parent view when zooming in.
     const view = bounds ? padBounds(bounds, RENDER_MARGIN) : null;
-    const list = Array.from(positions.values()).filter((p) => !view || inBounds(view, p.latitude, p.longitude));
-    const withoutSelected = selectedId ? list.filter((p) => p.icao24 !== selectedId) : list;
+    // Zoomed out the server's thinned-out overview is the source; zoomed in,
+    // the viewport's /live snapshot. Each stands in for the other until its
+    // own data arrives, so a zoom never blanks the map.
+    const zoomedOut = zoom < CLUSTER_FETCH_MAX_ZOOM;
+    const useOverview = overviewPlanes.length > 0 && (zoomedOut || positions.size === 0);
+    const source = useOverview ? overviewPlanes : Array.from(positions.values());
+    const inView = source.filter((p) => p.icao24 !== selectedId && (!view || inBounds(view, p.latitude, p.longitude)));
     // An aircraft with a newer one on top of it is a ghost: not drawn at all
     // (see map/staleness.ts). Only where 20 m is visible.
-    const shadowed = zoom >= OVERLAP_MIN_ZOOM ? findShadowedIds(withoutSelected) : null;
-    const unselectedList = shadowed && shadowed.size > 0 ? withoutSelected.filter((p) => !shadowed.has(p.icao24)) : withoutSelected;
+    const shadowed = zoom >= OVERLAP_MIN_ZOOM ? findShadowedIds(inView) : null;
+    const candidates = shadowed && shadowed.size > 0 ? inView.filter((p) => !shadowed.has(p.icao24)) : inView;
 
-    const belowServerClusterZoom = zoom < CLUSTER_FETCH_MAX_ZOOM;
-    // A busy view (over MAX_INDIVIDUAL_MARKERS) shows active traffic only —
-    // individually if that fits, as clusters if not — and holds parked or
-    // silent aircraft back until the view is sparse enough (zoom in). The
-    // server's zoomed-out bubbles follow the same rule (see isActiveTraffic).
-    const nowMs = Date.now();
-    const overCap = !belowServerClusterZoom && unselectedList.length > MAX_INDIVIDUAL_MARKERS;
-    const drawnList = overCap ? unselectedList.filter((p) => isActiveTraffic(p, nowMs)) : unselectedList;
-    const clientClustered = overCap && drawnList.length > MAX_INDIVIDUAL_MARKERS;
+    // Where two planes' icons would overlap, only the first discovered is
+    // drawn; the selected one is always drawn and hides whatever is under it.
+    const points: Candidate[] = candidates.map((p) => {
+      const pt = map.latLngToContainerPoint([p.latitude, p.longitude]);
+      return { icao24: p.icao24, x: pt.x, y: pt.y, active: isActiveTraffic(p, nowMs) };
+    });
+    const fixed = selectedPos ? [map.latLngToContainerPoint([selectedPos.latitude, selectedPos.longitude])] : [];
+    const keep = pickNonOverlapping(points, fixed, planeBoxSize(zoom));
+    const drawn = candidates.filter((p) => keep.has(p.icao24));
 
-    if (belowServerClusterZoom) clusterLayer.update(clusters, clustersGridDeg);
-    else if (clientClustered) {
-      const grid = gridDegForZoom(zoom, clusterTargetPx(isSmallScreen()));
-      clusterLayer.update(clusterPositions(drawnList, grid), grid);
-    } else clusterLayer.update([], clustersGridDeg);
-
-    // Below the cluster zoom, unselected markers only get the "exiting"
-    // fade if they were actually on screen as individual markers. Coming
-    // from a client-clustered view they never were, and handing the whole
-    // list over built every one of them (1,000+ DOM markers, each with
-    // its own fade-in animation) just to fade it straight back out — a
-    // ~1s main-thread stall on every zoom-out from a busy area.
-    const showIndividually = belowServerClusterZoom ? individualMarkersShown : !clientClustered;
-    // Stays true below the cluster zoom until the fade finishes (see
-    // dropIndividualMarkersAfterFade), so a cluster fetch landing mid-fade
-    // doesn't cut it short.
-    if (!belowServerClusterZoom) individualMarkersShown = !clientClustered;
-
-    // Zoomed out, the overview's top aircraft stand in for the individual
-    // markers; until one arrives the zoom-out fade above plays as before.
-    const overviewList = belowServerClusterZoom && overviewPlanes.length > 0 ? overviewPlanes.filter((p) => p.icao24 !== selectedId) : null;
     markerLayer.update({
-      unselected: overviewList ?? (showIndividually ? (belowServerClusterZoom ? unselectedList : drawnList) : []),
+      unselected: drawn,
       selectedPos,
       zoom,
-      exiting: belowServerClusterZoom && !overviewList,
-      // Reports older than 2 h are drawn dimmed (see map/staleness.ts); only
-      // worth computing when individual markers are actually shown.
-      dimmed: overviewList ? agedIds(overviewList, nowMs) : showIndividually ? agedIds(drawnList, nowMs) : undefined,
+      exiting: false,
+      // Reports older than 2 h are drawn dimmed (see map/staleness.ts).
+      dimmed: agedIds(drawn, nowMs),
     });
   }
 
   // ---- fetch lifecycle ----
   function applyLiveSnapshot(list: LiveMarker[]): void {
+    if (overviewPlanes.length > 0) setOverviewPlanes([]); // the snapshot is the source from here on
     const selectedId = store.get("selectedId");
     const selectedKept = selectedId ? positions.get(selectedId) : undefined;
     const previous = new Map(positions);
@@ -348,17 +313,22 @@ function boot(): void {
       : liveCache.find(bounds, (z) => z >= CLUSTER_FETCH_MAX_ZOOM, now);
   }
 
+  // The overview replaces the zoomed-in snapshot: its aircraft are what is
+  // drawn now, so the snapshot's are dropped (the selected one is kept).
+  function applyOverview(planes: LiveMarker[]): void {
+    setOverviewPlanes(planes);
+    const selectedId = store.get("selectedId");
+    for (const id of Array.from(positions.keys())) if (id !== selectedId) positions.delete(id);
+    renderAircraftLayer();
+  }
+
   /** Draws the best cached data for the current view, if any and not already on screen. */
   function applyCachedView(now: number): CachedView<unknown> | null {
     const hit = findCachedView(now);
     if (!hit || hit === lastAppliedView) return hit;
     lastAppliedView = hit;
     if (zoom < CLUSTER_FETCH_MAX_ZOOM) {
-      const overview = hit.data as LiveOverview;
-      clusters = overview.clusters;
-      setOverviewPlanes(overview.planes);
-      clustersGridDeg = serverGridDeg(hit.zoom);
-      renderAircraftLayer();
+      applyOverview((hit.data as LiveOverview).planes);
     } else {
       applyLiveSnapshot(hit.data as LiveMarker[]);
     }
@@ -367,7 +337,7 @@ function boot(): void {
 
   /**
    * The one place viewport data is requested. Below CLUSTER_FETCH_MAX_ZOOM
-   * that's server-side clusters only — never /live, whose size grows with
+   * that's the thinned-out overview only — never /live, whose size grows with
    * the whole tracked fleet; at or above it, /live for exactly the current
    * viewport (deliberately unpadded: its bbox is what the OpenSky hot poll
    * covers, and a bigger area costs more credits). Cached views are drawn
@@ -396,18 +366,15 @@ function boot(): void {
       store.set("firstLoadDone", true);
     };
     if (requestZoom < CLUSTER_FETCH_MAX_ZOOM) {
-      const grid = serverGridDeg(requestZoom);
+      const grid = declutterCellDeg(requestZoom, planeBoxSize(requestZoom));
       const requestBounds = snapBounds(bounds, grid * 2);
-      fetchLiveOverview(requestBounds, grid, controller.signal, isSmallScreen() ? OVERVIEW_PLANES_SMALL : undefined)
+      fetchLiveOverview(requestBounds, grid, controller.signal)
         .then((overview) => {
           const entry = { zoom: requestZoom, bbox: requestBounds, data: overview, fetchedAt: Date.now() };
           clusterCache.put(entry);
           if (controller.signal.aborted || zoom !== requestZoom) return;
           lastAppliedView = entry;
-          clusters = overview.clusters;
-          setOverviewPlanes(overview.planes);
-          clustersGridDeg = grid;
-          renderAircraftLayer();
+          applyOverview(overview.planes);
         })
         .catch(() => {})
         .finally(done);
@@ -440,22 +407,12 @@ function boot(): void {
   }
 
   function handleViewportChange(nextBounds: Bounds, nextZoom: number, immediate = false): void {
-    const wasClustered = zoom < CLUSTER_FETCH_MAX_ZOOM;
+    const wasZoomedOut = zoom < CLUSTER_FETCH_MAX_ZOOM;
     bounds = nextBounds;
     zoom = nextZoom;
     store.set("zoom", nextZoom);
-    const clustered = nextZoom < CLUSTER_FETCH_MAX_ZOOM;
-    if (clustered !== wasClustered) {
-      clusters = [];
-      setOverviewPlanes([]);
-      lastAppliedView = null;
-    }
-    if (clustered && !wasClustered) dropIndividualMarkersAfterFade();
-    if (!clustered && exitFadeTimer) {
-      clearTimeout(exitFadeTimer);
-      exitFadeTimer = null;
-    }
-    renderAircraftLayer(); // icon sizes/cluster mode update for the new zoom immediately, independent of the fetch below
+    if ((nextZoom < CLUSTER_FETCH_MAX_ZOOM) !== wasZoomedOut) lastAppliedView = null;
+    renderAircraftLayer(); // icon sizes and what overlaps change with the zoom: redraw now, independent of the fetch below
     // A view we've seen recently is drawn right away, before the debounce.
     applyCachedView(Date.now());
 
@@ -466,22 +423,6 @@ function boot(): void {
     viewportFetchTimer = null;
     if (immediate) fetchViewport();
     else viewportFetchTimer = setTimeout(fetchViewport, VIEWPORT_DEBOUNCE_MS);
-  }
-
-  // Zoomed out past CLUSTER_FETCH_MAX_ZOOM: the individual markers fade
-  // (renderAircraftLayer marks them exiting), then go — they used to stay
-  // in `positions` and the DOM, invisible, for the rest of the session,
-  // and every later render walked all of them.
-  function dropIndividualMarkersAfterFade(): void {
-    if (exitFadeTimer) clearTimeout(exitFadeTimer);
-    exitFadeTimer = setTimeout(() => {
-      exitFadeTimer = null;
-      if (zoom >= CLUSTER_FETCH_MAX_ZOOM) return;
-      const selectedId = store.get("selectedId");
-      for (const id of Array.from(positions.keys())) if (id !== selectedId) positions.delete(id);
-      individualMarkersShown = false;
-      renderAircraftLayer();
-    }, EXIT_FADE_MS);
   }
 
   // ---- live push feed ----
@@ -778,7 +719,6 @@ function boot(): void {
   // ?debug: a read-only diagnostics panel for a misbehaving device (ui/debugOverlay.ts).
   if (new URLSearchParams(location.search).has("debug")) import("./ui/debugOverlay").then((m) => m.mountDebugOverlay(map)).catch(() => {});
   const markerLayer = createMarkerLayer(map, handleSelectAircraft);
-  const clusterLayer = createClusterLayer(map);
   const routeLayer = createRouteLayer(map);
   const followSelected = createFollowSelected(map, (offScreen) => store.set("planeOffScreen", offScreen));
 

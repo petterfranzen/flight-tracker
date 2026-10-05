@@ -188,7 +188,7 @@ public class FlightController {
     }
 
     private static final int DEFAULT_OVERVIEW_PLANES = 120;
-    private static final int MAX_OVERVIEW_PLANES = 1000;
+    private static final int MAX_OVERVIEW_PLANES = 2000;
     private static final int DEFAULT_OVERVIEW_PER_CELL = 6;
     private static final int MAX_OVERVIEW_PER_CELL = 20;
 
@@ -201,7 +201,9 @@ public class FlightController {
      * does not touch the reported viewport (a world-sized bbox must not
      * become "the current viewport" for the hot poll and the broadcaster).
      * {@code limit} caps the planes returned, {@code perCell} the planes
-     * taken from any one grid cell.
+     * taken from any one grid cell. With {@code declutter=true} it is the
+     * cluster-free variant instead: one plane per cell, first discovered
+     * wins, no clusters (see LiveStateStore.discovered).
      */
     @GetMapping("/live/overview")
     public LiveOverview liveOverview(@RequestParam double latMin,
@@ -210,10 +212,18 @@ public class FlightController {
                                       @RequestParam double lonMax,
                                       @RequestParam(defaultValue = "2") double gridDeg,
                                       @RequestParam(defaultValue = "" + DEFAULT_OVERVIEW_PLANES) int limit,
-                                      @RequestParam(defaultValue = "" + DEFAULT_OVERVIEW_PER_CELL) int perCell) {
+                                      @RequestParam(defaultValue = "" + DEFAULT_OVERVIEW_PER_CELL) int perCell,
+                                      @RequestParam(defaultValue = "false") boolean declutter) {
         Instant now = Instant.now();
         Bounds bounds = new Bounds(latMin, latMax, lonMin, lonMax);
         double clampedGridDeg = Math.min(MAX_CLUSTER_GRID_DEG, Math.max(MIN_CLUSTER_GRID_DEG, gridDeg));
+        if (declutter) {
+            // No clusters: one plane per cell, first discovered wins (see LiveStateStore.discovered).
+            return liveStateStore.discovered(
+                    now.minus(LiveVisibilityWindows.STALE_AIRBORNE_BOUND), now.minus(LiveVisibilityWindows.LANDED_VISIBILITY),
+                    now.minus(LiveVisibilityWindows.ACTIVE_TRAFFIC_WINDOW),
+                    bounds, clampedGridDeg, Math.min(MAX_OVERVIEW_PLANES, Math.max(0, limit)));
+        }
         return liveStateStore.overview(
                 now.minus(LiveVisibilityWindows.STALE_AIRBORNE_BOUND), now.minus(LiveVisibilityWindows.LANDED_VISIBILITY),
                 now.minus(LiveVisibilityWindows.ACTIVE_TRAFFIC_WINDOW),

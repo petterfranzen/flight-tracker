@@ -148,11 +148,24 @@ class FlightControllerTest {
         when(liveStateStore.overview(any(), any(), any(), any(), eq(2.0), anyInt(), anyInt()))
                 .thenReturn(new LiveOverview(List.of(), List.of()));
 
-        controller().liveOverview(-90, 90, -180, 180, 2.0, 99_999, 99);
-        verify(liveStateStore).overview(any(), any(), any(), any(), eq(2.0), eq(1000), eq(20)); // capped
+        controller().liveOverview(-90, 90, -180, 180, 2.0, 99_999, 99, false);
+        verify(liveStateStore).overview(any(), any(), any(), any(), eq(2.0), eq(2000), eq(20)); // capped
 
-        controller().liveOverview(-90, 90, -180, 180, 2.0, -5, 0);
+        controller().liveOverview(-90, 90, -180, 180, 2.0, -5, 0, false);
         verify(liveStateStore).overview(any(), any(), any(), any(), eq(2.0), eq(0), eq(1)); // floored
+    }
+
+    @Test
+    void liveOverview_declutterAsksForTheClusterFreeVariant_clampedAndFlooredLikeTheOther() {
+        when(liveStateStore.discovered(any(), any(), any(), any(), anyDouble(), anyInt()))
+                .thenReturn(new LiveOverview(List.of(), List.of()));
+
+        controller().liveOverview(-90, 90, -180, 180, 0.01, 99_999, 6, true);
+        verify(liveStateStore).discovered(any(), any(), any(), any(), eq(0.5), eq(2000)); // cell floored, planes capped
+
+        controller().liveOverview(-90, 90, -180, 180, 999, -5, 6, true);
+        verify(liveStateStore).discovered(any(), any(), any(), any(), eq(40.0), eq(0));
+        verify(liveStateStore, never()).overview(any(), any(), any(), any(), anyDouble(), anyInt(), anyInt());
     }
 
     @Test
@@ -160,7 +173,7 @@ class FlightControllerTest {
         when(liveStateStore.overview(any(), any(), any(), any(), anyDouble(), anyInt(), anyInt()))
                 .thenReturn(new LiveOverview(List.of(), List.of()));
 
-        controller().liveOverview(-90, 90, -180, 180, 2.0, 200, 3);
+        controller().liveOverview(-90, 90, -180, 180, 2.0, 200, 3, false);
 
         // A world-sized bbox must not become "the current viewport" (hot poll / broadcaster).
         verifyNoInteractions(viewportService);
