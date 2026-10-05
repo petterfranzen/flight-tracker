@@ -49,6 +49,7 @@ These are the same commands as `.github/workflows/build-deploy.yml`.
 cd frontend && npm ci && npm run build
 npm run test:e2e
 npm run test:perf        # tests/perf.spec.ts, @perf tag, one worker; its own CI step
+npm run test:scenarios   # tests/scenarios/, @scenario tag, one worker; its own CI step (~3 min)
 
 # Backend (+ -Pwith-frontend to pack frontend/dist into the jar)
 cd backend && mvn -B verify -Pwith-frontend
@@ -95,4 +96,7 @@ the bundled Chromium instead (see above).
 - Work on a branch and open a PR. **Never push to or merge into `main`**:
   a push to `main` deploys to production.
 - Never put deploy keys or Cloudflare tokens anywhere an agent runs.
-- Before handing back a frontend change, run `npm run build && npm run test:e2e`.
+- Before handing back a frontend change, run `npm run build && npm run test:e2e && npm run test:perf && npm run test:scenarios`.
+  `test:e2e` skips the `@perf` and `@scenario` tests, but CI runs both, and the
+  scenario journeys assert on what the map draws (e.g. cluster icons), so a UI
+  change can leave them red while `test:e2e` is green.
