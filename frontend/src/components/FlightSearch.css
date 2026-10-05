@@ -71,37 +71,15 @@
   font-size: 11px;
 }
 
-.flight-search-advanced-toggle {
-  display: block;
-  width: 100%;
-  box-sizing: border-box;
+/* The airport box, directly under the flight-number box. */
+.flight-search-airport {
   margin-top: 6px;
-  background: var(--color-panel);
-  color: var(--color-text);
-  border: 1px solid var(--color-panel-border);
-  border-radius: 8px;
-  padding: 8px 12px;
-  font-size: 13px;
-  font-weight: 600;
-  text-align: left;
-  cursor: pointer;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
-}
-
-.flight-search-advanced-toggle:hover {
-  background: var(--color-panel-border);
-}
-
-.flight-search-advanced-panel {
-  margin-top: 6px;
-  padding-top: 10px;
-  border-top: 1px solid var(--color-panel-border);
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
-.flight-search-advanced-input {
+.flight-search-airport-input {
   box-shadow: none;
 }
 
@@ -129,7 +107,7 @@
   }
 
   /* iOS Safari zooms the viewport on focus of any text field under 16px.
-     Covers both search inputs (the advanced one shares the class). */
+     Covers both search inputs (the airport one shares the class). */
   .flight-search-input {
     font-size: 16px;
   }

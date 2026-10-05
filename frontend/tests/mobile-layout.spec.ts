@@ -52,8 +52,7 @@ test.describe("mobile layout", () => {
     expect(viewport).not.toMatch(/user-scalable\s*=\s*(no|0)/i);
 
     await page.locator(".flight-search-fab").click();
-    await page.locator(".flight-search-advanced-toggle").click();
-    await expect(page.locator(".flight-search-advanced-input")).toBeVisible();
+    await expect(page.locator(".flight-search-airport-input")).toBeVisible();
 
     const sizes = await page.evaluate(() =>
       Array.from(document.querySelectorAll<HTMLElement>("input, textarea, select"))

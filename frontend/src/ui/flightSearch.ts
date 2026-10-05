@@ -21,9 +21,9 @@ function searchIconSvg(): SVGElement {
 }
 
 /**
- * Two independent search modes sharing one component: the primary
- * flight-number/callsign box (always visible) and an "advanced search"
- * airport panel, expanded on demand. Both funnel into `onSelect`. Kept
+ * Two independent search modes sharing one component: the flight-number/
+ * callsign box and, right under it, an airport box (both always visible).
+ * Both funnel into `selectAircraft`. Kept
  * fully self-contained (no store slots) — nothing outside this module ever
  * needs to know its query/open state, same as the original React version.
  */
@@ -53,8 +53,7 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
   let requestSeq = 0;
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
-  // --- advanced (airport) search state ---
-  let advancedOpen = false;
+  // --- airport search state ---
   let airportQuery = "";
   let routeResults: FlightPosition[] = [];
   let routeOpen = false;
@@ -177,12 +176,12 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
   const routeResultsList = h("ul", { className: "flight-search-results", role: "listbox", id: "flight-search-route-listbox" });
   const airportInput = h("input", {
     type: "text",
-    className: "flight-search-input flight-search-advanced-input",
-    placeholder: "Search by airport (name, IATA, or ICAO)…",
+    className: "flight-search-input flight-search-airport-input",
+    placeholder: "Search by airport…",
     role: "combobox",
     "aria-controls": "flight-search-route-listbox",
     "aria-autocomplete": "list",
-    "aria-label": "Search by origin or destination airport",
+    "aria-label": "Search by origin or destination airport (name, IATA or ICAO code)",
   }) as HTMLInputElement;
   airportInput.addEventListener("input", () => {
     airportQuery = airportInput.value;
@@ -217,20 +216,7 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     }
   });
 
-  const advancedPanel = h("div", { id: "flight-search-advanced-panel", className: "flight-search-advanced-panel" }, airportInput);
-  const advancedToggle = h(
-    "button",
-    {
-      type: "button",
-      className: "flight-search-advanced-toggle",
-      "aria-controls": "flight-search-advanced-panel",
-      onClick: () => {
-        advancedOpen = !advancedOpen;
-        renderAll();
-      },
-    },
-    "Advanced search (airport) ▼",
-  );
+  const airportPanel = h("div", { className: "flight-search-airport" }, airportInput);
 
   const fab = h(
     "button",
@@ -251,7 +237,7 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     "Close search ✕",
   );
   const eyebrow = h("span", { className: "flight-search-eyebrow" }, "Query // Flight No.");
-  const panel = h("div", { id: "flight-search-panel", className: "flight-search-panel" }, panelClose, eyebrow, input, advancedToggle);
+  const panel = h("div", { id: "flight-search-panel", className: "flight-search-panel" }, panelClose, eyebrow, input, airportPanel);
   const container = h("div", { className: "flight-search" }, fab, panel);
 
   function setActiveRow(listEl: HTMLElement, activeIdx: number): void {
@@ -302,7 +288,7 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     const showDropdown = open && query.trim().length > 0;
     clear(resultsList);
     if (showDropdown) {
-      if (!resultsList.parentElement) panel.insertBefore(resultsList, advancedToggle);
+      if (!resultsList.parentElement) panel.insertBefore(resultsList, airportPanel);
       if (loading && results.length === 0) resultsList.append(h("li", { className: "flight-search-status" }, "Searching…"));
       else if (!loading && results.length === 0) resultsList.append(h("li", { className: "flight-search-status" }, "No matching flights"));
       results.forEach((p, i) => resultsList.append(resultRow(p, i, i === activeIndex, "flight-search-option", choose)));
@@ -318,7 +304,7 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     const showDropdown = routeOpen && airportQuery.trim().length > 0;
     clear(routeResultsList);
     if (showDropdown) {
-      if (!routeResultsList.parentElement) advancedPanel.appendChild(routeResultsList);
+      if (!routeResultsList.parentElement) airportPanel.appendChild(routeResultsList);
       if (routeLoading && routeResults.length === 0) routeResultsList.append(h("li", { className: "flight-search-status" }, "Searching…"));
       else if (!routeLoading && routeResults.length === 0) routeResultsList.append(h("li", { className: "flight-search-status" }, "No matching flights"));
       routeResults.forEach((p, i) => routeResultsList.append(resultRow(p, i, i === routeActiveIndex, "flight-search-route-option", choose)));
@@ -334,13 +320,6 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     panel.classList.toggle("flight-search-panel--open", mobilePanelOpen);
     fab.setAttribute("aria-expanded", String(mobilePanelOpen));
     fab.setAttribute("aria-label", mobilePanelOpen ? "Close search" : "Search flights");
-    advancedToggle.setAttribute("aria-expanded", String(advancedOpen));
-    advancedToggle.textContent = advancedOpen ? "Hide advanced search ▲" : "Advanced search (airport) ▼";
-    if (advancedOpen) {
-      if (!advancedPanel.parentElement) panel.appendChild(advancedPanel);
-    } else if (advancedPanel.parentElement) {
-      advancedPanel.remove();
-    }
     if (input.value !== query) input.value = query;
     if (airportInput.value !== airportQuery) airportInput.value = airportQuery;
     renderResults();
