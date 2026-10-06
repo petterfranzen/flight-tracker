@@ -175,7 +175,7 @@ export async function wheelZoom(page: Page, steps: number, at?: { x: number; y: 
   const box = (await page.locator(".leaflet-container").boundingBox())!;
   await page.mouse.move(at?.x ?? box.x + box.width / 2, at?.y ?? box.y + box.height / 2);
   for (let i = 0; i < Math.abs(steps); i++) {
-    await page.mouse.wheel(0, steps > 0 ? -200 : 200); // wheelPxPerZoomLevel is 200
+    await page.mouse.wheel(0, steps > 0 ? -200 : 200); // one notch (>= WHEEL_STEP_PX, see map/wheelZoom.ts) is one level; 450 ms clears the step cooldown
     await page.waitForTimeout(450);
   }
 }

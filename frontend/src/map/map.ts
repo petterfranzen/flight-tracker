@@ -8,6 +8,7 @@ import "leaflet/dist/leaflet.css";
 import type { Bounds } from "../types/flight";
 import type { Theme } from "../theme";
 import { minZoomFor, WORLD_BOUNDS } from "./zoomLimits";
+import { createWheelStepper } from "./wheelZoom";
 
 // Cyberpunk theme's TileLayer points here instead of OpenStreetMap — a
 // transparent 1x1 PNG as a data: URI, so Leaflet never makes a real network
@@ -98,11 +99,18 @@ export function createMap(
     maxBounds: WORLD_BOUNDS,
     maxBoundsViscosity: 1.0,
     zoomControl: false,
-    // Leaflet's default (60) reads as ~3 zoom levels per physical
-    // scroll-wheel tick on at least one real mouse/trackpad. Raised so one
-    // tick tracks ~1 level.
-    wheelPxPerZoomLevel: 200,
+    // Wheel and touchpad zoom is stepped by our own handler below (see
+    // map/wheelZoom.ts): Leaflet's turns every burst of wheel events into a
+    // zoom level, so a spinning wheel or a touchpad swipe queued many.
+    scrollWheelZoom: false,
   });
+  const wheelStepper = createWheelStepper();
+  const onWheel = (e: WheelEvent): void => {
+    e.preventDefault(); // never the page's own scroll or the browser's pinch-zoom
+    const step = wheelStepper.feed({ deltaY: e.deltaY, deltaMode: e.deltaMode, ctrlKey: e.ctrlKey, now: performance.now() });
+    if (step !== 0) map.setZoomAround(map.mouseEventToContainerPoint(e), map.getZoom() + step);
+  };
+  container.addEventListener("wheel", onWheel, { passive: false });
   // Drops the "Leaflet" prefix (and flag) on phones, where the attribution
   // strip otherwise takes two lines; the data credits stay.
   if (window.matchMedia("(max-width: 768px)").matches) map.attributionControl.setPrefix(false);
@@ -206,6 +214,7 @@ export function createMap(
   window.addEventListener("pageshow", remeasure);
 
   function destroy(): void {
+    container.removeEventListener("wheel", onWheel);
     map.off("moveend", report);
     resizeObserver?.disconnect();
     window.visualViewport?.removeEventListener("resize", remeasure);

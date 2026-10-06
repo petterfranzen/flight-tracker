@@ -1,5 +1,6 @@
 import L from "leaflet";
 import { isSmallScreen } from "./screen";
+import { createPinchResolution } from "./pinchResolution";
 import { setWorkerUrl, type Map as MaplibreMap } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 // Vite bundles this as a worker entry (its own imports pulled in with it)
@@ -95,7 +96,40 @@ export function createMaplibreLayer(): L.Layer {
       '&copy; <a href="https://openfreemap.org">OpenFreeMap</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
   });
   patchZoomOutAnimation(layer);
+  lowerResolutionWhilePinching(layer);
   return layer;
+}
+
+/**
+ * Draws the canvas at pixel ratio 1 while two fingers are on the map (see
+ * map/pinchResolution.ts), so a pinch stays smooth on a 2x phone.
+ */
+function lowerResolutionWhilePinching(layer: L.Layer): void {
+  const gl = layer as unknown as GlLayerInternals & { onAdd(map: L.Map): unknown; onRemove(map: L.Map): unknown };
+  const originalAdd = gl.onAdd;
+  const originalRemove = gl.onRemove;
+  let teardown: (() => void) | null = null;
+  gl.onAdd = function (this: GlLayerInternals & { onAdd: unknown }, map: L.Map): unknown {
+    const result = originalAdd.call(this, map);
+    const container = map.getContainer();
+    const pinch = createPinchResolution({
+      full: BUFFER_OPTIONS.pixelRatio,
+      low: 1,
+      apply: (ratio) => this._glMap?.setPixelRatio(ratio),
+    });
+    const onTouch = (e: TouchEvent): void => pinch.touches(e.touches.length);
+    for (const type of ["touchstart", "touchend", "touchcancel"]) container.addEventListener(type, onTouch as EventListener, { passive: true });
+    teardown = () => {
+      for (const type of ["touchstart", "touchend", "touchcancel"]) container.removeEventListener(type, onTouch as EventListener);
+      pinch.dispose();
+    };
+    return result;
+  } as typeof gl.onAdd;
+  gl.onRemove = function (this: unknown, map: L.Map): unknown {
+    teardown?.();
+    teardown = null;
+    return originalRemove.call(this, map);
+  } as typeof gl.onRemove;
 }
 
 interface GlLayerInternals {
