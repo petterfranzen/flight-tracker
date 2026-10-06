@@ -21,15 +21,18 @@ test.describe("view cache", () => {
 
     await setMapView(page, 59.3, 18.0, 5);
     await page.waitForTimeout(600);
-    expect(clusterRequests.length).toBe(afterFirstVisit + 1);
+    // z5 was either fetched now or already prefetched in the background (see prefetch.spec.ts).
+    expect(clusterRequests.length).toBeGreaterThanOrEqual(afterFirstVisit);
+    const afterSecondVisit = clusterRequests.length;
 
     await page.locator(".plane-icon").evaluate((el) => el.setAttribute("data-seen", "1"));
     await setMapView(page, 59.3, 18.0, 6);
     // Drawn straight from the cache — already there before the debounce
     // would even have fired a request, and the same marker (not rebuilt, so no fade-in on the way back).
     await expect(page.locator('.plane-icon[data-seen="1"]')).toHaveCount(1, { timeout: 100 });
-    await page.waitForTimeout(600);
-    expect(clusterRequests.length).toBe(afterFirstVisit + 1);
+    // Past the viewport debounce (250 ms) but before the background prefetch (600 ms after settling).
+    await page.waitForTimeout(500);
+    expect(clusterRequests.length).toBe(afterSecondVisit);
   });
 
   test("zooming in to the /live zoom reuses the parent view's aircraft", async ({ page }) => {

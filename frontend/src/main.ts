@@ -91,8 +91,13 @@ const VIEW_CACHE_MAX_ENTRIES = 40;
 const MAX_DRAWN_MARKERS = 300;
 const MAX_DRAWN_MARKERS_SMALL_SCREEN = 150;
 
+// How long the view must sit still before the zoom levels either side of it are
+// fetched in the background, so the next zoom step is drawn from cache.
+const PREFETCH_DELAY_MS = 600;
+
 // Fraction of the view's size drawn beyond each edge.
-const RENDER_MARGIN = 0.2;
+// Wide enough that a pan or a one-level zoom-out lands on planes that are already there.
+const RENDER_MARGIN = 0.4;
 
 function padBounds(b: Bounds, fraction: number): Bounds {
   const dLat = (b.latMax - b.latMin) * fraction;
@@ -362,6 +367,7 @@ function boot(): void {
     const freshFor = zoom < CLUSTER_FETCH_MAX_ZOOM ? VIEW_CACHE_FRESH_MS : LIVE_CACHE_FRESH_MS;
     if (hit && now - hit.fetchedAt < freshFor) {
       store.set("firstLoadDone", true);
+      prefetchNeighbourOverviews();
       return;
     }
     viewportAbort?.abort();
@@ -382,6 +388,7 @@ function boot(): void {
           if (controller.signal.aborted || zoom !== requestZoom) return;
           lastAppliedView = entry;
           applyOverview(overview.planes);
+          prefetchNeighbourOverviews();
         })
         .catch(() => {})
         .finally(done);
@@ -395,9 +402,49 @@ function boot(): void {
         if (controller.signal.aborted || zoom < CLUSTER_FETCH_MAX_ZOOM) return;
         lastAppliedView = entry;
         applyLiveSnapshot(list);
+        prefetchNeighbourOverviews();
       })
       .catch(() => {})
       .finally(done);
+  }
+
+  // Fetches the zoomed-out overview for the zoom level either side of the one
+  // on screen (when that level uses the overview), so a zoom step finds it
+  // cached and draws at once. Quiet: it never touches what is on screen, is
+  // dropped the moment the viewport changes, and skips a level that is cached.
+  let prefetchTimer: ReturnType<typeof setTimeout> | null = null;
+  let prefetchAbort: AbortController | null = null;
+  function cancelPrefetch(): void {
+    if (prefetchTimer) clearTimeout(prefetchTimer);
+    prefetchTimer = null;
+    prefetchAbort?.abort();
+    prefetchAbort = null;
+  }
+  function prefetchNeighbourOverviews(): void {
+    cancelPrefetch();
+    prefetchTimer = setTimeout(() => {
+      prefetchTimer = null;
+      if (!bounds || document.hidden) return;
+      const controller = new AbortController();
+      prefetchAbort = controller;
+      const centre = map.getCenter();
+      const half = map.getSize().divideBy(2);
+      for (const dz of [-1, 1]) {
+        const z = Math.round(zoom) + dz;
+        if (z < map.getMinZoom() || z >= CLUSTER_FETCH_MAX_ZOOM) continue;
+        const middle = map.project(centre, z);
+        const sw = map.unproject(middle.add([-half.x, half.y]), z);
+        const ne = map.unproject(middle.add([half.x, -half.y]), z);
+        const view: Bounds = { latMin: sw.lat, latMax: ne.lat, lonMin: sw.lng, lonMax: ne.lng };
+        const cached = clusterCache.find(view, (cz) => cz === z, Date.now());
+        if (cached && Date.now() - cached.fetchedAt < VIEW_CACHE_FRESH_MS) continue;
+        const grid = declutterCellDeg(z, planeBoxSize(z));
+        const requestBounds = snapBounds(view, grid * 2);
+        fetchLiveOverview(requestBounds, grid, controller.signal)
+          .then((overview) => clusterCache.put({ zoom: z, bbox: requestBounds, data: overview, fetchedAt: Date.now() }))
+          .catch(() => {});
+      }
+    }, PREFETCH_DELAY_MS);
   }
 
   function fetchFreshData(): void {
@@ -424,6 +471,7 @@ function boot(): void {
     applyCachedView(Date.now());
 
     // Whatever is in flight was for a viewport that no longer exists.
+    cancelPrefetch();
     viewportAbort?.abort();
     viewportAbort = null;
     if (viewportFetchTimer) clearTimeout(viewportFetchTimer);
