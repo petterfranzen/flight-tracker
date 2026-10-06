@@ -144,6 +144,50 @@ class SqlitePersistenceIntegrationTest {
     }
 
     @Test
+    void warmUp_restoresEachAircraftsNewestReport_andWhenItsCurrentGroundStreakBegan() {
+        Instant t0 = Instant.parse("2026-01-01T00:00:00Z");
+        Clock clock = Clock.fixed(t0, ZoneOffset.UTC);
+        AircraftRepository aircraftRepository = new AircraftRepository(jdbcClient, clock);
+        FlightPositionRepository positions = new FlightPositionRepository(jdbcClient, clock);
+        LiveStateStore store = new LiveStateStore(jdbcTemplate, clock);
+
+        // (icao24, minutes before "now", on the ground?) in time order per aircraft.
+        Object[][] reports = {
+                // Airborne at its newest report: no streak.
+                {"air001", 300, false}, {"air001", 200, false}, {"air001", 10, false},
+                // Flew, then landed and stayed: the streak began at the first ground report.
+                {"gnd001", 300, false}, {"gnd001", 280, false}, {"gnd001", 260, true}, {"gnd001", 250, true}, {"gnd001", 240, true},
+                // Ground, air, ground again (a taxi hop): the streak is the last ground run.
+                {"flk001", 300, true}, {"flk001", 280, false}, {"flk001", 260, true}, {"flk001", 250, true},
+                // Only ever seen on the ground in the window: the first ground report.
+                {"onl001", 200, true}, {"onl001", 190, true},
+                // A ground report from before the 24 h window is ignored; the streak starts in the window.
+                {"pre001", 30 * 60, true}, {"pre001", 60, true}, {"pre001", 30, true},
+        };
+        for (Object[] r : reports) {
+            aircraftRepository.insertIfAbsent((String) r[0]);
+            positions.insertIgnoringDuplicate((String) r[0], "CS" + r[0], t0.minusSeconds(60L * (int) r[1]), 59.0, 18.0,
+                    (boolean) r[2] ? 0.0 : 10_000.0, (boolean) r[2] ? 0.0 : 200.0, 90.0, 0.0, (boolean) r[2], "opensky");
+        }
+
+        store.warmUp();
+
+        assertThat(store.get("air001")).hasValueSatisfying(a -> {
+            assertThat(a.observedAt()).isEqualTo(t0.minusSeconds(60L * 10));
+            assertThat(a.onGround()).isFalse();
+            assertThat(a.landedSince()).isNull();
+        });
+        assertThat(store.get("gnd001")).hasValueSatisfying(a -> {
+            assertThat(a.observedAt()).isEqualTo(t0.minusSeconds(60L * 240));
+            assertThat(a.onGround()).isTrue();
+            assertThat(a.landedSince()).isEqualTo(t0.minusSeconds(60L * 260));
+        });
+        assertThat(store.get("flk001")).hasValueSatisfying(a -> assertThat(a.landedSince()).isEqualTo(t0.minusSeconds(60L * 260)));
+        assertThat(store.get("onl001")).hasValueSatisfying(a -> assertThat(a.landedSince()).isEqualTo(t0.minusSeconds(60L * 200)));
+        assertThat(store.get("pre001")).hasValueSatisfying(a -> assertThat(a.landedSince()).isEqualTo(t0.minusSeconds(60L * 60)));
+    }
+
+    @Test
     void retention_alsoPrunesAircraftWithNoRemainingPositionsAfterSevenDays() {
         Instant t0 = Instant.parse("2026-01-10T00:00:00Z");
         Clock clock = Clock.fixed(t0, ZoneOffset.UTC);

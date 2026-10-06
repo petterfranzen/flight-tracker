@@ -101,30 +101,41 @@ public class LiveStateStore {
      */
     @PostConstruct
     void warmUp() {
+        long startedNanos = System.nanoTime();
         Instant cutoff = clock.instant().minus(LiveVisibilityWindows.LONGEST_VISIBILITY);
+        // Two cheap steps instead of window functions over every row in the window
+        // (about a day of positions, millions of rows, which made each restart wait
+        // ~10-20 s): the newest report per aircraft comes from a GROUP BY that the
+        // (icao24, observed_at, agent_source) index covers, and the landed streak
+        // is only worked out for the aircraft whose newest report is on the ground,
+        // by two indexed lookups each: the last airborne report, then the first
+        // ground report after it (no airborne report in the window = the first
+        // ground report in the window). Same result as the LAG()/ROW_NUMBER()
+        // formulation it replaced (SqlitePersistenceIntegrationTest pins the
+        // streak cases), about 0.5 s instead of 8-18 s on 2.7M rows.
         String sql = """
-            WITH windowed AS (
-                SELECT icao24, callsign, observed_at, latitude, longitude, altitude_m,
-                       velocity_ms, heading_deg, vertical_rate_ms, on_ground, agent_source,
-                       LAG(on_ground) OVER (PARTITION BY icao24 ORDER BY observed_at) AS prev_on_ground,
-                       ROW_NUMBER() OVER (PARTITION BY icao24 ORDER BY observed_at DESC) AS rn
+            WITH params(cut) AS (SELECT ?),
+            last AS (
+                SELECT icao24, MAX(observed_at) AS observed_at
                 FROM flight_position
-                WHERE observed_at > ?
-            ),
-            latest AS (
-                SELECT * FROM windowed WHERE rn = 1
-            ),
-            landed_transitions AS (
-                SELECT icao24, observed_at AS landed_since
-                FROM windowed
-                WHERE on_ground = 1 AND prev_on_ground IS NOT 1
+                WHERE observed_at > (SELECT cut FROM params)
+                GROUP BY icao24
             )
-            SELECT latest.icao24, latest.callsign, latest.observed_at, latest.latitude, latest.longitude,
-                   latest.altitude_m, latest.velocity_ms, latest.heading_deg, latest.vertical_rate_ms,
-                   latest.on_ground, latest.agent_source,
-                   (SELECT MAX(lt.landed_since) FROM landed_transitions lt
-                     WHERE lt.icao24 = latest.icao24 AND lt.landed_since <= latest.observed_at) AS landed_since
-            FROM latest
+            SELECT p.icao24, p.callsign, p.observed_at, p.latitude, p.longitude, p.altitude_m,
+                   p.velocity_ms, p.heading_deg, p.vertical_rate_ms, p.on_ground, p.agent_source,
+                   CASE WHEN p.on_ground = 1 THEN (
+                       SELECT MIN(g.observed_at) FROM flight_position g
+                       WHERE g.icao24 = p.icao24 AND g.on_ground = 1
+                         AND g.observed_at > (SELECT cut FROM params)
+                         AND g.observed_at > COALESCE((
+                             SELECT MAX(a.observed_at) FROM flight_position a
+                             WHERE a.icao24 = p.icao24 AND a.on_ground = 0
+                               AND a.observed_at > (SELECT cut FROM params)
+                               AND a.observed_at <= p.observed_at), 0)
+                   ) END AS landed_since
+            FROM last l
+            JOIN flight_position p ON p.icao24 = l.icao24 AND p.observed_at = l.observed_at
+            GROUP BY p.icao24
             """;
 
         int[] loaded = {0};
@@ -149,7 +160,7 @@ public class LiveStateStore {
             byIcao24.put(aircraft.icao24(), aircraft);
             loaded[0]++;
         }, cutoff.toEpochMilli());
-        log.info("LiveStateStore warm-up: loaded {} aircraft from flight_position", loaded[0]);
+        log.info("LiveStateStore warm-up: loaded {} aircraft from flight_position in {} ms", loaded[0], (System.nanoTime() - startedNanos) / 1_000_000);
     }
 
     private static Double nullableDouble(ResultSet rs, String column) throws SQLException {
