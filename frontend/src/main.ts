@@ -23,6 +23,7 @@ import {
 import { boundsFromMap, createFollowSelected, createMap, DEFAULT_VIEW } from "./map/map";
 import { createMarkerLayer, planeBoxSize } from "./map/markers";
 import { declutterCellDeg, pickNonOverlapping, type Candidate } from "./map/declutter";
+import { isSmallScreen } from "./map/screen";
 import { pickInitialView } from "./map/initialView";
 import { getMockPlaneCount } from "./api/mockFleet";
 import { agedIds, findShadowedIds, isActiveTraffic, OVERLAP_MIN_ZOOM } from "./map/staleness";
@@ -83,6 +84,12 @@ const OVERVIEW_REFRESH_MS = 10_000;
 const LIVE_CACHE_FRESH_MS = 3_000;
 const VIEW_CACHE_MAX_AGE_MS = 5 * 60_000;
 const VIEW_CACHE_MAX_ENTRIES = 40;
+
+// The most planes drawn at once. Every one is a DOM marker that a zoom step
+// re-places, so this is what keeps zooming smooth (a phone has a fraction of
+// a laptop's CPU). Above it, planes are spaced further apart rather than cut off.
+const MAX_DRAWN_MARKERS = 300;
+const MAX_DRAWN_MARKERS_SMALL_SCREEN = 150;
 
 // Fraction of the view's size drawn beyond each edge.
 const RENDER_MARGIN = 0.2;
@@ -270,7 +277,7 @@ function boot(): void {
       return { icao24: p.icao24, x: pt.x, y: pt.y, active: isActiveTraffic(p, nowMs) };
     });
     const fixed = selectedPos ? [map.latLngToContainerPoint([selectedPos.latitude, selectedPos.longitude])] : [];
-    const keep = pickNonOverlapping(points, fixed, planeBoxSize(zoom));
+    const keep = pickNonOverlapping(points, fixed, planeBoxSize(zoom), isSmallScreen() ? MAX_DRAWN_MARKERS_SMALL_SCREEN : MAX_DRAWN_MARKERS);
     const drawn = candidates.filter((p) => keep.has(p.icao24));
 
     markerLayer.update({

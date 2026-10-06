@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { pickNonOverlapping, type Candidate } from "../src/map/declutter";
 import { mockFlightApi, setMapView } from "./helpers";
 
 // No clustering: planes are big, and where two would overlap on screen only the
@@ -116,6 +117,53 @@ test.describe("hiding overlapping planes", () => {
     await serve(page, lattice("a", 120, 12));
     await expect.poll(async () => page.locator(".plane-icon").count(), { timeout: 10_000 }).toBe(120);
     await expect(page.locator(".plane-icon--entering")).toHaveCount(0);
+  });
+});
+
+test.describe("capping how many planes are drawn", () => {
+  // Every plane is a DOM marker re-placed on each zoom step: an uncapped dense view (hundreds of
+  // markers) made zooming laggy, a phone most of all.
+  const crowd = (n: number): Candidate[] =>
+    Array.from({ length: n }, (_, i) => ({ icao24: `cap${i}`, x: ((i * 7919) % 12_800) / 10, y: ((i * 104_729) % 7_200) / 10, active: true }));
+
+  test("pickNonOverlapping stops at the cap by spacing planes further apart, evenly across the screen", () => {
+    const list = crowd(3_000);
+    const uncapped = pickNonOverlapping(list, [], 37);
+    expect(uncapped.size).toBeGreaterThan(450); // the problem: far more than a zoom step can re-place smoothly
+    const capped = pickNonOverlapping(list, [], 37, 300);
+    expect(capped.size).toBeLessThanOrEqual(300);
+    expect(capped.size).toBeGreaterThan(200); // not thinned much below the cap
+    // Evenly spread, not the first 300 in priority order clumped somewhere: every quadrant keeps planes.
+    const shown = list.filter((c) => capped.has(c.icao24));
+    for (const [left, top] of [[true, true], [true, false], [false, true], [false, false]]) {
+      const inQuadrant = shown.filter((c) => (c.x < 640) === left && (c.y < 360) === top).length;
+      expect(inQuadrant).toBeGreaterThan(40);
+    }
+    // And still no overlaps (the spacing only ever grows).
+    for (let i = 0; i < shown.length; i++) {
+      for (let j = i + 1; j < shown.length; j++) {
+        expect(Math.abs(shown[i].x - shown[j].x) >= 0.7 * 37 || Math.abs(shown[i].y - shown[j].y) >= 0.7 * 37).toBe(true);
+      }
+    }
+  });
+
+  test("a cap that is not reached changes nothing", () => {
+    const list = crowd(120);
+    expect([...pickNonOverlapping(list, [], 37, 300)].sort()).toEqual([...pickNonOverlapping(list, [], 37)].sort());
+  });
+
+  test("in the app: a dense view draws at most 300 planes on a laptop, 150 on a phone", async ({ page }) => {
+    const dense = Array.from({ length: 3_000 }, (_, i) =>
+      plane(`d${i.toString(16).padStart(5, "0")}`, `D${i}`, BASE.lat - 1.2 + (((i * 7919) % 10_000) / 10_000) * 2.4, BASE.lon - 2.5 + (((i * 104_729) % 10_000) / 10_000) * 5),
+    );
+    await serve(page, dense, 8);
+    await expect.poll(async () => page.locator(".plane-icon").count(), { timeout: 10_000 }).toBeGreaterThan(100);
+    expect(await page.locator(".plane-icon").count()).toBeLessThanOrEqual(300);
+
+    await page.setViewportSize({ width: 400, height: 800 });
+    await setMapView(page, BASE.lat, BASE.lon, 8);
+    await expect.poll(async () => page.locator(".plane-icon").count(), { timeout: 10_000 }).toBeLessThanOrEqual(150);
+    expect(await page.locator(".plane-icon").count()).toBeGreaterThan(30);
   });
 });
 

@@ -35,12 +35,29 @@ export interface Candidate {
  * already kept or one of `fixed` (the selected plane, which is always
  * drawn). A grid with cells of the overlap distance means each candidate only
  * looks at nine cells, so this is linear in the number of candidates.
+ *
+ * `maxCount` bounds how many are kept (every marker is a DOM node, and a
+ * zoom step re-places all of them). If more would be kept, the spacing is
+ * widened and the pass repeated, so the thinning is even across the screen
+ * (every area keeps its first-discovered planes, just further apart) rather
+ * than the first `maxCount` planes in priority order clumping wherever they
+ * happen to be.
  */
-export function pickNonOverlapping(candidates: Candidate[], fixed: { x: number; y: number }[], boxPx: number): Set<string> {
-  const min = Math.max(1, boxPx * OVERLAP_FRACTION);
+export function pickNonOverlapping(candidates: Candidate[], fixed: { x: number; y: number }[], boxPx: number, maxCount = Infinity): Set<string> {
   const order = candidates.map((c) => ({ c, rank: discoveryRank(c.icao24) }));
   order.sort((a, b) => (a.c.active === b.c.active ? a.rank - b.rank : a.c.active ? -1 : 1));
 
+  let min = Math.max(1, boxPx * OVERLAP_FRACTION);
+  let shown = pickOnce(order, fixed, min);
+  // Area scales with spacing squared, so this lands close to the cap in one or two more passes.
+  for (let pass = 0; shown.size > maxCount && pass < 6; pass++) {
+    min *= Math.max(1.08, Math.sqrt(shown.size / maxCount));
+    shown = pickOnce(order, fixed, min);
+  }
+  return shown;
+}
+
+function pickOnce(order: { c: Candidate }[], fixed: { x: number; y: number }[], min: number): Set<string> {
   const grid = new Map<number, { x: number; y: number }[]>();
   const key = (cx: number, cy: number): number => cx * 100_003 + cy;
   const add = (p: { x: number; y: number }): void => {
