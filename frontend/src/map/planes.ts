@@ -486,6 +486,7 @@ export function createPlaneLayer(map: FlightMap, onSelect: (p: LiveMarker) => vo
     }
     added = false;
     latest.clear();
+    map.renderedPlanes = () => [];
   }
 
   return { update, destroy };

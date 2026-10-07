@@ -131,6 +131,12 @@ export class FlightMap {
         gl.getCanvas().style.cursor = this.hitAt(hoverAt) ? "pointer" : "";
       });
     });
+    // The cursor above is on the canvas, which overrides the grab/grabbing
+    // cursor MapLibre puts on the container around it: drop it while the map
+    // is moving (the next mousemove sets it again).
+    gl.on("movestart", () => {
+      gl.getCanvas().style.cursor = "";
+    });
   }
 
   /** Registers a hit test for something the map draws (see MapHit). */

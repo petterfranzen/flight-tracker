@@ -148,12 +148,20 @@ test.describe("planes drawn by the map", () => {
     await page.waitForTimeout(300);
     await expect(page.locator(".details-panel")).toHaveCount(0);
 
-    // Hovering it shows it is clickable.
+    // Hovering it shows it is clickable; dragging from it does not (the
+    // canvas cursor would hide the map's own grabbing cursor).
     await page.mouse.move(right.x, right.y);
-    await expect.poll(() => withMap(page, (map) => map.gl.getCanvas().style.cursor)).toBe("pointer");
+    const cursor = () => withMap(page, (map) => map.gl.getCanvas().style.cursor);
+    await expect.poll(cursor).toBe("pointer");
+    await page.mouse.down();
+    await page.mouse.move(right.x - 60, right.y, { steps: 5 });
+    await expect.poll(cursor).toBe("");
+    await page.mouse.up();
+    await page.waitForTimeout(500);
 
     // Anywhere on its icon box selects it, as the DOM marker's box did.
-    await page.mouse.click(right.x + right.size * 0.4, right.y - right.size * 0.4);
+    const moved = (await renderedPlanes(page)).find((p) => p.icao24 === "bbbbbb")!;
+    await page.mouse.click(moved.x + moved.size * 0.4, moved.y - moved.size * 0.4);
     await expect(page.getByText("ICAO24 BBBBBB")).toBeVisible({ timeout: 5_000 });
     await expect.poll(async () => (await renderedPlanes(page)).filter((p) => p.selected).map((p) => p.label), { timeout: 5_000 }).toEqual(["RIGHT1"]);
   });
