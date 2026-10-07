@@ -14,7 +14,7 @@ test.describe("view cache", () => {
       if (r.url().includes("/api/flights/live/overview")) clusterRequests.push(r.url());
     });
     await page.goto("/");
-    await page.waitForSelector(".leaflet-container", { timeout: 10_000 });
+    await page.waitForSelector(".map-container", { timeout: 10_000 });
     await setMapView(page, 59.3, 18.0, 6);
     await page.waitForTimeout(600);
     const afterFirstVisit = clusterRequests.length;
@@ -42,7 +42,7 @@ test.describe("view cache", () => {
       if (/\/api\/flights\/live\?/.test(r.url())) liveRequests.push(r.url());
     });
     await page.goto("/");
-    await page.waitForSelector(".leaflet-container");
+    await page.waitForSelector(".map-container");
     await setMapView(page, 59.65, 17.9, 8);
     await page.waitForSelector(".plane-icon", { timeout: 10_000 });
     await page.waitForTimeout(600);

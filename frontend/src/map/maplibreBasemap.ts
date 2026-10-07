@@ -1,14 +1,11 @@
-import L from "leaflet";
-import { isSmallScreen } from "./screen";
-import { createPinchResolution } from "./pinchResolution";
-import { setWorkerUrl, type Map as MaplibreMap } from "maplibre-gl";
+import { setWorkerUrl, type Map as MaplibreMap, type MapOptions } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 // Vite bundles this as a worker entry (its own imports pulled in with it)
 // and hands back the emitted, hashed URL. See setWorkerUrl below for why
 // that has to be done by hand.
 import maplibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
-import "@maplibre/maplibre-gl-leaflet";
 import { CYBERPUNK_STYLE } from "../cyberpunkMapStyle";
+import { isSmallScreen } from "./screen";
 
 // maplibre-gl works out its own worker URL at *runtime*, from import.meta.url:
 //
@@ -39,191 +36,57 @@ import { CYBERPUNK_STYLE } from "../cyberpunkMapStyle";
 // about the other.
 setWorkerUrl(maplibreWorkerUrl);
 
-/**
- * The cyberpunk theme's basemap — a MapLibre GL layer rendering
- * cyberpunkMapStyle.ts over OpenFreeMap's vector tiles. Dynamically
- * imported (see map.ts's `mountMaplibre`) so maplibre-gl (~260KB gzipped,
- * only ever needed by the cyberpunk theme) isolates into its own async
- * chunk instead of bloating the bundle every default-theme user pays for.
- *
- * Adding it via maplibre-gl-leaflet puts it on the same Leaflet map
- * instance every marker/polyline/control already lives on — nothing else
- * has to know it exists.
- */
-// Buffers that keep zooming and panning from looking like a redraw:
-//  - padding: the GL canvas is this fraction of the viewport larger on every
-//    side, so a pan reveals map that's already rendered (plugin default 0.1).
-//    Every layer's fill cost scales with the canvas area ((1 + 2p)^2: 2.25x
-//    the viewport at 0.25, 1.44x at 0.1), and measured on the live basemap
-//    0.25 -> 0.1 cut a frame by 27-37% at z6/z9/z12. Zoom-outs no longer
-//    lean on the margin (see patchZoomOutAnimation), so it only has to
-//    cover a pan.
-//  - maxTileCacheZoomLevels: how many zoom levels of tiles stay cached
-//    (MapLibre default 5), so zooming back out or in redraws from memory.
-//  - fadeDuration 0: labels appear at once instead of fading in again after
-//    every zoom step, which read as the whole map re-rendering.
-//  - refreshExpiredTiles false: tiles already loaded aren't re-fetched just
-//    because their cache headers expired mid-session.
-const BUFFER_OPTIONS = {
-  padding: 0.1,
-  maxTileCacheZoomLevels: 8,
-  fadeDuration: 0,
-  refreshExpiredTiles: false,
-  // The canvas is rendered at the device pixel ratio by default; a 3x phone
-  // shades 2.25x the pixels of a 2x one for detail the eye can't tell on a
-  // map. Desktop and 2x displays are unchanged.
-  pixelRatio: Math.min(window.devicePixelRatio || 1, 2),
-};
-
-// Phones (same breakpoint as the rest of the mobile layout): a slower GPU and
-// CPU and a slower network, where the boot screen's wait is felt most.
 export { isSmallScreen };
+
+const ATTRIBUTION =
+  '&copy; <a href="https://openfreemap.org">OpenFreeMap</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
+const MAPLIBRE_CREDIT = '<a href="https://maplibre.org/">MapLibre</a>';
+
+/**
+ * The basemap's own MapLibre options: cyberpunkMapStyle.ts over OpenFreeMap's
+ * vector tiles. Camera, interaction and zoom-unit options belong to map.ts.
+ *  - maxTileCacheZoomLevels: how many zoom levels of tiles stay cached
+ *    (MapLibre default 5), so zooming back out or in redraws from memory.
+ *  - fadeDuration 0: labels appear at once instead of fading in again after
+ *    every zoom, which read as the whole map re-rendering.
+ *  - refreshExpiredTiles false: tiles already loaded aren't re-fetched just
+ *    because their cache headers expired mid-session.
+ *  - pixelRatio: the canvas is rendered at the device pixel ratio by default;
+ *    a 3x phone shades 2.25x the pixels of a 2x one for detail the eye can't
+ *    tell on a map. Desktop and 2x displays are unchanged.
+ */
+export function basemapOptions(): Partial<MapOptions> {
+  return {
+    style: CYBERPUNK_STYLE,
+    maxTileCacheZoomLevels: 8,
+    fadeDuration: 0,
+    refreshExpiredTiles: false,
+    pixelRatio: Math.min(window.devicePixelRatio || 1, 2),
+    // Expanded, not MapLibre's collapsible "i" button. Phones drop the
+    // library credit (the data credits stay), which otherwise wraps the
+    // strip onto a second line.
+    attributionControl: { compact: false, customAttribution: isSmallScreen() ? ATTRIBUTION : `${MAPLIBRE_CREDIT} | ${ATTRIBUTION}` },
+  };
+}
 
 // Upper bound on holding the boot screen for the basemap: a slow or
 // unreachable tile server must never trap anyone behind it.
 const BASEMAP_READY_CAP_MS = 5_000;
 const BASEMAP_READY_CAP_SMALL_MS = 3_000;
 
-export function createMaplibreLayer(): L.Layer {
-  const layer = (
-    L as unknown as {
-      maplibreGL: (opts: Record<string, unknown>) => L.Layer;
-    }
-  ).maplibreGL({
-    ...BUFFER_OPTIONS,
-    style: CYBERPUNK_STYLE,
-    attribution:
-      '&copy; <a href="https://openfreemap.org">OpenFreeMap</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-  });
-  patchZoomOutAnimation(layer);
-  lowerResolutionWhilePinching(layer);
-  return layer;
-}
-
 /**
- * Draws the canvas at pixel ratio 1 while two fingers are on the map (see
- * map/pinchResolution.ts), so a pinch stays smooth on a 2x phone.
+ * Resolves once the basemap has finished rendering its first view (the map's
+ * first `idle`), or after BASEMAP_READY_CAP_MS, whichever comes first.
  */
-function lowerResolutionWhilePinching(layer: L.Layer): void {
-  const gl = layer as unknown as GlLayerInternals & { onAdd(map: L.Map): unknown; onRemove(map: L.Map): unknown };
-  const originalAdd = gl.onAdd;
-  const originalRemove = gl.onRemove;
-  let teardown: (() => void) | null = null;
-  gl.onAdd = function (this: GlLayerInternals & { onAdd: unknown }, map: L.Map): unknown {
-    const result = originalAdd.call(this, map);
-    const container = map.getContainer();
-    const pinch = createPinchResolution({
-      full: BUFFER_OPTIONS.pixelRatio,
-      low: 1,
-      apply: (ratio) => this._glMap?.setPixelRatio(ratio),
-    });
-    const onTouch = (e: TouchEvent): void => pinch.touches(e.touches.length);
-    for (const type of ["touchstart", "touchend", "touchcancel"]) container.addEventListener(type, onTouch as EventListener, { passive: true });
-    teardown = () => {
-      for (const type of ["touchstart", "touchend", "touchcancel"]) container.removeEventListener(type, onTouch as EventListener);
-      pinch.dispose();
+export function whenBasemapReady(gl: MaplibreMap): Promise<void> {
+  return new Promise((resolve) => {
+    if (gl.loaded() && gl.areTilesLoaded()) return resolve();
+    const done = (): void => {
+      clearTimeout(timer);
+      gl.off("idle", done);
+      resolve();
     };
-    return result;
-  } as typeof gl.onAdd;
-  gl.onRemove = function (this: unknown, map: L.Map): unknown {
-    teardown?.();
-    teardown = null;
-    return originalRemove.call(this, map);
-  } as typeof gl.onRemove;
-}
-
-interface GlLayerInternals {
-  _map: L.Map;
-  _glMap: MaplibreMap;
-  _offset: L.Point;
-  _container: HTMLElement;
-  _animateZoom(e: L.ZoomAnimEvent): void;
-  getSize(): L.Point;
-}
-
-/**
- * maplibre-gl-leaflet draws the canvas at the starting zoom and only
- * CSS-scales it during Leaflet's zoom animation. Its canvas is
- * (1 + 2 * padding) times the viewport, so zooming out shrinks it below
- * the viewport (a one-level zoom-out is 0.75x) and the dark container
- * shows as bands along the edges until the zoom ends.
- *
- * For zoom-outs this renders the canvas at the target zoom up front, shown
- * magnified to match the starting view, and animates the magnification
- * down to 1. The canvas is then never smaller than the viewport, whichever
- * the distance. The cost is the first frames being the target zoom's
- * tiles scaled up, as a raster layer's already are; zoom-ins keep the
- * plugin's own animation (their scale is above 1, so no gap).
- */
-function patchZoomOutAnimation(layer: L.Layer): void {
-  const gl = layer as unknown as GlLayerInternals;
-  const original = gl._animateZoom;
-  gl._animateZoom = function (this: GlLayerInternals, e: L.ZoomAnimEvent): void {
-    const map = this._map;
-    const canvas = (this._glMap as unknown as { _actualCanvas?: HTMLCanvasElement })._actualCanvas;
-    const scale = map.getZoomScale(e.zoom); // target / current, < 1 for a zoom-out
-    if (!canvas || scale >= 1) return original.call(this, e);
-
-    // The plugin's own end state for this animation, as if the canvas were
-    // still rendered at the starting zoom.
-    const padding = map.getSize().multiplyBy(BUFFER_OPTIONS.padding * scale);
-    const viewHalf = this.getSize().divideBy(2);
-    const topLeft = map.project(e.center, e.zoom).subtract(viewHalf).add((map as unknown as { _getMapPanePos(): L.Point })._getMapPanePos().add(padding)).round();
-    const offset = map.project(map.getBounds().getNorthWest(), e.zoom).subtract(topLeft).subtract(this._offset);
-
-    // The same canvas content rendered at the target zoom is the old one
-    // scaled by `scale` about its centre, so its end state is the old one's
-    // translated by (scale - 1) * centre, with no scale of its own.
-    const half = this.getSize().divideBy(2);
-    const end = offset.add(half.multiplyBy(scale - 1));
-    const start = half.multiplyBy(1 - 1 / scale);
-
-    const center = map.getCenter();
-    this._glMap.jumpTo({ center: [center.lng, center.lat], zoom: e.zoom - 1 });
-    // Placed at the matching start without a transition, then released to
-    // animate to the end state.
-    canvas.style.transition = "none";
-    L.DomUtil.setTransform(canvas, start, 1 / scale);
-    void canvas.offsetWidth;
-    canvas.style.transition = "";
-    L.DomUtil.setTransform(canvas, end, 1);
-  };
-}
-
-/**
- * Resolves once the basemap has finished rendering the current view (or
- * BASEMAP_READY_CAP_MS has passed). With `warmNeighbourZooms` — only while
- * the boot screen is still covering the map — it then renders one zoom
- * level out and one in behind the scenes and returns to the starting view,
- * so the first zoom either way draws from cached tiles instead of loading
- * them on screen. Moves only MapLibre's own camera; Leaflet, the markers
- * and the data fetches never see it.
- */
-export async function whenBasemapReady(layer: L.Layer, warmNeighbourZooms: boolean): Promise<void> {
-  const gl = (layer as unknown as { getMaplibreMap(): MaplibreMap | null }).getMaplibreMap();
-  if (!gl) return;
-  const deadline = Date.now() + (isSmallScreen() ? BASEMAP_READY_CAP_SMALL_MS : BASEMAP_READY_CAP_MS);
-  const rendered = (): Promise<void> =>
-    new Promise((resolve) => {
-      if (gl.loaded() && gl.areTilesLoaded()) return resolve();
-      const left = deadline - Date.now();
-      if (left <= 0) return resolve();
-      const timer = setTimeout(resolve, left);
-      gl.once("idle", () => {
-        clearTimeout(timer);
-        resolve();
-      });
-    });
-
-  await rendered();
-  if (!warmNeighbourZooms) return;
-  const center = gl.getCenter();
-  const zoom = gl.getZoom();
-  for (const dz of [-1, 1]) {
-    if (Date.now() >= deadline) break;
-    gl.jumpTo({ center, zoom: zoom + dz });
-    await rendered();
-  }
-  gl.jumpTo({ center, zoom });
-  await rendered();
+    const timer = setTimeout(done, isSmallScreen() ? BASEMAP_READY_CAP_SMALL_MS : BASEMAP_READY_CAP_MS);
+    gl.on("idle", done);
+  });
 }

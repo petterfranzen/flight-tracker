@@ -288,7 +288,7 @@ export const CYBERPUNK_STYLE: StyleSpecification = {
 
     // Place labels only. Airports are deliberately NOT labelled here even
     // though the aerodrome_label layer carries iata/icao: DefaultAirports
-    // renders every airport as a real Leaflet marker on both themes, so a
+    // renders every airport as a real DOM marker, so a
     // symbol layer here would double-label each one — which is exactly what
     // the first prototype did.
     {

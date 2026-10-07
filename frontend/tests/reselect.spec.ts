@@ -24,13 +24,13 @@ async function selectAt(page: import("@playwright/test").Page, p: typeof first):
 const centre = (page: import("@playwright/test").Page) =>
   withMap(page, (map) => {
     const c = map.getCenter();
-    return { lat: c.lat, lon: c.lng };
+    return { lat: c.lat, lon: c.lon };
   });
 
 test("selecting a second aircraft flies to it, not back to the first", async ({ page }) => {
   await mockFlightApi(page);
   await page.goto("/");
-  await page.waitForSelector(".leaflet-container", { timeout: 10_000 });
+  await page.waitForSelector(".map-container", { timeout: 10_000 });
 
   await selectAt(page, first);
   let c = await centre(page);

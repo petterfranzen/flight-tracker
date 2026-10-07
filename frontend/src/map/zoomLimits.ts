@@ -1,4 +1,4 @@
-// Pure, Leaflet-free: how far out the map may zoom for a given screen.
+// Pure, map-free: how far out the map may zoom for a given screen.
 
 const TILE_PX = 256;
 const MERCATOR_MAX_LAT = 85.0511;

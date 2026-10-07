@@ -14,7 +14,7 @@ test.describe("airport search", () => {
   test("the airport box is always there, under the flight-number box: one input, not separate origin/destination fields", async ({ page }) => {
     await mockFlightApi(page);
     await page.goto("/");
-    await page.waitForSelector(".leaflet-container", { timeout: 10_000 });
+    await page.waitForSelector(".map-container", { timeout: 10_000 });
 
     await expect(page.locator(".flight-search-airport-input")).toHaveCount(1);
     await expect(page.locator(".flight-search-airport-input")).toBeVisible();
@@ -27,7 +27,7 @@ test.describe("airport search", () => {
   test("searching by airport and selecting a result shows that aircraft's dossier", async ({ page }) => {
     await mockFlightApi(page);
     await page.goto("/");
-    await page.waitForSelector(".leaflet-container", { timeout: 10_000 });
+    await page.waitForSelector(".map-container", { timeout: 10_000 });
 
     const target = LIVE_FIXTURE.find((p) => p.icao24 === "4aad15")!;
 

@@ -39,7 +39,7 @@ test.describe("airport density by zoom", () => {
   test("zoomed out, only the most significant airports are drawn", async ({ page }) => {
     await mockFlightApi(page);
     await page.goto("/");
-    await page.waitForSelector(".leaflet-container", { timeout: 10_000 });
+    await page.waitForSelector(".map-container", { timeout: 10_000 });
 
     await setMapView(page, SWEDEN.lat, SWEDEN.lon, WORLD_ZOOM);
 
@@ -52,7 +52,7 @@ test.describe("airport density by zoom", () => {
   test("zooming in reveals the smaller ones", async ({ page }) => {
     await mockFlightApi(page);
     await page.goto("/");
-    await page.waitForSelector(".leaflet-container", { timeout: 10_000 });
+    await page.waitForSelector(".map-container", { timeout: 10_000 });
 
     await setMapView(page, SWEDEN.lat, SWEDEN.lon, WORLD_ZOOM);
     await expect(airportLabel(page, MINOR)).toHaveCount(0);
@@ -67,7 +67,7 @@ test.describe("airport density by zoom", () => {
   test("the drawn count grows as you zoom in", async ({ page }) => {
     await mockFlightApi(page);
     await page.goto("/");
-    await page.waitForSelector(".leaflet-container", { timeout: 10_000 });
+    await page.waitForSelector(".map-container", { timeout: 10_000 });
 
     // Airports are only drawn near the viewport, so the raw DOM count shrinks
     // as the view narrows. Count inside one fixed geographic box instead (the
@@ -75,16 +75,16 @@ test.describe("airport density by zoom", () => {
     await setMapView(page, SWEDEN.lat, SWEDEN.lon, CLOSE_ZOOM);
     const box = await withMap(page, (map) => {
       const b = map.getBounds();
-      return { s: b.getSouth(), n: b.getNorth(), w: b.getWest(), e: b.getEast() };
+      return { s: b.latMin, n: b.latMax, w: b.lonMin, e: b.lonMax };
     });
     const countInBox = (page2: import("@playwright/test").Page) =>
       withMap(
         page2,
-        (map, box: { s: number; n: number; w: number; e: number }) => {
+        (_map, box: { s: number; n: number; w: number; e: number }) => {
           let n = 0;
-          document.querySelectorAll<HTMLElement & { _leaflet_pos?: { x: number; y: number } }>(".default-airport-icon").forEach((el) => {
-            if (!el._leaflet_pos) return;
-            const ll = map.layerPointToLatLng(el._leaflet_pos as never);
+          document.querySelectorAll<HTMLElement & { _marker?: { getLngLat(): { lat: number; lng: number } } }>(".default-airport-icon").forEach((el) => {
+            if (!el._marker) return;
+            const ll = el._marker.getLngLat();
             if (ll.lat >= box.s && ll.lat <= box.n && ll.lng >= box.w && ll.lng <= box.e) n++;
           });
           return n;
@@ -110,10 +110,10 @@ test.describe("airport density by zoom", () => {
   test("only airports near the viewport get a DOM marker, and panning brings in the next ones", async ({ page }) => {
     await mockFlightApi(page);
     await page.goto("/");
-    await page.waitForSelector(".leaflet-container", { timeout: 10_000 });
+    await page.waitForSelector(".map-container", { timeout: 10_000 });
 
     // At the closest zoom every one of the 878 airports passes the rank rule;
-    // each is a DOM node Leaflet restyles on every zoom frame, so only those
+    // each is a DOM marker the map re-places on every frame, so only those
     // near the view may exist. (Was 878 markers for a view of ~10.)
     await setMapView(page, SWEDEN.lat, SWEDEN.lon, CLOSE_ZOOM);
     await expect(airportLabel(page, ALWAYS_SHOWN)).toHaveCount(1);
@@ -129,7 +129,7 @@ test.describe("airport density by zoom", () => {
   test("an airport stays clickable once it appears", async ({ page }) => {
     await mockFlightApi(page);
     await page.goto("/");
-    await page.waitForSelector(".leaflet-container", { timeout: 10_000 });
+    await page.waitForSelector(".map-container", { timeout: 10_000 });
 
     await setMapView(page, SWEDEN.lat, SWEDEN.lon, CLOSE_ZOOM);
     await expect(airportMarker(page, MINOR)).toHaveCount(1);

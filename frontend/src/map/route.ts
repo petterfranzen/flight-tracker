@@ -1,6 +1,7 @@
-import L from "leaflet";
+import type { GeoJSONSource } from "maplibre-gl";
+import type { FlightMap } from "./map";
 
-const ROUTE_COLOR = "#4db2ff"; // matches --color-accent in FlightMap.css
+const ROUTE_FALLBACK_COLOR = "#3ce0ff"; // --color-accent in FlightMap.css, if it can't be read
 const ROUTE_SPLINE_SEGMENTS = 8;
 
 /**
@@ -39,29 +40,50 @@ export interface RouteLayerHandle {
   destroy(): void;
 }
 
-export function createRouteLayer(map: L.Map): RouteLayerHandle {
-  let polyline: L.Polyline | null = null;
+export const ROUTE_SOURCE_ID = "flight-route";
+const ROUTE_LAYER_ID = "flight-route-line";
+
+/**
+ * The selected aircraft's trail: a GeoJSON source and a dashed line layer
+ * on top of the basemap (planes are DOM markers above the canvas, so the
+ * selected one is always drawn over it). The colour is the theme's accent
+ * token, read once from the CSS.
+ */
+export function createRouteLayer(map: FlightMap): RouteLayerHandle {
+  let added = false;
+  let latest: [number, number][] = [];
+
+  function data(route: [number, number][]): GeoJSON.Feature {
+    const coordinates = route.length > 1 ? smoothRoute(route).map(([lat, lon]) => [lon, lat]) : [];
+    return { type: "Feature", properties: {}, geometry: { type: "LineString", coordinates } };
+  }
+
+  map.whenStyleReady(() => {
+    if (added) return;
+    const color = getComputedStyle(map.getContainer()).getPropertyValue("--color-accent").trim() || ROUTE_FALLBACK_COLOR;
+    map.gl.addSource(ROUTE_SOURCE_ID, { type: "geojson", data: data(latest) });
+    map.gl.addLayer({
+      id: ROUTE_LAYER_ID,
+      type: "line",
+      source: ROUTE_SOURCE_ID,
+      layout: { "line-cap": "round", "line-join": "round" },
+      // Dashes are in line widths: 6 px on, 8 px off at 3 px wide.
+      paint: { "line-color": color, "line-width": 3, "line-dasharray": [2, 8 / 3] },
+    });
+    added = true;
+  });
 
   function update(route: [number, number][]): void {
-    if (route.length <= 1) {
-      if (polyline) {
-        polyline.remove();
-        polyline = null;
-      }
-      return;
-    }
-    const smoothed = smoothRoute(route);
-    if (polyline) {
-      polyline.setLatLngs(smoothed);
-    } else {
-      polyline = L.polyline(smoothed, { className: "route-line", color: ROUTE_COLOR, weight: 3, dashArray: "6 8" });
-      polyline.addTo(map);
-    }
+    latest = route;
+    if (added) (map.gl.getSource(ROUTE_SOURCE_ID) as GeoJSONSource | undefined)?.setData(data(route));
   }
 
   function destroy(): void {
-    if (polyline) polyline.remove();
-    polyline = null;
+    if (added && map.gl.getStyle()) {
+      map.gl.removeLayer(ROUTE_LAYER_ID);
+      map.gl.removeSource(ROUTE_SOURCE_ID);
+    }
+    added = false;
   }
 
   return { update, destroy };

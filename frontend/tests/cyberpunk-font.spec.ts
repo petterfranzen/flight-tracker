@@ -2,15 +2,15 @@ import { expect, test } from "@playwright/test";
 import { findMarkerNear, LIVE_FIXTURE, mockFlightApi, setMapView } from "./helpers";
 
 // The cyberpunk theme uses one face (JetBrains Mono, self-hosted via
-// @fontsource) for every piece of DOM text, form controls and Leaflet
-// chrome included. MapLibre basemap labels are canvas glyphs, not DOM.
+// @fontsource) for every piece of DOM text, form controls and map
+// chrome (attribution, scale bar) included. MapLibre basemap labels are canvas glyphs, not DOM.
 
 const target = LIVE_FIXTURE.find((p) => p.icao24 === "4aad15")!;
 
 test("cyberpunk theme renders all DOM text in JetBrains Mono, self-hosted", async ({ page }) => {
-  await mockFlightApi(page, { appDefaultTheme: true });
+  await mockFlightApi(page);
   await page.goto("/");
-  await page.waitForSelector(".leaflet-container", { timeout: 20_000 });
+  await page.waitForSelector(".map-container", { timeout: 20_000 });
 
   await setMapView(page, target.latitude, target.longitude, 11);
   await page.waitForSelector(".plane-icon:not(.plane-icon--exiting)", { timeout: 10_000 });

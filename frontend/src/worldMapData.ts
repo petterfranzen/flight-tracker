@@ -6,8 +6,8 @@
 // layer at all), filtered to the major/mid significance tiers. Each keeps
 // Natural Earth's scalerank so the app can thin them out as you zoom out.
 // Raw lon/lat,
-// not pre-projected: these are rendered as real Leaflet markers (see
-// DefaultAirports.tsx) and projected live like every other marker, so they
+// not pre-projected: these are rendered as real DOM markers (see
+// ui/defaultAirports.ts) and projected live like every other marker, so they
 // stay correct at any pan/zoom.
 //
 // This file used to carry country outlines, cities, rivers and lakes as

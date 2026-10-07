@@ -9,6 +9,8 @@ import {
   jumpTo,
   pickVisiblePlane,
   planeMarkers,
+  routeDrawn,
+  routeExtentPx,
   startHarness,
   wheelZoom,
   zoomLevel,
@@ -75,12 +77,11 @@ test.describe("user journeys @scenario", () => {
     await expect(page.locator(".details-panel-favorite-toggle").first()).toHaveClass(/--active/);
 
     await h.step("zoom out to see the whole trajectory", () => wheelZoom(page, -3));
-    const route = page.locator("path.route-line");
-    await expect(route).toBeVisible();
+    await expect.poll(() => routeDrawn(page), { message: "trajectory drawn" }).toBe(true);
     // The trail covers the whole leg: 40 minutes ≈ 5° of flight, so at z7 it
     // must span far more than a point, and end at the aircraft.
-    const bbox = await route.boundingBox();
-    expect(Math.max(bbox!.width, bbox!.height), "trajectory drawn as a long line").toBeGreaterThan(150);
+    const bbox = await routeExtentPx(page);
+    expect(Math.max(bbox.width, bbox.height), "trajectory drawn as a long line").toBeGreaterThan(150);
     const selected = (await planeMarkers(page)).find((m) => m.callsign === callsign);
     expect(selected, "selected aircraft still drawn when zoomed out").toBeTruthy();
   });
@@ -141,7 +142,7 @@ test.describe("user journeys @scenario", () => {
     await expect(page.locator(".details-panel")).toContainText("KLR");
   });
 
-  test("reselecting across the map, airport dossier, live updates, theme round trip", async ({ page }, testInfo) => {
+  test("reselecting across the map, airport dossier, live updates", async ({ page }, testInfo) => {
     test.setTimeout(150_000);
     const h = await startHarness(page, testInfo);
     await h.step("boot", () => boot(page));
@@ -167,13 +168,5 @@ test.describe("user journeys @scenario", () => {
     await expect(page.locator(".details-panel")).toContainText("Amsterdam");
     await page.locator(".details-panel-close").click();
 
-    await h.step("switch to the plain theme", () => page.locator(".theme-toggle-btn").click());
-    await expect(page.locator("html")).not.toHaveAttribute("data-theme", /.+/);
-    await h.step("and back to cyberpunk: basemap renders again", async () => {
-      await page.locator(".theme-toggle-btn").click();
-      await page.waitForSelector(".boot-screen--hidden, body:not(:has(.boot-screen))", { timeout: 20_000 });
-    });
-    const c = await centre(page);
-    expect(Math.abs(c.lat - AMS.lat) < 2, "view kept across the theme toggle").toBe(true);
   });
 });

@@ -1,25 +1,23 @@
 import type { AircraftDossier, AirportInfo, AirportSelection, LiveMarker, SelectedPosition } from "../types/flight";
 import type { FavoriteAircraft, FavoriteRoute } from "../favorites";
-import type { Theme } from "../theme";
 import type { Store } from "./store";
 
 /**
  * The whole app's shared, observable slots — one flat shape every UI module
  * reads from and writes to via the same Store instance. Action fields
- * (selectAircraft, toggleTheme, …) are set once in main.ts and never
+ * (selectAircraft, …) are set once in main.ts and never
  * reassigned; they exist here so a UI module needs nothing beyond the
  * store to both render and act, matching every module's
  * `mount(root, store)` contract.
  */
 export interface AppState extends Record<string, unknown> {
-  theme: Theme;
   zoom: number;
   /** Aircraft in the air and heard from recently (the chip's "Active"). */
   trackedCount: number;
   /** Every aircraft the server still holds, parked or silent included (the chip's "Seen"). */
   seenCount: number;
   firstLoadDone: boolean;
-  /** The basemap has drawn its first view (always true on the plain theme). The boot screen waits on it. */
+  /** The basemap has drawn its first view . The boot screen waits on it. */
   basemapReady: boolean;
   showResumeDialog: boolean;
 
@@ -54,7 +52,6 @@ export interface AppState extends Record<string, unknown> {
   toggleRouteFavorite: () => void;
   removeFavoriteAircraft: (entry: FavoriteAircraft) => void;
   removeFavoriteRoute: (route: FavoriteRoute) => void;
-  toggleTheme: () => void;
   resumeTracking: () => void;
 }
 

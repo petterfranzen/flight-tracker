@@ -74,7 +74,7 @@ async function open(page: import("@playwright/test").Page, clusters: ReturnType<
   await mockFlightApi(page, { clusters, geo });
   await page.setViewportSize(DESKTOP);
   await page.goto("/");
-  await page.waitForSelector(".leaflet-container", { timeout: 10_000 });
+  await page.waitForSelector(".map-container", { timeout: 10_000 });
 }
 
 test.describe("opening view in the app", () => {
@@ -83,7 +83,7 @@ test.describe("opening view in the app", () => {
     await expect.poll(() => withMap(page, (m) => m.getZoom()), { timeout: 10_000 }).toBe(8);
     const c = await withMap(page, (m) => m.getCenter());
     expect(c.lat).toBeCloseTo(50.1, 1);
-    expect(c.lng).toBeCloseTo(8.6, 1);
+    expect(c.lon).toBeCloseTo(8.6, 1);
   });
 
   test("opens at the default centre, zoom 8, when it already has enough traffic", async ({ page }) => {
@@ -91,7 +91,7 @@ test.describe("opening view in the app", () => {
     await expect.poll(() => withMap(page, (m) => m.getZoom()), { timeout: 10_000 }).toBe(8);
     const c = await withMap(page, (m) => m.getCenter());
     expect(c.lat).toBeCloseTo(59.33, 1);
-    expect(c.lng).toBeCloseTo(18.06, 1);
+    expect(c.lon).toBeCloseTo(18.06, 1);
   });
 
   const MANCHESTER = { lat: 53.5, lon: -2.2 };
@@ -101,7 +101,7 @@ test.describe("opening view in the app", () => {
     await open(page, [cell(53.4, -2.3, 40), cell(53.6, -2.1, 40), cell(59.4, 18.1, 120)], MANCHESTER);
     await expect.poll(() => withMap(page, (m) => m.getCenter().lat), { timeout: 10_000 }).toBeCloseTo(53.5, 0);
     const c = await withMap(page, (m) => m.getCenter());
-    expect(c.lng).toBeCloseTo(-2.2, 0);
+    expect(c.lon).toBeCloseTo(-2.2, 0);
     expect(await withMap(page, (m) => m.getZoom())).toBeGreaterThanOrEqual(6);
   });
 
@@ -116,7 +116,7 @@ test.describe("opening view in the app", () => {
     await page.waitForTimeout(1_500);
     const c = await withMap(page, (m) => m.getCenter());
     expect(c.lat).toBeCloseTo(59.33, 1);
-    expect(c.lng).toBeCloseTo(18.06, 1);
+    expect(c.lon).toBeCloseTo(18.06, 1);
   });
 
   test("with no usable traffic data the default view is kept", async ({ page }) => {
@@ -136,7 +136,7 @@ test.describe("opening view in the app", () => {
     });
     await page.setViewportSize(DESKTOP);
     await page.goto("/");
-    await page.waitForSelector(".leaflet-container", { timeout: 10_000 });
+    await page.waitForSelector(".map-container", { timeout: 10_000 });
     await setMapView(page, 10, 10, 5);
     release();
     await page.waitForTimeout(1_500);

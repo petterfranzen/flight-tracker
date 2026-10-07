@@ -15,18 +15,29 @@ test.describe("neighbour-zoom prefetch", () => {
     // A world summary under the opening-view threshold keeps the map on its default view.
     await mockFlightApi(page, { clusters: [{ lat: 59.5, lon: 18.5, count: 12 }], overviewPlanes: [plane] });
     await page.goto("/");
-    await page.waitForSelector(".leaflet-container", { timeout: 10_000 });
+    await page.waitForSelector(".map-container", { timeout: 10_000 });
     await setMapView(page, 59.3, 18.0, 6);
     await page.waitForTimeout(1_800); // settle + the prefetch delay + its requests
     const settled = overview.length;
     expect(settled, "the view plus the zoom levels either side").toBeGreaterThanOrEqual(3);
+    // Which zoom level a request is for, from its width: a viewport-wide
+    // bbox (snapped outwards a little) at 256 px per 360° at zoom 0.
+    const width = page.viewportSize()!.width;
+    const levelOf = (url: string) => {
+      const q = new URL(url).searchParams;
+      return Math.round(Math.log2(((width / 256) * 360) / (Number(q.get("lonMax")) - Number(q.get("lonMin")))));
+    };
+    expect(overview.map(levelOf)).toEqual(expect.arrayContaining([5, 6, 7]));
 
+    // A request for the *next* level out (z4, the new neighbour) may follow;
+    // none may be for the level now on screen.
     await setMapView(page, 59.3, 18.0, 5);
     await page.waitForTimeout(700); // past the viewport debounce
-    expect(overview.length, "zoom-out served from the prefetched level").toBe(settled);
+    expect(overview.slice(settled).map(levelOf), "zoom-out served from the prefetched level").not.toContain(5);
+    const afterZoomOut = overview.length;
     await setMapView(page, 59.3, 18.0, 6);
     await page.waitForTimeout(700);
-    expect(overview.length, "and back again").toBe(settled);
+    expect(overview.slice(afterZoomOut).map(levelOf), "and back again").not.toContain(6);
   });
 
   test("at the live zoom, the overview level below is prefetched (the zoom-out step)", async ({ page }) => {
@@ -36,7 +47,7 @@ test.describe("neighbour-zoom prefetch", () => {
     });
     await mockFlightApi(page, { clusters: [{ lat: 59.5, lon: 18.5, count: 12 }], overviewPlanes: [plane] });
     await page.goto("/");
-    await page.waitForSelector(".leaflet-container", { timeout: 10_000 });
+    await page.waitForSelector(".map-container", { timeout: 10_000 });
     await page.waitForTimeout(1_500);
     const before = overview.length;
     await setMapView(page, 59.3, 18.0, 8); // zoom 8 uses /live; z7 is an overview level
@@ -51,7 +62,7 @@ test.describe("neighbour-zoom prefetch", () => {
     });
     await mockFlightApi(page, { clusters: [{ lat: 59.5, lon: 18.5, count: 12 }], overviewPlanes: [plane] });
     await page.goto("/");
-    await page.waitForSelector(".leaflet-container", { timeout: 10_000 });
+    await page.waitForSelector(".map-container", { timeout: 10_000 });
     await page.waitForTimeout(1_500);
     await setMapView(page, 59.3, 18.0, 5);
     await page.waitForTimeout(350); // fetch done, prefetch timer (600 ms) still pending

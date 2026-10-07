@@ -34,7 +34,7 @@ async function serve(page: Page, list: ReturnType<typeof plane>[], zoom = 8) {
   await mockFlightApi(page);
   await page.route(/\/api\/flights\/live(\?|$)/, (route) => route.fulfill({ json: list }));
   await page.goto("/");
-  await page.waitForSelector(".leaflet-container", { timeout: 10_000 });
+  await page.waitForSelector(".map-container", { timeout: 10_000 });
   await setMapView(page, BASE.lat, BASE.lon, zoom);
 }
 

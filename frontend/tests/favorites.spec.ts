@@ -15,7 +15,7 @@ test.describe("favorites", () => {
   test("favoriting an aircraft persists it, shows it live in the panel, and it can be selected and removed from there", async ({ page }) => {
     await mockFlightApi(page);
     await page.goto("/");
-    await page.waitForSelector(".leaflet-container", { timeout: 10_000 });
+    await page.waitForSelector(".map-container", { timeout: 10_000 });
 
     const target = LIVE_FIXTURE.find((p) => p.icao24 === "4aad15")!;
     await setMapView(page, target.latitude, target.longitude, 11);
@@ -26,9 +26,8 @@ test.describe("favorites", () => {
 
     // Exact match on the button's own aria-label, not a loose "Aircraft"
     // substring: every plane marker also carries an accessible name
-    // containing "Aircraft" (see planeIcon in FlightMap.tsx), and Leaflet
-    // gives each marker's container role="button" too, so a substring
-    // match here would hit 20+ markers as well as this toggle.
+    // containing "Aircraft" (see buildPlaneElement in map/markers.ts), so
+    // a substring match here would hit 20+ markers as well as this toggle.
     const aircraftToggle = page.getByRole("button", { name: "Favorite this aircraft", exact: true });
     await expect(aircraftToggle).toHaveText("☆ Favorite aircraft");
     await aircraftToggle.click();
@@ -36,7 +35,7 @@ test.describe("favorites", () => {
 
     // Persisted client-side (see favorites.ts) — a reload must not lose it.
     await page.reload();
-    await page.waitForSelector(".leaflet-container", { timeout: 10_000 });
+    await page.waitForSelector(".map-container", { timeout: 10_000 });
 
     const favoritesToggle = page.locator(".favorites-panel-toggle");
     await expect(favoritesToggle).toHaveText("★ Favorites (1) ▼");

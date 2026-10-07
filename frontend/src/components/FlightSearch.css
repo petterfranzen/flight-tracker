@@ -149,9 +149,9 @@
     gap: 8px;
     position: fixed;
     inset: 0;
-    /* Above Leaflet's own .leaflet-top/.leaflet-bottom control layer
-       (z-index: 1000 in leaflet.css) — otherwise the scale bar control
-       paints through this "full-screen" overlay regardless of DOM order. */
+    /* Above the map's own control corners (MapLibre's
+       .maplibregl-ctrl-* layer) — otherwise the scale bar control paints
+       through this "full-screen" overlay regardless of DOM order. */
     z-index: 1001;
     padding: 16px;
     padding-top: max(16px, env(safe-area-inset-top));

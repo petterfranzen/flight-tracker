@@ -1,27 +1,7 @@
-import L from "leaflet";
-// Leaflet's own base stylesheet — defines `.leaflet-marker-icon`,
-// `.leaflet-pane`, `.leaflet-tile-pane` etc. as `position: absolute`
-// ("required styles" per Leaflet's own comment on this block). Without it
-// every marker/pane falls back to normal document flow instead of being
-// pinned via Leaflet's transform/negative-margin positioning.
-import "leaflet/dist/leaflet.css";
+import { LngLat, Map as MaplibreMap, MercatorCoordinate, type MapEventType } from "maplibre-gl";
 import type { Bounds } from "../types/flight";
-import type { Theme } from "../theme";
+import { basemapOptions, whenBasemapReady } from "./maplibreBasemap";
 import { minZoomFor, WORLD_BOUNDS } from "./zoomLimits";
-import { createWheelStepper } from "./wheelZoom";
-
-// Cyberpunk theme's TileLayer points here instead of OpenStreetMap — a
-// transparent 1x1 PNG as a data: URI, so Leaflet never makes a real network
-// request for it, and every tile renders fully invisible. A *real*
-// TileLayer still has to be mounted even so: Leaflet's own internals
-// genuinely depend on a real TileLayer existing, not just "some layer, any
-// layer" (confirmed by bisection in the previous UI framework's version).
-// This satisfies that without fetching or showing any real map imagery —
-// the MapLibre layer renders over it.
-const BLANK_TILE_URL =
-  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
-const OSM_TILE_URL = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
-const OSM_ATTRIBUTION = "&copy; OpenStreetMap contributors";
 
 // Zoom a selection's flyTo treats as "close enough" to stop zooming
 // further in — also markers.ts's FULL_SIZE_ZOOM, kept in sync by hand
@@ -42,150 +22,265 @@ export function isTaxiing(onGround: boolean | null | undefined, velocityMs: numb
   return onGround === true && (velocityMs == null || velocityMs < GROUND_MAX_SPEED_MS);
 }
 
-export function boundsFromMap(map: L.Map): Bounds {
-  const b = map.getBounds();
-  const lonMin = b.getWest();
-  const lonMax = b.getEast();
-  // At extreme zoom-out (or after panning across wrapped "copies" of the
-  // world), Leaflet's bounds can span or exceed a full 360° of longitude —
-  // that's not a real bbox, it's "the whole world is visible". Send the
-  // actual valid range in that case rather than nonsensical numbers.
-  const spansWholeWorld = lonMax - lonMin >= 360;
-  return {
-    latMin: Math.max(-90, b.getSouth()),
-    latMax: Math.min(90, b.getNorth()),
-    lonMin: spansWholeWorld ? -180 : lonMin,
-    lonMax: spansWholeWorld ? 180 : lonMax,
-  };
+/**
+ * App zoom units. Everything outside this file (the backend's zoom/gridDeg,
+ * CLUSTER_FETCH_MAX_ZOOM, icon sizes, zoomLimits.ts, the view caches, the
+ * tests) speaks the zoom of 256 px tiles, which is what the map used before
+ * MapLibre. MapLibre's tiles are 512 px, so the same view is one level lower
+ * there. FlightMap converts at its edge; nothing else touches the GL map's zoom.
+ */
+const ZOOM_OFFSET = 1;
+const toGl = (zoom: number): number => zoom - ZOOM_OFFSET;
+const fromGl = (zoom: number): number => zoom + ZOOM_OFFSET;
+const TILE_PX = 256;
+
+/** The app's furthest zoom-in (the old raster layer's maxZoom). */
+export const MAX_ZOOM = 18;
+/** The app's furthest zoom-out on any screen; raised to fit the screen (see fitMinZoom). */
+const MIN_ZOOM_FLOOR = 2;
+
+// One 100 px mouse-wheel notch zooms about half a level: MapLibre's
+// 2 / (1 + e^(-100 * rate)) scale per notch is sqrt(2) at this rate. Its
+// default (1/450) is about 0.15 of a level, which made a wheel feel dead.
+// The touchpad rate (small, frequent deltas) stays MapLibre's.
+const WHEEL_ZOOM_RATE = 1 / 113.5;
+
+export interface Point {
+  x: number;
+  y: number;
+}
+
+export interface LatLon {
+  lat: number;
+  lon: number;
+}
+
+export type MapEvent = keyof MapEventType;
+
+/**
+ * The one MapLibre map, in app units: zoom as above, positions as
+ * [lat, lon] / {lat, lon}, pixels relative to the map container. Tests reach
+ * it as `._flightMap` on the container (see tests/helpers.ts).
+ */
+export class FlightMap {
+  readonly gl: MaplibreMap;
+  private styleReady = false;
+  private styleQueue: (() => void)[] = [];
+
+  constructor(gl: MaplibreMap) {
+    this.gl = gl;
+    gl.once("style.load", () => {
+      this.styleReady = true;
+      for (const fn of this.styleQueue.splice(0)) fn();
+    });
+  }
+
+  /** Runs `fn` once the style can take sources and layers (at once if it already can). */
+  whenStyleReady(fn: () => void): void {
+    if (this.styleReady) fn();
+    else this.styleQueue.push(fn);
+  }
+
+  getContainer(): HTMLElement {
+    return this.gl.getContainer();
+  }
+
+  getZoom(): number {
+    return fromGl(this.gl.getZoom());
+  }
+
+  getMinZoom(): number {
+    return fromGl(this.gl.getMinZoom());
+  }
+
+  setMinZoom(zoom: number): void {
+    this.gl.setMinZoom(toGl(zoom));
+  }
+
+  getMaxZoom(): number {
+    return fromGl(this.gl.getMaxZoom());
+  }
+
+  getCenter(): LatLon {
+    const c = this.gl.getCenter();
+    return { lat: c.lat, lon: c.lng };
+  }
+
+  /** The size the map last measured its container at, px. */
+  getSize(): Point {
+    const canvas = this.gl.getCanvas();
+    return { x: canvas.clientWidth, y: canvas.clientHeight };
+  }
+
+  getBounds(): Bounds {
+    const b = this.gl.getBounds();
+    return {
+      latMin: Math.max(-90, b.getSouth()),
+      latMax: Math.min(90, b.getNorth()),
+      lonMin: Math.max(-180, b.getWest()),
+      lonMax: Math.min(180, b.getEast()),
+    };
+  }
+
+  contains(lat: number, lon: number): boolean {
+    const b = this.getBounds();
+    return lat >= b.latMin && lat <= b.latMax && lon >= b.lonMin && lon <= b.lonMax;
+  }
+
+  /** Container pixel of a position. */
+  project(lat: number, lon: number): Point {
+    const p = this.gl.project([lon, lat]);
+    return { x: p.x, y: p.y };
+  }
+
+  unproject(x: number, y: number): LatLon {
+    const ll = this.gl.unproject([x, y]);
+    return { lat: ll.lat, lon: ll.lng };
+  }
+
+  /** The bounds this view (same centre and size) would have at another zoom. */
+  boundsAt(zoom: number): Bounds {
+    const c = this.gl.getCenter();
+    const size = this.getSize();
+    const mid = MercatorCoordinate.fromLngLat(c);
+    const world = TILE_PX * Math.pow(2, zoom);
+    const dx = size.x / 2 / world;
+    const dy = size.y / 2 / world;
+    const sw = new MercatorCoordinate(mid.x - dx, mid.y + dy).toLngLat();
+    const ne = new MercatorCoordinate(mid.x + dx, mid.y - dy).toLngLat();
+    return { latMin: Math.max(-90, sw.lat), latMax: Math.min(90, ne.lat), lonMin: Math.max(-180, sw.lng), lonMax: Math.min(180, ne.lng) };
+  }
+
+  /** Ground distance one container pixel covers at the centre, metres. */
+  metersPerPixel(samplePx = 200): number {
+    const { x, y } = this.getSize();
+    const a = this.gl.unproject([x / 2, y / 2]);
+    const b = this.gl.unproject([x / 2 + samplePx, y / 2]);
+    return new LngLat(a.lng, a.lat).distanceTo(b) / samplePx;
+  }
+
+  /** Moves the view. Instant unless `animate` (a short ease). */
+  setView([lat, lon]: [number, number], zoom: number, opts: { animate?: boolean } = {}): void {
+    const camera = { center: [lon, lat] as [number, number], zoom: toGl(zoom) };
+    if (opts.animate) this.gl.easeTo({ ...camera, duration: 250 });
+    else this.gl.jumpTo(camera);
+  }
+
+  /** Zooms about the centre. Animated unless `animate: false`, like a button zoom. */
+  setZoom(zoom: number, opts: { animate?: boolean } = {}): void {
+    if (opts.animate === false) this.gl.jumpTo({ zoom: toGl(zoom) });
+    else this.gl.easeTo({ zoom: toGl(zoom), duration: 250 });
+  }
+
+  flyTo([lat, lon]: [number, number], zoom: number, durationMs: number): void {
+    this.gl.flyTo({ center: [lon, lat], zoom: toGl(zoom), duration: durationMs });
+  }
+
+  panTo([lat, lon]: [number, number], durationMs: number): void {
+    this.gl.panTo([lon, lat], { duration: durationMs });
+  }
+
+  isMoving(): boolean {
+    return this.gl.isMoving();
+  }
+
+  /** Re-reads the container's size, if it changed since the map last measured it. */
+  resize(): void {
+    const el = this.getContainer();
+    const size = this.getSize();
+    if (el.clientWidth !== size.x || el.clientHeight !== size.y) this.gl.resize();
+  }
+
+  on(type: MapEvent, fn: () => void): void {
+    this.gl.on(type, fn);
+  }
+
+  off(type: MapEvent, fn: () => void): void {
+    this.gl.off(type, fn);
+  }
+}
+
+export function boundsFromMap(map: FlightMap): Bounds {
+  return map.getBounds();
 }
 
 export interface MapController {
-  map: L.Map;
-  setTheme(theme: Theme): void;
+  map: FlightMap;
   destroy(): void;
 }
 
 /**
- * Creates the Leaflet map, the always-mounted TileLayer, and the lazy
- * MapLibre basemap layer (cyberpunk theme only, dynamically imported so it
- * stays its own chunk — see map/maplibreBasemap.ts). Viewport reporting
- * (mount + every `moveend`) is wired here since it's a property of the map
- * itself, not any one UI module.
+ * Creates the map: one MapLibre map rendering the cyberpunk basemap, with
+ * wheel, touchpad and pinch zoom handled by MapLibre itself (continuous,
+ * fractional zoom; see WHEEL_ZOOM_RATE). Viewport reporting (every
+ * `moveend`, which MapLibre fires once per gesture) is wired here since it's
+ * a property of the map itself, not any one UI module.
  */
 export function createMap(
   container: HTMLElement,
-  theme: Theme,
   onViewportChange: (bounds: Bounds, zoom: number) => void,
-  // false while a MapLibre basemap is still loading its first view, true
-  // once it's drawn (or the plain theme needs none) — the boot screen waits
-  // on it. See whenBasemapReady in maplibreBasemap.ts.
+  // false while the basemap is still loading its first view, true once it's
+  // drawn (or the cap ran out) — the boot screen waits on it. See
+  // whenBasemapReady in maplibreBasemap.ts.
   onBasemapReady: (ready: boolean) => void = () => {},
 ): MapController {
-  // Must be on the element *before* L.map() runs: .map-container is what
-  // gives it height:100%, and Leaflet measures (and caches) the container
-  // size during construction. Added afterwards, the map believed it was
-  // N×0 px until the next window resize, so every bbox it reported had
-  // latMin === latMax.
+  // Must be on the element *before* the map is constructed: .map-container
+  // is what gives it height:100%, and MapLibre sizes its canvas from the
+  // container during construction.
   container.classList.add("map-container");
-  const map = L.map(container, {
-    center: [DEFAULT_VIEW.lat, DEFAULT_VIEW.lon],
-    zoom: DEFAULT_VIEW.zoom,
-    // Past this, the world starts wrapping into multiple side-by-side
-    // copies — keeps the view to a single, unambiguous world (see
-    // boundsFromMap's own comment on the same hole from the other side).
+  const [[south, west], [north, east]] = WORLD_BOUNDS;
+  const gl = new MaplibreMap({
+    ...basemapOptions(),
+    container,
+    center: [DEFAULT_VIEW.lon, DEFAULT_VIEW.lat],
+    zoom: toGl(DEFAULT_VIEW.zoom),
     // minZoom starts at the floor and is raised to fit the screen as soon as
     // it is measured (see fitMinZoom).
-    minZoom: 2,
-    maxBounds: WORLD_BOUNDS,
-    maxBoundsViscosity: 1.0,
-    zoomControl: false,
-    // Wheel and touchpad zoom is stepped by our own handler below (see
-    // map/wheelZoom.ts): Leaflet's turns every burst of wheel events into a
-    // zoom level, so a spinning wheel or a touchpad swipe queued many.
-    scrollWheelZoom: false,
+    minZoom: toGl(MIN_ZOOM_FLOOR),
+    maxZoom: toGl(MAX_ZOOM),
+    // One world, never repeated beside itself, and panning stops at its edge.
+    // The longitudes are pulled in a hair: at exactly ±180 MapLibre wraps the
+    // east edge onto the west one, reads the world as 0 px wide and zooms to
+    // infinity (its own default range without maxBounds does the same).
+    renderWorldCopies: false,
+    maxBounds: [
+      [west + 1e-9, south],
+      [east - 1e-9, north],
+    ],
+    // North up, always: no rotation or tilt from any gesture.
+    dragRotate: false,
+    pitchWithRotate: false,
+    touchPitch: false,
   });
-  const wheelStepper = createWheelStepper();
-  const onWheel = (e: WheelEvent): void => {
-    e.preventDefault(); // never the page's own scroll or the browser's pinch-zoom
-    const step = wheelStepper.feed({ deltaY: e.deltaY, deltaMode: e.deltaMode, ctrlKey: e.ctrlKey, now: performance.now() });
-    if (step !== 0) map.setZoomAround(map.mouseEventToContainerPoint(e), map.getZoom() + step);
-  };
-  container.addEventListener("wheel", onWheel, { passive: false });
-  // Drops the "Leaflet" prefix (and flag) on phones, where the attribution
-  // strip otherwise takes two lines; the data credits stay.
-  if (window.matchMedia("(max-width: 768px)").matches) map.attributionControl.setPrefix(false);
+  gl.touchZoomRotate.disableRotation();
+  gl.keyboard.disableRotation();
+  gl.scrollZoom.setWheelZoomRate(WHEEL_ZOOM_RATE);
 
-  const containerEl = map.getContainer();
-  containerEl.setAttribute("aria-label", "Live aircraft map");
-  // Test-only hook (see tests/helpers.ts __findLeafletMap): with React gone
-  // there's no fiber tree to walk to find the mounted map instance, so it's
-  // stashed directly on its own container element instead — the smallest
-  // surface that still keeps this out of any real application code path.
-  (containerEl as unknown as { _leaflet_map: L.Map })._leaflet_map = map;
+  const map = new FlightMap(gl);
+  container.setAttribute("aria-label", "Live aircraft map");
+  // Test-only hook (see tests/helpers.ts withMap): the adapter, stashed on its
+  // own container element — the smallest surface that still keeps this out
+  // of any real application code path.
+  (container as unknown as { _flightMap: FlightMap })._flightMap = map;
 
-  const tileLayer = L.tileLayer(theme === "cyberpunk" ? BLANK_TILE_URL : OSM_TILE_URL, {
-    attribution: theme === "cyberpunk" ? "" : OSM_ATTRIBUTION,
-    // Belt-and-suspenders with maxBounds above: without this, a fast drag
-    // can still briefly request/paint a second copy's tiles before
-    // Leaflet's bounds correction catches up on drag end.
-    noWrap: true,
-  }).addTo(map);
-
-  let maplibreLayer: L.Layer | null = null;
-  let maplibreLoading: Promise<void> | null = null;
-  let wantsMaplibre = false;
-
-  // `atBoot`: the first mount, while the boot screen still covers the map —
-  // the only time it's safe to warm neighbouring zoom levels, since that
-  // briefly moves MapLibre's camera.
-  function mountMaplibre(atBoot: boolean): void {
-    wantsMaplibre = true;
-    if (maplibreLayer || maplibreLoading) return;
-    onBasemapReady(false);
-    maplibreLoading = import("./maplibreBasemap")
-      .then(({ createMaplibreLayer, whenBasemapReady, isSmallScreen }) => {
-        maplibreLoading = null;
-        // setTheme may have flipped back to default while the chunk was
-        // loading — guard against mounting a layer nobody wants anymore.
-        if (!wantsMaplibre) return;
-        const layer = createMaplibreLayer();
-        maplibreLayer = layer;
-        layer.addTo(map);
-        // Warming the neighbouring zoom levels is two more rounds of tile
-        // loading and rendering; worth it on a desktop, not on a phone.
-        return whenBasemapReady(layer, atBoot && !isSmallScreen());
-      })
-      .catch(() => {})
-      .finally(() => onBasemapReady(true));
-  }
-  function unmountMaplibre(): void {
-    wantsMaplibre = false;
-    onBasemapReady(true);
-    if (maplibreLayer) {
-      maplibreLayer.remove();
-      maplibreLayer = null;
-    }
-  }
-
-  function setTheme(nextTheme: Theme): void {
-    tileLayer.setUrl(nextTheme === "cyberpunk" ? BLANK_TILE_URL : OSM_TILE_URL);
-    tileLayer.options.attribution = nextTheme === "cyberpunk" ? "" : OSM_ATTRIBUTION;
-    if (nextTheme === "cyberpunk") mountMaplibre(false);
-    else unmountMaplibre();
-  }
-  if (theme === "cyberpunk") mountMaplibre(true);
-  else onBasemapReady(true);
+  let destroyed = false;
+  onBasemapReady(false);
+  whenBasemapReady(gl)
+    .catch(() => {})
+    .finally(() => {
+      if (!destroyed) onBasemapReady(true);
+    });
 
   // Reports on every `moveend`. The *initial* report (equivalent to the
   // original ViewportReporter's own mount-time call) is deliberately not
   // fired here — main.ts triggers it explicitly once every layer that a
-  // report can cascade into (markers, clusters) has been created, avoiding
+  // report can cascade into (markers, route) has been created, avoiding
   // an initialization-order hazard where the very first viewport report
   // could otherwise fire before those exist.
   function report(): void {
-    onViewportChange(boundsFromMap(map), map.getZoom());
+    onViewportChange(map.getBounds(), map.getZoom());
   }
-  map.on("moveend", report);
+  gl.on("moveend", report);
 
   // A screen wider (or taller) than one world would show the world repeating
   // beside itself, so zooming out stops where one world just fills the screen.
@@ -195,35 +290,27 @@ export function createMap(
     const min = minZoomFor(x, y);
     if (min !== map.getMinZoom()) map.setMinZoom(min);
   }
-  map.whenReady(fitMinZoom);
+  fitMinZoom();
+  gl.on("resize", fitMinZoom);
 
-  // Leaflet caches the container's size and only re-reads it on a window
-  // resize. On a phone the container's size also changes with no window
-  // resize: the dynamic toolbars (dvh), the flex layout settling once other
-  // parts of the shell mount, a page restored from the back/forward cache.
-  // A stale size means tiles (and the GL basemap) cover only part of the
-  // screen. Re-measure on any change to the container or the visual viewport;
-  // invalidateSize is a no-op when nothing changed.
-  const remeasure = (): void => {
-    map.invalidateSize({ debounceMoveend: true });
-    fitMinZoom();
-  };
-  const resizeObserver = typeof ResizeObserver !== "undefined" ? new ResizeObserver(remeasure) : null;
-  resizeObserver?.observe(container);
+  // MapLibre watches its container with a ResizeObserver of its own. A phone
+  // also changes what is visible with no layout change to watch (the visual
+  // viewport, a page restored from the back/forward cache), so re-measure on
+  // those too; resize() is a no-op when nothing changed.
+  const remeasure = (): void => map.resize();
   window.visualViewport?.addEventListener("resize", remeasure);
   window.addEventListener("pageshow", remeasure);
 
   function destroy(): void {
-    container.removeEventListener("wheel", onWheel);
-    map.off("moveend", report);
-    resizeObserver?.disconnect();
+    destroyed = true;
+    gl.off("moveend", report);
+    gl.off("resize", fitMinZoom);
     window.visualViewport?.removeEventListener("resize", remeasure);
     window.removeEventListener("pageshow", remeasure);
-    unmountMaplibre();
-    map.remove();
+    gl.remove();
   }
 
-  return { map, setTheme, destroy };
+  return { map, destroy };
 }
 
 export interface FollowSelectedUpdate {
@@ -256,7 +343,7 @@ export interface FollowSelectedHandle {
  * longer gets yanked back — see onOffScreenChange, the "Focus Plane"
  * button's own data source, for the replacement).
  */
-export function createFollowSelected(map: L.Map, onOffScreenChange: (offScreen: boolean) => void): FollowSelectedHandle {
+export function createFollowSelected(map: FlightMap, onOffScreenChange: (offScreen: boolean) => void): FollowSelectedHandle {
   let lastCenteredId: string | null = null;
   let lastFocusRequest = 0;
   let lastSheetExpanded = false;
@@ -264,10 +351,9 @@ export function createFollowSelected(map: L.Map, onOffScreenChange: (offScreen: 
   let currentLon: number | null = null;
 
   function checkOffScreen(): void {
-    onOffScreenChange(currentLat != null && currentLon != null && !map.getBounds().contains([currentLat, currentLon]));
+    onOffScreenChange(currentLat != null && currentLon != null && !map.contains(currentLat, currentLon));
   }
   map.on("moveend", checkOffScreen);
-  map.on("zoomend", checkOffScreen);
 
   function update({ selectedId, positionId, positionFresh, lat, lon, onGround, velocityMs, sheetExpanded, focusRequest }: FollowSelectedUpdate): void {
     // Switching from aircraft A to B updates selectedId and selectedPos one
@@ -280,12 +366,11 @@ export function createFollowSelected(map: L.Map, onOffScreenChange: (offScreen: 
     }
     currentLat = lat;
     currentLon = lon;
-    // Leaflet caches the container's last-known size and won't repaint
-    // tiles/markers to fit a new one on its own — needed both when the
-    // mobile sheet just mounted/changed height and when it just unmounted.
-    // A no-op when the size genuinely hasn't changed, so unconditional here
-    // is fine.
-    map.invalidateSize();
+    // The mobile sheet just mounted, changed height or unmounted: the map
+    // has to know its new size *now*, before centring within it, not when
+    // its own ResizeObserver gets round to it. A no-op when the size hasn't
+    // changed, so unconditional here is fine.
+    map.resize();
 
     if (selectedId == null) {
       lastCenteredId = null;
@@ -307,9 +392,9 @@ export function createFollowSelected(map: L.Map, onOffScreenChange: (offScreen: 
     if (isNewSelection || isFocusRequest) {
       const minZoom = isTaxiing(onGround, velocityMs) ? GROUND_SELECTED_ZOOM : SELECTED_MIN_ZOOM;
       const targetZoom = Math.max(map.getZoom(), minZoom);
-      map.flyTo([lat, lon], targetZoom, { duration: 0.8 });
+      map.flyTo([lat, lon], targetZoom, 800);
     } else if (isSheetToggle) {
-      map.panTo([lat, lon], { animate: true, duration: 0.5 });
+      map.panTo([lat, lon], 500);
     }
     // Deliberately no else branch: an ordinary position tick does not
     // recenter the map.
@@ -318,7 +403,6 @@ export function createFollowSelected(map: L.Map, onOffScreenChange: (offScreen: 
 
   function destroy(): void {
     map.off("moveend", checkOffScreen);
-    map.off("zoomend", checkOffScreen);
   }
 
   return { update, destroy };

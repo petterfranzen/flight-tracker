@@ -1,8 +1,6 @@
 import { Store } from "./state/store";
 import type { AppState } from "./state/appState";
 import { h, clear } from "./ui/h";
-import { loadTheme, saveTheme } from "./theme";
-import type { Theme } from "./theme";
 import type { FavoriteAircraft, FavoriteRoute } from "./favorites";
 import { loadFavoriteAircraft, loadFavoriteRoutes, toggleFavoriteAircraft, toggleFavoriteRoute } from "./favorites";
 import type { AirportSelection, Bounds, FlightPosition, LiveMarker, LiveOverview, SelectedPosition } from "./types/flight";
@@ -34,12 +32,10 @@ import * as dock from "./ui/dock";
 import * as flightSearch from "./ui/flightSearch";
 import * as favoritesPanel from "./ui/favoritesPanel";
 import * as legend from "./ui/legend";
-import * as themeToggle from "./ui/themeToggle";
 import * as dossierPanel from "./ui/dossierPanel";
 import * as bootScreen from "./ui/bootScreen";
 import * as resumeDialog from "./ui/resumeDialog";
-// Self-hosted cyberpunk face (latin subset). @font-face files are fetched
-// only once a matching font-family is used, so the default theme pays nothing.
+// Self-hosted cyberpunk face (latin subset).
 import "@fontsource/jetbrains-mono/latin-500.css";
 import "@fontsource/jetbrains-mono/latin-600.css";
 import "@fontsource/jetbrains-mono/latin-700.css";
@@ -56,6 +52,12 @@ const DIALOG_STOP_MS = 5 * 60_000;
 // every aircraft in view. There are no clusters: planes whose icons would
 // overlap are hidden, the first discovered one stays (map/declutter.ts).
 const CLUSTER_FETCH_MAX_ZOOM = 8;
+
+// The map zooms fractionally; overview requests and their cache entries are
+// per whole level, the nearest one that still uses the overview.
+function overviewZoom(zoom: number): number {
+  return Math.min(Math.round(zoom), CLUSTER_FETCH_MAX_ZOOM - 1);
+}
 
 // A drag or wheel-zoom fires a burst of moveends; only the one the user
 // settles on is worth a request.
@@ -136,14 +138,12 @@ function boot(): void {
   );
 
   // ---- store ----
-  const initialTheme = loadTheme();
   const state: AppState = {
-    theme: initialTheme,
     zoom: 6,
     trackedCount: 0,
     seenCount: 0,
     firstLoadDone: false,
-    basemapReady: initialTheme !== "cyberpunk",
+    basemapReady: false,
     showResumeDialog: false,
 
     selectedId: null,
@@ -175,7 +175,6 @@ function boot(): void {
     toggleRouteFavorite: () => {},
     removeFavoriteAircraft: () => {},
     removeFavoriteRoute: () => {},
-    toggleTheme: () => {},
     resumeTracking: () => {},
   };
   const store = new Store<AppState>(state);
@@ -278,10 +277,10 @@ function boot(): void {
     // Where two planes' icons would overlap, only the first discovered is
     // drawn; the selected one is always drawn and hides whatever is under it.
     const points: Candidate[] = candidates.map((p) => {
-      const pt = map.latLngToContainerPoint([p.latitude, p.longitude]);
+      const pt = map.project(p.latitude, p.longitude);
       return { icao24: p.icao24, x: pt.x, y: pt.y, active: isActiveTraffic(p, nowMs) };
     });
-    const fixed = selectedPos ? [map.latLngToContainerPoint([selectedPos.latitude, selectedPos.longitude])] : [];
+    const fixed = selectedPos ? [map.project(selectedPos.latitude, selectedPos.longitude)] : [];
     const keep = pickNonOverlapping(points, fixed, planeBoxSize(zoom), isSmallScreen() ? MAX_DRAWN_MARKERS_SMALL_SCREEN : MAX_DRAWN_MARKERS);
     const drawn = candidates.filter((p) => keep.has(p.icao24));
 
@@ -321,7 +320,7 @@ function boot(): void {
   function findCachedView(now: number): CachedView<LiveOverview> | CachedView<LiveMarker[]> | null {
     if (!bounds) return null;
     return zoom < CLUSTER_FETCH_MAX_ZOOM
-      ? clusterCache.find(bounds, (z) => z === zoom, now)
+      ? clusterCache.find(bounds, (z) => z === overviewZoom(zoom), now)
       : liveCache.find(bounds, (z) => z >= CLUSTER_FETCH_MAX_ZOOM, now);
   }
 
@@ -373,19 +372,19 @@ function boot(): void {
     viewportAbort?.abort();
     const controller = new AbortController();
     viewportAbort = controller;
-    const requestZoom = zoom;
+    const requestZoom = zoom < CLUSTER_FETCH_MAX_ZOOM ? overviewZoom(zoom) : Math.round(zoom);
     const done = (): void => {
       if (viewportAbort === controller) viewportAbort = null;
       store.set("firstLoadDone", true);
     };
-    if (requestZoom < CLUSTER_FETCH_MAX_ZOOM) {
+    if (zoom < CLUSTER_FETCH_MAX_ZOOM) {
       const grid = declutterCellDeg(requestZoom, planeBoxSize(requestZoom));
       const requestBounds = snapBounds(bounds, grid * 2);
       fetchLiveOverview(requestBounds, grid, controller.signal)
         .then((overview) => {
           const entry = { zoom: requestZoom, bbox: requestBounds, data: overview, fetchedAt: Date.now() };
           clusterCache.put(entry);
-          if (controller.signal.aborted || zoom !== requestZoom) return;
+          if (controller.signal.aborted || zoom >= CLUSTER_FETCH_MAX_ZOOM || overviewZoom(zoom) !== requestZoom) return;
           lastAppliedView = entry;
           applyOverview(overview.planes);
           prefetchNeighbourOverviews();
@@ -427,15 +426,10 @@ function boot(): void {
       if (!bounds || document.hidden) return;
       const controller = new AbortController();
       prefetchAbort = controller;
-      const centre = map.getCenter();
-      const half = map.getSize().divideBy(2);
       for (const dz of [-1, 1]) {
         const z = Math.round(zoom) + dz;
         if (z < map.getMinZoom() || z >= CLUSTER_FETCH_MAX_ZOOM) continue;
-        const middle = map.project(centre, z);
-        const sw = map.unproject(middle.add([-half.x, half.y]), z);
-        const ne = map.unproject(middle.add([half.x, -half.y]), z);
-        const view: Bounds = { latMin: sw.lat, latMax: ne.lat, lonMin: sw.lng, lonMax: ne.lng };
+        const view = map.boundsAt(z);
         const cached = clusterCache.find(view, (cz) => cz === z, Date.now());
         if (cached && Date.now() - cached.fetchedAt < VIEW_CACHE_FRESH_MS) continue;
         const grid = declutterCellDeg(z, planeBoxSize(z));
@@ -769,20 +763,13 @@ function boot(): void {
   }
 
   // ---- map + layers ----
-  const mapController = createMap(mapRoot, initialTheme, handleViewportChange, (ready) => store.set("basemapReady", ready));
+  const mapController = createMap(mapRoot, handleViewportChange, (ready) => store.set("basemapReady", ready));
   const map = mapController.map;
   // ?debug: a read-only diagnostics panel for a misbehaving device (ui/debugOverlay.ts).
   if (new URLSearchParams(location.search).has("debug")) import("./ui/debugOverlay").then((m) => m.mountDebugOverlay(map)).catch(() => {});
   const markerLayer = createMarkerLayer(map, handleSelectAircraft);
   const routeLayer = createRouteLayer(map);
   const followSelected = createFollowSelected(map, (offScreen) => store.set("planeOffScreen", offScreen));
-
-  function toggleTheme(): void {
-    const next: Theme = store.get("theme") === "cyberpunk" ? "default" : "cyberpunk";
-    saveTheme(next);
-    store.set("theme", next);
-    mapController.setTheme(next);
-  }
 
   // ---- wire real actions into the store now that every closure above exists ----
   store.set("selectAircraft", handleSelectAircraft);
@@ -795,7 +782,6 @@ function boot(): void {
   store.set("toggleRouteFavorite", toggleRouteFavorite);
   store.set("removeFavoriteAircraft", removeFavoriteAircraft);
   store.set("removeFavoriteRoute", removeFavoriteRoute);
-  store.set("toggleTheme", toggleTheme);
   store.set("resumeTracking", startCycle);
 
   // ---- UI modules ----
@@ -805,7 +791,6 @@ function boot(): void {
   flightSearch.mount(leftOverlayStack, store);
   favoritesPanel.mount(leftOverlayStack, store);
   legend.mount(leftOverlayStack); // no store slots — its open/closed state is purely local (see ui/legend.ts)
-  themeToggle.mount(leftOverlayStack, store);
   bootScreen.mount(bootScreenRoot, store);
   resumeDialog.mount(resumeDialogRoot, store);
   dossierPanel.mount(dossierRoot, store);
@@ -824,11 +809,9 @@ function boot(): void {
   store.subscribeMany(["selectedPos", "airportDossier"], syncDock);
   syncDock();
 
-  // Tracked-chip: cyberpunk-only, inline (not a separate component in the
-  // original either).
+  // Tracked-chip: inline (not a separate component in the original either).
   function renderTrackedChip(): void {
     clear(trackedChipRoot);
-    if (store.get("theme") !== "cyberpunk") return;
     trackedChipRoot.appendChild(
       h(
         "div",
@@ -854,7 +837,7 @@ function boot(): void {
     );
   }
   renderTrackedChip();
-  store.subscribeMany(["theme", "trackedCount", "seenCount"], renderTrackedChip);
+  store.subscribeMany(["trackedCount", "seenCount"], renderTrackedChip);
 
   // ---- follow-selected wiring ----
   function syncFollowSelected(): void {
@@ -916,12 +899,12 @@ function boot(): void {
         // Someone (the user, a test) already moved the map: leave it alone.
         // (Not strict equality: re-measuring the container can nudge the centre by a fraction of a pixel.)
         const c = map.getCenter();
-        if (map.getZoom() !== startZoom || Math.abs(c.lat - startCenter.lat) > 0.01 || Math.abs(c.lng - startCenter.lng) > 0.01) return;
+        if (map.getZoom() !== startZoom || Math.abs(c.lat - startCenter.lat) > 0.01 || Math.abs(c.lon - startCenter.lon) > 0.01) return;
         const center = geo ?? DEFAULT_VIEW;
         const view = summary ? pickInitialView(summary, center, { width: mapRoot.clientWidth, height: mapRoot.clientHeight }) : null;
-        if (view) map.setView([view.lat, view.lon], view.zoom, { animate: false });
+        if (view) map.setView([view.lat, view.lon], view.zoom);
         // No traffic data to choose a zoom from: still open where the visitor is.
-        else if (geo) map.setView([geo.lat, geo.lon], DEFAULT_VIEW.zoom, { animate: false });
+        else if (geo) map.setView([geo.lat, geo.lon], DEFAULT_VIEW.zoom);
       })
       .catch(() => {})
       .finally(() => clearTimeout(timer));

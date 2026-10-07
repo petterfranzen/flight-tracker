@@ -1,20 +1,14 @@
-import L from "leaflet";
+import type { IControl } from "maplibre-gl";
+import type { FlightMap } from "../map/map";
 import "../components/ScaleBar.css";
 
 // Round distances only, from a ladder — extends below 1km too (down to
-// 1m): a flight tracker's normal zoom range never needs that, but Leaflet
+// 1m): a flight tracker's normal zoom range never needs that, but the map
 // still allows zooming in close enough that even 1km would overflow the
 // bar's max width.
 const BREAKPOINTS_KM = [0.001, 0.01, 0.1, 1, 10, 100, 1_000, 10_000];
 const MAX_BAR_WIDTH_PX = 100;
 const SAMPLE_PX = 200;
-
-function metersPerPixel(map: L.Map): number {
-  const center = map.latLngToContainerPoint(map.getCenter());
-  const p1 = map.containerPointToLatLng(center);
-  const p2 = map.containerPointToLatLng(center.add(L.point(SAMPLE_PX, 0)));
-  return map.distance(p1, p2) / SAMPLE_PX;
-}
 
 /**
  * The largest breakpoint whose bar would fit within MAX_BAR_WIDTH_PX, so
@@ -36,38 +30,37 @@ function formatLabel(km: number): string {
 }
 
 /**
- * A single-bar scale indicator, built as an imperative L.Control (like
- * Leaflet's own ScaleControl) so it gets correct corner-stacking behavior
- * with any other Leaflet control sharing this corner for free. Only updates
- * on "zoomend" — panning to a different latitude doesn't move the bar at
- * all, which keeps the label from visibly changing while dragging even
- * though the true underlying meters-per-pixel is still drifting slightly
- * underneath it.
+ * A single-bar scale indicator, mounted as a MapLibre control in the
+ * bottom-left corner (so it stacks with anything else sharing that corner).
+ * Updates on "zoom" only — panning to a different latitude doesn't move the
+ * bar at all, which keeps the label from visibly changing while dragging
+ * even though the true underlying meters-per-pixel is still drifting
+ * slightly underneath it.
  */
-export function mount(map: L.Map): () => void {
-  const control = new L.Control({ position: "bottomleft" });
-  let bar: HTMLDivElement;
-  let label: HTMLSpanElement;
-
-  control.onAdd = () => {
-    const container = L.DomUtil.create("div", "scale-bar");
-    L.DomEvent.disableClickPropagation(container);
-    bar = L.DomUtil.create("div", "scale-bar-track", container);
-    label = L.DomUtil.create("span", "scale-bar-label", container);
-    return container;
+export function mount(map: FlightMap): () => void {
+  const container = document.createElement("div");
+  container.className = "maplibregl-ctrl scale-bar";
+  const bar = document.createElement("div");
+  bar.className = "scale-bar-track";
+  const label = document.createElement("span");
+  label.className = "scale-bar-label";
+  container.append(bar, label);
+  const control: IControl = {
+    onAdd: () => container,
+    onRemove: () => container.remove(),
   };
-  control.addTo(map);
+  map.gl.addControl(control, "bottom-left");
 
   function update(): void {
-    const { km, widthPx } = pickScale(metersPerPixel(map));
+    const { km, widthPx } = pickScale(map.metersPerPixel(SAMPLE_PX));
     bar.style.width = `${widthPx}px`;
     label.textContent = formatLabel(km);
   }
   update();
-  map.on("zoomend", update);
+  map.on("zoom", update);
 
   return () => {
-    map.off("zoomend", update);
-    control.remove();
+    map.off("zoom", update);
+    map.gl.removeControl(control);
   };
 }
