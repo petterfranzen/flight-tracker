@@ -42,10 +42,13 @@ layer) not started.
   (notch ≈ 0.5, fast notches all count, ctrl+wheel stream is continuous,
   zoom around pointer, canvas covers the viewport while zooming, whole-level
   data keys) and `basemap-ready.spec.ts`; `pinch-zoom.spec.ts` gained the
-  "ends fractional" case. The five timing failures from the first commit:
-  boot screen intercepting forced clicks (stale-dim), a racy prefetch count
-  (now counts per level), attribution width (box-sizing), and a 0 px read
-  of a re-rendering panel (polled).
+  "ends fractional" case. The five failures left by the first commit, plus
+  one that surfaced under MapLibre: the boot screen intercepting input
+  (stale-dim's forced click; the pinch now waits for it to lift), a racy
+  prefetch count (now counts requests per zoom level), attribution width
+  (box-sizing on the MapLibre strip), a 0 px read of a re-rendering panel
+  (mobile-layout, polled); airport-density's click passes as is on
+  MapLibre markers.
 - `CLAUDE.md` / `README.md` updated (one theme, the adapter, zoom units).
 
 ## Results (cloud session, Node 22, software WebGL)
