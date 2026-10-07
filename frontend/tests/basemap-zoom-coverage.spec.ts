@@ -43,7 +43,7 @@ async function worstGapDuring(page: Page, fromZoom: number, toZoom: number): Pro
 test.describe("GL basemap coverage while zooming", () => {
   test.beforeEach(async ({ page }) => {
     await stubTiles(page);
-    await mockFlightApi(page, { appDefaultTheme: true });
+    await mockFlightApi(page, { realTiles: true });
     await page.goto("/");
     await page.locator(".leaflet-container canvas.maplibregl-canvas").waitFor({ state: "attached", timeout: 15_000 });
     await page.waitForSelector(".boot-screen--hidden, body:not(:has(.boot-screen))", { timeout: 15_000 });

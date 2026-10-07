@@ -40,7 +40,7 @@ test.describe("map re-measures its container", () => {
       r.fulfill({ json: { tilejson: "3.0.0", tiles: ["https://tiles.openfreemap.org/t/{z}/{x}/{y}.pbf"], minzoom: 0, maxzoom: 14, vector_layers: [] } }),
     );
     await page.route(/tiles\.openfreemap\.org\/(t|fonts)\//, (r) => r.fulfill({ body: Buffer.alloc(0), contentType: "application/x-protobuf" }));
-    await mockFlightApi(page, { appDefaultTheme: true });
+    await mockFlightApi(page, { realTiles: true });
     // The page's own HTML with a rule that keeps the map container short until the test lifts it.
     await page.route(/\/(\?.*)?$/, async (route) => {
       if (route.request().resourceType() !== "document") return route.fallback();

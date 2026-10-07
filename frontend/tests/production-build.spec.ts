@@ -28,7 +28,6 @@ test("production build fetches real vector tiles, not just the style", async ({ 
   });
   page.on("pageerror", (e) => pageErrors.push(e.message));
 
-  await page.addInitScript(() => localStorage.setItem("flighttracker:theme", "cyberpunk"));
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto(PREVIEW_URL, { waitUntil: "load" });
   // Tiles are a real network round-trip to OpenFreeMap; this is a generous

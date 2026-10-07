@@ -8,7 +8,7 @@ import { findMarkerNear, LIVE_FIXTURE, mockFlightApi, setMapView } from "./helpe
 const target = LIVE_FIXTURE.find((p) => p.icao24 === "4aad15")!;
 
 test("cyberpunk theme renders all DOM text in JetBrains Mono, self-hosted", async ({ page }) => {
-  await mockFlightApi(page, { appDefaultTheme: true });
+  await mockFlightApi(page);
   await page.goto("/");
   await page.waitForSelector(".leaflet-container", { timeout: 20_000 });
 

@@ -27,7 +27,7 @@ async function stubTiles(page: Page, opts: { dead?: boolean } = {}): Promise<{ z
 
 test("the boot screen waits for the basemap, which warms the next zoom level behind it", async ({ page }) => {
   const tiles = await stubTiles(page);
-  await mockFlightApi(page, { appDefaultTheme: true });
+  await mockFlightApi(page, { realTiles: true });
   await page.goto("/");
   await page.waitForSelector(".boot-screen");
   await page.waitForSelector(".boot-screen--hidden, body:not(:has(.boot-screen))", { timeout: 15_000 });
@@ -40,7 +40,7 @@ test("the boot screen waits for the basemap, which warms the next zoom level beh
 
 test("the GL canvas renders a margin around the viewport", async ({ page }) => {
   await stubTiles(page);
-  await mockFlightApi(page, { appDefaultTheme: true });
+  await mockFlightApi(page, { realTiles: true });
   await page.goto("/");
   const canvas = page.locator(".leaflet-container canvas.maplibregl-canvas");
   await canvas.waitFor({ state: "attached", timeout: 15_000 });
@@ -54,7 +54,7 @@ test("the GL canvas renders a margin around the viewport", async ({ page }) => {
 test("an unreachable tile server can't hold the boot screen forever", async ({ page }) => {
   test.setTimeout(30_000);
   await stubTiles(page, { dead: true });
-  await mockFlightApi(page, { appDefaultTheme: true });
+  await mockFlightApi(page, { realTiles: true });
   await page.goto("/");
   await page.waitForSelector(".boot-screen");
   await page.waitForSelector(".boot-screen--hidden, body:not(:has(.boot-screen))", { timeout: 15_000 });

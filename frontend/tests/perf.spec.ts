@@ -1,7 +1,7 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 import { clusterMockFleet, onePerCell } from "../src/api/mockFleet";
 import { fleet10k, FLEET_SIZE, type FleetAircraft } from "./fixtures/fleet10k";
-import { withMap } from "./helpers";
+import { stubBasemapTiles, withMap } from "./helpers";
 
 // Main-thread budget for any single task while zooming and selecting with a
 // realistic worldwide fleet. 200ms is "the UI visibly froze"; before this
@@ -54,13 +54,9 @@ async function cpuSlowdown(page: Page): Promise<number> {
   }
 }
 
-// The budget measures this app's own main-thread work, so it runs on the
-// plain theme. The cyberpunk theme (the default since it became one) adds
-// a MapLibre WebGL basemap, and CI runners have no GPU: Chromium renders
-// WebGL in software there, which alone costs tens of long tasks per zoom
-// and says nothing about the app or about a real browser with a GPU.
-// PERF_THEME=cyberpunk runs the same scenario on it for a manual look.
-const PERF_THEME = process.env.PERF_THEME === "cyberpunk" ? "cyberpunk" : "default";
+// The basemap's tiles are stubbed empty (stubBasemapTiles): CI runners have
+// no GPU, and rendering real vector tiles in software would dominate the
+// long-task count while saying nothing about this app's own work.
 
 interface ViewportRequest {
   kind: "live" | "clusters";
@@ -231,14 +227,14 @@ async function mockTenThousand(page: Page, opts: { holdLive?: boolean; liveFeed?
 }
 
 async function startLongTaskObserver(page: Page) {
-  await page.addInitScript((theme) => {
-    localStorage.setItem("flighttracker:theme", theme);
+  await stubBasemapTiles(page);
+  await page.addInitScript(() => {
     const w = window as unknown as { __longTasks: number[] };
     w.__longTasks = [];
     new PerformanceObserver((list) => {
       for (const e of list.getEntries()) w.__longTasks.push(Math.round(e.duration));
     }).observe({ type: "longtask", buffered: true });
-  }, PERF_THEME);
+  });
 }
 
 const takeLongTasks = (page: Page) =>

@@ -62,7 +62,7 @@ html, body {
   --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
-/* Cyberpunk 2077-styled alternate theme (see ThemeToggle) — every token
+/* Cyberpunk 2077-styled theme (the only theme; index.html sets it) — every token
    below is consumed by the *same* rules the default theme already uses
    (panels, borders, text, the marker colors in plane-icon() below, the
    route line), so switching themes is one attribute flip for all of
@@ -212,7 +212,6 @@ html, body {
 [data-theme="cyberpunk"] .favorites-panel-toggle,
 [data-theme="cyberpunk"] .favorites-panel-content,
 [data-theme="cyberpunk"] .resume-dialog,
-[data-theme="cyberpunk"] .theme-toggle-btn,
 [data-theme="cyberpunk"] .map-legend-toggle,
 [data-theme="cyberpunk"] .map-legend-list,
 [data-theme="cyberpunk"] .dock-tile {
@@ -234,7 +233,6 @@ html, body {
 [data-theme="cyberpunk"] .favorites-panel-toggle,
 [data-theme="cyberpunk"] .favorites-panel-content,
 [data-theme="cyberpunk"] .resume-dialog,
-[data-theme="cyberpunk"] .theme-toggle-btn,
 [data-theme="cyberpunk"] .map-legend-toggle,
 [data-theme="cyberpunk"] .map-legend-list,
 [data-theme="cyberpunk"] .dock-tile {

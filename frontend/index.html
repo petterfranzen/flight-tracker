@@ -1,25 +1,9 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="cyberpunk">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Netwatch Skygrid</title>
-    <!-- Sets the theme attribute before any stylesheet paints, so the
-         cyberpunk theme (the default unless "default" was explicitly
-         chosen) never flashes the plain theme for a frame on load.
-         Synchronous and blocking on purpose — must run before the CSS
-         below is applied. Duplicates theme.ts's
-         loadTheme()/applyTheme() logic because it runs before any JS
-         module is available to import from; keep both in sync. -->
-    <script>
-      (function () {
-        var theme = "cyberpunk";
-        try {
-          if (localStorage.getItem("flighttracker:theme") === "default") theme = "default";
-        } catch (e) {}
-        if (theme === "cyberpunk") document.documentElement.dataset.theme = "cyberpunk";
-      })();
-    </script>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   </head>
   <body>

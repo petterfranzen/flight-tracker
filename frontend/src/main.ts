@@ -1,8 +1,6 @@
 import { Store } from "./state/store";
 import type { AppState } from "./state/appState";
 import { h, clear } from "./ui/h";
-import { loadTheme, saveTheme } from "./theme";
-import type { Theme } from "./theme";
 import type { FavoriteAircraft, FavoriteRoute } from "./favorites";
 import { loadFavoriteAircraft, loadFavoriteRoutes, toggleFavoriteAircraft, toggleFavoriteRoute } from "./favorites";
 import type { AirportSelection, Bounds, FlightPosition, LiveMarker, LiveOverview, SelectedPosition } from "./types/flight";
@@ -34,12 +32,10 @@ import * as dock from "./ui/dock";
 import * as flightSearch from "./ui/flightSearch";
 import * as favoritesPanel from "./ui/favoritesPanel";
 import * as legend from "./ui/legend";
-import * as themeToggle from "./ui/themeToggle";
 import * as dossierPanel from "./ui/dossierPanel";
 import * as bootScreen from "./ui/bootScreen";
 import * as resumeDialog from "./ui/resumeDialog";
-// Self-hosted cyberpunk face (latin subset). @font-face files are fetched
-// only once a matching font-family is used, so the default theme pays nothing.
+// Self-hosted cyberpunk face (latin subset).
 import "@fontsource/jetbrains-mono/latin-500.css";
 import "@fontsource/jetbrains-mono/latin-600.css";
 import "@fontsource/jetbrains-mono/latin-700.css";
@@ -136,14 +132,12 @@ function boot(): void {
   );
 
   // ---- store ----
-  const initialTheme = loadTheme();
   const state: AppState = {
-    theme: initialTheme,
     zoom: 6,
     trackedCount: 0,
     seenCount: 0,
     firstLoadDone: false,
-    basemapReady: initialTheme !== "cyberpunk",
+    basemapReady: false,
     showResumeDialog: false,
 
     selectedId: null,
@@ -175,7 +169,6 @@ function boot(): void {
     toggleRouteFavorite: () => {},
     removeFavoriteAircraft: () => {},
     removeFavoriteRoute: () => {},
-    toggleTheme: () => {},
     resumeTracking: () => {},
   };
   const store = new Store<AppState>(state);
@@ -769,20 +762,13 @@ function boot(): void {
   }
 
   // ---- map + layers ----
-  const mapController = createMap(mapRoot, initialTheme, handleViewportChange, (ready) => store.set("basemapReady", ready));
+  const mapController = createMap(mapRoot, handleViewportChange, (ready) => store.set("basemapReady", ready));
   const map = mapController.map;
   // ?debug: a read-only diagnostics panel for a misbehaving device (ui/debugOverlay.ts).
   if (new URLSearchParams(location.search).has("debug")) import("./ui/debugOverlay").then((m) => m.mountDebugOverlay(map)).catch(() => {});
   const markerLayer = createMarkerLayer(map, handleSelectAircraft);
   const routeLayer = createRouteLayer(map);
   const followSelected = createFollowSelected(map, (offScreen) => store.set("planeOffScreen", offScreen));
-
-  function toggleTheme(): void {
-    const next: Theme = store.get("theme") === "cyberpunk" ? "default" : "cyberpunk";
-    saveTheme(next);
-    store.set("theme", next);
-    mapController.setTheme(next);
-  }
 
   // ---- wire real actions into the store now that every closure above exists ----
   store.set("selectAircraft", handleSelectAircraft);
@@ -795,7 +781,6 @@ function boot(): void {
   store.set("toggleRouteFavorite", toggleRouteFavorite);
   store.set("removeFavoriteAircraft", removeFavoriteAircraft);
   store.set("removeFavoriteRoute", removeFavoriteRoute);
-  store.set("toggleTheme", toggleTheme);
   store.set("resumeTracking", startCycle);
 
   // ---- UI modules ----
@@ -805,7 +790,6 @@ function boot(): void {
   flightSearch.mount(leftOverlayStack, store);
   favoritesPanel.mount(leftOverlayStack, store);
   legend.mount(leftOverlayStack); // no store slots — its open/closed state is purely local (see ui/legend.ts)
-  themeToggle.mount(leftOverlayStack, store);
   bootScreen.mount(bootScreenRoot, store);
   resumeDialog.mount(resumeDialogRoot, store);
   dossierPanel.mount(dossierRoot, store);
@@ -824,11 +808,9 @@ function boot(): void {
   store.subscribeMany(["selectedPos", "airportDossier"], syncDock);
   syncDock();
 
-  // Tracked-chip: cyberpunk-only, inline (not a separate component in the
-  // original either).
+  // Tracked-chip: inline (not a separate component in the original either).
   function renderTrackedChip(): void {
     clear(trackedChipRoot);
-    if (store.get("theme") !== "cyberpunk") return;
     trackedChipRoot.appendChild(
       h(
         "div",
@@ -854,7 +836,7 @@ function boot(): void {
     );
   }
   renderTrackedChip();
-  store.subscribeMany(["theme", "trackedCount", "seenCount"], renderTrackedChip);
+  store.subscribeMany(["trackedCount", "seenCount"], renderTrackedChip);
 
   // ---- follow-selected wiring ----
   function syncFollowSelected(): void {

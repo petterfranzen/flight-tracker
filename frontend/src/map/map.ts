@@ -6,11 +6,10 @@ import L from "leaflet";
 // pinned via Leaflet's transform/negative-margin positioning.
 import "leaflet/dist/leaflet.css";
 import type { Bounds } from "../types/flight";
-import type { Theme } from "../theme";
 import { minZoomFor, WORLD_BOUNDS } from "./zoomLimits";
 import { createWheelStepper } from "./wheelZoom";
 
-// Cyberpunk theme's TileLayer points here instead of OpenStreetMap — a
+// The TileLayer points here instead of a real tile server — a
 // transparent 1x1 PNG as a data: URI, so Leaflet never makes a real network
 // request for it, and every tile renders fully invisible. A *real*
 // TileLayer still has to be mounted even so: Leaflet's own internals
@@ -20,8 +19,6 @@ import { createWheelStepper } from "./wheelZoom";
 // the MapLibre layer renders over it.
 const BLANK_TILE_URL =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
-const OSM_TILE_URL = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
-const OSM_ATTRIBUTION = "&copy; OpenStreetMap contributors";
 
 // Zoom a selection's flyTo treats as "close enough" to stop zooming
 // further in — also markers.ts's FULL_SIZE_ZOOM, kept in sync by hand
@@ -61,23 +58,20 @@ export function boundsFromMap(map: L.Map): Bounds {
 
 export interface MapController {
   map: L.Map;
-  setTheme(theme: Theme): void;
   destroy(): void;
 }
 
 /**
  * Creates the Leaflet map, the always-mounted TileLayer, and the lazy
- * MapLibre basemap layer (cyberpunk theme only, dynamically imported so it
- * stays its own chunk — see map/maplibreBasemap.ts). Viewport reporting
+ * MapLibre basemap layer (dynamically imported so it stays its own chunk — see map/maplibreBasemap.ts). Viewport reporting
  * (mount + every `moveend`) is wired here since it's a property of the map
  * itself, not any one UI module.
  */
 export function createMap(
   container: HTMLElement,
-  theme: Theme,
   onViewportChange: (bounds: Bounds, zoom: number) => void,
   // false while a MapLibre basemap is still loading its first view, true
-  // once it's drawn (or the plain theme needs none) — the boot screen waits
+  // once it's drawn — the boot screen waits
   // on it. See whenBasemapReady in maplibreBasemap.ts.
   onBasemapReady: (ready: boolean) => void = () => {},
 ): MapController {
@@ -123,8 +117,8 @@ export function createMap(
   // surface that still keeps this out of any real application code path.
   (containerEl as unknown as { _leaflet_map: L.Map })._leaflet_map = map;
 
-  const tileLayer = L.tileLayer(theme === "cyberpunk" ? BLANK_TILE_URL : OSM_TILE_URL, {
-    attribution: theme === "cyberpunk" ? "" : OSM_ATTRIBUTION,
+  const tileLayer = L.tileLayer(BLANK_TILE_URL, {
+    attribution: "",
     // Belt-and-suspenders with maxBounds above: without this, a fast drag
     // can still briefly request/paint a second copy's tiles before
     // Leaflet's bounds correction catches up on drag end.
@@ -132,49 +126,22 @@ export function createMap(
   }).addTo(map);
 
   let maplibreLayer: L.Layer | null = null;
-  let maplibreLoading: Promise<void> | null = null;
-  let wantsMaplibre = false;
-
-  // `atBoot`: the first mount, while the boot screen still covers the map —
-  // the only time it's safe to warm neighbouring zoom levels, since that
-  // briefly moves MapLibre's camera.
-  function mountMaplibre(atBoot: boolean): void {
-    wantsMaplibre = true;
-    if (maplibreLayer || maplibreLoading) return;
-    onBasemapReady(false);
-    maplibreLoading = import("./maplibreBasemap")
-      .then(({ createMaplibreLayer, whenBasemapReady, isSmallScreen }) => {
-        maplibreLoading = null;
-        // setTheme may have flipped back to default while the chunk was
-        // loading — guard against mounting a layer nobody wants anymore.
-        if (!wantsMaplibre) return;
-        const layer = createMaplibreLayer();
-        maplibreLayer = layer;
-        layer.addTo(map);
-        // Warming the neighbouring zoom levels is two more rounds of tile
-        // loading and rendering; worth it on a desktop, not on a phone.
-        return whenBasemapReady(layer, atBoot && !isSmallScreen());
-      })
-      .catch(() => {})
-      .finally(() => onBasemapReady(true));
-  }
-  function unmountMaplibre(): void {
-    wantsMaplibre = false;
-    onBasemapReady(true);
-    if (maplibreLayer) {
-      maplibreLayer.remove();
-      maplibreLayer = null;
-    }
-  }
-
-  function setTheme(nextTheme: Theme): void {
-    tileLayer.setUrl(nextTheme === "cyberpunk" ? BLANK_TILE_URL : OSM_TILE_URL);
-    tileLayer.options.attribution = nextTheme === "cyberpunk" ? "" : OSM_ATTRIBUTION;
-    if (nextTheme === "cyberpunk") mountMaplibre(false);
-    else unmountMaplibre();
-  }
-  if (theme === "cyberpunk") mountMaplibre(true);
-  else onBasemapReady(true);
+  let destroyed = false;
+  // Loaded while the boot screen still covers the map, the only time it's
+  // safe to warm neighbouring zoom levels (that briefly moves MapLibre's camera).
+  onBasemapReady(false);
+  import("./maplibreBasemap")
+    .then(({ createMaplibreLayer, whenBasemapReady, isSmallScreen }) => {
+      if (destroyed) return;
+      const layer = createMaplibreLayer();
+      maplibreLayer = layer;
+      layer.addTo(map);
+      // Warming the neighbouring zoom levels is two more rounds of tile
+      // loading and rendering; worth it on a desktop, not on a phone.
+      return whenBasemapReady(layer, !isSmallScreen());
+    })
+    .catch(() => {})
+    .finally(() => onBasemapReady(true));
 
   // Reports on every `moveend`. The *initial* report (equivalent to the
   // original ViewportReporter's own mount-time call) is deliberately not
@@ -219,11 +186,12 @@ export function createMap(
     resizeObserver?.disconnect();
     window.visualViewport?.removeEventListener("resize", remeasure);
     window.removeEventListener("pageshow", remeasure);
-    unmountMaplibre();
+    destroyed = true;
+    maplibreLayer?.remove();
     map.remove();
   }
 
-  return { map, setTheme, destroy };
+  return { map, destroy };
 }
 
 export interface FollowSelectedUpdate {

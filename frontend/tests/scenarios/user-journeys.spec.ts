@@ -141,7 +141,7 @@ test.describe("user journeys @scenario", () => {
     await expect(page.locator(".details-panel")).toContainText("KLR");
   });
 
-  test("reselecting across the map, airport dossier, live updates, theme round trip", async ({ page }, testInfo) => {
+  test("reselecting across the map, airport dossier, live updates", async ({ page }, testInfo) => {
     test.setTimeout(150_000);
     const h = await startHarness(page, testInfo);
     await h.step("boot", () => boot(page));
@@ -167,13 +167,5 @@ test.describe("user journeys @scenario", () => {
     await expect(page.locator(".details-panel")).toContainText("Amsterdam");
     await page.locator(".details-panel-close").click();
 
-    await h.step("switch to the plain theme", () => page.locator(".theme-toggle-btn").click());
-    await expect(page.locator("html")).not.toHaveAttribute("data-theme", /.+/);
-    await h.step("and back to cyberpunk: basemap renders again", async () => {
-      await page.locator(".theme-toggle-btn").click();
-      await page.waitForSelector(".boot-screen--hidden, body:not(:has(.boot-screen))", { timeout: 20_000 });
-    });
-    const c = await centre(page);
-    expect(Math.abs(c.lat - AMS.lat) < 2, "view kept across the theme toggle").toBe(true);
   });
 });

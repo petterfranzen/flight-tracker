@@ -24,13 +24,12 @@ function buildNoise(): string {
 }
 
 /**
- * One boot-sequence run: cyberpunk theme's flavor loading screen, real
+ * One boot-sequence run: flavor loading screen, real
  * loading state gating when it's allowed to dismiss, not a fixed timer:
  * the first aircraft data (`firstLoadDone`) and the basemap having drawn
  * its view, with neighbouring zooms warmed behind the screen
  * (`basemapReady`, see map/maplibreBasemap.ts whenBasemapReady). Returns a teardown that clears every timer immediately —
- * used both when the sequence finishes hiding itself and when the theme
- * flips away from cyberpunk mid-boot (the whole thing just unmounts).
+ * used when the sequence finishes hiding itself.
  */
 function runBootSequence(root: HTMLElement, store: AppStore): () => void {
   const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -125,24 +124,7 @@ function runBootSequence(root: HTMLElement, store: AppStore): () => void {
   };
 }
 
-/** Only ever shown on the cyberpunk theme — mounts/unmounts a fresh run each time the theme switches to/from it. */
+/** The loading screen, shown once per page load until the first data and the basemap are in. */
 export function mount(root: HTMLElement, store: AppStore): () => void {
-  let stopCurrent: (() => void) | null = null;
-
-  function sync(): void {
-    const wantsBoot = store.get("theme") === "cyberpunk";
-    if (wantsBoot && !stopCurrent) {
-      stopCurrent = runBootSequence(root, store);
-    } else if (!wantsBoot && stopCurrent) {
-      stopCurrent();
-      stopCurrent = null;
-    }
-  }
-  sync();
-  const unsubscribe = store.subscribe("theme", sync);
-
-  return () => {
-    unsubscribe();
-    stopCurrent?.();
-  };
+  return runBootSequence(root, store);
 }

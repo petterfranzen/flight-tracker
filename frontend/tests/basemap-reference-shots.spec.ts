@@ -18,7 +18,6 @@ const VIEWS = [
 test("cyberpunk basemap reference shots", async ({ page }) => {
   test.setTimeout(180_000);
   await mockFlightApi(page);
-  await page.addInitScript(() => localStorage.setItem("flighttracker:theme", "cyberpunk"));
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto("/");
   await page.waitForSelector(".leaflet-container");

@@ -46,21 +46,14 @@ export interface ClusterPointFixture {
  */
 export async function mockFlightApi(
   page: Page,
-  opts?: { historyDelayMs?: Record<string, number>; clusters?: ClusterPointFixture[]; overviewPlanes?: unknown[]; geo?: { lat: number; lon: number } | null; activeCount?: number; seenCount?: number; appDefaultTheme?: boolean },
+  opts?: { historyDelayMs?: Record<string, number>; clusters?: ClusterPointFixture[]; overviewPlanes?: unknown[]; geo?: { lat: number; lon: number } | null; activeCount?: number; seenCount?: number; realTiles?: boolean },
 ) {
-  // Pin the plain theme unless a test is about the app's default (cyberpunk)
-  // theme: the cyberpunk boot screen waits for a WebGL basemap, which in CI
-  // (real tiles, software rendering) can take seconds and isn't what these
-  // tests are about. A test's own later addInitScript still wins.
-  if (!opts?.appDefaultTheme) {
-    await page.addInitScript(() => {
-      try {
-        if (localStorage.getItem("flighttracker:theme") == null) localStorage.setItem("flighttracker:theme", "default");
-      } catch {
-        /* storage unavailable: the app's default applies */
-      }
-    });
-  }
+  // Basemap: an empty tileset (style and fonts load, every tile is blank), so
+  // the MapLibre basemap draws only its background: fast and identical on
+  // every run, with no real tile server involved. `realTiles` leaves the
+  // network alone for tests that are about the basemap itself (and a test's
+  // own later page.route for these URLs still wins).
+  if (!opts?.realTiles) await stubBasemapTiles(page);
   await page.route("**/api/flights/live/clusters*", (route: Route) => route.fulfill({ json: opts?.clusters ?? [] }));
   // The worldwide active-aircraft count behind the cyberpunk chip.
   await page.route("**/api/flights/live/count*", (route: Route) =>
@@ -255,4 +248,12 @@ export async function getRoutePathScreenPoints(page: Page): Promise<{ x: number;
     }
     return points;
   });
+}
+
+/** Serves OpenFreeMap's tileset as empty: the basemap draws its background colour and nothing else. */
+export async function stubBasemapTiles(page: Page) {
+  await page.route("https://tiles.openfreemap.org/planet", (r) =>
+    r.fulfill({ json: { tilejson: "3.0.0", tiles: ["https://tiles.openfreemap.org/t/{z}/{x}/{y}.pbf"], minzoom: 0, maxzoom: 14, vector_layers: [] } }),
+  );
+  await page.route(/tiles\.openfreemap\.org\/(t|fonts)\//, (r) => r.fulfill({ body: Buffer.alloc(0), contentType: "application/x-protobuf" }));
 }
