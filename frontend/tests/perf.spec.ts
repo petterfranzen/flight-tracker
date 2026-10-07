@@ -1,7 +1,7 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 import { clusterMockFleet, onePerCell } from "../src/api/mockFleet";
 import { fleet10k, FLEET_SIZE, type FleetAircraft } from "./fixtures/fleet10k";
-import { stubBasemapTiles, withMap } from "./helpers";
+import { renderedPlanes, stubBasemapTiles, waitForPlanes, withMap } from "./helpers";
 
 // Main-thread budget for any single task while zooming and selecting with a
 // realistic worldwide fleet. 200ms is "the UI visibly froze"; before this
@@ -272,7 +272,7 @@ test.describe("performance with 10,000 live aircraft @perf", () => {
     await startLongTaskObserver(page);
     const api = await mockTenThousand(page, { liveFeed: true });
     await page.goto("/");
-    await page.waitForSelector(".cluster-icon, .plane-icon", { timeout: 15_000 });
+    await waitForPlanes(page, 1, 15_000);
     await page.waitForTimeout(500);
 
     const longTasks: number[] = [...(await takeLongTasks(page))];
@@ -286,21 +286,17 @@ test.describe("performance with 10,000 live aircraft @perf", () => {
       await page.waitForTimeout(600);
     }
     await flyTo(page, LONDON.lat, LONDON.lon, 11);
-    await page.locator(".plane-icon:not(.plane-icon--exiting)").first().waitFor({ timeout: 10_000 });
+    await waitForPlanes(page);
     await page.waitForTimeout(500);
     // One that's actually on screen (and clear of the left-hand overlays).
-    await page.evaluate(() => {
-      const ok = Array.from(document.querySelectorAll<HTMLElement>(".plane-icon:not(.plane-icon--exiting)")).find((el) => {
-        const r = el.getBoundingClientRect();
-        return r.left > window.innerWidth * 0.4 && r.right < window.innerWidth - 20 && r.top > 80 && r.bottom < window.innerHeight - 80;
-      });
-      ok?.setAttribute("data-perf-target", "");
-    });
-    const plane = page.locator("[data-perf-target]");
+    const plane = (await renderedPlanes(page)).find(
+      (p) => p.x - p.size / 2 > VIEWPORT.width * 0.4 && p.x + p.size / 2 < VIEWPORT.width - 20 && p.y - p.size / 2 > 80 && p.y + p.size / 2 < VIEWPORT.height - 80,
+    );
+    expect(plane, "a plane on screen to select").toBeTruthy();
     longTasks.push(...(await takeLongTasks(page)));
 
     const t0 = Date.now();
-    await plane.click({ force: true });
+    await page.mouse.click(plane!.x, plane!.y);
     await page.locator("#details-panel-heading").waitFor();
     const selectMs = Date.now() - t0;
     await page.waitForTimeout(1_500); // the selection's flyTo + follow-up fetches
@@ -352,7 +348,7 @@ test.describe("performance with 10,000 live aircraft @perf", () => {
       if (/\/api\/flights\/live\?/.test(r.url())) aborted.push(r.url());
     });
     await page.goto("/");
-    await page.waitForSelector(".cluster-icon, .plane-icon", { timeout: 15_000 });
+    await waitForPlanes(page, 1, 15_000);
 
     // Five moveends in a single task, so they are inside the debounce window
     // however slow the machine: one request.

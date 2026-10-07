@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { pickNonOverlapping, type Candidate } from "../src/map/declutter";
-import { mockFlightApi, setMapView } from "./helpers";
+import { mockFlightApi, renderedPlanes, setMapView } from "./helpers";
 
 // No clustering: planes are big, and where two would overlap on screen only the
 // first discovered one is drawn (map/declutter.ts). Discovery order is the
@@ -38,13 +38,14 @@ async function serve(page: Page, list: ReturnType<typeof plane>[], zoom = 8) {
   await setMapView(page, BASE.lat, BASE.lon, zoom);
 }
 
-const labels = (page: Page) => page.locator(".plane-icon .plane-icon-label").evaluateAll((els) => els.map((e) => e.textContent!).sort());
+const labels = async (page: Page) => (await renderedPlanes(page)).map((p) => p.callsign).sort();
+const count = async (page: Page) => (await renderedPlanes(page)).length;
 
 test.describe("hiding overlapping planes", () => {
   test("planes with room around them are all drawn, parked ones included", async ({ page }) => {
     await serve(page, [...lattice("a", 20, 10), ...lattice("g", 30, 10, { onGround: true }).map((p, i) => ({ ...p, latitude: p.latitude + 1.6, longitude: p.longitude + 0.003 * i }))]);
     // 20 airborne on their lattice; the parked block is 1.6° (~580 px) north of it, on the same lattice spacing.
-    await expect.poll(async () => page.locator(".plane-icon").count(), { timeout: 10_000 }).toBeGreaterThanOrEqual(20);
+    await expect.poll(() => count(page), { timeout: 10_000 }).toBeGreaterThanOrEqual(20);
     await expect(page.locator(".cluster-icon")).toHaveCount(0);
   });
 
@@ -58,7 +59,7 @@ test.describe("hiding overlapping planes", () => {
       ],
       9,
     );
-    await expect.poll(async () => page.locator(".plane-icon").count(), { timeout: 10_000 }).toBe(2);
+    await expect.poll(() => count(page), { timeout: 10_000 }).toBe(2);
     expect(await labels(page)).toEqual(["ALONE", "FIRST"]);
   });
 
@@ -68,9 +69,9 @@ test.describe("hiding overlapping planes", () => {
       [plane("aaaaaa", "FIRST", BASE.lat, BASE.lon), plane("bbbbbb", "SECOND", BASE.lat + 0.01, BASE.lon + 0.01)],
       9,
     );
-    await expect.poll(async () => page.locator(".plane-icon").count(), { timeout: 10_000 }).toBe(1);
+    await expect.poll(() => count(page), { timeout: 10_000 }).toBe(1);
     await setMapView(page, BASE.lat, BASE.lon, 13);
-    await expect.poll(async () => page.locator(".plane-icon").count(), { timeout: 10_000 }).toBe(2);
+    await expect.poll(() => count(page), { timeout: 10_000 }).toBe(2);
   });
 
   test("an active flight beats a parked one that was discovered first", async ({ page }) => {
@@ -79,7 +80,7 @@ test.describe("hiding overlapping planes", () => {
       [plane("aaaaaa", "PARKED", BASE.lat, BASE.lon, { onGround: true }), plane("bbbbbb", "FLYING", BASE.lat + 0.001, BASE.lon + 0.001)],
       9,
     );
-    await expect.poll(async () => page.locator(".plane-icon").count(), { timeout: 10_000 }).toBe(1);
+    await expect.poll(() => count(page), { timeout: 10_000 }).toBe(1);
     expect(await labels(page)).toEqual(["FLYING"]);
   });
 
@@ -89,17 +90,12 @@ test.describe("hiding overlapping planes", () => {
       plane(`x${i.toString(16).padStart(5, "0")}`, `X${i}`, BASE.lat - 0.5 + ((i * 7) % 100) * 0.01, BASE.lon - 1 + ((i * 13) % 100) * 0.02),
     );
     await serve(page, crowd, 9);
-    await expect.poll(async () => page.locator(".plane-icon").count(), { timeout: 10_000 }).toBeGreaterThan(20);
-    const boxes = await page.locator(".plane-icon").evaluateAll((els) =>
-      els.map((e) => {
-        const r = e.getBoundingClientRect();
-        return { x: r.x + r.width / 2, y: r.y + r.height / 2, size: r.width };
-      }),
-    );
+    await expect.poll(() => count(page), { timeout: 10_000 }).toBeGreaterThan(20);
+    const boxes = await renderedPlanes(page);
     expect(boxes.length).toBeLessThan(400); // bounded by the screen, not by the 1,500
     for (let i = 0; i < boxes.length; i++) {
       for (let j = i + 1; j < boxes.length; j++) {
-        const min = 0.7 * Math.min(boxes[i].size, boxes[j].size) - 1.5; // 1.5px: positions are rounded
+        const min = 0.7 * Math.min(boxes[i].size, boxes[j].size) - 1.5; // 1.5px: drawn positions are quantised to the tile grid
         const overlap = Math.abs(boxes[i].x - boxes[j].x) < min && Math.abs(boxes[i].y - boxes[j].y) < min;
         expect(overlap, `planes ${i} and ${j} overlap`).toBe(false);
       }
@@ -109,20 +105,20 @@ test.describe("hiding overlapping planes", () => {
   test("a few arriving aircraft fade in; a big batch just appears", async ({ page }) => {
     // One fade-in animation per marker is a long task when hundreds arrive at once (see MAX_FADE_IN_BATCH).
     await serve(page, lattice("a", 20, 10));
-    await expect.poll(async () => page.locator(".plane-icon").count(), { timeout: 10_000 }).toBe(20);
-    await expect(page.locator(".plane-icon--entering")).toHaveCount(20);
+    await expect.poll(() => count(page), { timeout: 10_000 }).toBe(20);
+    expect((await renderedPlanes(page)).filter((p) => p.fadedIn)).toHaveLength(20);
   });
 
   test("a big batch of arriving aircraft appears without a fade-in", async ({ page }) => {
     await serve(page, lattice("a", 120, 12));
-    await expect.poll(async () => page.locator(".plane-icon").count(), { timeout: 10_000 }).toBe(120);
-    await expect(page.locator(".plane-icon--entering")).toHaveCount(0);
+    await expect.poll(() => count(page), { timeout: 10_000 }).toBe(120);
+    expect((await renderedPlanes(page)).filter((p) => p.fadedIn)).toHaveLength(0);
   });
 });
 
 test.describe("capping how many planes are drawn", () => {
-  // Every plane is a DOM marker re-placed on each zoom step: an uncapped dense view (hundreds of
-  // markers) made zooming laggy, a phone most of all.
+  // Every render projects the candidates and re-sends the drawn set to the map: an uncapped dense
+  // view (hundreds of planes; DOM markers when this was written) made zooming laggy, a phone most of all.
   const crowd = (n: number): Candidate[] =>
     Array.from({ length: n }, (_, i) => ({ icao24: `cap${i}`, x: ((i * 7919) % 12_800) / 10, y: ((i * 104_729) % 7_200) / 10, active: true }));
 
@@ -157,21 +153,21 @@ test.describe("capping how many planes are drawn", () => {
       plane(`d${i.toString(16).padStart(5, "0")}`, `D${i}`, BASE.lat - 1.2 + (((i * 7919) % 10_000) / 10_000) * 2.4, BASE.lon - 2.5 + (((i * 104_729) % 10_000) / 10_000) * 5),
     );
     await serve(page, dense, 8);
-    await expect.poll(async () => page.locator(".plane-icon").count(), { timeout: 10_000 }).toBeGreaterThan(100);
-    expect(await page.locator(".plane-icon").count()).toBeLessThanOrEqual(300);
+    await expect.poll(() => count(page), { timeout: 10_000 }).toBeGreaterThan(100);
+    expect(await count(page)).toBeLessThanOrEqual(300);
 
     await page.setViewportSize({ width: 400, height: 800 });
     await setMapView(page, BASE.lat, BASE.lon, 8);
-    await expect.poll(async () => page.locator(".plane-icon").count(), { timeout: 10_000 }).toBeLessThanOrEqual(150);
-    expect(await page.locator(".plane-icon").count()).toBeGreaterThan(30);
+    await expect.poll(() => count(page), { timeout: 10_000 }).toBeLessThanOrEqual(150);
+    expect(await count(page)).toBeGreaterThan(30);
   });
 });
 
 test.describe("big planes", () => {
   test("icons are bigger than the old dart but grow gradually with zoom, and taper to fit stands at an airport", async ({ page }) => {
     await serve(page, [plane("aaaaaa", "SOLO", BASE.lat, BASE.lon)], 8);
-    await expect.poll(async () => page.locator(".plane-icon").count(), { timeout: 10_000 }).toBe(1);
-    const size = async () => (await page.locator(".plane-icon").first().boundingBox())!.width;
+    await expect.poll(() => count(page), { timeout: 10_000 }).toBe(1);
+    const size = async () => (await renderedPlanes(page))[0].size;
     const sizeAt = async (zoom: number) => {
       await setMapView(page, BASE.lat, BASE.lon, zoom);
       await page.waitForTimeout(300);
@@ -196,24 +192,24 @@ test.describe("big planes", () => {
   test("at stand zoom, planes 55 m apart (neighbouring gates) are both drawn", async ({ page }) => {
     // 0.0005 deg of latitude is ~55 m.
     await serve(page, [plane("aaaaaa", "GATE1", BASE.lat, BASE.lon), plane("bbbbbb", "GATE2", BASE.lat + 0.0005, BASE.lon)], 16);
-    await expect.poll(async () => page.locator(".plane-icon").count(), { timeout: 10_000 }).toBe(2);
+    await expect.poll(() => count(page), { timeout: 10_000 }).toBe(2);
   });
 
   test("on a phone they are about 20% bigger, for a finger", async ({ page }) => {
     await page.setViewportSize({ width: 400, height: 800 });
     await serve(page, [plane("aaaaaa", "SOLO", BASE.lat, BASE.lon)], 10);
-    await expect.poll(async () => page.locator(".plane-icon").count(), { timeout: 10_000 }).toBe(1);
-    const z10 = (await page.locator(".plane-icon").first().boundingBox())!.width;
+    await expect.poll(() => count(page), { timeout: 10_000 }).toBe(1);
+    const z10 = (await renderedPlanes(page))[0].size;
     expect(z10).toBeGreaterThanOrEqual(50); // 43 on a laptop
     expect(z10).toBeLessThanOrEqual(56);
     await setMapView(page, BASE.lat, BASE.lon, 16);
     await page.waitForTimeout(300);
-    expect((await page.locator(".plane-icon").first().boundingBox())!.width).toBeLessThan(62);
+    expect((await renderedPlanes(page))[0].size).toBeLessThan(62);
   });
 
   test("on a phone, neighbouring gates at stand zoom are both drawn", async ({ page }) => {
     await page.setViewportSize({ width: 400, height: 800 });
     await serve(page, [plane("aaaaaa", "GATE1", BASE.lat, BASE.lon), plane("bbbbbb", "GATE2", BASE.lat + 0.0006, BASE.lon)], 16); // ~67 m
-    await expect.poll(async () => page.locator(".plane-icon").count(), { timeout: 10_000 }).toBe(2);
+    await expect.poll(() => count(page), { timeout: 10_000 }).toBe(2);
   });
 });

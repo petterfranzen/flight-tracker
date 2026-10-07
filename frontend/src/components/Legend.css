@@ -152,8 +152,8 @@
   color: var(--color-text);
 }
 
-/* Outline square by default, and the actual marker shape each row stands
-   for: aircraft and selected are both square marks (see map/markers.ts); only airport overrides it, being a circle. */
+/* Outline square by default; only airport overrides it, being a circle like
+   the airport dot the map draws. */
 .map-legend-swatch {
   width: 10px;
   height: 10px;
@@ -166,11 +166,9 @@
   border-color: var(--color-marker-selected);
 }
 
-/* Circle, matching DefaultAirports' own dot. The colour is duplicated
-   from DefaultAirports.css by hand rather than shared through a token,
-   since it's specific to that one mark. */
+/* Circle, matching the airport layer's dot (ui/defaultAirports.ts). */
 .map-legend-swatch--airport {
   border-radius: 50%;
-  border-color: #e2ddc9;
+  border-color: var(--color-airport);
 }
 

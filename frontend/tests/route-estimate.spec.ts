@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { findMarkerNear, getRouteVertices, LIVE_FIXTURE, mockFlightApi, setMapView } from "./helpers";
+import { findMarkerNear, getRouteVertices, LIVE_FIXTURE, mockFlightApi, setMapView, waitForPlanes } from "./helpers";
 
 // The server dead-reckons an aircraft forward from its last real report and
 // sends that estimate with the report's own observedAt. The trail must not
@@ -23,7 +23,7 @@ test("estimated positions move the end of the trail instead of piling up in it",
   await page.goto("/");
   await page.waitForSelector(".map-container", { timeout: 10_000 });
   await setMapView(page, plane.latitude, plane.longitude, 11);
-  await page.waitForSelector(".plane-icon:not(.plane-icon--exiting)", { timeout: 10_000 });
+  await waitForPlanes(page);
   await page.waitForTimeout(500);
   await (await findMarkerNear(page, plane.latitude, plane.longitude)).click();
   await page.getByText("ICAO24 4D00D9").waitFor({ timeout: 5_000 });

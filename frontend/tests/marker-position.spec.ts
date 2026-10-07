@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { findMarkerNear, getMapLatLngToContainerPoint, getRoutePathScreenPoints, HISTORIES, LIVE_FIXTURE, mockFlightApi, setMapView } from "./helpers";
+import { findMarkerNear, getMapLatLngToContainerPoint, getRoutePathScreenPoints, HISTORIES, LIVE_FIXTURE, mockFlightApi, setMapView, waitForPlanes } from "./helpers";
 
 // Fixture data captured from the real API (see tests/fixtures/ and the
 // scripts that produced them — a straight `/live` poll and `/history`
@@ -20,7 +20,7 @@ test.describe("aircraft marker positions", () => {
 
     const target = LIVE_FIXTURE.find((p) => p.icao24 === "4aad15")!;
     await setMapView(page, target.latitude, target.longitude, 11);
-    await page.waitForSelector(".plane-icon", { timeout: 10_000 });
+    await waitForPlanes(page);
 
     const expected = await getMapLatLngToContainerPoint(page, target.latitude, target.longitude);
     const marker = await findMarkerNear(page, target.latitude, target.longitude);
@@ -40,7 +40,7 @@ test.describe("aircraft marker positions", () => {
 
     const target = LIVE_FIXTURE.find((p) => p.icao24 === "4aad15")!;
     await setMapView(page, target.latitude, target.longitude, 11);
-    await page.waitForSelector(".plane-icon", { timeout: 10_000 });
+    await waitForPlanes(page);
 
     // Pan away and back — the fixture /live response is identical on
     // every request, so this isolates whether *panning itself* corrupts
@@ -73,7 +73,7 @@ test.describe("aircraft marker positions", () => {
     const aircraftB = LIVE_FIXTURE.find((p) => p.icao24 === "4d00d9")!;
 
     await setMapView(page, aircraftA.latitude, aircraftA.longitude, 11);
-    await page.waitForSelector(".plane-icon", { timeout: 10_000 });
+    await waitForPlanes(page);
     await (await findMarkerNear(page, aircraftA.latitude, aircraftA.longitude)).click();
     await page.getByText("ICAO24 4AAD15").waitFor({ timeout: 2000 });
 

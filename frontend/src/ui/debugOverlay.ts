@@ -42,7 +42,7 @@ export function mountDebugOverlay(map: FlightMap): void {
       navigator.userAgent.replace(/^Mozilla\/5.0 /, "").slice(0, 90),
       `dpr ${window.devicePixelRatio}  inner ${innerWidth}x${innerHeight}  visual ${vv ? `${Math.round(vv.width)}x${Math.round(vv.height)}` : "n/a"}`,
       `container ${Math.round(r.width)}x${Math.round(r.height)}  map ${s.x}x${s.y}${Math.round(r.height) !== s.y ? "  <-- MISMATCH" : ""}`,
-      `z${map.getZoom().toFixed(2)} @${c.lat.toFixed(2)},${c.lon.toFixed(2)}  markers ${container.querySelectorAll(".plane-icon").length}  airports ${container.querySelectorAll(".default-airport-icon").length}`,
+      `z${map.getZoom().toFixed(2)} @${c.lat.toFixed(2)},${c.lon.toFixed(2)}  planes ${map.renderedPlanes().length}  airports ${map.renderedAirports().length}`,
       `webgl loaded ${g.loaded} tiles ${g.tiles} contextLost ${g.lost} canvas ${g.canvas}  map errors ${mapErrors}`,
       ...errors,
     ].join("\n");

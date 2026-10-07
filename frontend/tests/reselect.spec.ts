@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { findMarkerNear, LIVE_FIXTURE, mockFlightApi, setMapView, withMap } from "./helpers";
+import { findMarkerNear, LIVE_FIXTURE, mockFlightApi, setMapView, waitForPlanes, withMap } from "./helpers";
 
 // Selecting a second aircraft while one is already selected has to fly the
 // map to the *new* one. Reported sequence: zoom in near ARN, select a
@@ -14,7 +14,7 @@ const second = LIVE_FIXTURE.find((p) => p.icao24 === "4aae47")!; // ~1.5° east
 
 async function selectAt(page: import("@playwright/test").Page, p: typeof first): Promise<void> {
   await setMapView(page, p.latitude, p.longitude, 11);
-  await page.waitForSelector(".plane-icon:not(.plane-icon--exiting)", { timeout: 10_000 });
+  await waitForPlanes(page);
   await page.waitForTimeout(500);
   await (await findMarkerNear(page, p.latitude, p.longitude)).click();
   await page.getByText(`ICAO24 ${p.icao24.toUpperCase()}`).waitFor({ timeout: 5_000 });

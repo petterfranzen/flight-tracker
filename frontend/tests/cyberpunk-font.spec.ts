@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { findMarkerNear, LIVE_FIXTURE, mockFlightApi, setMapView } from "./helpers";
+import { findMarkerNear, LIVE_FIXTURE, mockFlightApi, setMapView, waitForPlanes } from "./helpers";
 
 // The cyberpunk theme uses one face (JetBrains Mono, self-hosted via
 // @fontsource) for every piece of DOM text, form controls and map
@@ -13,7 +13,7 @@ test("cyberpunk theme renders all DOM text in JetBrains Mono, self-hosted", asyn
   await page.waitForSelector(".map-container", { timeout: 20_000 });
 
   await setMapView(page, target.latitude, target.longitude, 11);
-  await page.waitForSelector(".plane-icon:not(.plane-icon--exiting)", { timeout: 10_000 });
+  await waitForPlanes(page);
   await page.waitForTimeout(500);
   await (await findMarkerNear(page, target.latitude, target.longitude)).click();
   await page.getByText(`ICAO24 ${target.icao24.toUpperCase()}`).waitFor({ timeout: 5_000 });

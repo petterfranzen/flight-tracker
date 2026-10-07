@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { findMarkerNear, LIVE_FIXTURE, mockFlightApi, setMapView } from "./helpers";
+import { findMarkerNear, LIVE_FIXTURE, mockFlightApi, setMapView, waitForPlanes } from "./helpers";
 
 // Verifies the mobile hide-by-default/reveal-on-demand treatment (see
 // MOBILE_BREAKPOINT_PX in FlightMap.tsx) without disturbing desktop: every
@@ -73,7 +73,7 @@ test.describe("mobile layout", () => {
 
     const target = LIVE_FIXTURE.find((p) => p.icao24 === "4aad15")!;
     await setMapView(page, target.latitude, target.longitude, 11);
-    await page.waitForSelector(".plane-icon", { timeout: 10_000 });
+    await waitForPlanes(page);
     await page.waitForTimeout(500);
     await (await findMarkerNear(page, target.latitude, target.longitude)).click();
     await page.getByText(`ICAO24 ${target.icao24.toUpperCase()}`).waitFor({ timeout: 2_000 });
@@ -139,7 +139,7 @@ test.describe("mobile layout", () => {
 
     const target = LIVE_FIXTURE.find((p) => p.icao24 === "4aad15")!;
     await setMapView(page, target.latitude, target.longitude, 11);
-    await page.waitForSelector(".plane-icon", { timeout: 10_000 });
+    await waitForPlanes(page);
     await page.waitForTimeout(500);
     await (await findMarkerNear(page, target.latitude, target.longitude)).click();
     await expect(page.locator(".details-panel-expand-toggle")).toBeVisible();
@@ -177,7 +177,7 @@ test.describe("mobile layout", () => {
     await page.waitForSelector(".map-container", { timeout: 10_000 });
     const target = LIVE_FIXTURE.find((p) => p.icao24 === "4aad15")!;
     await setMapView(page, target.latitude, target.longitude, 11);
-    await page.waitForSelector(".plane-icon", { timeout: 10_000 });
+    await waitForPlanes(page);
     await page.waitForTimeout(500);
     await (await findMarkerNear(page, target.latitude, target.longitude)).click();
     await page.getByText("ICAO24 4AAD15").waitFor({ timeout: 5_000 });
@@ -228,7 +228,7 @@ test.describe("mobile layout", () => {
 
     const target = LIVE_FIXTURE.find((p) => p.icao24 === "4aad15")!;
     await setMapView(page, target.latitude, target.longitude, 11);
-    await page.waitForSelector(".plane-icon", { timeout: 10_000 });
+    await waitForPlanes(page);
     await page.waitForTimeout(500);
 
     const marker = await findMarkerNear(page, target.latitude, target.longitude);
@@ -300,7 +300,7 @@ test.describe("mobile layout", () => {
 
     const target = LIVE_FIXTURE.find((p) => p.icao24 === "4aad15")!;
     await setMapView(page, target.latitude, target.longitude, 11);
-    await page.waitForSelector(".plane-icon", { timeout: 10_000 });
+    await waitForPlanes(page);
     await page.waitForTimeout(500);
     const marker = await findMarkerNear(page, target.latitude, target.longitude);
     await marker.click();
