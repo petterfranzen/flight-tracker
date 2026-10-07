@@ -27,8 +27,8 @@ function buildNoise(): string {
  * One boot-sequence run: flavor loading screen, real
  * loading state gating when it's allowed to dismiss, not a fixed timer:
  * the first aircraft data (`firstLoadDone`) and the basemap having drawn
- * its view, with neighbouring zooms warmed behind the screen
- * (`basemapReady`, see map/maplibreBasemap.ts whenBasemapReady). Returns a teardown that clears every timer immediately —
+ * its first view (`basemapReady`, see map/maplibreBasemap.ts
+ * whenBasemapReady). Returns a teardown that clears every timer immediately —
  * used when the sequence finishes hiding itself.
  */
 function runBootSequence(root: HTMLElement, store: AppStore): () => void {

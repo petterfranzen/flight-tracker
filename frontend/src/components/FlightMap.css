@@ -526,24 +526,9 @@ html, body {
 }
 
 
-.route-line {
-  stroke-linecap: round;
-  animation: dash-travel 2.4s linear forwards;
-}
-
-@keyframes dash-travel {
-  from { stroke-dashoffset: 240; }
-  to { stroke-dashoffset: 0; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .route-line { animation: none; }
-}
-
 /* Eases a genuinely new marker onto the map instead of it just appearing —
-   see planeIcon's own comment for why this is scoped to first-mount only
-   (plane-icon--entering), not every icon rebuild a zoom/selection change
-   triggers. A plain CSS animation, not a transition + class toggle: it
+   scoped to first-mount only (plane-icon--entering, see map/markers.ts),
+   not every restyle a zoom/selection change triggers. A plain CSS animation, not a transition + class toggle: it
    needs to start the instant the element exists, with nothing in JS left
    to trigger it — this is what turns a whole viewport's worth of aircraft
    appearing all at once the moment a pan/zoom fetch resolves into traffic
@@ -664,9 +649,8 @@ html, body {
    dropped per later feedback: at any real traffic density it read as
    visual clutter rather than the intended blip styling. Left as display:
    none unconditionally (rather than deleted outright) since the element
-   itself stays in planeIcon's markup either way — see that comment for
-   why RotatingPlaneIcon.createIcon() needs a consistent DOM shape
-   regardless of theme. .plane-icon-label (the selected-aircraft callsign
+   itself stays in the marker markup either way (buildPlaneElement in
+   map/markers.ts). .plane-icon-label (the selected-aircraft callsign
    chip) is unrelated and unaffected — see its own rule below. */
 .plane-icon-mark,
 .plane-icon-label {
@@ -916,8 +900,8 @@ html, body {
      size never changed, so Leaflet kept centering within the *full*
      height, right underneath the sheet. Making both real flex children
      means the map only ever gets asked to center within whatever height
-     it genuinely has on screen (see FollowSelected in FlightMap.tsx,
-     which calls invalidateSize() + re-centers whenever this ratio
+     it genuinely has on screen (see createFollowSelected in map/map.ts,
+     which re-measures the map and re-centers whenever this ratio
      changes). Absolutely-positioned children of .app-shell (the search
      overlay, the resume dialog) are unaffected — position: absolute
      children are removed from flow regardless of the parent's display
@@ -971,7 +955,7 @@ html, body {
     border-top: 1px solid var(--color-panel-border);
     border-radius: 12px 12px 0 0;
     box-shadow: 0 -6px 18px rgba(0, 0, 0, 0.5);
-    /* Deliberately no height transition: FollowSelected's invalidateSize()
+    /* Deliberately no height transition: createFollowSelected's resize()
        call runs synchronously right after this class toggles, reading
        clientHeight at that instant — an animated height change would
        still be mid-transition then, so the map would recenter against a
