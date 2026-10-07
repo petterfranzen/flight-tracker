@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { findMarkerNear, LIVE_FIXTURE, mockFlightApi, setMapView } from "./helpers";
+import { findMarkerNear, LIVE_FIXTURE, mockFlightApi, setMapView, waitForPlanes } from "./helpers";
 
 // One basic journey, covering the aircraft-favorite path end to end
 // (toggle from the details panel -> persists to localStorage -> shows up
@@ -19,15 +19,13 @@ test.describe("favorites", () => {
 
     const target = LIVE_FIXTURE.find((p) => p.icao24 === "4aad15")!;
     await setMapView(page, target.latitude, target.longitude, 11);
-    await page.waitForSelector(".plane-icon", { timeout: 10_000 });
+    await waitForPlanes(page);
     await page.waitForTimeout(500);
     await (await findMarkerNear(page, target.latitude, target.longitude)).click();
     await page.getByText(`ICAO24 ${target.icao24.toUpperCase()}`).waitFor({ timeout: 2_000 });
 
     // Exact match on the button's own aria-label, not a loose "Aircraft"
-    // substring: every plane marker also carries an accessible name
-    // containing "Aircraft" (see buildPlaneElement in map/markers.ts), so
-    // a substring match here would hit 20+ markers as well as this toggle.
+    // substring, which other controls' names also contain.
     const aircraftToggle = page.getByRole("button", { name: "Favorite this aircraft", exact: true });
     await expect(aircraftToggle).toHaveText("☆ Favorite aircraft");
     await aircraftToggle.click();

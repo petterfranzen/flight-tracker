@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { findMarkerNear, LIVE_FIXTURE, mockFlightApi, setMapView } from "./helpers";
+import { findMarkerNear, LIVE_FIXTURE, mockFlightApi, setMapView, waitForPlanes } from "./helpers";
 
 // What "Favorite route" does must be stated on screen, including when it is
 // unavailable, and the Favorites list must say what is (not) actionable.
@@ -10,7 +10,7 @@ async function selectTarget(page: import("@playwright/test").Page) {
   await page.goto("/");
   await page.waitForSelector(".map-container", { timeout: 10_000 });
   await setMapView(page, target.latitude, target.longitude, 11);
-  await page.waitForSelector(".plane-icon", { timeout: 10_000 });
+  await waitForPlanes(page);
   await page.waitForTimeout(500);
   await (await findMarkerNear(page, target.latitude, target.longitude)).click();
   await page.getByText(`ICAO24 ${target.icao24.toUpperCase()}`).waitFor({ timeout: 5_000 });

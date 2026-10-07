@@ -59,13 +59,23 @@ html, body {
   --color-marker: #ffb020;
   --color-marker-selected: #4db2ff;
   --color-focus: #4db2ff;
+  /* Map-drawn marks (map/planes.ts, ui/defaultAirports.ts draw them on the
+     GL canvas from these values): the plane's outline and shadow, the
+     selected plane's halo and callsign chip, the airport dot and its chip. */
+  --color-plane-outline: rgba(0, 0, 0, 0.7);
+  --color-plane-shadow: rgba(0, 0, 0, 0.6);
+  --color-marker-halo: #4db2ff;
+  --color-label-bg: rgba(5, 6, 8, 0.65);
+  --color-airport: #e2ddc9;
+  --color-airport-fill: #1a1a1a;
+  --color-airport-label-bg: rgba(20, 20, 20, 0.75);
   --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
 /* Cyberpunk 2077-styled theme (the only theme; index.html sets it) — every token
    below is consumed by the *same* rules the default theme already uses
-   (panels, borders, text, the marker colors in plane-icon() below, the
-   route line), so switching themes is one attribute flip for all of
+   (panels, borders, text, the marker colors the plane layers draw with,
+   the route line), so switching themes is one attribute flip for all of
    this, not a second copy of every component's CSS. The map itself is
    the one exception: MaplibreBasemap replaces OpenStreetMap's raster
    tiles outright for this theme, rendering vector tiles through a style
@@ -525,160 +535,6 @@ html, body {
   background: var(--color-panel);
 }
 
-
-/* Eases a genuinely new marker onto the map instead of it just appearing —
-   scoped to first-mount only (plane-icon--entering, see map/markers.ts),
-   not every restyle a zoom/selection change triggers. A plain CSS animation, not a transition + class toggle: it
-   needs to start the instant the element exists, with nothing in JS left
-   to trigger it — this is what turns a whole viewport's worth of aircraft
-   appearing all at once the moment a pan/zoom fetch resolves into traffic
-   smoothly filling in instead of a hard, blocking-feeling redraw. */
-.plane-icon--entering {
-  animation: marker-fade-in 220ms ease-out;
-}
-
-@keyframes marker-fade-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-
-/* A real (JS-toggled) transition, not another entering-style animation:
-   unlike a mount, "gone stale because the map zoomed past
-   CLUSTER_FETCH_MAX_ZOOM" isn't a one-shot event tied to element creation
-   — plane-icon--exiting gets added straight to the className FlightMap
-   already computes on every zoom change (see AircraftMarker's exiting
-   prop), so this only needs to smooth that transition, not drive it. */
-.plane-icon {
-  transition: opacity 250ms ease-in;
-}
-
-/* Report older than 2 h (see map/staleness.ts): still drawn, but not like
-   live traffic. Declared before --exiting so a fading-out marker still ends
-   fully transparent. */
-.plane-icon--dimmed {
-  opacity: 0.35;
-}
-
-.plane-icon--exiting {
-  opacity: 0;
-  pointer-events: none;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .plane-icon--entering { animation: none; }
-  .plane-icon { transition: none; }
-}
-
-.plane-glyph {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  /* Percentage, not a fixed px size: fills whatever size markers.ts gives
-     the .plane-icon box (per zoom, larger when selected), so selected vs.
-     unselected sizing lives in one place instead of needing a duplicate,
-     separately-sized copy of every rule in this file. */
-  width: 100%;
-  height: 100%;
-  color: var(--color-marker);
-  transition: transform 0.4s ease;
-}
-
-.plane-glyph svg {
-  width: 90%;
-  height: 90%;
-  fill: currentColor;
-  /* A dark outline keeps the marker legible over both light and dark map
-     tiles, regardless of what's directly underneath it. */
-  stroke: rgba(0, 0, 0, 0.7);
-  stroke-width: 1;
-  stroke-linejoin: round;
-  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6));
-}
-
-/* No rotation angle can read as "unknown" on its own — whatever we pick
-   coincides with some real heading. Mark it unmistakably instead. */
-.plane-glyph--unknown-heading svg {
-  fill: none;
-  stroke: var(--color-marker);
-  stroke-dasharray: 2 2;
-  opacity: 0.75;
-}
-
-/* The positioning context for the halo and the callsign label. MapLibre
-   positions the bare wrapper around this box (.plane-marker, see
-   map/markers.ts), so nothing here competes with its transform. */
-.plane-icon {
-  position: relative;
-}
-
-/* Sits behind the glyph, unrotated, so it reads as a halo around the
-   marker regardless of which way the plane itself is pointing. */
-.plane-icon-halo {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  width: 100%;
-  height: 100%;
-  border-radius: 50%;
-  transform: translate(-50%, -50%);
-  pointer-events: none;
-  opacity: 0;
-}
-
-.plane-icon--selected .plane-glyph {
-  color: var(--color-marker-selected);
-}
-
-.plane-icon--selected .plane-icon-halo {
-  opacity: 1;
-  background: radial-gradient(circle, rgba(77, 178, 255, 0.55) 0%, rgba(77, 178, 255, 0) 72%);
-  animation: halo-pulse 1.6s ease-out infinite;
-}
-
-@keyframes halo-pulse {
-  0% { transform: translate(-50%, -50%) scale(1); opacity: 0.9; }
-  100% { transform: translate(-50%, -50%) scale(2.6); opacity: 0; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .plane-icon--selected .plane-icon-halo { animation: none; opacity: 0.6; }
-}
-
-/* .plane-icon-mark used to draw a square outline box behind the glyph on
-   cyberpunk theme (matching an earlier approved mockup's .blip-mark) —
-   dropped per later feedback: at any real traffic density it read as
-   visual clutter rather than the intended blip styling. Left as display:
-   none unconditionally (rather than deleted outright) since the element
-   itself stays in the marker markup either way (buildPlaneElement in
-   map/markers.ts). .plane-icon-label (the selected-aircraft callsign
-   chip) is unrelated and unaffected — see its own rule below. */
-.plane-icon-mark,
-.plane-icon-label {
-  display: none;
-}
-/* Selected only, not every marker — real traffic can mean dozens of
-   aircraft close together on screen (a busy airport's approach path),
-   and a label chip per marker there overlaps into unreadable noise (the
-   actual reported bug). Flightradar24's own answer to the same problem
-   is exactly this: drop callsigns rather than try to fit them all, kept
-   for the one aircraft actually being tracked. */
-[data-theme="cyberpunk"] .plane-icon--selected .plane-icon-label {
-  display: block;
-  position: absolute;
-  top: 50%;
-  left: 100%;
-  transform: translateY(-50%);
-  margin-left: 4px;
-  padding: 1px 4px;
-  background: rgba(5, 6, 8, 0.65);
-  color: var(--color-marker-selected);
-  font-family: var(--font-data);
-  font-weight: 700;
-  font-size: 11px;
-  letter-spacing: 0.01em;
-  white-space: nowrap;
-  pointer-events: none;
-}
 
 .details-panel {
   position: absolute;

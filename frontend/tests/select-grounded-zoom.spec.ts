@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { findMarkerNear, LIVE_FIXTURE, mockFlightApi, setMapView, withMap } from "./helpers";
+import { findMarkerNear, LIVE_FIXTURE, mockFlightApi, setMapView, waitForPlanes, withMap } from "./helpers";
 
 // A selected aircraft that is on the ground and slow (taxiing/parked) gets
 // a much closer zoom than an airborne one (see isTaxiing in map.ts).
@@ -7,7 +7,7 @@ import { findMarkerNear, LIVE_FIXTURE, mockFlightApi, setMapView, withMap } from
 async function selectAt(page: import("@playwright/test").Page, icao24: string, startZoom: number): Promise<number> {
   const target = LIVE_FIXTURE.find((p) => p.icao24 === icao24)!;
   await setMapView(page, target.latitude, target.longitude, startZoom);
-  await page.waitForSelector(".plane-icon", { timeout: 10_000 });
+  await waitForPlanes(page);
   await page.waitForTimeout(500);
   await (await findMarkerNear(page, target.latitude, target.longitude)).click();
   await page.getByText(`ICAO24 ${target.icao24.toUpperCase()}`).waitFor({ timeout: 2_000 });

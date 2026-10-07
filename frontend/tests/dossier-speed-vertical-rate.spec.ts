@@ -1,5 +1,5 @@
 import { expect, test, type WebSocketRoute } from "@playwright/test";
-import { findMarkerNear, LIVE_FIXTURE, mockFlightApi, setMapView } from "./helpers";
+import { findMarkerNear, LIVE_FIXTURE, mockFlightApi, setMapView, waitForPlanes } from "./helpers";
 
 // The aircraft dossier's Speed and Vertical rate rows (dossierPanel.ts).
 // Selecting from a marker only gives a LiveMarker, which carries neither,
@@ -20,7 +20,7 @@ test.describe("dossier speed and vertical rate", () => {
 
     const target = LIVE_FIXTURE.find((p) => p.icao24 === "4aad15")!;
     await setMapView(page, target.latitude, target.longitude, 11);
-    await page.waitForSelector(".plane-icon", { timeout: 10_000 });
+    await waitForPlanes(page);
     await page.waitForTimeout(500);
     await (await findMarkerNear(page, target.latitude, target.longitude)).click();
     await page.getByText(`ICAO24 ${target.icao24.toUpperCase()}`).waitFor({ timeout: 2_000 });

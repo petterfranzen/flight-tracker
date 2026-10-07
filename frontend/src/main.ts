@@ -19,7 +19,7 @@ import {
   subscribeLiveFeed,
 } from "./api/flightApi";
 import { boundsFromMap, createFollowSelected, createMap, DEFAULT_VIEW } from "./map/map";
-import { createMarkerLayer, planeBoxSize } from "./map/markers";
+import { createPlaneLayer, planeBoxSize } from "./map/planes";
 import { declutterCellDeg, pickNonOverlapping, type Candidate } from "./map/declutter";
 import { isSmallScreen } from "./map/screen";
 import { pickInitialView } from "./map/initialView";
@@ -87,9 +87,11 @@ const LIVE_CACHE_FRESH_MS = 3_000;
 const VIEW_CACHE_MAX_AGE_MS = 5 * 60_000;
 const VIEW_CACHE_MAX_ENTRIES = 40;
 
-// The most planes drawn at once. Every one is a DOM marker that a zoom step
-// re-places, so this is what keeps zooming smooth (a phone has a fraction of
-// a laptop's CPU). Above it, planes are spaced further apart rather than cut off.
+// The most planes drawn at once. Planes are drawn by the map (map/planes.ts),
+// but every render projects the candidates and re-sends the drawn set to the
+// map's worker, and a dense view past a few hundred icons reads as noise
+// anyway; a phone has a fraction of a laptop's CPU. Above it, planes are
+// spaced further apart rather than cut off.
 const MAX_DRAWN_MARKERS = 300;
 const MAX_DRAWN_MARKERS_SMALL_SCREEN = 150;
 
@@ -284,11 +286,9 @@ function boot(): void {
     const keep = pickNonOverlapping(points, fixed, planeBoxSize(zoom), isSmallScreen() ? MAX_DRAWN_MARKERS_SMALL_SCREEN : MAX_DRAWN_MARKERS);
     const drawn = candidates.filter((p) => keep.has(p.icao24));
 
-    markerLayer.update({
+    planeLayer.update({
       unselected: drawn,
       selectedPos,
-      zoom,
-      exiting: false,
       // Reports older than 2 h are drawn dimmed (see map/staleness.ts).
       dimmed: agedIds(drawn, nowMs),
     });
@@ -763,11 +763,13 @@ function boot(): void {
   }
 
   // ---- map + layers ----
+  // Layer order on the map, bottom to top: basemap, airports, the trail,
+  // planes, the selected plane (each module adds its layers below the next).
   const mapController = createMap(mapRoot, handleViewportChange, (ready) => store.set("basemapReady", ready));
   const map = mapController.map;
   // ?debug: a read-only diagnostics panel for a misbehaving device (ui/debugOverlay.ts).
   if (new URLSearchParams(location.search).has("debug")) import("./ui/debugOverlay").then((m) => m.mountDebugOverlay(map)).catch(() => {});
-  const markerLayer = createMarkerLayer(map, handleSelectAircraft);
+  const planeLayer = createPlaneLayer(map, handleSelectAircraft);
   const routeLayer = createRouteLayer(map);
   const followSelected = createFollowSelected(map, (offScreen) => store.set("planeOffScreen", offScreen));
 

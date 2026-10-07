@@ -1,5 +1,5 @@
-import type { Page, Route } from "@playwright/test";
-import type { FlightMap } from "../src/map/map";
+import { expect, type Page, type Route } from "@playwright/test";
+import type { FlightMap, RenderedAirport, RenderedPlane } from "../src/map/map";
 import liveFixture from "./fixtures/live.json" with { type: "json" };
 import history4aad15 from "./fixtures/history-4aad15.json" with { type: "json" };
 import history4d00d9 from "./fixtures/history-4d00d9.json" with { type: "json" };
@@ -184,32 +184,84 @@ export async function setMapView(page: Page, lat: number, lon: number, zoom: num
   );
 }
 
+/** A plane as drawn, in page pixels (the space boundingBox() and page.mouse use). */
+export type PagePlane = RenderedPlane;
+
 /**
- * Fixture live data packs 30 real aircraft into a small area, so more
- * than one `.plane-icon` is typically on screen at once — `.first()`
- * picks whichever happens to be first in DOM order, not the one under
- * test. This finds the marker actually closest to a given aircraft's true
- * projected position instead.
+ * Every plane the map's plane layers drew in view (map/planes.ts), with x/y
+ * in page pixels: what a user sees, not what the app holds in memory.
  */
-export async function findMarkerNear(page: Page, lat: number, lon: number): Promise<import("@playwright/test").Locator> {
+export async function renderedPlanes(page: Page): Promise<PagePlane[]> {
+  return withMap(page, (map) => {
+    const rect = map.getContainer().getBoundingClientRect();
+    return map.renderedPlanes().map((p) => ({ ...p, x: p.x + rect.x, y: p.y + rect.y }));
+  });
+}
+
+/** Every airport the airport layer drew in view (ui/defaultAirports.ts), x/y in page pixels. */
+export async function renderedAirports(page: Page): Promise<RenderedAirport[]> {
+  return withMap(page, (map) => {
+    const rect = map.getContainer().getBoundingClientRect();
+    return map.renderedAirports().map((a) => ({ ...a, x: a.x + rect.x, y: a.y + rect.y }));
+  });
+}
+
+/** Waits until at least `min` planes are drawn. */
+export async function waitForPlanes(page: Page, min = 1, timeout = 10_000): Promise<void> {
+  await expect.poll(async () => (await renderedPlanes(page)).length, { timeout, message: "planes drawn" }).toBeGreaterThanOrEqual(min);
+}
+
+/** Clicks the page at (x, y) once nothing (the boot screen) can intercept it. */
+async function clickAt(page: Page, x: number, y: number): Promise<void> {
+  await page.locator(".boot-screen:not(.boot-screen--hidden)").waitFor({ state: "detached", timeout: 15_000 });
+  await page.mouse.click(x, y);
+}
+
+/** A drawn plane, looked up afresh on every call (it moves, and a selection flies the map to it). */
+export interface PlaneTarget {
+  icao24: string;
+  /** Its icon box as drawn, page pixels. */
+  boundingBox(): Promise<{ x: number; y: number; width: number; height: number } | null>;
+  /** Clicks its centre, like a user would. */
+  click(): Promise<void>;
+}
+
+export function planeTarget(page: Page, icao24: string): PlaneTarget {
+  const find = async () => (await renderedPlanes(page)).find((p) => p.icao24 === icao24) ?? null;
+  return {
+    icao24,
+    async boundingBox() {
+      const p = await find();
+      return p ? { x: p.x - p.size / 2, y: p.y - p.size / 2, width: p.size, height: p.size } : null;
+    },
+    async click() {
+      const p = await find();
+      if (!p) throw new Error(`plane ${icao24} is not drawn`);
+      await clickAt(page, p.x, p.y);
+    },
+  };
+}
+
+/**
+ * Fixture live data packs 30 real aircraft into a small area, so more than
+ * one plane is typically on screen at once. This finds the drawn plane
+ * closest to a given aircraft's true projected position.
+ */
+export async function findMarkerNear(page: Page, lat: number, lon: number): Promise<PlaneTarget> {
   const expected = await getMapLatLngToContainerPoint(page, lat, lon);
-  const markers = page.locator(".plane-icon");
-  const count = await markers.count();
-  let bestIndex = -1;
-  let bestDist = Infinity;
-  for (let i = 0; i < count; i++) {
-    const box = await markers.nth(i).boundingBox();
-    if (!box) continue;
-    const dx = box.x + box.width / 2 - expected.x;
-    const dy = box.y + box.height / 2 - expected.y;
-    const dist = Math.hypot(dx, dy);
-    if (dist < bestDist) {
-      bestDist = dist;
-      bestIndex = i;
-    }
+  let best: PagePlane | null = null;
+  for (const p of await renderedPlanes(page)) {
+    if (!best || Math.hypot(p.x - expected.x, p.y - expected.y) < Math.hypot(best.x - expected.x, best.y - expected.y)) best = p;
   }
-  if (bestIndex === -1) throw new Error(`No .plane-icon marker found near (${lat}, ${lon})`);
-  return markers.nth(bestIndex);
+  if (!best) throw new Error(`No plane drawn near (${lat}, ${lon})`);
+  return planeTarget(page, best.icao24);
+}
+
+/** Clicks the drawn airport with this code (its dot), like a user would. */
+export async function clickAirport(page: Page, code: string): Promise<void> {
+  const ap = (await renderedAirports(page)).find((a) => a.code === code);
+  if (!ap) throw new Error(`airport ${code} is not drawn`);
+  await clickAt(page, ap.x, ap.y);
 }
 
 /** The selected aircraft's trail as drawn: the route source's line, [lat, lon] per vertex (map/route.ts). */

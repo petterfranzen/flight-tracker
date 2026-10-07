@@ -4,8 +4,7 @@ import { basemapOptions, whenBasemapReady } from "./maplibreBasemap";
 import { minZoomFor, WORLD_BOUNDS } from "./zoomLimits";
 
 // Zoom a selection's flyTo treats as "close enough" to stop zooming
-// further in — also markers.ts's FULL_SIZE_ZOOM, kept in sync by hand
-// (no shared constant module for a single shared number).
+// further in.
 export const SELECTED_MIN_ZOOM = 10;
 
 // Where the map starts when nothing better is known (see map/initialView.ts,
@@ -57,6 +56,44 @@ export interface LatLon {
 
 export type MapEvent = keyof MapEventType;
 
+/** Something clickable drawn in the map's own layers (a plane, an airport) under a pointer. */
+export interface MapHit {
+  /** Lower wins outright (the selected plane is 0); within a priority the nearest wins. */
+  priority: number;
+  /** From the pointer to the target's anchor, px. */
+  distance: number;
+  activate(): void;
+}
+
+/** A plane the plane layers drew (map/planes.ts), for tests. Pixels are container pixels. */
+export interface RenderedPlane {
+  icao24: string;
+  callsign: string;
+  lat: number;
+  lon: number;
+  x: number;
+  y: number;
+  /** Side of its icon box as drawn at the current zoom, px. */
+  size: number;
+  selected: boolean;
+  dimmed: boolean;
+  /** The callsign chip shown next to it (the selected plane only), else null. */
+  label: string | null;
+  /** It faded in when it arrived (a small batch), rather than just appearing. */
+  fadedIn: boolean;
+  /** performance.now() when it was last added to the drawn set: unchanged while it stays drawn. */
+  drawnSince: number;
+}
+
+/** An airport the airport layer drew (ui/defaultAirports.ts), for tests. */
+export interface RenderedAirport {
+  code: string;
+  lat: number;
+  lon: number;
+  x: number;
+  y: number;
+}
+
 /**
  * The one MapLibre map, in app units: zoom as above, positions as
  * [lat, lon] / {lat, lon}, pixels relative to the map container. Tests reach
@@ -66,6 +103,12 @@ export class FlightMap {
   readonly gl: MaplibreMap;
   private styleReady = false;
   private styleQueue: (() => void)[] = [];
+  private hitTargets: ((p: Point) => MapHit | null)[] = [];
+
+  /** Test hook (tests/helpers.ts renderedPlanes): every plane drawn in view. Set by map/planes.ts. */
+  renderedPlanes: () => RenderedPlane[] = () => [];
+  /** Test hook: every airport drawn in view. Set by ui/defaultAirports.ts. */
+  renderedAirports: () => RenderedAirport[] = () => [];
 
   constructor(gl: MaplibreMap) {
     this.gl = gl;
@@ -73,6 +116,34 @@ export class FlightMap {
       this.styleReady = true;
       for (const fn of this.styleQueue.splice(0)) fn();
     });
+    // Planes and airports are drawn by the map itself, so clicks and hovers
+    // are hit-tested here (MapLibre fires no click after a drag).
+    gl.on("click", (e) => this.hitAt(e.point)?.activate());
+    let hoverFrame = 0;
+    let hoverAt: Point = { x: 0, y: 0 };
+    gl.on("mousemove", (e) => {
+      hoverAt = e.point;
+      if (hoverFrame) return;
+      hoverFrame = requestAnimationFrame(() => {
+        hoverFrame = 0;
+        gl.getCanvas().style.cursor = this.hitAt(hoverAt) ? "pointer" : "";
+      });
+    });
+  }
+
+  /** Registers a hit test for something the map draws (see MapHit). */
+  addHitTarget(fn: (p: Point) => MapHit | null): void {
+    this.hitTargets.push(fn);
+  }
+
+  /** What a click at this container pixel would select, if anything. */
+  hitAt(p: Point): MapHit | null {
+    let best: MapHit | null = null;
+    for (const target of this.hitTargets) {
+      const hit = target(p);
+      if (hit && (!best || hit.priority < best.priority || (hit.priority === best.priority && hit.distance < best.distance))) best = hit;
+    }
+    return best;
   }
 
   /** Runs `fn` once the style can take sources and layers (at once if it already can). */

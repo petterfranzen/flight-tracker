@@ -1,5 +1,6 @@
 import type { GeoJSONSource } from "maplibre-gl";
 import type { FlightMap } from "./map";
+import { PLANES_LAYER } from "./planes";
 
 const ROUTE_FALLBACK_COLOR = "#3ce0ff"; // --color-accent in FlightMap.css, if it can't be read
 const ROUTE_SPLINE_SEGMENTS = 8;
@@ -41,12 +42,12 @@ export interface RouteLayerHandle {
 }
 
 export const ROUTE_SOURCE_ID = "flight-route";
-const ROUTE_LAYER_ID = "flight-route-line";
+export const ROUTE_LAYER_ID = "flight-route-line";
 
 /**
  * The selected aircraft's trail: a GeoJSON source and a dashed line layer
- * on top of the basemap (planes are DOM markers above the canvas, so the
- * selected one is always drawn over it). The colour is the theme's accent
+ * on top of the basemap, under the plane layers (map/planes.ts), so the
+ * selected plane is always drawn over it. The colour is the theme's accent
  * token, read once from the CSS.
  */
 export function createRouteLayer(map: FlightMap): RouteLayerHandle {
@@ -62,14 +63,17 @@ export function createRouteLayer(map: FlightMap): RouteLayerHandle {
     if (added) return;
     const color = getComputedStyle(map.getContainer()).getPropertyValue("--color-accent").trim() || ROUTE_FALLBACK_COLOR;
     map.gl.addSource(ROUTE_SOURCE_ID, { type: "geojson", data: data(latest) });
-    map.gl.addLayer({
-      id: ROUTE_LAYER_ID,
-      type: "line",
-      source: ROUTE_SOURCE_ID,
-      layout: { "line-cap": "round", "line-join": "round" },
-      // Dashes are in line widths: 6 px on, 8 px off at 3 px wide.
-      paint: { "line-color": color, "line-width": 3, "line-dasharray": [2, 8 / 3] },
-    });
+    map.gl.addLayer(
+      {
+        id: ROUTE_LAYER_ID,
+        type: "line",
+        source: ROUTE_SOURCE_ID,
+        layout: { "line-cap": "round", "line-join": "round" },
+        // Dashes are in line widths: 6 px on, 8 px off at 3 px wide.
+        paint: { "line-color": color, "line-width": 3, "line-dasharray": [2, 8 / 3] },
+      },
+      map.gl.getLayer(PLANES_LAYER) ? PLANES_LAYER : undefined,
+    );
     added = true;
   });
 

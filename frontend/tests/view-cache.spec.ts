@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { mockFlightApi, setMapView, withMap } from "./helpers";
+import { mockFlightApi, renderedPlanes, setMapView, waitForPlanes, withMap } from "./helpers";
 
 // main.ts's view cache (map/viewCache.ts): going back to a view the map has
 // just shown draws from memory, without a request and without fading the
@@ -25,11 +25,16 @@ test.describe("view cache", () => {
     expect(clusterRequests.length).toBeGreaterThanOrEqual(afterFirstVisit);
     const afterSecondVisit = clusterRequests.length;
 
-    await page.locator(".plane-icon").evaluate((el) => el.setAttribute("data-seen", "1"));
+    await waitForPlanes(page);
+    const before = (await renderedPlanes(page)).find((p) => p.icao24 === "ov0001")!;
     await setMapView(page, 59.3, 18.0, 6);
     // Drawn straight from the cache — already there before the debounce
-    // would even have fired a request, and the same marker (not rebuilt, so no fade-in on the way back).
-    await expect(page.locator('.plane-icon[data-seen="1"]')).toHaveCount(1, { timeout: 100 });
+    // would even have fired a request (250 ms; the map draws a frame or two
+    // after its data is set), and the same plane, drawn without a break
+    // since before (not removed and re-added, so no fade-in on the way back).
+    await expect
+      .poll(async () => (await renderedPlanes(page)).find((p) => p.icao24 === "ov0001")?.drawnSince, { timeout: 200, intervals: [10] })
+      .toBe(before.drawnSince);
     // Past the viewport debounce (250 ms) but before the background prefetch (600 ms after settling).
     await page.waitForTimeout(500);
     expect(clusterRequests.length).toBe(afterSecondVisit);
@@ -44,7 +49,7 @@ test.describe("view cache", () => {
     await page.goto("/");
     await page.waitForSelector(".map-container");
     await setMapView(page, 59.65, 17.9, 8);
-    await page.waitForSelector(".plane-icon", { timeout: 10_000 });
+    await waitForPlanes(page);
     await page.waitForTimeout(600);
     expect(liveRequests).toHaveLength(1);
 
