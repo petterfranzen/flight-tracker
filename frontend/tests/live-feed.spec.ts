@@ -26,7 +26,11 @@ test.describe("live feed reconnect", () => {
     expect(connects.length).toBeGreaterThanOrEqual(3);
     expect(connects.length).toBeLessThanOrEqual(5); // 1s, 2s, 4s (±25%) — not a 1s storm
     const gaps = connects.slice(1).map((c, i) => c.at - connects[i].at);
-    for (let i = 1; i < gaps.length; i++) expect(gaps[i]).toBeGreaterThan(gaps[i - 1]);
+    // The k-th retry waits 1s * 2^k, jittered ±25%, so each gap is at least
+    // 0.75 * 2^k s. A busy main thread (the map booting in software WebGL)
+    // only ever makes a timer late, so lower bounds hold where comparing one
+    // gap with the next did not: a late first retry outgrew an early second.
+    gaps.forEach((gap, k) => expect(gap, `gap ${k + 1}`).toBeGreaterThanOrEqual(750 * 2 ** k));
 
     const origin = new URL(page.url());
     expect(connects[0].url).toBe(`ws://${origin.host}/ws/live`);
