@@ -169,8 +169,8 @@ overview thinning stays, and the layers draw exactly the kept set with
 
 - `npx tsc --noEmit -p .`, `npm run build`: clean.
 - `npm run test:e2e`: 99 passed (production-build.spec.ts included).
-- `npm run test:perf`: 2 passed, three runs, budget unchanged (200 ms).
-  Max long task 167 / 195 / 126 ms at slowdown 1, select 265-335 ms.
+- `npm run test:perf`: 2 passed, four runs, budget unchanged (200 ms).
+  Max long task 167 / 195 / 126 / 171 ms at slowdown 1, select 265-335 ms.
   For comparison, main measured in the same session: 114 / 139 / 121 ms,
   select 259-389 ms. The map now repaints more often (about 170 frames in
   that run against 78), which is what a GL layer updating its data does;
