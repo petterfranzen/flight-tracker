@@ -204,20 +204,20 @@ export async function centre(page: Page): Promise<{ lat: number; lon: number }> 
   return mapEval(page, "const c = map.getCenter(); return { lat: c.lat, lon: c.lon };");
 }
 
-/** Every plane marker on screen: its callsign and where it's drawn. */
-export async function planeMarkers(page: Page): Promise<{ callsign: string; lat: number; lon: number; exiting: boolean }[]> {
+/** Every plane drawn on screen (the map's plane layers, map/planes.ts): its callsign and where it's drawn. */
+export async function planeMarkers(page: Page): Promise<{ icao24: string; callsign: string; lat: number; lon: number; x: number; y: number }[]> {
   return mapEval(
     page,
-    `const out = [];
-     document.querySelectorAll(".plane-marker").forEach((root) => {
-       const el = root.querySelector(".plane-icon");
-       if (!el || !root._marker) return;
-       const ll = root._marker.getLngLat();
-       if (!map.contains(ll.lat, ll.lng)) return;
-       out.push({ callsign: el.querySelector(".plane-icon-label")?.textContent ?? "", lat: ll.lat, lon: ll.lng, exiting: el.classList.contains("plane-icon--exiting") });
-     });
-     return out;`,
+    `const rect = map.getContainer().getBoundingClientRect();
+     return map.renderedPlanes()
+       .filter((p) => map.contains(p.lat, p.lon))
+       .map((p) => ({ icao24: p.icao24, callsign: p.callsign, lat: p.lat, lon: p.lon, x: p.x + rect.x, y: p.y + rect.y }));`,
   );
+}
+
+/** Waits until planes are drawn on screen. */
+export async function waitForPlanes(page: Page): Promise<void> {
+  await expect.poll(async () => (await planeMarkers(page)).length, { timeout: 10_000, message: "planes drawn" }).toBeGreaterThan(0);
 }
 
 /** The selected aircraft's trail is on screen: the GL line layer has rendered features in view (map/route.ts). */
@@ -238,31 +238,47 @@ export async function routeExtentPx(page: Page): Promise<{ width: number; height
   })()`);
 }
 
-/** Clicks the plane marker labelled `callsign`, like a user would. */
+/**
+ * Whether a click at the plane's centre would select it: the map's own hit
+ * test picks it (not a neighbour), and no panel sits on top of the map there.
+ */
+async function clickable(page: Page, m: { icao24: string; x: number; y: number }): Promise<boolean> {
+  return mapEval(
+    page,
+    `const rect = map.getContainer().getBoundingClientRect();
+     const x = ${m.x}, y = ${m.y};
+     if (document.elementFromPoint(x, y) !== map.gl.getCanvas()) return false;
+     return map.hitAt({ x: x - rect.x, y: y - rect.y })?.id === "plane:${m.icao24}";`,
+  );
+}
+
+/** Clicks the plane labelled `callsign`, like a user would. */
 export async function clickPlane(page: Page, callsign: string): Promise<void> {
-  await page.locator(".plane-icon:not(.plane-icon--exiting)", { has: page.locator(".plane-icon-label", { hasText: new RegExp(`^${callsign}$`) }) }).click();
+  const m = (await planeMarkers(page)).find((p) => p.callsign === callsign);
+  expect(m, `${callsign} is not drawn`).toBeTruthy();
+  expect(await clickable(page, m!), `${callsign} is covered by something else`).toBe(true);
+  await page.mouse.click(m!.x, m!.y);
 }
 
 /** A plane on screen that isn't covered by another one, to click. */
 export async function pickVisiblePlane(page: Page, near?: { lat: number; lon: number }): Promise<string> {
-  const markers = (await planeMarkers(page)).filter((m) => !m.exiting && m.callsign);
+  const markers = (await planeMarkers(page)).filter((m) => m.callsign);
   expect(markers.length, "no plane markers on screen to pick from").toBeGreaterThan(0);
   const sorted = near ? markers.sort((a, b) => Math.hypot(a.lat - near.lat, a.lon - near.lon) - Math.hypot(b.lat - near.lat, b.lon - near.lon)) : markers;
-  for (const m of sorted) {
-    const loc = page.locator(".plane-icon:not(.plane-icon--exiting)", { has: page.locator(".plane-icon-label", { hasText: new RegExp(`^${m.callsign}$`) }) });
-    const box = await loc.boundingBox();
-    if (!box) continue;
-    // The topmost element at its centre must be this marker (not a neighbour or a panel).
-    const hit = await page.evaluate(
-      ({ x, y, cs }) => {
-        const el = document.elementFromPoint(x, y)?.closest(".plane-icon");
-        return el?.querySelector(".plane-icon-label")?.textContent === cs;
-      },
-      { x: box.x + box.width / 2, y: box.y + box.height / 2, cs: m.callsign },
-    );
-    if (hit) return m.callsign;
-  }
+  for (const m of sorted) if (await clickable(page, m)) return m.callsign;
   throw new Error("every plane marker on screen is covered by something else");
+}
+
+/** Clicks the airport with this IATA code (its dot), like a user would. */
+export async function clickAirport(page: Page, code: string): Promise<void> {
+  const ap = await mapEval<{ x: number; y: number } | null>(
+    page,
+    `const rect = map.getContainer().getBoundingClientRect();
+     const a = map.renderedAirports().find((a) => a.code === ${JSON.stringify(code)});
+     return a ? { x: a.x + rect.x, y: a.y + rect.y } : null;`,
+  );
+  expect(ap, `airport ${code} is not drawn`).toBeTruthy();
+  await page.mouse.click(ap!.x, ap!.y);
 }
 
 // ---- health ----
@@ -319,7 +335,6 @@ export async function checkHealth(page: Page, h: Harness, step: string): Promise
   const wrong: string[] = [];
   const zoomedOut = (await mapEval<number>(page, "return map.getZoom();")) < OVERVIEW_ZOOM_BELOW;
   for (const m of await planeMarkers(page)) {
-    if (m.exiting) continue;
     const a = h.world.byCallsign(m.callsign);
     if (!a) {
       wrong.push(`${m.callsign}: not an aircraft in the world`);

@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { mockFlightApi, setMapView } from "./helpers";
+import { mockFlightApi, renderedPlanes, setMapView } from "./helpers";
 
 // Zoomed out, the server sends a thinned-out set of active aircraft (one per
 // half-icon cell, first discovered first; FlightController.liveOverview with
@@ -27,7 +27,7 @@ test.describe("zoomed-out overview", () => {
     await page.goto("/");
     await page.waitForSelector(".map-container", { timeout: 10_000 });
     await setMapView(page, 59.3, 18.0, 6);
-    await expect(page.locator(".plane-icon")).toHaveCount(3, { timeout: 5_000 });
+    await expect.poll(async () => (await renderedPlanes(page)).length, { timeout: 5_000 }).toBe(3);
     await expect(page.locator(".cluster-icon")).toHaveCount(0);
   });
 
@@ -58,11 +58,11 @@ test.describe("zoomed-out overview", () => {
     await page.goto("/");
     await page.waitForSelector(".map-container", { timeout: 10_000 });
     await setMapView(page, 59.3, 18.0, 6);
-    const marker = page.locator(".plane-icon");
-    await expect(marker).toHaveCount(1, { timeout: 5_000 });
-    const before = await marker.boundingBox();
+    const x = async () => (await renderedPlanes(page)).find((p) => p.icao24 === "ov0001")?.x ?? 0;
+    await expect.poll(async () => (await renderedPlanes(page)).length, { timeout: 5_000 }).toBe(1);
+    const before = await x();
 
     push({ ...first, latitude: 59.2, longitude: 19.4, observedAt: new Date(Date.now() + 5_000).toISOString() });
-    await expect.poll(async () => (await marker.boundingBox())?.x ?? 0, { timeout: 5_000 }).toBeGreaterThan(before!.x + 20);
+    await expect.poll(x, { timeout: 5_000 }).toBeGreaterThan(before + 20);
   });
 });

@@ -123,7 +123,7 @@ export function mount(map: FlightMap, onAirportSelect: (ap: AirportSelection) =>
       const distance = Math.hypot(at.x - pt.x, at.y - pt.y);
       if (best && best.distance <= distance) continue;
       const { code, name } = f.properties as { code: string; name: string };
-      best = { priority: 1, distance, activate: () => onAirportSelect({ code, name, lat, lon }) };
+      best = { id: `airport:${code}`, priority: 1, distance, activate: () => onAirportSelect({ code, name, lat, lon }) };
     }
     return best;
   });

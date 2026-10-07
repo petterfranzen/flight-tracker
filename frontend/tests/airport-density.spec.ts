@@ -1,12 +1,12 @@
 import { expect, test } from "@playwright/test";
-import { mockFlightApi, setMapView, withMap } from "./helpers";
+import { clickAirport, mockFlightApi, renderedAirports, setMapView, withMap } from "./helpers";
 
 // Two real entries from worldMapData.ts, picked because they sit close
 // together in southern Sweden but at opposite ends of Natural Earth's
 // significance ranking:
 //   ARN (Arlanda)    rank 2 — drawn at every zoom
 //   NRK (Norrköping) rank 8 — only once you're zoomed well in
-// Kept in sync by hand with MAX_RANK_BY_ZOOM in DefaultAirports.tsx,
+// Kept in sync by hand with MAX_RANK_BY_ZOOM in ui/defaultAirports.ts,
 // the same way clustering.spec.ts tracks CLUSTER_FETCH_MAX_ZOOM.
 const ALWAYS_SHOWN = "ARN";
 const MINOR = "NRK";
@@ -15,27 +15,18 @@ const SWEDEN = { lat: 59.0, lon: 17.0 };
 const WORLD_ZOOM = 3;
 const CLOSE_ZOOM = 9;
 
-function airportLabel(page: import("@playwright/test").Page, code: string) {
-  return page.locator(".default-airport-icon-label", { hasText: new RegExp(`^${code}$`) });
+/** How many times the airport with this code is drawn in view (the map's airport layer). */
+async function drawnCount(page: import("@playwright/test").Page, code: string): Promise<number> {
+  return (await renderedAirports(page)).filter((a) => a.code === code).length;
 }
 
-/**
- * The marker itself, not its label. The label carries `pointer-events:
- * none` (DefaultAirports.css) so it never blocks dragging the map, which
- * means clicking it lands on the map container underneath — only the dot
- * is a real click target.
- */
-function airportMarker(page: import("@playwright/test").Page, code: string) {
-  return page
-    .locator(".default-airport-icon")
-    .filter({ has: page.locator(".default-airport-icon-label", { hasText: new RegExp(`^${code}$`) }) });
-}
-
-function allAirports(page: import("@playwright/test").Page) {
-  return page.locator(".default-airport-icon");
-}
+const drawn = (page: import("@playwright/test").Page, code: string) => expect.poll(() => drawnCount(page, code), { timeout: 10_000 });
 
 test.describe("airport density by zoom", () => {
+  // Only airports in view are drawn: tall enough that ARN and NRK are both on
+  // screen around SWEDEN at CLOSE_ZOOM (ARN is ~460 px north of the centre).
+  test.use({ viewport: { width: 1280, height: 1000 } });
+
   test("zoomed out, only the most significant airports are drawn", async ({ page }) => {
     await mockFlightApi(page);
     await page.goto("/");
@@ -43,10 +34,10 @@ test.describe("airport density by zoom", () => {
 
     await setMapView(page, SWEDEN.lat, SWEDEN.lon, WORLD_ZOOM);
 
-    await expect(airportLabel(page, ALWAYS_SHOWN)).toHaveCount(1);
+    await drawn(page, ALWAYS_SHOWN).toBe(1);
     // The whole point of the change: a minor regional airport is noise at
     // world scale, and 878 of them made the map unreadable.
-    await expect(airportLabel(page, MINOR)).toHaveCount(0);
+    await drawn(page, MINOR).toBe(0);
   });
 
   test("zooming in reveals the smaller ones", async ({ page }) => {
@@ -55,13 +46,13 @@ test.describe("airport density by zoom", () => {
     await page.waitForSelector(".map-container", { timeout: 10_000 });
 
     await setMapView(page, SWEDEN.lat, SWEDEN.lon, WORLD_ZOOM);
-    await expect(airportLabel(page, MINOR)).toHaveCount(0);
+    await drawn(page, MINOR).toBe(0);
 
     await setMapView(page, SWEDEN.lat, SWEDEN.lon, CLOSE_ZOOM);
 
-    await expect(airportLabel(page, MINOR)).toHaveCount(1);
+    await drawn(page, MINOR).toBe(1);
     // The major one never disappears on the way in.
-    await expect(airportLabel(page, ALWAYS_SHOWN)).toHaveCount(1);
+    await drawn(page, ALWAYS_SHOWN).toBe(1);
   });
 
   test("the drawn count grows as you zoom in", async ({ page }) => {
@@ -69,33 +60,21 @@ test.describe("airport density by zoom", () => {
     await page.goto("/");
     await page.waitForSelector(".map-container", { timeout: 10_000 });
 
-    // Airports are only drawn near the viewport, so the raw DOM count shrinks
-    // as the view narrows. Count inside one fixed geographic box instead (the
-    // view at the closest zoom), which every zoom's viewport contains.
+    // Only airports in view are drawn, so the raw count shrinks as the view
+    // narrows. Count inside one fixed geographic box instead (the view at the
+    // closest zoom), which every zoom's viewport contains.
     await setMapView(page, SWEDEN.lat, SWEDEN.lon, CLOSE_ZOOM);
     const box = await withMap(page, (map) => {
       const b = map.getBounds();
       return { s: b.latMin, n: b.latMax, w: b.lonMin, e: b.lonMax };
     });
-    const countInBox = (page2: import("@playwright/test").Page) =>
-      withMap(
-        page2,
-        (_map, box: { s: number; n: number; w: number; e: number }) => {
-          let n = 0;
-          document.querySelectorAll<HTMLElement & { _marker?: { getLngLat(): { lat: number; lng: number } } }>(".default-airport-icon").forEach((el) => {
-            if (!el._marker) return;
-            const ll = el._marker.getLngLat();
-            if (ll.lat >= box.s && ll.lat <= box.n && ll.lng >= box.w && ll.lng <= box.e) n++;
-          });
-          return n;
-        },
-        box,
-      );
+    const countInBox = async (page2: import("@playwright/test").Page) =>
+      (await renderedAirports(page2)).filter((a) => a.lat >= box.s && a.lat <= box.n && a.lon >= box.w && a.lon <= box.e).length;
 
     const counts: number[] = [];
     for (const zoom of [WORLD_ZOOM, 5, 7, CLOSE_ZOOM]) {
       await setMapView(page, SWEDEN.lat, SWEDEN.lon, zoom);
-      await expect.poll(async () => allAirports(page).count(), { timeout: 10_000 }).toBeGreaterThan(0);
+      await expect.poll(async () => (await renderedAirports(page)).length, { timeout: 10_000 }).toBeGreaterThan(0);
       counts.push(await countInBox(page));
     }
 
@@ -107,23 +86,22 @@ test.describe("airport density by zoom", () => {
     expect(counts[counts.length - 1]).toBeGreaterThan(counts[0]);
   });
 
-  test("only airports near the viewport get a DOM marker, and panning brings in the next ones", async ({ page }) => {
+  test("only airports in view are drawn, and panning brings in the next ones", async ({ page }) => {
     await mockFlightApi(page);
     await page.goto("/");
     await page.waitForSelector(".map-container", { timeout: 10_000 });
 
     // At the closest zoom every one of the 878 airports passes the rank rule;
-    // each is a DOM marker the map re-places on every frame, so only those
-    // near the view may exist. (Was 878 markers for a view of ~10.)
+    // only those in view may be drawn. (Was 878 DOM markers for a view of ~10.)
     await setMapView(page, SWEDEN.lat, SWEDEN.lon, CLOSE_ZOOM);
-    await expect(airportLabel(page, ALWAYS_SHOWN)).toHaveCount(1);
-    await expect.poll(async () => allAirports(page).count(), { timeout: 10_000 }).toBeLessThan(100);
-    await expect(airportLabel(page, "LHR")).toHaveCount(0);
+    await drawn(page, ALWAYS_SHOWN).toBe(1);
+    await expect.poll(async () => (await renderedAirports(page)).length, { timeout: 10_000 }).toBeLessThan(100);
+    await drawn(page, "LHR").toBe(0);
 
-    // Panning far away swaps the set (moveend, not just zoomend).
+    // Panning far away swaps the set.
     await setMapView(page, 51.47, -0.45, CLOSE_ZOOM);
-    await expect(airportLabel(page, "LHR")).toHaveCount(1);
-    await expect(airportLabel(page, ALWAYS_SHOWN)).toHaveCount(0);
+    await drawn(page, "LHR").toBe(1);
+    await drawn(page, ALWAYS_SHOWN).toBe(0);
   });
 
   test("an airport stays clickable once it appears", async ({ page }) => {
@@ -132,13 +110,13 @@ test.describe("airport density by zoom", () => {
     await page.waitForSelector(".map-container", { timeout: 10_000 });
 
     await setMapView(page, SWEDEN.lat, SWEDEN.lon, CLOSE_ZOOM);
-    await expect(airportMarker(page, MINOR)).toHaveCount(1);
-    await airportMarker(page, MINOR).click();
+    await drawn(page, MINOR).toBe(1);
+    await clickAirport(page, MINOR);
 
-    // Filtering rebuilds the marker list on every zoom, so this guards
-    // the thing most likely to break silently: a marker that renders but
-    // has lost its click handler. The dossier heading is the airport's
-    // name (FlightMap.tsx), falling back to its code.
+    // The layer's zoom filter changes what is drawn on every zoom, so this
+    // guards the thing most likely to break silently: an airport that renders
+    // but no longer hit-tests. The dossier heading is the airport's name,
+    // falling back to its code.
     await expect(page.getByRole("heading", { name: /Norrk|NRK/ })).toBeVisible({ timeout: 10_000 });
   });
 });

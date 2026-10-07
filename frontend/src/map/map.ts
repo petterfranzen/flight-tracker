@@ -58,6 +58,8 @@ export type MapEvent = keyof MapEventType;
 
 /** Something clickable drawn in the map's own layers (a plane, an airport) under a pointer. */
 export interface MapHit {
+  /** What it is, e.g. "plane:4aad15" or "airport:ARN" (for tests and debugging). */
+  id: string;
   /** Lower wins outright (the selected plane is 0); within a priority the nearest wins. */
   priority: number;
   /** From the pointer to the target's anchor, px. */

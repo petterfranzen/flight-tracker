@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { mockFlightApi, setMapView } from "./helpers";
+import { mockFlightApi, planeTarget, renderedPlanes, setMapView } from "./helpers";
 
 // The server keeps landed aircraft for 48 h, so the map can show a plane whose
 // last report is hours old, or one that has since left a stand under whatever
@@ -24,14 +24,10 @@ async function serve(page: Page, list: ReturnType<typeof marker>[]) {
 
 /** Callsigns of every drawn plane, split into dimmed and live. */
 async function drawn(page: Page, expectedCount: number) {
-  await expect.poll(async () => page.locator(".plane-icon").count(), { timeout: 10_000 }).toBe(expectedCount);
-  return page.evaluate(() => {
-    const labels = (sel: string) =>
-      Array.from(document.querySelectorAll(sel))
-        .map((e) => e.querySelector(".plane-icon-label")!.textContent!)
-        .sort();
-    return { dimmed: labels(".plane-icon--dimmed"), live: labels(".plane-icon:not(.plane-icon--dimmed)") };
-  });
+  await expect.poll(async () => (await renderedPlanes(page)).length, { timeout: 10_000 }).toBe(expectedCount);
+  const planes = await renderedPlanes(page);
+  const callsigns = (dimmed: boolean) => planes.filter((p) => p.dimmed === dimmed).map((p) => p.callsign).sort();
+  return { dimmed: callsigns(true), live: callsigns(false) };
 }
 
 test.describe("dimming stale aircraft", () => {
@@ -76,11 +72,9 @@ test.describe("dimming stale aircraft", () => {
     await serve(page, [marker("aaaaaa", "AGED1", 0, 180), marker("bbbbbb", "FRESH1", 0.0011, 1)]);
     await setMapView(page, BASE.lat, BASE.lon, 16);
     await drawn(page, 2);
-    // A forced click lands on whatever is on top: wait out the boot screen.
-    await page.waitForSelector("body:not(:has(.boot-screen))", { timeout: 15_000 });
-    await page.locator(".plane-icon", { hasText: "AGED1" }).click({ force: true });
-    await expect(page.locator(".plane-icon--selected")).toHaveCount(1);
-    await expect(page.locator(".plane-icon--selected")).not.toHaveClass(/plane-icon--dimmed/);
-    await expect(page.locator(".plane-icon--selected .plane-icon-label")).toHaveText("AGED1");
+    await planeTarget(page, "aaaaaa").click();
+    const selected = async () => (await renderedPlanes(page)).filter((p) => p.selected);
+    await expect.poll(async () => (await selected()).map((p) => p.label), { timeout: 10_000 }).toEqual(["AGED1"]);
+    expect((await selected())[0].dimmed).toBe(false);
   });
 });

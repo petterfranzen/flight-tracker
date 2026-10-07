@@ -69,7 +69,15 @@ function byZoom(fn: (size: number) => number | number[], mobile: boolean, select
   return ["interpolate", ["linear"], ["zoom"], ...stops] as unknown as ExpressionSpecification;
 }
 
-const iconSize = (mobile: boolean, selected: boolean) => byZoom((size) => size / IMAGE_PX, mobile, selected);
+// Data-driven in form only (every feature's `scale` is absent: 1). A plain
+// zoom expression is capped by MapLibre at its value one level above the
+// tile's (what collision boxes are built for), which drew the planes that
+// shrink past z14 a level early; a feature-and-zoom size is not capped.
+const iconSize = (mobile: boolean, selected: boolean): ExpressionSpecification => {
+  const expr = byZoom((size) => size / IMAGE_PX, mobile, selected) as unknown[];
+  for (let i = 4; i < expr.length; i += 2) expr[i] = ["*", expr[i], ["coalesce", ["get", "scale"], 1]];
+  return expr as ExpressionSpecification;
+};
 // The callsign chip starts 4 px right of the selected plane's box.
 const labelTranslate = (mobile: boolean) => byZoom((size) => [size / 2 + 4, 0], mobile, true);
 
@@ -432,7 +440,7 @@ export function createPlaneLayer(map: FlightMap, onSelect: (p: LiveMarker) => vo
       const dy = Math.abs(at.y - pt.y);
       const reach = selected ? halfSelected : half;
       if (dx > reach || dy > reach) continue;
-      const hit: MapHit = { priority: selected ? 0 : 1, distance: Math.hypot(dx, dy), activate: () => onSelect(latest.get(id) ?? p) };
+      const hit: MapHit = { id: `plane:${id}`, priority: selected ? 0 : 1, distance: Math.hypot(dx, dy), activate: () => onSelect(latest.get(id) ?? p) };
       if (!best || hit.priority < best.priority || (hit.priority === best.priority && hit.distance < best.distance)) best = hit;
     }
     return best;

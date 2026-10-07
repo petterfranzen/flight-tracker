@@ -3,6 +3,7 @@ import { AIRPORTS } from "./world";
 import {
   POSITION_TOLERANCE_DEG,
   centre,
+  clickAirport,
   clickPlane,
   drag,
   expectCentredOn,
@@ -12,6 +13,7 @@ import {
   routeDrawn,
   routeExtentPx,
   startHarness,
+  waitForPlanes,
   wheelZoom,
   zoomLevel,
 } from "./harness";
@@ -33,7 +35,7 @@ async function boot(page: import("@playwright/test").Page) {
   await page.goto("/");
   await page.waitForSelector(".boot-screen");
   await page.waitForSelector(".boot-screen--hidden, body:not(:has(.boot-screen))", { timeout: 20_000 });
-  await page.waitForSelector(".plane-icon", { timeout: 10_000 });
+  await waitForPlanes(page);
 }
 
 test.describe("user journeys @scenario", () => {
@@ -54,7 +56,7 @@ test.describe("user journeys @scenario", () => {
     expect((await planeMarkers(page)).length, "individual planes at z10 near ARN").toBeGreaterThan(0);
     await h.step("pan around zoomed in", () => drag(page, -250, 120));
     await h.step("zoom back out to the overview", () => wheelZoom(page, -4));
-    await expect(page.locator(".plane-icon").first()).toBeVisible();
+    await waitForPlanes(page);
     await expect(page.locator(".cluster-icon")).toHaveCount(0);
     await h.step("zoom in again: drawn from cache, still correct", () => wheelZoom(page, 4));
     expect(h.restarts, "restart only on page load (status says the window is open, so never)").toBe(0);
@@ -161,7 +163,7 @@ test.describe("user journeys @scenario", () => {
 
     await h.step("watch live updates for 10s", () => page.waitForTimeout(10_000));
     await h.step("open the Schiphol airport dossier", async () => {
-      await page.locator(".default-airport-icon", { hasText: "AMS" }).first().click();
+      await clickAirport(page, "AMS");
       await expect(page.locator("#airport-details-panel-heading")).toBeVisible();
     });
     await expect(page.locator(".details-panel")).toContainText("AMS / EHAM");
