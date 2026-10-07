@@ -16,7 +16,7 @@ test.describe("aircraft marker positions", () => {
   test("renders a marker at its aircraft's true geographic position", async ({ page }) => {
     await mockFlightApi(page);
     await page.goto("/");
-    await page.waitForSelector(".leaflet-container", { timeout: 10_000 });
+    await page.waitForSelector(".map-container", { timeout: 10_000 });
 
     const target = LIVE_FIXTURE.find((p) => p.icao24 === "4aad15")!;
     await setMapView(page, target.latitude, target.longitude, 11);
@@ -36,7 +36,7 @@ test.describe("aircraft marker positions", () => {
   test("marker stays pinned to its true position across a pan", async ({ page }) => {
     await mockFlightApi(page);
     await page.goto("/");
-    await page.waitForSelector(".leaflet-container", { timeout: 10_000 });
+    await page.waitForSelector(".map-container", { timeout: 10_000 });
 
     const target = LIVE_FIXTURE.find((p) => p.icao24 === "4aad15")!;
     await setMapView(page, target.latitude, target.longitude, 11);
@@ -67,7 +67,7 @@ test.describe("aircraft marker positions", () => {
     // stomped the trail B had already loaded.
     await mockFlightApi(page, { historyDelayMs: { "4aad15": 800, "4d00d9": 50 } });
     await page.goto("/");
-    await page.waitForSelector(".leaflet-container", { timeout: 10_000 });
+    await page.waitForSelector(".map-container", { timeout: 10_000 });
 
     const aircraftA = LIVE_FIXTURE.find((p) => p.icao24 === "4aad15")!;
     const aircraftB = LIVE_FIXTURE.find((p) => p.icao24 === "4d00d9")!;
@@ -91,28 +91,15 @@ test.describe("aircraft marker positions", () => {
     // Still showing B, not reverted to A by the late response.
     await expect(page.getByText("ICAO24 4D00D9")).toBeVisible();
 
-    const path = page.locator("path.route-line");
-    await expect(path).toBeVisible();
+    await expect.poll(() => getRoutePathScreenPoints(page).then((p) => p.length), { timeout: 5_000 }).toBeGreaterThan(0);
     const points = await getRoutePathScreenPoints(page);
     const bHistory = HISTORIES["4d00d9"];
     const aHistory = HISTORIES["4aad15"];
-    expect(points.length).toBeGreaterThan(0);
 
-    // The trail's last point is always on screen (it's the aircraft's
-    // current position, and the view is centered on it) — Leaflet clips a
-    // Polyline's rendering to a padded viewport, so an *earlier* history
-    // point can legitimately fall outside that and get dropped from the
-    // rendered path entirely (this flight's real history spans hundreds of
-    // km; not every point is anywhere near the current view). Asserting
-    // on the first rendered point would be asserting on clipping behavior,
-    // not on which aircraft's data is showing — the last point is the
-    // reliable, always-on-screen check for that.
-    // Slightly looser than the marker-position tests' 3px: Leaflet's
-    // Polyline simplification (smoothFactor) can nudge the last rendered
-    // vertex a few px from the raw point when it's part of a simplified
-    // segment — real rounding, not the kind of gap a wrong-aircraft splice
-    // would produce (which reads in the tens to thousands of px, as the
-    // pre-fix version of this exact assertion did).
+    // The trail's last point is the aircraft's latest real report (the view
+    // is centred near it). The line is a smoothed spline through every
+    // report, so its last vertex is that report exactly; a wrong-aircraft
+    // splice reads in the tens to thousands of px.
     const lastExpected = await getMapLatLngToContainerPoint(page, bHistory[bHistory.length - 1].latitude, bHistory[bHistory.length - 1].longitude);
     const last = points[points.length - 1];
     expect(Math.abs(last.x - lastExpected.x)).toBeLessThan(10);

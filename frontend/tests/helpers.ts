@@ -1,5 +1,5 @@
 import type { Page, Route } from "@playwright/test";
-import type L from "leaflet";
+import type { FlightMap } from "../src/map/map";
 import liveFixture from "./fixtures/live.json" with { type: "json" };
 import history4aad15 from "./fixtures/history-4aad15.json" with { type: "json" };
 import history4d00d9 from "./fixtures/history-4d00d9.json" with { type: "json" };
@@ -114,59 +114,56 @@ export async function mockFlightApi(
   await page.routeWebSocket("**/ws/live", () => {});
 }
 
-// Finds the mounted Leaflet map instance, in-page. Vanilla TS (no React
-// fiber tree to walk anymore — see map/map.ts's createMap, which stashes
-// the instance directly on its own container element the moment it's
-// created: `container._leaflet_map = map`). That's a narrower surface than
-// the old React-fiber DFS this replaced (a single property read on a
-// single element, versus walking the whole component tree with a duck-typed
-// guess), and it's scoped to `.leaflet-container` specifically so it can
-// never accidentally match an unrelated element. Injected as a string (see
-// withMap below) so it runs inside the page, not this Node process.
+// Finds the map adapter, in-page: map/map.ts's createMap stashes it on its
+// own container element the moment it's created (`container._flightMap`),
+// scoped to `.map-container` so it can never accidentally match an
+// unrelated element. Injected as a string (see withMap below) so it runs
+// inside the page, not this Node process.
 const FIND_MAP_SNIPPET = `
-  function __findLeafletMap() {
-    const el = document.querySelector(".leaflet-container");
-    const map = el && el._leaflet_map;
-    if (!map) throw new Error("Leaflet map instance not found (.leaflet-container has no _leaflet_map)");
+  function __findFlightMap() {
+    const el = document.querySelector(".map-container");
+    const map = el && el._flightMap;
+    if (!map) throw new Error("map not found (.map-container has no _flightMap)");
     return map;
   }
 `;
 
 /**
- * Runs `fn(map, ...args)` inside the page against the live Leaflet map
- * instance. `fn` is serialized via toString() and reconstructed in-page —
- * it must be self-contained (only reference `map` and `args`, never
- * variables closed over from the Node-side test file, which don't survive
- * that serialization) and `args` must be JSON-serializable.
+ * Runs `fn(map, ...args)` inside the page against the live map adapter
+ * (FlightMap: app zoom units, [lat, lon] positions, container pixels).
+ * `fn` is serialized via toString() and reconstructed in-page — it must be
+ * self-contained (only reference `map` and `args`, never variables closed
+ * over from the Node-side test file, which don't survive that
+ * serialization) and `args` must be JSON-serializable.
  */
-export async function withMap<T, A extends unknown[]>(page: Page, fn: (map: L.Map, ...args: A) => T, ...args: A): Promise<T> {
+export async function withMap<T, A extends unknown[]>(page: Page, fn: (map: FlightMap, ...args: A) => T, ...args: A): Promise<Awaited<T>> {
   return page.evaluate(
     ({ snippet, fnStr, args }) => {
       // eslint-disable-next-line no-eval
-      const findMap = eval(`(function() { ${snippet}; return __findLeafletMap(); })`);
+      const findMap = eval(`(function() { ${snippet}; return __findFlightMap(); })`);
       const map = findMap();
       // eslint-disable-next-line no-eval
       const action = eval(`(${fnStr})`);
       return action(map, ...args);
     },
     { snippet: FIND_MAP_SNIPPET, fnStr: fn.toString(), args },
-  );
+  ) as Promise<Awaited<T>>;
 }
 
 /**
  * The expected on-*page* pixel position for a lat/lon, matching what
  * Playwright's boundingBox() returns for elements (viewport-relative).
- * map.latLngToContainerPoint() alone isn't that — it's relative to the map
- * container's own top-left, which sits below the app header, so comparing
- * it directly against a marker's boundingBox() is off by exactly that
- * header's height. Adding the container's own page rect here, in-page,
- * converts it to the same coordinate space in one step.
+ * map.project() alone isn't that — it's relative to the map container's
+ * own top-left, which can sit below other chrome, so comparing it directly
+ * against a marker's boundingBox() would be off by that offset. Adding the
+ * container's own page rect here, in-page, converts it to the same
+ * coordinate space in one step.
  */
 export async function getMapLatLngToContainerPoint(page: Page, lat: number, lon: number): Promise<{ x: number; y: number }> {
   return withMap(
     page,
     (map, lat: number, lon: number) => {
-      const pt = map.latLngToContainerPoint([lat, lon]);
+      const pt = map.project(lat, lon);
       const rect = map.getContainer().getBoundingClientRect();
       return { x: pt.x + rect.x, y: pt.y + rect.y };
     },
@@ -179,7 +176,7 @@ export async function setMapView(page: Page, lat: number, lon: number, zoom: num
   await withMap(
     page,
     (map, lat: number, lon: number, zoom: number) => {
-      map.setView([lat, lon], zoom, { animate: false });
+      map.setView([lat, lon], zoom);
     },
     lat,
     lon,
@@ -215,39 +212,30 @@ export async function findMarkerNear(page: Page, lat: number, lon: number): Prom
   return markers.nth(bestIndex);
 }
 
-/**
- * A Leaflet SVG path's `d` attribute is written in the renderer's own
- * user-space, not page pixels — its numbers only equal on-screen position
- * when the map's internal pixel origin and pane offset both happen to be
- * zero. That's not guaranteed: setView's `{animate: false}` still takes
- * Leaflet's "quick pan" shortcut for a same-zoom move that's smaller than
- * the viewport (_tryAnimatedPan → _rawPanBy), which shifts the map pane via
- * a CSS transform instead of resetting the pixel origin, leaving raw `d`
- * coordinates offset from the true screen position by exactly that pan
- * delta — the path itself still renders in the right place on screen
- * (Leaflet composes the same compensating transform back in via the pane/
- * renderer container), only a naive read of `d` disagrees with it. Feeding
- * each parsed vertex through the path element's own screenCTM applies
- * every ancestor transform Leaflet actually used, so it matches reality
- * regardless of which internal code path produced it.
- */
-export async function getRoutePathScreenPoints(page: Page): Promise<{ x: number; y: number }[]> {
-  return page.evaluate(() => {
-    const path = document.querySelector("path.route-line") as SVGPathElement | null;
-    if (!path || !path.ownerSVGElement) return [];
-    const ctm = path.getScreenCTM();
-    if (!ctm) return [];
-    const nums = (path.getAttribute("d") ?? "").match(/-?\d+(\.\d+)?/g)?.map(Number) ?? [];
-    const points: { x: number; y: number }[] = [];
-    for (let i = 0; i + 1 < nums.length; i += 2) {
-      const pt = path.ownerSVGElement.createSVGPoint();
-      pt.x = nums[i];
-      pt.y = nums[i + 1];
-      const screenPt = pt.matrixTransform(ctm);
-      points.push({ x: screenPt.x, y: screenPt.y });
-    }
-    return points;
+/** The selected aircraft's trail as drawn: the route source's line, [lat, lon] per vertex (map/route.ts). */
+export async function getRouteVertices(page: Page): Promise<{ lat: number; lon: number }[]> {
+  return withMap(page, async (map) => {
+    const source = map.gl.getSource("flight-route") as { getData(): Promise<{ geometry?: { coordinates: [number, number][] } }> } | undefined;
+    if (!source) return [];
+    const data = await source.getData();
+    return (data.geometry?.coordinates ?? []).map(([lon, lat]) => ({ lat, lon }));
   });
+}
+
+/** The trail's vertices in page pixels (the space boundingBox() uses). */
+export async function getRoutePathScreenPoints(page: Page): Promise<{ x: number; y: number }[]> {
+  const vertices = await getRouteVertices(page);
+  return withMap(
+    page,
+    (map, vertices: { lat: number; lon: number }[]) => {
+      const rect = map.getContainer().getBoundingClientRect();
+      return vertices.map((v) => {
+        const pt = map.project(v.lat, v.lon);
+        return { x: pt.x + rect.x, y: pt.y + rect.y };
+      });
+    },
+    vertices,
+  );
 }
 
 /** Serves OpenFreeMap's tileset as empty: the basemap draws its background colour and nothing else. */

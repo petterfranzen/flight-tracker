@@ -42,9 +42,9 @@ html, body {
   font-family: inherit;
 }
 
-/* Leaflet's own stylesheet sets a Helvetica/Arial stack on the container,
+/* MapLibre's own stylesheet sets a Helvetica/Arial stack on the container,
    which wins for the attribution and anything inside the map. */
-.app-shell .leaflet-container {
+.app-shell .maplibregl-map {
   font-family: inherit;
 }
 
@@ -588,11 +588,10 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: center;
-  /* Percentage, not a fixed px size: fills whatever size Leaflet applies
-     to the marker itself (ICON_SIZE or SELECTED_ICON_SIZE, set via
-     iconSize in planeIcon()), so selected vs. unselected sizing lives in
-     one place instead of needing a duplicate, separately-sized copy of
-     every rule in this file. */
+  /* Percentage, not a fixed px size: fills whatever size markers.ts gives
+     the .plane-icon box (per zoom, larger when selected), so selected vs.
+     unselected sizing lives in one place instead of needing a duplicate,
+     separately-sized copy of every rule in this file. */
   width: 100%;
   height: 100%;
   color: var(--color-marker);
@@ -620,22 +619,12 @@ html, body {
   opacity: 0.75;
 }
 
-/* No `position: relative` rule here (deliberately — this class doubles as
-   Leaflet's own marker-icon element): .leaflet-marker-icon in Leaflet's
-   base CSS already sets `position: absolute` on this same element, which
-   Leaflet's marker positioning (transform + negative margin, both applied
-   to this element) depends on completely. Any non-static `position`
-   already gives .plane-icon-halo below a valid positioning context, so
-   overriding it to `relative` here bought nothing — it only sat later in
-   the cascade than leaflet.css and silently won, which took the marker
-   out of the absolute-positioned scheme Leaflet expects entirely.
-   Real-world effect: marker (and trail) position drifted with however
-   many *other* markers happened to be in the DOM at the time, since the
-   element was participating in normal document flow instead of being
-   pinned by transform — the actual mechanism behind aircraft "jumping"
-   and "disappearing" on pan/zoom reported this session. Confirmed via
-   Playwright against captured real API data: this one-line removal is
-   what took the marker-position tests from off by 50-125px to exact. */
+/* The positioning context for the halo and the callsign label. MapLibre
+   positions the bare wrapper around this box (.plane-marker, see
+   map/markers.ts), so nothing here competes with its transform. */
+.plane-icon {
+  position: relative;
+}
 
 /* Sits behind the glyph, unrotated, so it reads as a halo around the
    marker regardless of which way the plane itself is pointing. */
@@ -992,8 +981,9 @@ html, body {
   }
 
   /* Sized to its content (the dossier is laid out to fit without
-     scrolling), capped so the map always keeps a strip above it. Leaflet
-     keeps the plane centred as the map's height changes (invalidateSize). */
+     scrolling), capped so the map always keeps a strip above it. The
+     map keeps the plane centred as its height changes (see
+     createFollowSelected in map/map.ts). */
   .details-panel--expanded {
     height: auto;
     max-height: 78vh;
@@ -1005,8 +995,8 @@ html, body {
     max-height: 78dvh;
   }
 
-  /* Live report (with screenshot): ScaleBar (see ScaleBar.tsx) is a real
-     Leaflet control anchored to the *map's own* bottom-left corner, which
+  /* Live report (with screenshot): ScaleBar (see ui/scaleBar.ts) is a map
+     control anchored to the *map's own* bottom-left corner, which
      is only 33.333vh tall in this state — barely more than
      .left-overlay-stack's own fixed ~232px (16px top offset + four 48px
      icons + gaps), which is anchored to the *viewport* instead and
@@ -1015,7 +1005,7 @@ html, body {
      (.details-panel, no --expanded) leaves the map 66.667vh tall — comfortably
      clear of the icon stack — so this only needs scoping to the
      expanded state specifically, not sheets in general. */
-  .app-shell:has(.details-panel--expanded) .leaflet-bottom.leaflet-left {
+  .app-shell:has(.details-panel--expanded) .maplibregl-ctrl-bottom-left {
     display: none;
   }
 
@@ -1124,7 +1114,8 @@ html, body {
 
   /* Attribution is legally required but needn't be big: smaller type,
      tighter padding, and capped width so it wraps to a slim strip. */
-  .leaflet-control-attribution {
+  .maplibregl-ctrl-attrib {
+    box-sizing: border-box;
     font-size: 9px;
     line-height: 1.3;
     padding: 0 4px;

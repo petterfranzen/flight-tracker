@@ -1,7 +1,7 @@
 # CLAUDE.md
 
 Agent brief for flight-tracker: one Spring Boot JVM (REST, WebSocket and
-the pollers), SQLite, and a vanilla TypeScript + Leaflet frontend bundled
+the pollers), SQLite, and a vanilla TypeScript + MapLibre GL frontend bundled
 into the same jar. `README.md` covers the architecture.
 
 ## Invariants
@@ -28,10 +28,17 @@ into the same jar. `README.md` covers the architecture.
 - **`/api/health` `version` is the git SHA** (`-Dgit.sha` → build-info →
   `HealthController`). `deploy/hetzner/deploy.sh` waits for exactly that
   value before declaring a deploy healthy.
-- **Theme tokens** live in `frontend/src/components/FlightMap.css`: `:root`
-  for the default theme and `:root[data-theme="cyberpunk"]` for the reskin.
-  `frontend/src/theme.ts` switches between them. Use the `var(--…)`
-  tokens; don't add new hard-coded colours.
+- **One theme, cyberpunk.** Its tokens live in
+  `frontend/src/components/FlightMap.css` (`:root[data-theme="cyberpunk"]`
+  over the `:root` defaults; `index.html` sets the attribute). Use the
+  `var(--…)` tokens; don't add new hard-coded colours.
+- **The map is one MapLibre GL map** behind the `FlightMap` adapter in
+  `frontend/src/map/map.ts` (no Leaflet). The app speaks Leaflet zoom units
+  (256 px tiles): app zoom = MapLibre zoom + 1. Only the adapter converts;
+  nothing else touches the GL map's zoom. Zoom is fractional, so round it
+  wherever it is a key or an index (view caches, prefetch, icon sizes);
+  requests use whole levels. Tests reach the adapter as `._flightMap` on
+  `.map-container` (`tests/helpers.ts` `withMap`).
 
 ## Environment
 

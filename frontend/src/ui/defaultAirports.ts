@@ -1,12 +1,13 @@
-import L from "leaflet";
+import { Marker } from "maplibre-gl";
+import type { FlightMap } from "../map/map";
 import { AIRPORTS } from "../worldMapData";
 import type { AirportSelection } from "../types/flight";
 import "../components/DefaultAirports.css";
 
-// Above Leaflet's own markerPane (z-index 600), so an airport is never
-// hidden underneath a plane or cluster mark that happens to sit on it.
-const AIRPORT_PANE = "airport-overlay";
-const AIRPORT_PANE_Z_INDEX = "650";
+// Above every plane marker (markers.ts stacks planes at 0-2), so an airport
+// is never hidden underneath a plane that happens to sit on it.
+const AIRPORT_Z_INDEX = "3";
+const ICON_PX = 12;
 
 /**
  * How far down Natural Earth's significance ranking to draw, per zoom
@@ -22,8 +23,8 @@ const MAX_RANK_BY_ZOOM = [2, 2, 2, 2, 3, 4, 6, 7, 8];
 const VIEW_PAD = 0.5;
 
 /**
- * Every airport on the map, on both themes: a dot plus its IATA code,
- * clickable to open the airport dossier. Loaded lazily (see map.ts) so
+ * Every airport on the map: a dot plus its IATA code, clickable to open
+ * the airport dossier. Loaded lazily (see main.ts) so
  * worldMapData.ts's ~160KB stays out of the main bundle.
  *
  * Markers are reused by AIRPORTS index (stable across re-renders; a
@@ -34,57 +35,39 @@ const VIEW_PAD = 0.5;
  *
  * Only airports inside the viewport (plus VIEW_PAD) get a DOM marker. From
  * zoom 5 up the rank rule alone allowed 284 -> 878 markers worldwide, almost
- * all far off screen; Leaflet restyles and transforms every marker on each
- * zoom frame, so that alone made zooming stutter.
+ * all far off screen, and every marker is re-placed on each frame of a pan
+ * or zoom.
  */
-export function mount(map: L.Map, onAirportSelect: (ap: AirportSelection) => void): () => void {
-  if (!map.getPane(AIRPORT_PANE)) {
-    const pane = map.createPane(AIRPORT_PANE);
-    pane.style.zIndex = AIRPORT_PANE_Z_INDEX;
-  }
-
-  const markers = new Map<number, L.Marker>();
+export function mount(map: FlightMap, onAirportSelect: (ap: AirportSelection) => void): () => void {
+  const markers = new Map<number, Marker>();
 
   function render(): void {
-    const zoom = map.getZoom();
-    const level = Math.max(0, Math.floor(zoom));
+    const level = Math.max(0, Math.floor(map.getZoom()));
     const maxRank = level >= MAX_RANK_BY_ZOOM.length ? Infinity : MAX_RANK_BY_ZOOM[level];
     const seen = new Set<number>();
-    const view = map.getBounds().pad(VIEW_PAD);
+    const b = map.getBounds();
+    const padLat = (b.latMax - b.latMin) * VIEW_PAD;
+    const padLon = (b.lonMax - b.lonMin) * VIEW_PAD;
 
     AIRPORTS.forEach((ap, index) => {
       if (ap.rank > maxRank) return;
-      if (!view.contains([ap.pos[1], ap.pos[0]])) return;
+      const [lon, lat] = ap.pos;
+      if (lat < b.latMin - padLat || lat > b.latMax + padLat || lon < b.lonMin - padLon || lon > b.lonMax + padLon) return;
       seen.add(index);
       if (markers.has(index)) return;
-      const icon = new L.DivIcon({
-        className: "default-airport-icon",
-        html: `<span class="default-airport-icon-dot" aria-hidden="true"></span><span class="default-airport-icon-label">${ap.code}</span>`,
-        iconSize: [12, 12],
-        iconAnchor: [6, 6],
+      const el = document.createElement("div");
+      el.className = "default-airport-icon";
+      el.style.width = `${ICON_PX}px`;
+      el.style.height = `${ICON_PX}px`;
+      el.style.zIndex = AIRPORT_Z_INDEX;
+      el.innerHTML = `<span class="default-airport-icon-dot" aria-hidden="true"></span><span class="default-airport-icon-label">${ap.code}</span>`;
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        onAirportSelect({ code: ap.code, name: ap.name, lat, lon });
       });
-      const marker = L.marker([ap.pos[1], ap.pos[0]], {
-        icon,
-        pane: AIRPORT_PANE,
-        zIndexOffset: 1000,
-        // Leaflet's keyboard module makes every marker focusable (tabindex)
-        // and, via Map.Keyboard._panOnFocus, auto-pans the map whenever a
-        // marker receives DOM focus — including the focus a browser gives
-        // any tabbable element on an ordinary mousedown/click, not just real
-        // Tab-key navigation. Confirmed live: clicking an airport marker
-        // triggered that auto-pan, and it mis-measured this icon as
-        // off-screen (tiny 12x12 DivIcon with two absolutely-positioned,
-        // overflowing children — not the size/shape panInside's bounds
-        // check expects), yanking the view and the marker out from under
-        // the click before it could register, so the dossier never opened.
-        // Aircraft/cluster markers don't hit this (larger, simpler icons,
-        // no overflowing children) so they keep keyboard focus. Airports
-        // are still fully clickable by mouse/touch; only Tab-key reachability
-        // is traded away here.
-        keyboard: false,
-      });
-      marker.on("click", () => onAirportSelect({ code: ap.code, name: ap.name, lat: ap.pos[1], lon: ap.pos[0] }));
-      marker.addTo(map);
+      const marker = new Marker({ element: el, anchor: "center" }).setLngLat([lon, lat]).addTo(map.gl);
+      // Test-only hook, as on plane markers (see tests/airport-density.spec.ts).
+      (el as unknown as { _marker: Marker })._marker = marker;
       markers.set(index, marker);
     });
 

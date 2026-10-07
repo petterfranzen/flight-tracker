@@ -19,7 +19,7 @@ async function serve(page: Page, list: ReturnType<typeof marker>[]) {
   // Later registration wins over the shared mock's /live.
   await page.route(/\/api\/flights\/live(\?|$)/, (route) => route.fulfill({ json: list }));
   await page.goto("/");
-  await page.waitForSelector(".leaflet-container", { timeout: 10_000 });
+  await page.waitForSelector(".map-container", { timeout: 10_000 });
 }
 
 /** Callsigns of every drawn plane, split into dimmed and live. */
@@ -76,6 +76,8 @@ test.describe("dimming stale aircraft", () => {
     await serve(page, [marker("aaaaaa", "AGED1", 0, 180), marker("bbbbbb", "FRESH1", 0.0011, 1)]);
     await setMapView(page, BASE.lat, BASE.lon, 16);
     await drawn(page, 2);
+    // A forced click lands on whatever is on top: wait out the boot screen.
+    await page.waitForSelector("body:not(:has(.boot-screen))", { timeout: 15_000 });
     await page.locator(".plane-icon", { hasText: "AGED1" }).click({ force: true });
     await expect(page.locator(".plane-icon--selected")).toHaveCount(1);
     await expect(page.locator(".plane-icon--selected")).not.toHaveClass(/plane-icon--dimmed/);

@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { findMarkerNear, LIVE_FIXTURE, mockFlightApi, setMapView, withMap } from "./helpers";
+import { findMarkerNear, getRouteVertices, LIVE_FIXTURE, mockFlightApi, setMapView } from "./helpers";
 
 // The server dead-reckons an aircraft forward from its last real report and
 // sends that estimate with the report's own observedAt. The trail must not
@@ -9,14 +9,7 @@ import { findMarkerNear, LIVE_FIXTURE, mockFlightApi, setMapView, withMap } from
 
 const plane = LIVE_FIXTURE.find((p) => p.icao24 === "4d00d9")!;
 
-const routeVertices = (page: import("@playwright/test").Page) =>
-  withMap(page, (map) => {
-    for (const layer of Object.values((map as unknown as { _layers: Record<string, unknown> })._layers)) {
-      const l = layer as { options?: { className?: string }; getLatLngs?: () => { lat: number; lng: number }[] };
-      if (l.options?.className === "route-line" && l.getLatLngs) return l.getLatLngs().map((p) => ({ lat: p.lat, lon: p.lng }));
-    }
-    return [];
-  });
+const routeVertices = (page: import("@playwright/test").Page) => getRouteVertices(page);
 
 test("estimated positions move the end of the trail instead of piling up in it", async ({ page }) => {
   await page.clock.install(); // before the page starts its timers; time still flows until we jump it
@@ -28,7 +21,7 @@ test("estimated positions move the end of the trail instead of piling up in it",
     return route.fulfill({ json: { ...plane, latitude: plane.latitude - 0.02 * polls, longitude: plane.longitude + 0.01 * polls } });
   });
   await page.goto("/");
-  await page.waitForSelector(".leaflet-container", { timeout: 10_000 });
+  await page.waitForSelector(".map-container", { timeout: 10_000 });
   await setMapView(page, plane.latitude, plane.longitude, 11);
   await page.waitForSelector(".plane-icon:not(.plane-icon--exiting)", { timeout: 10_000 });
   await page.waitForTimeout(500);

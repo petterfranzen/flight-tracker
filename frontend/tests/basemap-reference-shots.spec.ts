@@ -20,7 +20,7 @@ test("cyberpunk basemap reference shots", async ({ page }) => {
   await mockFlightApi(page);
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto("/");
-  await page.waitForSelector(".leaflet-container");
+  await page.waitForSelector(".map-container");
   await page.waitForTimeout(6000);
 
   for (const v of VIEWS) {

@@ -41,7 +41,7 @@ export interface Harness {
 }
 
 const mapEval = <T>(page: Page, fn: string): Promise<T> =>
-  page.evaluate(`(() => { const map = document.querySelector(".leaflet-container")._leaflet_map; ${fn} })()`);
+  page.evaluate(`(() => { const map = document.querySelector(".map-container")._flightMap; ${fn} })()`);
 
 export async function startHarness(page: Page, testInfo: TestInfo): Promise<Harness> {
   const world = new World();
@@ -171,17 +171,18 @@ export async function settle(page: Page): Promise<void> {
   await page.waitForTimeout(1_200);
 }
 
-export async function wheelZoom(page: Page, steps: number, at?: { x: number; y: number }): Promise<void> {
-  const box = (await page.locator(".leaflet-container").boundingBox())!;
+/** Zooms `levels` whole levels with the mouse wheel: two 100 px notches a level (see WHEEL_ZOOM_RATE in map/map.ts). */
+export async function wheelZoom(page: Page, levels: number, at?: { x: number; y: number }): Promise<void> {
+  const box = (await page.locator(".map-container").boundingBox())!;
   await page.mouse.move(at?.x ?? box.x + box.width / 2, at?.y ?? box.y + box.height / 2);
-  for (let i = 0; i < Math.abs(steps); i++) {
-    await page.mouse.wheel(0, steps > 0 ? -200 : 200); // one notch (>= WHEEL_STEP_PX, see map/wheelZoom.ts) is one level; 450 ms clears the step cooldown
-    await page.waitForTimeout(450);
+  for (let i = 0; i < Math.abs(levels) * 2; i++) {
+    await page.mouse.wheel(0, levels > 0 ? -100 : 100);
+    await page.waitForTimeout(450); // a pause between notches, so each is its own wheel gesture of exactly half a level
   }
 }
 
 export async function drag(page: Page, dx: number, dy: number): Promise<void> {
-  const box = (await page.locator(".leaflet-container").boundingBox())!;
+  const box = (await page.locator(".map-container").boundingBox())!;
   const x = box.x + box.width * 0.6;
   const y = box.y + box.height / 2;
   await page.mouse.move(x, y);
@@ -200,23 +201,41 @@ export async function zoomLevel(page: Page): Promise<number> {
 }
 
 export async function centre(page: Page): Promise<{ lat: number; lon: number }> {
-  return mapEval(page, "const c = map.getCenter(); return { lat: c.lat, lon: c.lng };");
+  return mapEval(page, "const c = map.getCenter(); return { lat: c.lat, lon: c.lon };");
 }
 
 /** Every plane marker on screen: its callsign and where it's drawn. */
 export async function planeMarkers(page: Page): Promise<{ callsign: string; lat: number; lon: number; exiting: boolean }[]> {
   return mapEval(
     page,
-    `const out = []; const view = map.getBounds();
-     map.eachLayer((l) => {
-       const el = l.getElement && l.getElement();
-       if (!el || !el.classList.contains("plane-icon") || !l.getLatLng) return;
-       const ll = l.getLatLng();
-       if (!view.contains(ll)) return;
+    `const out = [];
+     document.querySelectorAll(".plane-marker").forEach((root) => {
+       const el = root.querySelector(".plane-icon");
+       if (!el || !root._marker) return;
+       const ll = root._marker.getLngLat();
+       if (!map.contains(ll.lat, ll.lng)) return;
        out.push({ callsign: el.querySelector(".plane-icon-label")?.textContent ?? "", lat: ll.lat, lon: ll.lng, exiting: el.classList.contains("plane-icon--exiting") });
      });
      return out;`,
   );
+}
+
+/** The selected aircraft's trail is on screen: the GL line layer has rendered features in view (map/route.ts). */
+export async function routeDrawn(page: Page): Promise<boolean> {
+  return mapEval(page, `return map.gl.getLayer("flight-route-line") != null && map.gl.queryRenderedFeatures({ layers: ["flight-route-line"] }).length > 0;`);
+}
+
+/** The on-screen size of the trail, px: the bounding box of its vertices that fall inside the map. */
+export async function routeExtentPx(page: Page): Promise<{ width: number; height: number }> {
+  return page.evaluate(`(async () => {
+    const map = document.querySelector(".map-container")._flightMap;
+    const data = await map.gl.getSource("flight-route").getData();
+    const size = map.getSize();
+    const pts = data.geometry.coordinates.map(([lon, lat]) => map.project(lat, lon)).filter((p) => p.x >= 0 && p.y >= 0 && p.x <= size.x && p.y <= size.y);
+    if (pts.length === 0) return { width: 0, height: 0 };
+    const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
+    return { width: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys) };
+  })()`);
 }
 
 /** Clicks the plane marker labelled `callsign`, like a user would. */
@@ -249,7 +268,7 @@ export async function pickVisiblePlane(page: Page, near?: { lat: number; lon: nu
 // ---- health ----
 
 async function landFraction(page: Page): Promise<number> {
-  const box = (await page.locator(".leaflet-container").boundingBox())!;
+  const box = (await page.locator(".map-container").boundingBox())!;
   const png = await page.screenshot({ clip: { x: box.x + box.width * 0.55, y: box.y + box.height * 0.15, width: box.width * 0.3, height: box.height * 0.7 } });
   return page.evaluate(
     async ({ b64, rgb }) => {
@@ -290,9 +309,7 @@ export async function checkHealth(page: Page, h: Harness, step: string): Promise
     // tile in view to have finished processing.
     await expect
       .poll(() => mapEval<string>(page, `
-          let gl = null;
-          map.eachLayer((l) => { if (l.getMaplibreMap) gl = l.getMaplibreMap(); });
-          if (!gl) return "no MapLibre layer";
+          const gl = map.gl;
           if (!gl.isStyleLoaded()) return "style not loaded";
           return gl.areTilesLoaded() ? "ok" : "tiles still loading";`), { message: `[${step}] basemap tiles`, timeout: 5_000 })
       .toBe("ok");

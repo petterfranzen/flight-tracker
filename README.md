@@ -15,7 +15,7 @@ to keep in sync.
 ## Stack
 - **Backend**: Java 21 / Spring Boot, one process — REST, WebSocket and the scheduled `FlightDataAgent` pollers all in one JVM (no Spring profiles). Live aircraft state (`LiveStateStore`) is an in-memory map, not a DB table; only the persistent position history and a couple of restart-surviving counters (`app_state`) touch the database. Real-time updates to WebSocket clients go through an in-process Spring event (`PositionsPersistedEvent`), not cross-process coordination.
 - **Database**: SQLite (WAL mode), one append-only `flight_position` table plus `aircraft`/`airport`/`app_state`
-- **Frontend**: Vanilla TypeScript + Leaflet (MapLibre for the basemap), Vite — no framework
+- **Frontend**: Vanilla TypeScript + MapLibre GL (one map: basemap, DOM plane markers, trail), Vite — no framework
 
 ## Run it locally
 
@@ -102,7 +102,7 @@ these are ordinary, fairly useful log lines.
 - `backend/.../service/live/LiveStateStore.java` — in-memory live aircraft state (upserts, landed-streak logic, estimate clearing).
 - `backend/.../service/UsageService.java` — turns historic positions into distance/airtime figures.
 - `backend/.../service/enrichment/CallsignRouteService.java` — origin/destination per *callsign* (what a flight is), resolved from adsbdb by a paced background walk over every live callsign; backs the dossier's route and the airport search.
-- `frontend/src/main.ts` — boot/wiring; `frontend/src/map/` — Leaflet map, markers, overlap hiding (`declutter.ts`: where planes overlap, only the first discovered is drawn; there are no clusters), route; `frontend/src/ui/` — one module per UI component; design tokens are at the top of each component's adjacent `.css`.
+- `frontend/src/main.ts` — boot/wiring; `frontend/src/map/` — the MapLibre map and its adapter (`map.ts`, app zoom units), markers, overlap hiding (`declutter.ts`: where planes overlap, only the first discovered is drawn; there are no clusters), route; `frontend/src/ui/` — one module per UI component; design tokens are at the top of each component's adjacent `.css`.
 - `backend/.../observability/PhaseLogger.java` — the phase markers above.
 - `docs/neovim-basics.md` — Neovim primer for the config in `nvim/init.lua`.
 - `docs/multi-agent-workflow.md` — running Claude Code, Codex, and Gemini CLI on this repo in parallel without them stepping on each other.

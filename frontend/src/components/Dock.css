@@ -5,11 +5,11 @@
 .dock-wrap {
   position: absolute;
   left: 16px;
-  /* Clears Leaflet's own scale-bar control (ScaleBar.tsx, "bottomleft")
-     — its content is ~33px tall plus Leaflet's own ~10px control margin,
+  /* Clears the scale-bar control (ui/scaleBar.ts, "bottom-left") — its
+     content is ~33px tall plus the map's own ~10px control margin,
      so 16px here would sit directly on top of it. Stacked above rather
      than moved beside it because the scale bar's width varies with
-     whatever round distance is currently showing (see ScaleBar.tsx's
+     whatever round distance is currently showing (see scaleBar.ts's
      BREAKPOINTS_KM) — a fixed height clearance is the stable dimension. */
   bottom: 56px;
   z-index: 500;

@@ -1,4 +1,4 @@
-// Pure, Leaflet-free: which planes get drawn when they would overlap on screen.
+// Pure, map-free: which planes get drawn when they would overlap on screen.
 // The rule is "first discovered wins": of any planes whose icons overlap, only
 // the one this map saw first is drawn and the others are hidden. First
 // discovered is stable (a plane keeps its place in line for the whole

@@ -56,7 +56,7 @@ test.describe("live feed reconnect", () => {
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
     await page.goto("/");
-    await page.waitForSelector(".leaflet-container");
+    await page.waitForSelector(".map-container");
     await page.waitForTimeout(1_000);
     expect(errors).toEqual([]);
   });

@@ -14,7 +14,7 @@ test.describe("mobile layout", () => {
     await page.setViewportSize(MOBILE_VIEWPORT);
     await mockFlightApi(page);
     await page.goto("/");
-    await page.waitForSelector(".leaflet-container", { timeout: 10_000 });
+    await page.waitForSelector(".map-container", { timeout: 10_000 });
 
     await expect(page.locator(".app-header")).toBeHidden();
 
@@ -43,7 +43,7 @@ test.describe("mobile layout", () => {
     await page.setViewportSize(MOBILE_VIEWPORT);
     await mockFlightApi(page);
     await page.goto("/");
-    await page.waitForSelector(".leaflet-container", { timeout: 10_000 });
+    await page.waitForSelector(".map-container", { timeout: 10_000 });
 
     // Blocking zoom via the viewport meta would "fix" this at the cost of accessibility.
     const viewport = await page.locator('meta[name="viewport"]').getAttribute("content");
@@ -69,7 +69,7 @@ test.describe("mobile layout", () => {
     await page.setViewportSize(MOBILE_VIEWPORT);
     await mockFlightApi(page);
     await page.goto("/");
-    await page.waitForSelector(".leaflet-container", { timeout: 10_000 });
+    await page.waitForSelector(".map-container", { timeout: 10_000 });
 
     const target = LIVE_FIXTURE.find((p) => p.icao24 === "4aad15")!;
     await setMapView(page, target.latitude, target.longitude, 11);
@@ -111,7 +111,7 @@ test.describe("mobile layout", () => {
     await page.setViewportSize(MOBILE_VIEWPORT);
     await mockFlightApi(page);
     await page.goto("/");
-    await page.waitForSelector(".leaflet-container", { timeout: 10_000 });
+    await page.waitForSelector(".map-container", { timeout: 10_000 });
 
     // Chromium's dvh equals vh, so this can't be observed by measuring: on iOS
     // Safari 100vh is the viewport with toolbars collapsed, which pushes the
@@ -143,8 +143,9 @@ test.describe("mobile layout", () => {
     await page.waitForTimeout(500);
     await (await findMarkerNear(page, target.latitude, target.longitude)).click();
     await expect(page.locator(".details-panel-expand-toggle")).toBeVisible();
-    const height = await page.locator(".details-panel-expand-toggle").evaluate((el) => el.getBoundingClientRect().height);
-    expect(height).toBeGreaterThanOrEqual(44);
+    // Polled: the panel re-renders as the selection's data arrives, and a
+    // read that lands on a just-replaced element measures 0.
+    await expect.poll(() => page.locator(".details-panel-expand-toggle").evaluate((el) => el.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
   });
 
   test("expand arrow points the way the sheet will move, and the expanded sheet shows the whole dossier without scrolling", async ({ page }) => {
@@ -173,7 +174,7 @@ test.describe("mobile layout", () => {
       }),
     );
     await page.goto("/");
-    await page.waitForSelector(".leaflet-container", { timeout: 10_000 });
+    await page.waitForSelector(".map-container", { timeout: 10_000 });
     const target = LIVE_FIXTURE.find((p) => p.icao24 === "4aad15")!;
     await setMapView(page, target.latitude, target.longitude, 11);
     await page.waitForSelector(".plane-icon", { timeout: 10_000 });
@@ -209,10 +210,11 @@ test.describe("mobile layout", () => {
     await page.setViewportSize(MOBILE_VIEWPORT);
     await mockFlightApi(page);
     await page.goto("/");
-    await page.waitForSelector(".leaflet-container", { timeout: 10_000 });
-    const attribution = page.locator(".leaflet-control-attribution");
+    await page.waitForSelector(".map-container", { timeout: 10_000 });
+    const attribution = page.locator(".maplibregl-ctrl-attrib");
     await expect(attribution).toBeVisible();
-    await expect(attribution).not.toContainText("Leaflet");
+    await expect(attribution).not.toContainText("MapLibre"); // the library credit is dropped on phones; the data credits stay
+    await expect(attribution).toContainText("OpenStreetMap");
     const fontSize = await attribution.evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
     expect(fontSize).toBeLessThanOrEqual(10);
     expect((await attribution.boundingBox())!.width).toBeLessThanOrEqual(MOBILE_VIEWPORT.width * 0.6 + 1);
@@ -222,7 +224,7 @@ test.describe("mobile layout", () => {
     await page.setViewportSize(MOBILE_VIEWPORT);
     await mockFlightApi(page);
     await page.goto("/");
-    await page.waitForSelector(".leaflet-container", { timeout: 10_000 });
+    await page.waitForSelector(".map-container", { timeout: 10_000 });
 
     const target = LIVE_FIXTURE.find((p) => p.icao24 === "4aad15")!;
     await setMapView(page, target.latitude, target.longitude, 11);
@@ -231,7 +233,7 @@ test.describe("mobile layout", () => {
 
     const marker = await findMarkerNear(page, target.latitude, target.longitude);
     await marker.click();
-    await page.waitForTimeout(900); // flyTo's own 800ms animation + invalidateSize/reflow
+    await page.waitForTimeout(900); // flyTo's own 800ms animation + resize/reflow
 
     const panel = page.locator(".details-panel");
     await expect(panel).toBeVisible();
@@ -290,7 +292,7 @@ test.describe("mobile layout", () => {
     await page.setViewportSize(DESKTOP_VIEWPORT);
     await mockFlightApi(page);
     await page.goto("/");
-    await page.waitForSelector(".leaflet-container", { timeout: 10_000 });
+    await page.waitForSelector(".map-container", { timeout: 10_000 });
 
     await expect(page.locator(".app-header")).toBeVisible();
     await expect(page.locator(".flight-search-fab")).toBeHidden();

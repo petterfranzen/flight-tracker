@@ -1,4 +1,5 @@
-import L from "leaflet";
+import { Marker } from "maplibre-gl";
+import type { FlightMap } from "./map";
 import type { LiveMarker, SelectedPosition } from "../types/flight";
 
 // A small rotated dart stands in for the transponder icon — heading comes
@@ -43,34 +44,6 @@ export function planeBoxSize(zoom: number): number {
   return scaleIconSize(zoom, mobile, false);
 }
 
-/**
- * A DivIcon that stamps the current rotation onto its glyph the moment
- * Leaflet actually creates the DOM node, reading it from a live ref rather
- * than a value baked in at construction time — see markers.ts's own
- * updateEntry, which mutates headingRef.current on every position tick
- * without ever rebuilding the icon. callsignRef is written once (a
- * callsign never changes after a marker first exists) and read the same
- * safe way (textContent, not interpolated into the html string) since
- * callsign is untrusted external OpenSky data.
- */
-class RotatingPlaneIcon extends L.DivIcon {
-  headingRef: { current: number };
-  callsignRef: { current: string };
-  constructor(options: L.DivIconOptions, headingRef: { current: number }, callsignRef: { current: string }) {
-    super(options);
-    this.headingRef = headingRef;
-    this.callsignRef = callsignRef;
-  }
-  createIcon(oldIcon?: HTMLElement) {
-    const el = super.createIcon(oldIcon);
-    const glyph = el.querySelector<HTMLElement>(".plane-glyph");
-    if (glyph) glyph.style.transform = `rotate(${this.headingRef.current}deg)`;
-    const label = el.querySelector<HTMLElement>(".plane-icon-label");
-    if (label) label.textContent = this.callsignRef.current;
-    return el;
-  }
-}
-
 interface IconParams {
   known: boolean;
   selected: boolean;
@@ -80,52 +53,72 @@ interface IconParams {
   dimmed: boolean;
 }
 
-function iconParamsKey(p: IconParams): string {
-  return `${p.known}|${p.selected}|${p.zoom}|${p.entering}|${p.exiting}|${p.dimmed}`;
+interface IconStyle {
+  className: string;
+  size: number;
 }
 
-// Icon *options* (className/html/size) are cacheable across markers sharing
-// the same (known, selected, zoom, entering, exiting) tuple — only
-// headingRef/callsignRef need to stay per-marker (see RotatingPlaneIcon's
-// own comment), so each marker still gets its own icon instance built from
-// these shared, immutable options.
-const iconOptionsCache = new Map<string, L.DivIconOptions>();
+// Icon styles are cacheable across markers sharing the same (known,
+// selected, zoom, entering, exiting, dimmed) tuple.
+const iconStyleCache = new Map<string, IconStyle>();
 
-function planeIconOptions(known: boolean, selected: boolean, zoom: number, entering: boolean, exiting: boolean, dimmed: boolean): L.DivIconOptions {
-  const key = iconParamsKey({ known, selected, zoom, entering, exiting, dimmed });
-  const cached = iconOptionsCache.get(key);
+function planeIconStyle({ known, selected, zoom, entering, exiting, dimmed }: IconParams): IconStyle {
+  const key = `${known}|${selected}|${zoom}|${entering}|${exiting}|${dimmed}`;
+  const cached = iconStyleCache.get(key);
   if (cached) return cached;
-
-  const glyphClass = known ? "plane-glyph" : "plane-glyph plane-glyph--unknown-heading";
   const isMobile = window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT_PX}px)`).matches;
-  const size = Math.max(scaleIconSize(zoom, isMobile, selected), 16);
-
-  const options: L.DivIconOptions = {
+  const style = {
     className: `plane-icon${selected ? " plane-icon--selected" : ""}${entering ? " plane-icon--entering" : ""}${exiting ? " plane-icon--exiting" : ""}${dimmed ? " plane-icon--dimmed" : ""}`,
-    html: `<div class="plane-icon-halo" aria-hidden="true"></div><div class="plane-icon-mark" aria-hidden="true"></div><div class="${glyphClass}" role="img" aria-label="Aircraft position marker">${PLANE_SVG}</div><div class="plane-icon-label" aria-hidden="true"></div>`,
-    iconSize: [size, size],
-    iconAnchor: [size / 2, size / 2],
+    size: Math.max(scaleIconSize(zoom, isMobile, selected), 16),
   };
-  iconOptionsCache.set(key, options);
-  return options;
+  iconStyleCache.set(key, style);
+  return style;
+}
+
+/**
+ * Builds one plane's marker element: a bare wrapper that MapLibre positions
+ * (its transform, opacity and z-index are the Marker's), holding the
+ * `.plane-icon` box this file styles. The wrapper keeps MapLibre's inline
+ * opacity off `.plane-icon`, where the dimmed/exiting rules need it. The
+ * callsign is written with textContent, never interpolated into the markup,
+ * since it is untrusted external OpenSky data.
+ */
+function buildPlaneElement(known: boolean, headingDeg: number, callsign: string): { root: HTMLElement; icon: HTMLElement; glyph: HTMLElement } {
+  const root = document.createElement("div");
+  root.className = "plane-marker";
+  const icon = document.createElement("div");
+  const glyphClass = known ? "plane-glyph" : "plane-glyph plane-glyph--unknown-heading";
+  icon.innerHTML = `<div class="plane-icon-halo" aria-hidden="true"></div><div class="plane-icon-mark" aria-hidden="true"></div><div class="${glyphClass}" role="img" aria-label="Aircraft position marker">${PLANE_SVG}</div><div class="plane-icon-label" aria-hidden="true"></div>`;
+  const glyph = icon.querySelector<HTMLElement>(".plane-glyph")!;
+  glyph.style.transform = `rotate(${headingDeg}deg)`;
+  icon.querySelector<HTMLElement>(".plane-icon-label")!.textContent = callsign;
+  root.appendChild(icon);
+  return { root, icon, glyph };
+}
+
+function applyIconStyle(icon: HTMLElement, style: IconStyle): void {
+  icon.className = style.className;
+  icon.style.width = `${style.size}px`;
+  icon.style.height = `${style.size}px`;
 }
 
 interface MarkerEntry {
-  marker: L.Marker;
+  marker: Marker;
+  root: HTMLElement;
+  icon: HTMLElement;
+  glyph: HTMLElement;
   // Latest position this marker was drawn with — what a click selects.
   // The click handler used to capture the LiveMarker from when the marker
   // was first built, so selecting a long-lived marker flew to wherever the
   // aircraft was back then.
   latest: LiveMarker;
-  headingRef: { current: number };
-  callsignRef: { current: string };
-  // (known, selected, roundedZoom, exiting) only — excludes `entering`,
-  // which is true exactly once (this entry's first build) and never a
-  // trigger for rebuilding afterward. Matches AircraftMarker's own
-  // useMemo deps in the original React component.
+  // (known, selected, roundedZoom, exiting, dimmed) only — excludes
+  // `entering`, which is true exactly once (this entry's first build) and
+  // never a trigger for restyling afterward.
   compareKey: string;
   // Last values written to the DOM, so an unchanged aircraft costs nothing
-  // on a re-render (setLatLng and the glyph lookup each touch layout).
+  // on a re-render (setLngLat and the glyph transform each touch layout).
+  known: boolean;
   lat: number;
   lon: number;
   rotationDeg: number;
@@ -137,43 +130,11 @@ function compareKey(known: boolean, selected: boolean, zoom: number, exiting: bo
   return `${known}|${selected}|${zoom}|${exiting}|${dimmed}`;
 }
 
-// Below the normal z-order (0) so a dimmed ghost never paints over live traffic.
-const DIMMED_Z_OFFSET = -1000;
-const SELECTED_Z_OFFSET = 10_000;
-function zOffset(selected: boolean, dimmed: boolean): number {
-  return selected ? SELECTED_Z_OFFSET : dimmed ? DIMMED_Z_OFFSET : 0;
-}
-
-// Same tuple minus zoom: when only the zoom changed, the icon's markup is
-// identical and just its size differs — see resizeInPlace.
-function styleKey(key: string): string {
-  const [known, selected, , exiting, dimmed] = key.split("|");
-  return `${known}|${selected}|${exiting}|${dimmed}`;
-}
-
-/**
- * Applies a new icon size to an already-mounted marker element — the same
- * width/height/margins L.DivIcon's own _setIconStyles writes — instead of
- * handing the marker a new icon, which tears down and rebuilds its DOM.
- * Every zoom step used to rebuild every visible plane that way. Also
- * updates the marker's icon options so a later rebuild (or Leaflet's own
- * re-render) keeps the new size.
- */
-function resizeInPlace(marker: L.Marker, options: L.DivIconOptions): boolean {
-  const el = marker.getElement();
-  const size = options.iconSize as [number, number] | undefined;
-  const anchor = options.iconAnchor as [number, number] | undefined;
-  if (!el || !size || !anchor) return false;
-  el.style.width = `${size[0]}px`;
-  el.style.height = `${size[1]}px`;
-  el.style.marginLeft = `${-anchor[0]}px`;
-  el.style.marginTop = `${-anchor[1]}px`;
-  const icon = marker.options.icon as L.DivIcon | undefined;
-  if (icon) {
-    icon.options.iconSize = options.iconSize;
-    icon.options.iconAnchor = options.iconAnchor;
-  }
-  return true;
+// Stacking among markers (they share one container with the GL canvas, so
+// no negative values: those would drop below the map). A dimmed ghost
+// never paints over live traffic; the selected plane is always on top.
+function zIndex(selected: boolean, dimmed: boolean): string {
+  return selected ? "2" : dimmed ? "0" : "1";
 }
 
 export interface MarkerLayerUpdate {
@@ -200,31 +161,37 @@ export interface MarkerLayerHandle {
  * down and rebuilt just because a position changed. A single entry can
  * move between "selected" and "unselected" (the aircraft gets clicked, or
  * the selection moves elsewhere) without ever being removed from the map;
- * only its icon options and z-order change.
+ * only its classes, size and z-order change.
  */
-export function createMarkerLayer(map: L.Map, onSelect: (p: LiveMarker) => void): MarkerLayerHandle {
+export function createMarkerLayer(map: FlightMap, onSelect: (p: LiveMarker) => void): MarkerLayerHandle {
   const entries = new Map<string, MarkerEntry>();
 
   function buildEntry(p: LiveMarker, selected: boolean, roundedZoom: number, exiting: boolean, dimmed: boolean, entering: boolean): MarkerEntry {
     const known = p.headingDeg != null;
-    const headingRef = { current: known ? (p.headingDeg as number) : 0 };
-    const callsignRef = { current: p.callsign?.trim() || p.icao24.toUpperCase() };
-    const options = planeIconOptions(known, selected, roundedZoom, entering, exiting, dimmed);
-    const icon = new RotatingPlaneIcon(options, headingRef, callsignRef);
-    const marker = L.marker([p.latitude, p.longitude], { icon });
+    const rotationDeg = known ? (p.headingDeg as number) : 0;
+    const { root, icon, glyph } = buildPlaneElement(known, rotationDeg, p.callsign?.trim() || p.icao24.toUpperCase());
+    applyIconStyle(icon, planeIconStyle({ known, selected, zoom: roundedZoom, entering, exiting, dimmed }));
+    root.style.zIndex = zIndex(selected, dimmed);
     const entry = {} as MarkerEntry;
-    marker.on("click", () => onSelect(entry.latest));
-    marker.addTo(map);
-    if (selected || dimmed) marker.setZIndexOffset(zOffset(selected, dimmed));
+    root.addEventListener("click", (e) => {
+      e.stopPropagation();
+      onSelect(entry.latest);
+    });
+    const marker = new Marker({ element: root, anchor: "center" }).setLngLat([p.longitude, p.latitude]).addTo(map.gl);
+    // Test-only hook: the scenario harness reads each drawn plane's true
+    // position from its element (see tests/scenarios/harness.ts planeMarkers).
+    (root as unknown as { _marker: Marker })._marker = marker;
     return Object.assign(entry, {
       marker,
+      root,
+      icon,
+      glyph,
       latest: p,
-      headingRef,
-      callsignRef,
       compareKey: compareKey(known, selected, roundedZoom, exiting, dimmed),
+      known,
       lat: p.latitude,
       lon: p.longitude,
-      rotationDeg: headingRef.current,
+      rotationDeg,
       selected,
       dimmed,
     });
@@ -234,37 +201,29 @@ export function createMarkerLayer(map: L.Map, onSelect: (p: LiveMarker) => void)
     const known = p.headingDeg != null;
     const rotationDeg = known ? (p.headingDeg as number) : 0;
     entry.latest = p;
-    entry.headingRef.current = rotationDeg;
     if (p.latitude !== entry.lat || p.longitude !== entry.lon) {
-      entry.marker.setLatLng([p.latitude, p.longitude]);
+      entry.marker.setLngLat([p.longitude, p.latitude]);
       entry.lat = p.latitude;
       entry.lon = p.longitude;
     }
     if (selected !== entry.selected || dimmed !== entry.dimmed) {
-      entry.marker.setZIndexOffset(zOffset(selected, dimmed));
+      entry.root.style.zIndex = zIndex(selected, dimmed);
       entry.selected = selected;
       entry.dimmed = dimmed;
     }
-
     const nextKey = compareKey(known, selected, roundedZoom, exiting, dimmed);
     if (nextKey !== entry.compareKey) {
-      const options = planeIconOptions(known, selected, roundedZoom, false, exiting, dimmed);
-      if (styleKey(nextKey) === styleKey(entry.compareKey) && resizeInPlace(entry.marker, options)) {
-        entry.compareKey = nextKey;
-      } else {
-        // Rebuilt icon picks the heading up from headingRef in createIcon.
-        entry.marker.setIcon(new RotatingPlaneIcon(options, entry.headingRef, entry.callsignRef));
-        entry.compareKey = nextKey;
-        entry.rotationDeg = rotationDeg;
-        return;
+      // Restyled in place (classes and size): the element itself, and the
+      // Marker holding it, live as long as the aircraft is drawn.
+      applyIconStyle(entry.icon, planeIconStyle({ known, selected, zoom: roundedZoom, entering: false, exiting, dimmed }));
+      if (known !== entry.known) {
+        entry.glyph.classList.toggle("plane-glyph--unknown-heading", !known);
+        entry.known = known;
       }
+      entry.compareKey = nextKey;
     }
     if (rotationDeg !== entry.rotationDeg) {
-      // Heading is applied directly to the mounted glyph, never by handing
-      // the marker a new `icon` — that would trigger Marker.setIcon(), which
-      // tears down and rebuilds the icon DOM on every single position tick.
-      const glyph = entry.marker.getElement()?.querySelector<HTMLElement>(".plane-glyph");
-      if (glyph) glyph.style.transform = `rotate(${rotationDeg}deg)`;
+      entry.glyph.style.transform = `rotate(${rotationDeg}deg)`;
       entry.rotationDeg = rotationDeg;
     }
   }

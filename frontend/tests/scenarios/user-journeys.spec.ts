@@ -9,6 +9,8 @@ import {
   jumpTo,
   pickVisiblePlane,
   planeMarkers,
+  routeDrawn,
+  routeExtentPx,
   startHarness,
   wheelZoom,
   zoomLevel,
@@ -75,12 +77,11 @@ test.describe("user journeys @scenario", () => {
     await expect(page.locator(".details-panel-favorite-toggle").first()).toHaveClass(/--active/);
 
     await h.step("zoom out to see the whole trajectory", () => wheelZoom(page, -3));
-    const route = page.locator("path.route-line");
-    await expect(route).toBeVisible();
+    await expect.poll(() => routeDrawn(page), { message: "trajectory drawn" }).toBe(true);
     // The trail covers the whole leg: 40 minutes ≈ 5° of flight, so at z7 it
     // must span far more than a point, and end at the aircraft.
-    const bbox = await route.boundingBox();
-    expect(Math.max(bbox!.width, bbox!.height), "trajectory drawn as a long line").toBeGreaterThan(150);
+    const bbox = await routeExtentPx(page);
+    expect(Math.max(bbox.width, bbox.height), "trajectory drawn as a long line").toBeGreaterThan(150);
     const selected = (await planeMarkers(page)).find((m) => m.callsign === callsign);
     expect(selected, "selected aircraft still drawn when zoomed out").toBeTruthy();
   });

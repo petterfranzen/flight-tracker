@@ -241,7 +241,7 @@ const takeLongTasks = (page: Page) =>
   page.evaluate(() => (window as unknown as { __longTasks: number[] }).__longTasks.splice(0));
 
 // Animated, like a real wheel/button zoom — the expensive path. Block
-// bodies on purpose: returning the Leaflet map from page.evaluate makes
+// bodies on purpose: returning the map from page.evaluate makes
 // Playwright serialize its whole object graph in-page, a 100ms+ long task
 // of the test's own making.
 const zoomTo = (page: Page, z: number) =>
@@ -363,7 +363,7 @@ test.describe("performance with 10,000 live aircraft @perf", () => {
     // Past the debounce window, still just the one.
     await page.waitForTimeout(600);
     expect(started).toHaveLength(1);
-    expect(new URL(started[0]).searchParams.get("lonMin")).toBe(String(await withMap(page, (map) => map.getBounds().getWest())));
+    expect(new URL(started[0]).searchParams.get("lonMin")).toBe(String(await withMap(page, (map) => map.getBounds().lonMin)));
 
     // That request is still held, i.e. in flight: move again. It gets
     // aborted, and only the newer viewport is requested after it.

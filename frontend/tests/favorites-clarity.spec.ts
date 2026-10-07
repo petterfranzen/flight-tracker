@@ -8,7 +8,7 @@ const target = LIVE_FIXTURE.find((p) => p.icao24 === "4aad15")!;
 
 async function selectTarget(page: import("@playwright/test").Page) {
   await page.goto("/");
-  await page.waitForSelector(".leaflet-container", { timeout: 10_000 });
+  await page.waitForSelector(".map-container", { timeout: 10_000 });
   await setMapView(page, target.latitude, target.longitude, 11);
   await page.waitForSelector(".plane-icon", { timeout: 10_000 });
   await page.waitForTimeout(500);
@@ -69,7 +69,7 @@ test.describe("favorites clarity", () => {
     // route must have none. Later registrations take priority.
     await page.route("**/api/flights/search*", (route) => route.fulfill({ json: [] }));
     await page.goto("/");
-    await page.waitForSelector(".leaflet-container", { timeout: 10_000 });
+    await page.waitForSelector(".map-container", { timeout: 10_000 });
     await page.locator(".favorites-panel-toggle").click();
     const item = page.locator(".favorites-panel-item", { hasText: "KLR" });
     await expect(item.locator(".favorites-panel-item-status")).toHaveText("no live flight", { timeout: 5_000 });

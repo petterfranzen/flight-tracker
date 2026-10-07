@@ -26,13 +26,13 @@ test.describe("world limits in the app", () => {
       await page.setViewportSize({ width: w, height: h });
       await mockFlightApi(page);
       await page.goto("/");
-      await page.waitForSelector(".leaflet-container", { timeout: 10_000 });
+      await page.waitForSelector(".map-container", { timeout: 10_000 });
       await expect.poll(() => withMap(page, (m) => m.getMinZoom())).toBe(expectedMin);
 
       await setMapView(page, 0, 170, 2); // below the minimum: clamped up
       const after = await withMap(page, (m) => {
         const b = m.getBounds();
-        return { zoom: m.getZoom(), west: b.getWest(), east: b.getEast(), south: b.getSouth(), north: b.getNorth() };
+        return { zoom: m.getZoom(), west: b.lonMin, east: b.lonMax, south: b.latMin, north: b.latMax };
       });
       expect(after.zoom).toBeGreaterThanOrEqual(expectedMin);
       expect(after.east).toBeLessThanOrEqual(180.5);

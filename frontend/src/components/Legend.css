@@ -98,8 +98,8 @@
     gap: 8px;
     position: fixed;
     inset: 0;
-    /* Above Leaflet's own .leaflet-top/.leaflet-bottom control layer
-       (z-index: 1000 in leaflet.css), same reasoning as FlightSearch's
+    /* Above the map's own control corners (the scale bar, the
+       attribution), same reasoning as FlightSearch's
        identical rule. */
     z-index: 1001;
     padding: 16px;

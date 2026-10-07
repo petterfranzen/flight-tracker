@@ -16,7 +16,7 @@ test.describe("dossier speed and vertical rate", () => {
     });
 
     await page.goto("/");
-    await page.waitForSelector(".leaflet-container", { timeout: 10_000 });
+    await page.waitForSelector(".map-container", { timeout: 10_000 });
 
     const target = LIVE_FIXTURE.find((p) => p.icao24 === "4aad15")!;
     await setMapView(page, target.latitude, target.longitude, 11);
