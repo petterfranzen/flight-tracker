@@ -39,6 +39,15 @@ into the same jar. `README.md` covers the architecture.
   wherever it is a key or an index (view caches, prefetch, icon sizes);
   requests use whole levels. Tests reach the adapter as `._flightMap` on
   `.map-container` (`tests/helpers.ts` `withMap`).
+- **Planes and airports are GL layers, not DOM** (`map/planes.ts`,
+  `ui/defaultAirports.ts`; images drawn from the theme tokens). Which
+  planes are drawn is `main.ts` `renderAircraftLayer` + `declutter.ts`
+  (MapLibre symbol collision can't apply its rule, see the Stage C log in
+  `docs/agent-tasks/maplibre-native-progress.md`); the layers draw that
+  set and `setData` only when it changed, never per frame. Clicks go
+  through the adapter's hit test (`addHitTarget`). Tests read what was
+  drawn with `renderedPlanes()` / `renderedAirports()` (helpers.ts), never
+  DOM selectors.
 
 ## Environment
 
