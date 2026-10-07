@@ -1,7 +1,8 @@
 # MapLibre-native migration: progress log
 
 Brief: `docs/agent-tasks/maplibre-native.md`. Branch: `feat/maplibre-native`.
-Stage B in progress; Stage C (planes as a GL layer) not started.
+Stage B done (all suites green, see Results); Stage C (planes as a GL
+layer) not started.
 
 ## Done (Stage B)
 
@@ -47,12 +48,30 @@ Stage B in progress; Stage C (planes as a GL layer) not started.
   of a re-rendering panel (polled).
 - `CLAUDE.md` / `README.md` updated (one theme, the adapter, zoom units).
 
-## Next
+## Results (cloud session, Node 22, software WebGL)
 
-- Run `test:perf` and `test:scenarios`; fix what they find.
-- Backend `mvn -B verify -Pwith-frontend`.
+- `npx tsc --noEmit -p .`, `npm run build`: clean.
+- `npm run test:e2e`: 94 passed (production-build.spec.ts included).
+- `npm run test:perf`: 2 passed, budget unchanged (200 ms). Three runs:
+  max long task 167 / 113 / 127 ms at slowdown 1, 73-81 tasks over 50 ms,
+  select 354-436 ms.
+- `npm run test:scenarios`: 5 passed (twice).
+- `cd backend && mvn -B verify -Pwith-frontend`: passes.
+
+## Left for Stage C or the owner
+
+- Planes are still DOM markers (Stage C moves them to a symbol layer).
+  MapLibre re-places every marker on each `move` frame; fine at the
+  300/150 caps here.
+- The trail's dash-travel animation was an SVG stroke animation and is
+  gone; the GL line is dashed but static. Animating `line-dasharray` per
+  frame is possible if wanted.
+- Airports stay above every plane, the selected one included (as under
+  Leaflet), so an airport label can cover the selected plane's callsign
+  chip.
+- The attribution uses MapLibre's default light strip (as Leaflet's was).
 
 ## Known failures
 
-- (none recorded yet beyond the cloud-only `production-build.spec.ts`
-  real-tile check)
+- None. `production-build.spec.ts`'s real-tile check is expected to fail
+  in a cloud session (blocked host) but passed here.
