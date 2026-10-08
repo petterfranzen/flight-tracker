@@ -111,7 +111,7 @@ const near = (a: [number, number, number], b: [number, number, number]) => Math.
 test.describe("planes drawn by the map", () => {
   test("icon size follows a fractional zoom smoothly, between the whole levels' sizes", async ({ page }) => {
     // Pointing north, so the dart's height on screen is its length.
-    await serve(page, [plane("aaaaaa", "SOLO", BASE.lat, BASE.lon, 0)], 15);
+    await serve(page, [plane("aaaaaa", "SOLO", BASE.lat, BASE.lon, 0)], 13);
     await expect.poll(async () => (await renderedPlanes(page)).length, { timeout: 10_000 }).toBe(1);
     await page.locator(".boot-screen").waitFor({ state: "detached", timeout: 15_000 });
     const measure = async (zoom: number) => {
@@ -120,21 +120,21 @@ test.describe("planes drawn by the map", () => {
       const p = (await renderedPlanes(page))[0];
       return { size: p.size, drawn: (await glyphExtent(page, p.x, p.y, MARKER)).height };
     };
-    // z15 52 px, z16 43 px (ICON_SIZE_BY_ZOOM): far enough apart to see on screen.
-    const z15 = await measure(15);
-    const z155 = await measure(15.5);
-    const z16 = await measure(16);
-    expect(z15.size).toBe(52);
-    expect(z16.size).toBe(43);
-    expect(z155.size).toBeCloseTo(47.5, 5);
+    // z13 42 px, z14 34 px (ICON_SIZE_BY_ZOOM): far enough apart to see on screen.
+    const z13 = await measure(13);
+    const z135 = await measure(13.5);
+    const z14 = await measure(14);
+    expect(z13.size).toBe(42);
+    expect(z14.size).toBe(34);
+    expect(z135.size).toBeCloseTo(38, 5);
     // What the map really drew is in proportion to that size at every zoom
     // (the dart's solid fill spans about half its box from tip to tail).
-    const ratios = [z15, z155, z16].map((m) => m.drawn / m.size);
+    const ratios = [z13, z135, z14].map((m) => m.drawn / m.size);
     for (const r of ratios) expect(r, `drawn/size ${ratios.map((x) => x.toFixed(3)).join(", ")}`).toBeGreaterThan(0.45);
     expect(Math.max(...ratios) - Math.min(...ratios), `drawn/size ${ratios.map((x) => x.toFixed(3)).join(", ")}`).toBeLessThan(0.06);
     // In between, not snapped to either level.
-    expect(z155.drawn).toBeLessThan(z15.drawn);
-    expect(z155.drawn).toBeGreaterThan(z16.drawn);
+    expect(z135.drawn).toBeLessThan(z13.drawn);
+    expect(z135.drawn).toBeGreaterThan(z14.drawn);
   });
 
   test("clicking a plane selects it; a click beside it does not", async ({ page }) => {

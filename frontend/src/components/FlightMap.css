@@ -779,8 +779,11 @@ html, body {
 
   /* A fixed-width side panel would eat most of a phone's screen width;
      converted to a bottom sheet instead — same content and
-     functionality, just repositioned. Two heights (collapsed/expanded,
-     see .details-panel--expanded) rather than the old single 70vh cap. */
+     functionality, just repositioned. Two states (collapsed/expanded,
+     see .details-panel--expanded). Collapsed is a short peek sized to its
+     few lines (callsign, last update), so the map keeps most of the
+     screen for the plane and its trail; capped at a third in case those
+     lines ever wrap. */
   .details-panel {
     position: relative; /* was absolute — still needed as the positioning
                             context for .details-panel-close-x below, but
@@ -797,8 +800,9 @@ html, body {
     transform: none;
     flex: 0 0 auto;
     width: 100%;
-    height: 33.334vh; /* collapsed default: map gets the other 2/3 */
-    height: 33.334dvh;
+    height: auto;
+    max-height: 33.334vh;
+    max-height: 33.334dvh;
     /* Scrolling lives on .details-panel-inner below, not here: this
        element also carries cyberpunk theme's clip-path (faceted corner),
        and clip-path plus overflow-y:auto on the same element forces the
@@ -842,7 +846,7 @@ html, body {
      icons + gaps), which is anchored to the *viewport* instead and
      doesn't know or care how tall the map beneath it currently is. The
      two were landing right on top of each other. Collapsed
-     (.details-panel, no --expanded) leaves the map 66.667vh tall — comfortably
+     (.details-panel, no --expanded) leaves the map most of the screen — comfortably
      clear of the icon stack — so this only needs scoping to the
      expanded state specifically, not sheets in general. */
   .app-shell:has(.details-panel--expanded) .maplibregl-ctrl-bottom-left {
@@ -850,11 +854,20 @@ html, body {
   }
 
   /* The actual scrolling element (see .details-panel's overflow: hidden
-     above) — fills the fixed-height sheet and scrolls its own content,
-     independent of the clip-path applied to its parent. */
+     above) — capped like the sheet, and scrolls its own content when it
+     outgrows that, independent of the clip-path applied to its parent. */
   .details-panel-inner {
-    height: 100%;
+    max-height: 33.334vh;
+    max-height: 33.334dvh;
     overflow-y: auto;
+  }
+
+  /* The collapsed peek: the expand handle, the callsign and how fresh its
+     position is (plus "Focus plane" when it's off screen). The rest —
+     the eyebrow, the favourite buttons and the ICAO line — comes with the
+     expanded sheet. */
+  .details-panel:not(.details-panel--expanded) :is(.details-panel-eyebrow, .details-panel-favorite-toggles, .details-panel-favorite-hint, .details-panel-meta--secondary) {
+    display: none;
   }
 
   /* Replaces the desktop bottom Close button on mobile — top-right ✕ is

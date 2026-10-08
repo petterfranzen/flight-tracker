@@ -164,7 +164,7 @@ test.describe("capping how many planes are drawn", () => {
 });
 
 test.describe("big planes", () => {
-  test("icons are bigger than the old dart but grow gradually with zoom, and taper to fit stands at an airport", async ({ page }) => {
+  test("icons are bigger than the old dart, grow gradually up to city zoom, and shrink at an airport to fit its stands", async ({ page }) => {
     await serve(page, [plane("aaaaaa", "SOLO", BASE.lat, BASE.lon)], 8);
     await expect.poll(() => count(page), { timeout: 10_000 }).toBe(1);
     const size = async () => (await renderedPlanes(page))[0].size;
@@ -175,6 +175,7 @@ test.describe("big planes", () => {
     };
     const z8 = await sizeAt(8);
     const z10 = await sizeAt(10);
+    const z12 = await sizeAt(12);
     const z14 = await sizeAt(14);
     const z16 = await sizeAt(16);
     // Intermediate zooms are modest (the old dart was 31 px at z8, 36 at z10), not huge.
@@ -182,17 +183,30 @@ test.describe("big planes", () => {
     expect(z8).toBeLessThanOrEqual(40);
     expect(z10).toBeGreaterThan(z8);
     expect(z10).toBeLessThanOrEqual(50);
-    expect(z14).toBeGreaterThan(z10);
-    expect(z14).toBeLessThanOrEqual(62);
-    // At stand zoom (~40 px between gates at z16) they taper so each plane fits its gate.
-    expect(z16).toBeLessThan(50);
-    expect(z16).toBeGreaterThanOrEqual(36); // still easy to hit
+    expect(z12).toBeGreaterThan(z10);
+    expect(z12).toBeLessThanOrEqual(56);
+    // From the whole-airport view (z14) in, they shrink: at z16 neighbouring
+    // narrow-body stands are ~29 px apart at Heathrow's latitude, 36 px here.
+    expect(z14).toBeLessThan(z12);
+    expect(z16).toBeLessThan(z14);
+    expect(z16).toBeLessThanOrEqual(28);
+    expect(z16).toBeGreaterThanOrEqual(20); // still easy to hit
   });
 
   test("at stand zoom, planes 55 m apart (neighbouring gates) are both drawn", async ({ page }) => {
     // 0.0005 deg of latitude is ~55 m.
     await serve(page, [plane("aaaaaa", "GATE1", BASE.lat, BASE.lon), plane("bbbbbb", "GATE2", BASE.lat + 0.0005, BASE.lon)], 16);
     await expect.poll(() => count(page), { timeout: 10_000 }).toBe(2);
+  });
+
+  test("at Heathrow's latitude, planes at neighbouring narrow-body stands (43 m) are both drawn and don't overlap", async ({ page }) => {
+    const LHR = { lat: 51.47, lon: -0.454 };
+    const list = [plane("aaaaaa", "STAND1", LHR.lat, LHR.lon), plane("bbbbbb", "STAND2", LHR.lat + 43 / 111_195, LHR.lon)];
+    await serve(page, list, 16);
+    await setMapView(page, LHR.lat, LHR.lon, 16);
+    await expect.poll(() => count(page), { timeout: 10_000 }).toBe(2);
+    const [a, b] = await renderedPlanes(page);
+    expect(Math.hypot(a.x - b.x, a.y - b.y)).toBeGreaterThanOrEqual(Math.max(a.size, b.size));
   });
 
   test("on a phone they are about 20% bigger, for a finger", async ({ page }) => {
@@ -204,7 +218,7 @@ test.describe("big planes", () => {
     expect(z10).toBeLessThanOrEqual(56);
     await setMapView(page, BASE.lat, BASE.lon, 16);
     await page.waitForTimeout(300);
-    expect((await renderedPlanes(page))[0].size).toBeLessThan(62);
+    expect((await renderedPlanes(page))[0].size).toBeLessThanOrEqual(32);
   });
 
   test("on a phone, neighbouring gates at stand zoom are both drawn", async ({ page }) => {

@@ -76,7 +76,9 @@ test.describe("mobile layout", () => {
     await waitForPlanes(page);
     await page.waitForTimeout(500);
     await (await findMarkerNear(page, target.latitude, target.longitude)).click();
-    await page.getByText(`ICAO24 ${target.icao24.toUpperCase()}`).waitFor({ timeout: 2_000 });
+    await page.getByText(`ICAO24 ${target.icao24.toUpperCase()}`).waitFor({ state: "attached", timeout: 2_000 });
+    // The favourite buttons live in the expanded sheet; the collapsed one is a short peek.
+    await page.locator(".details-panel-expand-toggle").click();
     await page.getByRole("button", { name: "Favorite this aircraft", exact: true }).click();
     await page.locator(".details-panel-close-x").click();
     await expect(page.locator(".details-panel")).toHaveCount(0);
@@ -95,16 +97,16 @@ test.describe("mobile layout", () => {
     // Expand arrow is at the top of the sheet, above the heading.
     // Read all three rects in one evaluate: the panel is rebuilt on position
     // updates, so separate locator lookups can land on a detached node.
-    await expect(page.locator(".details-panel-eyebrow")).toBeVisible();
+    await expect(page.locator(".details-panel h2")).toBeVisible();
     const rects = await page.evaluate(() => {
       const r = (sel: string) => document.querySelector(sel)!.getBoundingClientRect();
       const panel = r(".details-panel");
       const toggle = r(".details-panel-expand-toggle");
-      const eyebrow = r(".details-panel-eyebrow");
-      return { toggleTop: toggle.top - panel.top, toggleBottom: toggle.bottom, eyebrowTop: eyebrow.top };
+      const heading = r(".details-panel h2");
+      return { toggleTop: toggle.top - panel.top, toggleBottom: toggle.bottom, headingTop: heading.top };
     });
     expect(rects.toggleTop).toBeLessThan(10);
-    expect(rects.toggleBottom).toBeLessThanOrEqual(rects.eyebrowTop + 1);
+    expect(rects.toggleBottom).toBeLessThanOrEqual(rects.headingTop + 1);
   });
 
   test("sheet sizing tracks the visible viewport (dvh) and the expand arrow is a real touch target", async ({ page }) => {
@@ -180,7 +182,7 @@ test.describe("mobile layout", () => {
     await waitForPlanes(page);
     await page.waitForTimeout(500);
     await (await findMarkerNear(page, target.latitude, target.longitude)).click();
-    await page.getByText("ICAO24 4AAD15").waitFor({ timeout: 5_000 });
+    await page.getByText("ICAO24 4AAD15").waitFor({ state: "attached", timeout: 5_000 });
     await expect(page.locator(".details-panel-field", { hasText: "Registration" })).toContainText("TC-RSC", { timeout: 5_000 });
 
     // Bottom-sheet convention: collapsed shows an up arrow (pull up to expand),
@@ -245,9 +247,15 @@ test.describe("mobile layout", () => {
     // Within 15px, not exact — a scrollbar can shave a few px off the
     // effective viewport, which isn't the thing under test here.
     expect(Math.abs(box!.y + box!.height - MOBILE_VIEWPORT.height)).toBeLessThan(15);
-    // Collapsed default: bottom 1/3 of the viewport, not the old 70vh cap.
-    expect(Math.abs(box!.height - MOBILE_VIEWPORT.height / 3)).toBeLessThan(15);
+    // Collapsed default: a short peek (handle, callsign, last update) so the
+    // map keeps most of the screen, not the old third of it.
+    expect(box!.height).toBeLessThanOrEqual(MOBILE_VIEWPORT.height * 0.22);
+    await expect(page.locator(".details-panel h2")).toBeVisible();
+    await expect(page.locator(".details-panel-updated")).toBeVisible();
     await expect(page.locator(".details-panel-fields")).toBeHidden();
+    for (const secondary of [".details-panel-eyebrow", ".details-panel-favorite-toggles", ".details-panel-meta--secondary"]) {
+      await expect(page.locator(secondary), `${secondary} waits for the expanded sheet`).toBeHidden();
+    }
 
     // The actual regression this whole fix is for: the selected plane must
     // sit above the sheet, not underneath it (the old absolute-overlay
@@ -265,6 +273,7 @@ test.describe("mobile layout", () => {
     await page.locator(".details-panel-expand-toggle").click();
     await page.waitForTimeout(800); // CSS height transition (250ms) + panTo's 500ms
     await expect(page.locator(".details-panel-fields")).toBeVisible();
+    await expect(page.locator(".details-panel-favorite-toggles")).toBeVisible();
     const expandedBox = await panel.boundingBox();
     // Content-sized, between the collapsed third and the 78% cap.
     expect(expandedBox!.height).toBeGreaterThan(box!.height);
@@ -277,12 +286,12 @@ test.describe("mobile layout", () => {
 
     await page.screenshot({ path: "/tmp/mobile-layout-dossier-expanded.png" });
 
-    // Collapse back: height and marker position both return to the 1/3 state.
+    // Collapse back: height and marker position both return to the peek.
     await page.locator(".details-panel-expand-toggle").click();
     await page.waitForTimeout(800);
     await expect(page.locator(".details-panel-fields")).toBeHidden();
     const recollapsedBox = await panel.boundingBox();
-    expect(Math.abs(recollapsedBox!.height - MOBILE_VIEWPORT.height / 3)).toBeLessThan(15);
+    expect(Math.abs(recollapsedBox!.height - box!.height)).toBeLessThan(2);
 
     await page.locator(".details-panel-close-x").click();
     await expect(panel).toBeHidden();
