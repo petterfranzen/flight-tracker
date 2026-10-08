@@ -222,7 +222,7 @@ function renderAircraftPanel(store: AppStore): { panel: HTMLElement; updatedLine
       focusButton,
       h("div", { className: "details-panel-favorite-toggles" }, aircraftToggle, routeToggle),
       h("p", { className: "details-panel-favorite-hint" }, favoriteHint),
-      h("p", { className: "details-panel-meta" }, `ICAO24 ${selectedPos.icao24.toUpperCase()} · last leg traced above`),
+      h("p", { className: "details-panel-meta details-panel-meta--secondary" }, `ICAO24 ${selectedPos.icao24.toUpperCase()} · last leg traced above`),
       updatedLine,
       fields,
       h("button", { className: "details-panel-close", onClick: () => store.get("closeAircraftPanel")(), "aria-label": "Close aircraft details" }, "Close"),

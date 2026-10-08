@@ -17,18 +17,21 @@ const PLANE_PATH = "M12 2 L19 20 L12 16 L5 20 Z";
 // a size is easy to read and to tune; between levels the map interpolates
 // (zoom is continuous). Overlapping planes are hidden (map/declutter.ts)
 // rather than clustered, so icons are clearly bigger than the old 30-36 px
-// dart, but they grow gradually from the world view up to city zoom (z14)
-// and then taper again so that planes fit by their gates (stands are ~50 m
-// apart, about 40 px at z16).
+// dart. They grow gradually from the world view up to city zoom (z12) and
+// then shrink over the airport zooms so that planes fit by their gates: z14
+// shows a whole airport, and at z16 neighbouring stands (~43 m apart for
+// narrow-bodies) are about 29 px apart at Heathrow's latitude, 36 px at
+// Arlanda's.
 const ICON_SIZE_BY_ZOOM: readonly number[] = [
   /* z0  */ 18, 18, 20,
   /* z3  */ 22, 25, 28, 30, 33, 37,
-  /* z9  */ 40, 43, 46, 50, 54,
-  /* z14 */ 58,
-  /* z15 */ 52,
-  /* z16 */ 43,
-  /* z17 */ 40,
-  /* z18 */ 43,
+  /* z9  */ 40, 43, 46, 48,
+  /* z13 */ 42,
+  /* z14 */ 34,
+  /* z15 */ 27,
+  /* z16 */ 24,
+  /* z17 */ 28,
+  /* z18 */ 36,
 ];
 // Phones get larger targets for a finger.
 const MOBILE_FACTOR = 1.2;
