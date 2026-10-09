@@ -33,28 +33,25 @@ async function stubTiles(page: Page, opts: { dead?: boolean; hold?: boolean } = 
 test("the boot screen waits for the basemap's tiles, then lifts", async ({ page }) => {
   const tiles = await stubTiles(page, { hold: true });
   await mockFlightApi(page, { realTiles: true });
-  // When the boot screen went up, in page time.
+  // Aircraft data is long in (it's mocked); only the basemap is outstanding.
+  // Looked at by a page timer started the moment the screen goes up, due 3 s
+  // later: past its own minimum (2.6 s) and before the basemap cap (5 s from
+  // the same boot). Timers run in due order, so it runs first however busy
+  // the machine is; anything started from the test, after goto, could land
+  // past the cap.
   await page.addInitScript(() => {
     new MutationObserver((_, observer) => {
       if (!document.querySelector(".boot-screen")) return;
-      (window as unknown as { bootShownAt: number }).bootShownAt = performance.now();
       observer.disconnect();
+      setTimeout(() => {
+        (window as unknown as { heldAt3s: boolean }).heldAt3s = !document.querySelector(".boot-screen--hidden") && !!document.querySelector(".boot-screen");
+      }, 3_000);
     }).observe(document, { childList: true, subtree: true });
   });
   await page.goto("/");
   await page.waitForSelector(".boot-screen");
-  // Aircraft data is long in (it's mocked); only the basemap is outstanding.
-  // Looked at by a page timer due 3 s after the screen went up: past its own
-  // minimum (2.6 s) and before the basemap cap (5 s from the same boot).
-  // Timers run in due order, so this one runs first however busy the machine
-  // is (a test-side wait after goto could land past the cap).
-  const heldAt3s = await page.evaluate(
-    () =>
-      new Promise<boolean>((resolve) => {
-        const shownAt = (window as unknown as { bootShownAt: number }).bootShownAt;
-        setTimeout(() => resolve(!document.querySelector(".boot-screen--hidden") && !!document.querySelector(".boot-screen")), shownAt + 3_000 - performance.now());
-      }),
-  );
+  await page.waitForFunction(() => (window as unknown as { heldAt3s?: boolean }).heldAt3s !== undefined, null, { timeout: 15_000 });
+  const heldAt3s = await page.evaluate(() => (window as unknown as { heldAt3s: boolean }).heldAt3s);
   expect(heldAt3s, "boot screen still up while the tiles are held").toBe(true);
   await expect.poll(tiles.requested, { timeout: 10_000 }).toBeGreaterThan(0);
   tiles.release();

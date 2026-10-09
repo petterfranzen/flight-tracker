@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { mockFlightApi, overviewLevel, renderedPlanes, requestCentreLon, setMapView, trackRequests, waitForMapReady, waitForPlanes, withMap } from "./helpers";
+import { freezeClock, mockFlightApi, overviewLevel, planeLayerIds, renderedPlanes, requestCentreLon, setMapView, trackRequests, waitForMapReady, waitForPlanes, withMap } from "./helpers";
 
 // main.ts's view cache (map/viewCache.ts): going back to a view the map has
 // just shown draws from memory, without a request and without fading the
@@ -41,18 +41,23 @@ test.describe("view cache", () => {
   test("zooming in to the /live zoom reuses the parent view's aircraft", async ({ page }) => {
     await mockFlightApi(page);
     const live = trackRequests(page, /\/api\/flights\/live\?/);
+    // A /live view counts as fresh for 3 s (LIVE_CACHE_FRESH_MS): on a busy
+    // machine that ran out before the zoom-in. The clock stands still instead
+    // and moves only past each debounce.
+    await freezeClock(page);
     await page.goto("/");
     await waitForMapReady(page);
     await setMapView(page, 59.65, 17.9, 8);
-    await waitForPlanes(page);
-    await live.settled();
+    await page.clock.runFor(300); // past the viewport debounce (250 ms)
+    await expect.poll(() => planeLayerIds(page), { timeout: 5_000 }).not.toEqual([]); // its aircraft applied
     expect(live.sent).toHaveLength(1);
 
     // z9 at the same centre lies inside the z8 view: no request.
     await withMap(page, (map) => {
       map.setZoom(9, { animate: false });
     });
-    await page.waitForTimeout(700); // past the viewport debounce (250 ms)
+    await page.clock.runFor(300);
+    await page.waitForTimeout(300); // a request it made would have been recorded by now
     expect(live.sent).toHaveLength(1);
   });
 });

@@ -287,18 +287,49 @@ export type PagePlane = RenderedPlane;
  * in page pixels: what a user sees, not what the app holds in memory.
  */
 export async function renderedPlanes(page: Page): Promise<PagePlane[]> {
+  return retryMidUpdate(page, () =>
+    withMap(page, (map) => {
+      const rect = map.getContainer().getBoundingClientRect();
+      return map.renderedPlanes().map((p) => ({ ...p, x: p.x + rect.x, y: p.y + rect.y }));
+    }),
+  );
+}
+
+/**
+ * MapLibre's feature query can throw while a source update is half applied
+ * ("feature index out of bounds"): ask again a moment later.
+ */
+async function retryMidUpdate<T>(page: Page, read: () => Promise<T>): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await read();
+    } catch (e) {
+      if (attempt >= 5 || !String(e).includes("feature index out of bounds")) throw e;
+      await page.waitForTimeout(50);
+    }
+  }
+}
+
+/**
+ * icao24s in the plane layer's data, read from its source rather than from
+ * what was drawn: a sign that a response has been applied that works while
+ * freezeClock holds the animation frames (nothing renders then).
+ */
+export async function planeLayerIds(page: Page): Promise<string[]> {
   return withMap(page, (map) => {
-    const rect = map.getContainer().getBoundingClientRect();
-    return map.renderedPlanes().map((p) => ({ ...p, x: p.x + rect.x, y: p.y + rect.y }));
+    const source = map.gl.getSource("planes") as unknown as { serialize(): { data?: { features?: { properties?: { id?: string } }[] } } } | undefined;
+    return (source?.serialize().data?.features ?? []).map((f) => f.properties?.id ?? "");
   });
 }
 
 /** Every airport the airport layer drew in view (ui/defaultAirports.ts), x/y in page pixels. */
 export async function renderedAirports(page: Page): Promise<RenderedAirport[]> {
-  return withMap(page, (map) => {
-    const rect = map.getContainer().getBoundingClientRect();
-    return map.renderedAirports().map((a) => ({ ...a, x: a.x + rect.x, y: a.y + rect.y }));
-  });
+  return retryMidUpdate(page, () =>
+    withMap(page, (map) => {
+      const rect = map.getContainer().getBoundingClientRect();
+      return map.renderedAirports().map((a) => ({ ...a, x: a.x + rect.x, y: a.y + rect.y }));
+    }),
+  );
 }
 
 /** Waits until at least `min` planes are drawn. */

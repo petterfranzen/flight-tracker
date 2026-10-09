@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { mockFlightApi, setMapView, waitForMapReady, withMap } from "./helpers";
+import { freezeClock, mockFlightApi, setMapView, waitForMapReady, withMap } from "./helpers";
 
 // Wheel and touchpad zoom are MapLibre's own (map/map.ts): continuous and
 // fractional, and every input counts. One 100 px mouse-wheel notch is about
@@ -126,27 +126,32 @@ test.describe("data stays keyed by whole zoom levels", () => {
       grids.push(Number(new URL(route.request().url()).searchParams.get("gridDeg")));
       return route.fulfill({ json: { planes: [], clusters: [] } });
     });
+    // The page's clock moves only past each debounce: no neighbour prefetch
+    // (600 ms after a view lands) gets in among the viewport's requests, and
+    // the cached view can't age out (8 s) however slow the machine.
+    await freezeClock(page);
     await page.goto("/");
     await waitForMapReady(page);
 
     await setMapView(page, 59.3, 18.0, 6);
+    await page.clock.runFor(300); // past the viewport debounce (250 ms)
     await expect.poll(() => grids.length, { timeout: 5_000 }).toBeGreaterThan(0);
     const wholeLevelGrid = grids[0];
 
     // Somewhere else (nothing cached there), at a fractional zoom that rounds to 6.
-    await page.waitForTimeout(1_500); // past the neighbour prefetch, so the next request is the viewport's
     grids.length = 0;
     await setMapView(page, 45.0, 5.0, 6.3);
+    await page.clock.runFor(300);
     await expect.poll(() => grids.length, { timeout: 5_000 }).toBeGreaterThan(0);
     expect(grids[0]).toBe(wholeLevelGrid);
 
     // Back to the first place at another fraction of the same level (a
     // little closer in, so the cached view covers it): served from the view
     // cache, no request of its own.
-    await page.waitForTimeout(1_500);
     grids.length = 0;
     await setMapView(page, 59.3, 18.0, 6.2);
-    await page.waitForTimeout(800);
+    await page.clock.runFor(300);
+    await page.waitForTimeout(300); // a request it made would have been recorded by now
     expect(grids).toEqual([]);
   });
 });

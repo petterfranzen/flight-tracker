@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { freezeClock, mockFlightApi, overviewLevel, requestCentreLon, setMapView, trackRequests, waitForMapReady, withMap } from "./helpers";
+import { freezeClock, mockFlightApi, overviewLevel, planeLayerIds, requestCentreLon, setMapView, trackRequests, waitForMapReady } from "./helpers";
 
 // Once the view sits still, the overview for the zoom level either side is fetched in the
 // background, so the next zoom step is drawn from cache with no request of its own.
@@ -72,9 +72,7 @@ test.describe("neighbour-zoom prefetch", () => {
     await page.clock.runFor(300); // past the viewport debounce: the view's own request
     // Applied (its plane is in the plane layer's data; nothing renders while
     // the clock stands still), so its prefetch (600 ms) is now pending.
-    await expect
-      .poll(() => withMap(page, (map) => JSON.stringify((map.gl.getSource("planes") as unknown as { serialize(): { data: unknown } } | undefined)?.serialize().data ?? null).includes('"level5"')), { timeout: 5_000 })
-      .toBe(true);
+    await expect.poll(() => planeLayerIds(page), { timeout: 5_000 }).toContain("level5");
     const during = overview.length;
     await setMapView(page, MADRID.lat, MADRID.lon, 5); // somewhere else before it fires
     await page.clock.runFor(1_000); // well past when the old prefetch was due
