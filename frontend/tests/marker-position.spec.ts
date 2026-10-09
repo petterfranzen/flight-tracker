@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { findMarkerNear, getMapLatLngToContainerPoint, getRoutePathScreenPoints, HISTORIES, LIVE_FIXTURE, mockFlightApi, setMapView, waitForPlanes } from "./helpers";
+import { findMarkerNear, getMapLatLngToContainerPoint, getRoutePathScreenPoints, HISTORIES, LIVE_FIXTURE, mockFlightApi, setMapView, waitForMapReady, waitForPlanes } from "./helpers";
 
 // Fixture data captured from the real API (see tests/fixtures/ and the
 // scripts that produced them — a straight `/live` poll and `/history`
@@ -16,7 +16,7 @@ test.describe("aircraft marker positions", () => {
   test("renders a marker at its aircraft's true geographic position", async ({ page }) => {
     await mockFlightApi(page);
     await page.goto("/");
-    await page.waitForSelector(".map-container", { timeout: 10_000 });
+    await waitForMapReady(page);
 
     const target = LIVE_FIXTURE.find((p) => p.icao24 === "4aad15")!;
     await setMapView(page, target.latitude, target.longitude, 11);
@@ -36,7 +36,7 @@ test.describe("aircraft marker positions", () => {
   test("marker stays pinned to its true position across a pan", async ({ page }) => {
     await mockFlightApi(page);
     await page.goto("/");
-    await page.waitForSelector(".map-container", { timeout: 10_000 });
+    await waitForMapReady(page);
 
     const target = LIVE_FIXTURE.find((p) => p.icao24 === "4aad15")!;
     await setMapView(page, target.latitude, target.longitude, 11);
@@ -67,7 +67,7 @@ test.describe("aircraft marker positions", () => {
     // stomped the trail B had already loaded.
     await mockFlightApi(page, { historyDelayMs: { "4aad15": 800, "4d00d9": 50 } });
     await page.goto("/");
-    await page.waitForSelector(".map-container", { timeout: 10_000 });
+    await waitForMapReady(page);
 
     const aircraftA = LIVE_FIXTURE.find((p) => p.icao24 === "4aad15")!;
     const aircraftB = LIVE_FIXTURE.find((p) => p.icao24 === "4d00d9")!;

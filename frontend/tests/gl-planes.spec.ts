@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { mockFlightApi, planeTarget, renderedPlanes, setMapView, withMap } from "./helpers";
+import { mockFlightApi, planeTarget, renderedPlanes, setMapView, waitForMapReady, withMap } from "./helpers";
 
 // Planes are drawn by the map itself (map/planes.ts): symbol layers on the GL
 // canvas, not DOM elements. These check what that drawing has to get right:
@@ -37,7 +37,7 @@ async function serve(page: Page, list: Plane[] | (() => Plane[]), zoom: number, 
     return route.fulfill({ json: current().filter((p) => q && p.callsign.startsWith(q)) });
   });
   await page.goto("/");
-  await page.waitForSelector(".map-container", { timeout: 10_000 });
+  await waitForMapReady(page);
   await setMapView(page, at.lat, at.lon, zoom);
 }
 

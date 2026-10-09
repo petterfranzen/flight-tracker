@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { pickNonOverlapping, type Candidate } from "../src/map/declutter";
-import { mockFlightApi, renderedPlanes, setMapView } from "./helpers";
+import { mockFlightApi, renderedPlanes, setMapView, waitForMapReady } from "./helpers";
 
 // No clustering: planes are big, and where two would overlap on screen only the
 // first discovered one is drawn (map/declutter.ts). Discovery order is the
@@ -34,7 +34,7 @@ async function serve(page: Page, list: ReturnType<typeof plane>[], zoom = 8) {
   await mockFlightApi(page);
   await page.route(/\/api\/flights\/live(\?|$)/, (route) => route.fulfill({ json: list }));
   await page.goto("/");
-  await page.waitForSelector(".map-container", { timeout: 10_000 });
+  await waitForMapReady(page);
   await setMapView(page, BASE.lat, BASE.lon, zoom);
 }
 

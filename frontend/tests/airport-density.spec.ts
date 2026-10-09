@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { clickAirport, mockFlightApi, renderedAirports, setMapView, withMap } from "./helpers";
+import { clickAirport, mockFlightApi, renderedAirports, setMapView, waitForMapReady, withMap } from "./helpers";
 
 // Two real entries from worldMapData.ts, picked because they sit close
 // together in southern Sweden but at opposite ends of Natural Earth's
@@ -30,7 +30,7 @@ test.describe("airport density by zoom", () => {
   test("zoomed out, only the most significant airports are drawn", async ({ page }) => {
     await mockFlightApi(page);
     await page.goto("/");
-    await page.waitForSelector(".map-container", { timeout: 10_000 });
+    await waitForMapReady(page);
 
     await setMapView(page, SWEDEN.lat, SWEDEN.lon, WORLD_ZOOM);
 
@@ -43,7 +43,7 @@ test.describe("airport density by zoom", () => {
   test("zooming in reveals the smaller ones", async ({ page }) => {
     await mockFlightApi(page);
     await page.goto("/");
-    await page.waitForSelector(".map-container", { timeout: 10_000 });
+    await waitForMapReady(page);
 
     await setMapView(page, SWEDEN.lat, SWEDEN.lon, WORLD_ZOOM);
     await drawn(page, MINOR).toBe(0);
@@ -58,7 +58,7 @@ test.describe("airport density by zoom", () => {
   test("the drawn count grows as you zoom in", async ({ page }) => {
     await mockFlightApi(page);
     await page.goto("/");
-    await page.waitForSelector(".map-container", { timeout: 10_000 });
+    await waitForMapReady(page);
 
     // Only airports in view are drawn, so the raw count shrinks as the view
     // narrows. Count inside one fixed geographic box instead (the view at the
@@ -75,7 +75,19 @@ test.describe("airport density by zoom", () => {
     for (const zoom of [WORLD_ZOOM, 5, 7, CLOSE_ZOOM]) {
       await setMapView(page, SWEDEN.lat, SWEDEN.lon, zoom);
       await expect.poll(async () => (await renderedAirports(page)).length, { timeout: 10_000 }).toBeGreaterThan(0);
-      counts.push(await countInBox(page));
+      // Symbols are placed over several frames: count once two reads agree.
+      let count = -1;
+      await expect
+        .poll(
+          async () => {
+            const prev = count;
+            count = await countInBox(page);
+            return count === prev;
+          },
+          { timeout: 10_000, intervals: [250] },
+        )
+        .toBe(true);
+      counts.push(count);
     }
 
     // Not asserting exact counts: they move with the Natural Earth source and
@@ -89,7 +101,7 @@ test.describe("airport density by zoom", () => {
   test("only airports in view are drawn, and panning brings in the next ones", async ({ page }) => {
     await mockFlightApi(page);
     await page.goto("/");
-    await page.waitForSelector(".map-container", { timeout: 10_000 });
+    await waitForMapReady(page);
 
     // At the closest zoom every one of the 878 airports passes the rank rule;
     // only those in view may be drawn. (Was 878 DOM markers for a view of ~10.)
@@ -107,7 +119,7 @@ test.describe("airport density by zoom", () => {
   test("an airport stays clickable once it appears", async ({ page }) => {
     await mockFlightApi(page);
     await page.goto("/");
-    await page.waitForSelector(".map-container", { timeout: 10_000 });
+    await waitForMapReady(page);
 
     await setMapView(page, SWEDEN.lat, SWEDEN.lon, CLOSE_ZOOM);
     await drawn(page, MINOR).toBe(1);

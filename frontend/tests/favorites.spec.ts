@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { findMarkerNear, LIVE_FIXTURE, mockFlightApi, setMapView, waitForPlanes } from "./helpers";
+import { findMarkerNear, LIVE_FIXTURE, mockFlightApi, setMapView, waitForMapReady, waitForPlanes } from "./helpers";
 
 // One basic journey, covering the aircraft-favorite path end to end
 // (toggle from the details panel -> persists to localStorage -> shows up
@@ -15,7 +15,7 @@ test.describe("favorites", () => {
   test("favoriting an aircraft persists it, shows it live in the panel, and it can be selected and removed from there", async ({ page }) => {
     await mockFlightApi(page);
     await page.goto("/");
-    await page.waitForSelector(".map-container", { timeout: 10_000 });
+    await waitForMapReady(page);
 
     const target = LIVE_FIXTURE.find((p) => p.icao24 === "4aad15")!;
     await setMapView(page, target.latitude, target.longitude, 11);
@@ -33,7 +33,7 @@ test.describe("favorites", () => {
 
     // Persisted client-side (see favorites.ts) — a reload must not lose it.
     await page.reload();
-    await page.waitForSelector(".map-container", { timeout: 10_000 });
+    await waitForMapReady(page);
 
     const favoritesToggle = page.locator(".favorites-panel-toggle");
     await expect(favoritesToggle).toHaveText("★ Favorites (1) ▼");

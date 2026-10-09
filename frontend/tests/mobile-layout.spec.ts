@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { findMarkerNear, LIVE_FIXTURE, mockFlightApi, setMapView, waitForPlanes } from "./helpers";
+import { findMarkerNear, LIVE_FIXTURE, mockFlightApi, setMapView, settledBox, waitForMapReady, waitForPlanes } from "./helpers";
 
 // Verifies the mobile hide-by-default/reveal-on-demand treatment (see
 // MOBILE_BREAKPOINT_PX in FlightMap.tsx) without disturbing desktop: every
@@ -14,7 +14,7 @@ test.describe("mobile layout", () => {
     await page.setViewportSize(MOBILE_VIEWPORT);
     await mockFlightApi(page);
     await page.goto("/");
-    await page.waitForSelector(".map-container", { timeout: 10_000 });
+    await waitForMapReady(page);
 
     await expect(page.locator(".app-header")).toBeHidden();
 
@@ -43,7 +43,7 @@ test.describe("mobile layout", () => {
     await page.setViewportSize(MOBILE_VIEWPORT);
     await mockFlightApi(page);
     await page.goto("/");
-    await page.waitForSelector(".map-container", { timeout: 10_000 });
+    await waitForMapReady(page);
 
     // Blocking zoom via the viewport meta would "fix" this at the cost of accessibility.
     const viewport = await page.locator('meta[name="viewport"]').getAttribute("content");
@@ -69,7 +69,7 @@ test.describe("mobile layout", () => {
     await page.setViewportSize(MOBILE_VIEWPORT);
     await mockFlightApi(page);
     await page.goto("/");
-    await page.waitForSelector(".map-container", { timeout: 10_000 });
+    await waitForMapReady(page);
 
     const target = LIVE_FIXTURE.find((p) => p.icao24 === "4aad15")!;
     await setMapView(page, target.latitude, target.longitude, 11);
@@ -113,7 +113,7 @@ test.describe("mobile layout", () => {
     await page.setViewportSize(MOBILE_VIEWPORT);
     await mockFlightApi(page);
     await page.goto("/");
-    await page.waitForSelector(".map-container", { timeout: 10_000 });
+    await waitForMapReady(page);
 
     // Chromium's dvh equals vh, so this can't be observed by measuring: on iOS
     // Safari 100vh is the viewport with toolbars collapsed, which pushes the
@@ -176,7 +176,7 @@ test.describe("mobile layout", () => {
       }),
     );
     await page.goto("/");
-    await page.waitForSelector(".map-container", { timeout: 10_000 });
+    await waitForMapReady(page);
     const target = LIVE_FIXTURE.find((p) => p.icao24 === "4aad15")!;
     await setMapView(page, target.latitude, target.longitude, 11);
     await waitForPlanes(page);
@@ -212,7 +212,7 @@ test.describe("mobile layout", () => {
     await page.setViewportSize(MOBILE_VIEWPORT);
     await mockFlightApi(page);
     await page.goto("/");
-    await page.waitForSelector(".map-container", { timeout: 10_000 });
+    await waitForMapReady(page);
     const attribution = page.locator(".maplibregl-ctrl-attrib");
     await expect(attribution).toBeVisible();
     await expect(attribution).not.toContainText("MapLibre"); // the library credit is dropped on phones; the data credits stay
@@ -226,7 +226,7 @@ test.describe("mobile layout", () => {
     await page.setViewportSize(MOBILE_VIEWPORT);
     await mockFlightApi(page);
     await page.goto("/");
-    await page.waitForSelector(".map-container", { timeout: 10_000 });
+    await waitForMapReady(page);
 
     const target = LIVE_FIXTURE.find((p) => p.icao24 === "4aad15")!;
     await setMapView(page, target.latitude, target.longitude, 11);
@@ -235,21 +235,20 @@ test.describe("mobile layout", () => {
 
     const marker = await findMarkerNear(page, target.latitude, target.longitude);
     await marker.click();
-    await page.waitForTimeout(900); // flyTo's own 800ms animation + resize/reflow
 
     const panel = page.locator(".details-panel");
     await expect(panel).toBeVisible();
-    const box = await panel.boundingBox();
-    expect(box).not.toBeNull();
+    // Once it has stopped re-rendering and moving, however long that takes.
+    const box = await settledBox(panel);
     // Bottom sheet: full viewport width, anchored to the bottom, not a
     // ~300px-wide column on the right (the desktop layout).
-    expect(box!.width).toBeGreaterThan(MOBILE_VIEWPORT.width * 0.9);
+    expect(box.width).toBeGreaterThan(MOBILE_VIEWPORT.width * 0.9);
     // Within 15px, not exact — a scrollbar can shave a few px off the
     // effective viewport, which isn't the thing under test here.
-    expect(Math.abs(box!.y + box!.height - MOBILE_VIEWPORT.height)).toBeLessThan(15);
+    expect(Math.abs(box.y + box.height - MOBILE_VIEWPORT.height)).toBeLessThan(15);
     // Collapsed default: a short peek (handle, callsign, last update) so the
     // map keeps most of the screen, not the old third of it.
-    expect(box!.height).toBeLessThanOrEqual(MOBILE_VIEWPORT.height * 0.22);
+    expect(box.height).toBeLessThanOrEqual(MOBILE_VIEWPORT.height * 0.22);
     await expect(page.locator(".details-panel h2")).toBeVisible();
     await expect(page.locator(".details-panel-updated")).toBeVisible();
     await expect(page.locator(".details-panel-fields")).toBeHidden();
@@ -261,37 +260,39 @@ test.describe("mobile layout", () => {
     // sit above the sheet, not underneath it (the old absolute-overlay
     // sheet left the map at full height, so flyTo centered the marker at
     // the *container's* true center — right behind the sheet).
-    const collapsedMarker = await findMarkerNear(page, target.latitude, target.longitude);
-    const collapsedMarkerBox = await collapsedMarker.boundingBox();
-    expect(collapsedMarkerBox).not.toBeNull();
-    expect(collapsedMarkerBox!.y + collapsedMarkerBox!.height).toBeLessThan(box!.y);
+    // Retried until the selection's flyTo (800 ms, longer on a busy machine) has landed.
+    await expect(async () => {
+      const collapsedMarkerBox = await (await findMarkerNear(page, target.latitude, target.longitude)).boundingBox();
+      expect(collapsedMarkerBox).not.toBeNull();
+      expect(collapsedMarkerBox!.y + collapsedMarkerBox!.height).toBeLessThan(box.y);
+    }).toPass({ timeout: 5_000 });
 
     await page.screenshot({ path: "/tmp/mobile-layout-dossier-collapsed.png" });
 
     // Expand: sheet grows to fit its content, map shrinks, plane re-centers
     // within that smaller area and must still clear the (now much taller) sheet.
     await page.locator(".details-panel-expand-toggle").click();
-    await page.waitForTimeout(800); // CSS height transition (250ms) + panTo's 500ms
     await expect(page.locator(".details-panel-fields")).toBeVisible();
     await expect(page.locator(".details-panel-favorite-toggles")).toBeVisible();
-    const expandedBox = await panel.boundingBox();
+    const expandedBox = await settledBox(panel); // after the CSS height transition (250 ms)
     // Content-sized, between the collapsed third and the 78% cap.
-    expect(expandedBox!.height).toBeGreaterThan(box!.height);
-    expect(expandedBox!.height).toBeLessThanOrEqual(MOBILE_VIEWPORT.height * 0.78 + 1);
+    expect(expandedBox.height).toBeGreaterThan(box.height);
+    expect(expandedBox.height).toBeLessThanOrEqual(MOBILE_VIEWPORT.height * 0.78 + 1);
 
-    const expandedMarker = await findMarkerNear(page, target.latitude, target.longitude);
-    const expandedMarkerBox = await expandedMarker.boundingBox();
-    expect(expandedMarkerBox).not.toBeNull();
-    expect(expandedMarkerBox!.y + expandedMarkerBox!.height).toBeLessThan(expandedBox!.y);
+    // Retried until the re-centring panTo (500 ms) has landed.
+    await expect(async () => {
+      const expandedMarkerBox = await (await findMarkerNear(page, target.latitude, target.longitude)).boundingBox();
+      expect(expandedMarkerBox).not.toBeNull();
+      expect(expandedMarkerBox!.y + expandedMarkerBox!.height).toBeLessThan(expandedBox.y);
+    }).toPass({ timeout: 5_000 });
 
     await page.screenshot({ path: "/tmp/mobile-layout-dossier-expanded.png" });
 
     // Collapse back: height and marker position both return to the peek.
     await page.locator(".details-panel-expand-toggle").click();
-    await page.waitForTimeout(800);
     await expect(page.locator(".details-panel-fields")).toBeHidden();
-    const recollapsedBox = await panel.boundingBox();
-    expect(Math.abs(recollapsedBox!.height - box!.height)).toBeLessThan(2);
+    const recollapsedBox = await settledBox(panel);
+    expect(Math.abs(recollapsedBox.height - box.height)).toBeLessThan(2);
 
     await page.locator(".details-panel-close-x").click();
     await expect(panel).toBeHidden();
@@ -301,7 +302,7 @@ test.describe("mobile layout", () => {
     await page.setViewportSize(DESKTOP_VIEWPORT);
     await mockFlightApi(page);
     await page.goto("/");
-    await page.waitForSelector(".map-container", { timeout: 10_000 });
+    await waitForMapReady(page);
 
     await expect(page.locator(".app-header")).toBeVisible();
     await expect(page.locator(".flight-search-fab")).toBeHidden();
@@ -316,18 +317,17 @@ test.describe("mobile layout", () => {
 
     const panel = page.locator(".details-panel");
     await expect(panel).toBeVisible();
-    const box = await panel.boundingBox();
-    expect(box).not.toBeNull();
+    const box = await settledBox(panel);
     // Compact card anchored ~16px from the right edge, vertically
     // centered, sized to its content and capped well under the viewport
     // height — not a full-height sidebar (see FlightMap.css's
     // .details-panel comment: that used to paint directly over
     // .tracked-chip, which shares the same top-right corner).
-    expect(box!.width).toBeLessThan(320);
-    expect(Math.abs(box!.x + box!.width - (DESKTOP_VIEWPORT.width - 16))).toBeLessThan(5);
-    const verticalCenter = box!.y + box!.height / 2;
+    expect(box.width).toBeLessThan(320);
+    expect(Math.abs(box.x + box.width - (DESKTOP_VIEWPORT.width - 16))).toBeLessThan(5);
+    const verticalCenter = box.y + box.height / 2;
     expect(Math.abs(verticalCenter - DESKTOP_VIEWPORT.height / 2)).toBeLessThan(5);
-    expect(box!.height).toBeLessThan(DESKTOP_VIEWPORT.height - 150);
+    expect(box.height).toBeLessThan(DESKTOP_VIEWPORT.height - 150);
 
     await page.screenshot({ path: "/tmp/desktop-layout-dossier-panel.png" });
   });
