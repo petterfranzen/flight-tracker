@@ -54,6 +54,8 @@ test.describe("wheel and touchpad zoom", () => {
   });
 
   test("a touchpad pinch (a ctrl+wheel stream) zooms continuously, not in one jump", async ({ page }) => {
+    // 80 rendered frames: on a busy machine (software WebGL) that alone can outlast the default 30 s.
+    test.slow();
     await openAt(page, 7);
     // Small ctrl+wheel deltas every frame, the way a touchpad reports a
     // pinch; the zoom is sampled after each one.

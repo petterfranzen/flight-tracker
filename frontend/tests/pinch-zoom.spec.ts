@@ -35,5 +35,7 @@ test("a pinch ends at a fractional zoom (no snap to a whole level)", async ({ pa
   const z = await zoom();
   expect(z).toBeGreaterThan(7.2);
   expect(z).toBeLessThan(8);
-  expect(Math.abs(z - Math.round(z))).toBeGreaterThan(0.05);
+  // A snap lands exactly on the level. How far a synthesized pinch gets
+  // varies with load (0.96 of a level has been seen), so not by a margin.
+  expect(Math.abs(z - Math.round(z))).toBeGreaterThan(0.005);
 });

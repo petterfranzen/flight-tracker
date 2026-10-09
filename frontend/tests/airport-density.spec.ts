@@ -75,7 +75,19 @@ test.describe("airport density by zoom", () => {
     for (const zoom of [WORLD_ZOOM, 5, 7, CLOSE_ZOOM]) {
       await setMapView(page, SWEDEN.lat, SWEDEN.lon, zoom);
       await expect.poll(async () => (await renderedAirports(page)).length, { timeout: 10_000 }).toBeGreaterThan(0);
-      counts.push(await countInBox(page));
+      // Symbols are placed over several frames: count once two reads agree.
+      let count = -1;
+      await expect
+        .poll(
+          async () => {
+            const prev = count;
+            count = await countInBox(page);
+            return count === prev;
+          },
+          { timeout: 10_000, intervals: [250] },
+        )
+        .toBe(true);
+      counts.push(count);
     }
 
     // Not asserting exact counts: they move with the Natural Earth source and
