@@ -18,7 +18,7 @@ import {
   restartPolling,
   subscribeLiveFeed,
 } from "./api/flightApi";
-import { boundsFromMap, createFollowSelected, createMap, DEFAULT_VIEW } from "./map/map";
+import { boundsFromMap, createFollowSelected, createMap, DEFAULT_VIEW, GPUInitializationError } from "./map/map";
 import { createPlaneLayer, planeBoxSize } from "./map/planes";
 import { declutterCellDeg, pickNonOverlapping, type Candidate } from "./map/declutter";
 import { isSmallScreen } from "./map/screen";
@@ -35,6 +35,7 @@ import * as legend from "./ui/legend";
 import * as dossierPanel from "./ui/dossierPanel";
 import * as bootScreen from "./ui/bootScreen";
 import * as resumeDialog from "./ui/resumeDialog";
+import * as webglNotice from "./ui/webglNotice";
 // Self-hosted cyberpunk face (latin subset).
 import "@fontsource/jetbrains-mono/latin-500.css";
 import "@fontsource/jetbrains-mono/latin-600.css";
@@ -918,4 +919,13 @@ function boot(): void {
   applyInitialView().then(() => handleViewportChange(boundsFromMap(map), map.getZoom(), true));
 }
 
-boot();
+try {
+  boot();
+} catch (err) {
+  // No WebGL2 for the map: say how to turn it on instead of leaving a dead
+  // page. createMap is the first thing in boot() that can throw this, before
+  // any fetch, timer or live feed has started, so there's nothing to stop.
+  if (!(err instanceof GPUInitializationError)) throw err;
+  console.error(err);
+  webglNotice.mount(document.getElementById("root")!, err.statusMessage);
+}

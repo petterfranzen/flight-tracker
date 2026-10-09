@@ -288,6 +288,11 @@ export interface MapController {
   destroy(): void;
 }
 
+// What createMap throws when the browser gives the map no WebGL2 context: no
+// usable GPU, a blocklisted one, or hardware acceleration turned off (main.ts
+// shows ui/webglNotice.ts instead of the app).
+export { GPUInitializationError } from "maplibre-gl";
+
 /**
  * Creates the map: one MapLibre map rendering the cyberpunk basemap, with
  * wheel, touchpad and pinch zoom handled by MapLibre itself (continuous,
