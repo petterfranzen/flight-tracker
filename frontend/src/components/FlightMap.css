@@ -529,6 +529,48 @@ html, body {
 }
 .resume-dialog-button:hover { filter: brightness(1.1); }
 
+/* Replaces the whole app when the browser gives the map no WebGL2 context
+   (ui/webglNotice.ts). The panel is a .resume-dialog for the theme's facets;
+   margin:auto rather than centring the flex box keeps a panel taller than
+   a small screen scrollable from its top. */
+.webgl-notice-backdrop {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  padding: 16px;
+  overflow-y: auto;
+  background: var(--color-bg);
+  /* .app-shell sets these for everything else; this replaces it. */
+  font-family: var(--font-ui);
+  color: var(--color-text);
+}
+.webgl-notice {
+  width: min(460px, 100%);
+  margin: auto;
+  text-align: left;
+}
+.webgl-notice p {
+  margin-bottom: 12px;
+}
+.webgl-notice ul {
+  margin: 0 0 20px;
+  padding-left: 20px;
+  font-size: 14px;
+  color: var(--color-text-muted);
+}
+.webgl-notice li + li { margin-top: 6px; }
+.webgl-notice code {
+  font-family: var(--font-data);
+  color: var(--color-accent);
+  overflow-wrap: anywhere;
+}
+.webgl-notice .webgl-notice-detail {
+  margin-bottom: 20px;
+  font-family: var(--font-data);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
 .map-container {
   width: 100%;
   height: 100%;
