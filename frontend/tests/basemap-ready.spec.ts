@@ -33,12 +33,30 @@ async function stubTiles(page: Page, opts: { dead?: boolean; hold?: boolean } = 
 test("the boot screen waits for the basemap's tiles, then lifts", async ({ page }) => {
   const tiles = await stubTiles(page, { hold: true });
   await mockFlightApi(page, { realTiles: true });
+  // When the boot screen went up, in page time.
+  await page.addInitScript(() => {
+    new MutationObserver((_, observer) => {
+      if (!document.querySelector(".boot-screen")) return;
+      (window as unknown as { bootShownAt: number }).bootShownAt = performance.now();
+      observer.disconnect();
+    }).observe(document, { childList: true, subtree: true });
+  });
   await page.goto("/");
   await page.waitForSelector(".boot-screen");
-  await expect.poll(tiles.requested, { timeout: 10_000 }).toBeGreaterThan(0);
   // Aircraft data is long in (it's mocked); only the basemap is outstanding.
-  await page.waitForTimeout(1_500);
-  await expect(page.locator(".boot-screen")).not.toHaveClass(/boot-screen--hidden/);
+  // Looked at by a page timer due 3 s after the screen went up: past its own
+  // minimum (2.6 s) and before the basemap cap (5 s from the same boot).
+  // Timers run in due order, so this one runs first however busy the machine
+  // is (a test-side wait after goto could land past the cap).
+  const heldAt3s = await page.evaluate(
+    () =>
+      new Promise<boolean>((resolve) => {
+        const shownAt = (window as unknown as { bootShownAt: number }).bootShownAt;
+        setTimeout(() => resolve(!document.querySelector(".boot-screen--hidden") && !!document.querySelector(".boot-screen")), shownAt + 3_000 - performance.now());
+      }),
+  );
+  expect(heldAt3s, "boot screen still up while the tiles are held").toBe(true);
+  await expect.poll(tiles.requested, { timeout: 10_000 }).toBeGreaterThan(0);
   tiles.release();
   await page.waitForSelector(BOOT_HIDDEN, { timeout: 5_000 });
 });

@@ -916,7 +916,13 @@ function boot(): void {
   // Initial viewport report — equivalent to the original ViewportReporter's
   // own mount-time call, fired only now that every layer it can cascade
   // into (markers, clusters, route) exists.
-  applyInitialView().then(() => handleViewportChange(boundsFromMap(map), map.getZoom(), true));
+  applyInitialView().then(() => {
+    handleViewportChange(boundsFromMap(map), map.getZoom(), true);
+    // Tests drive the map only after this (tests/helpers.ts waitForMapReady):
+    // until here the opening view can still move it, and its first request
+    // would land on top of the test's own.
+    mapRoot.dataset.ready = "true";
+  });
 }
 
 try {

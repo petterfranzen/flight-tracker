@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { mockFlightApi, setMapView, withMap } from "./helpers";
+import { mockFlightApi, setMapView, waitForMapReady, withMap } from "./helpers";
 
 // Wheel and touchpad zoom are MapLibre's own (map/map.ts): continuous and
 // fractional, and every input counts. One 100 px mouse-wheel notch is about
@@ -18,7 +18,7 @@ async function settled(page: Page): Promise<void> {
 async function openAt(page: Page, z: number): Promise<void> {
   await mockFlightApi(page);
   await page.goto("/");
-  await page.waitForSelector(".map-container", { timeout: 10_000 });
+  await waitForMapReady(page);
   await page.waitForSelector("body:not(:has(.boot-screen))", { timeout: 15_000 }); // it covers the map until then
   await setMapView(page, 59.3, 18.0, z);
   const box = (await page.locator(".map-container").boundingBox())!;
@@ -127,7 +127,7 @@ test.describe("data stays keyed by whole zoom levels", () => {
       return route.fulfill({ json: { planes: [], clusters: [] } });
     });
     await page.goto("/");
-    await page.waitForSelector(".map-container", { timeout: 10_000 });
+    await waitForMapReady(page);
 
     await setMapView(page, 59.3, 18.0, 6);
     await expect.poll(() => grids.length, { timeout: 5_000 }).toBeGreaterThan(0);

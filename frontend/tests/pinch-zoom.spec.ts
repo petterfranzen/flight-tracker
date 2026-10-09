@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { mockFlightApi, setMapView, withMap } from "./helpers";
+import { mockFlightApi, setMapView, waitForMapReady, withMap } from "./helpers";
 
 // A two-finger pinch (real touch events through Chromium's gesture synthesis) zooms the map with
 // MapLibre's own touch zoom, and ends wherever the fingers stopped: no snap back to a whole level.
@@ -8,7 +8,7 @@ test.use({ hasTouch: true, viewport: { width: 400, height: 800 } });
 async function setup(page: import("@playwright/test").Page) {
   await mockFlightApi(page);
   await page.goto("/");
-  await page.waitForSelector(".map-container", { timeout: 10_000 });
+  await waitForMapReady(page);
   await page.waitForSelector(".boot-screen--hidden, body:not(:has(.boot-screen))", { timeout: 15_000 });
   await setMapView(page, 59.3, 18.0, 7);
   const cdp = await page.context().newCDPSession(page);

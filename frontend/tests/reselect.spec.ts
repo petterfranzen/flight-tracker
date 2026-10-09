@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { findMarkerNear, LIVE_FIXTURE, mockFlightApi, setMapView, waitForPlanes, withMap } from "./helpers";
+import { findMarkerNear, LIVE_FIXTURE, mockFlightApi, setMapView, waitForMapReady, waitForPlanes, withMap } from "./helpers";
 
 // Selecting a second aircraft while one is already selected has to fly the
 // map to the *new* one. Reported sequence: zoom in near ARN, select a
@@ -30,7 +30,7 @@ const centre = (page: import("@playwright/test").Page) =>
 test("selecting a second aircraft flies to it, not back to the first", async ({ page }) => {
   await mockFlightApi(page);
   await page.goto("/");
-  await page.waitForSelector(".map-container", { timeout: 10_000 });
+  await waitForMapReady(page);
 
   await selectAt(page, first);
   let c = await centre(page);

@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { findMarkerNear, LIVE_FIXTURE, mockFlightApi, setMapView, waitForPlanes, withMap } from "./helpers";
+import { findMarkerNear, LIVE_FIXTURE, mockFlightApi, setMapView, waitForMapReady, waitForPlanes, withMap } from "./helpers";
 
 // A selected aircraft that is on the ground and slow (taxiing/parked) gets
 // a much closer zoom than an airborne one (see isTaxiing in map.ts).
@@ -19,7 +19,7 @@ test.describe("selecting a grounded aircraft", () => {
   test("zooms in far closer for a parked plane than the normal selection zoom", async ({ page }) => {
     await mockFlightApi(page);
     await page.goto("/");
-    await page.waitForSelector(".map-container", { timeout: 10_000 });
+    await waitForMapReady(page);
     // 4aab15: onGround, 0 m/s in the live fixture.
     expect(await selectAt(page, "4aab15", 12)).toBeGreaterThanOrEqual(16);
   });
@@ -27,7 +27,7 @@ test.describe("selecting a grounded aircraft", () => {
   test("an airborne aircraft keeps the normal selection zoom", async ({ page }) => {
     await mockFlightApi(page);
     await page.goto("/");
-    await page.waitForSelector(".map-container", { timeout: 10_000 });
+    await waitForMapReady(page);
     expect(await selectAt(page, "4aad15", 11)).toBeLessThan(14);
   });
 });

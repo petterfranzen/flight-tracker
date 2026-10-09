@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { mockFlightApi } from "./helpers";
+import { mockFlightApi, waitForMapReady } from "./helpers";
 
 // A map that caches its container size and only re-reads it on a window
 // resize breaks on phones, where the container changes size without one
@@ -10,7 +10,7 @@ test.describe("map re-measures its container", () => {
   test("a container resize with no window resize is picked up", async ({ page }) => {
     await mockFlightApi(page);
     await page.goto("/");
-    await page.waitForSelector(".map-container", { timeout: 10_000 });
+    await waitForMapReady(page);
     const size = () => page.evaluate(() => {
       const c = document.querySelector(".map-container") as HTMLElement & { _flightMap: { getSize(): { x: number; y: number } } };
       return { map: c._flightMap.getSize().y, real: Math.round(c.getBoundingClientRect().height) };
@@ -28,7 +28,7 @@ test.describe("map re-measures its container", () => {
   test("?debug shows the diagnostics panel; without it there is none", async ({ page }) => {
     await mockFlightApi(page);
     await page.goto("/");
-    await page.waitForSelector(".map-container", { timeout: 10_000 });
+    await waitForMapReady(page);
     await expect(page.locator("pre", { hasText: "container" })).toHaveCount(0);
     await page.goto("/?debug");
     await expect(page.locator("pre", { hasText: /container \d+x\d+\s+map \d+x\d+/ })).toBeVisible({ timeout: 10_000 });
