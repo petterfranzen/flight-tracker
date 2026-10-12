@@ -60,8 +60,13 @@ test.describe("coverage-gap status line", () => {
   });
 
   test("COVERAGE_LOST with a landing prediction adds the time and runway; under 1 km reads in metres", async ({ page }) => {
-    await open(page, () => status({ landing: LANDING, estimate: { ...status({}).estimate!, radiusM: 800 } }));
-    await expect(statusLine(page)).toHaveText("Coverage lost · est. ±800 m · landing ~11:03 ESSA 19R");
+    await open(page, () => status({ landing: LANDING, estimate: { ...status({}).estimate!, radiusM: 643 } }));
+    await expect(statusLine(page)).toHaveText("Coverage lost · est. ±640 m · landing ~11:03 ESSA 19R");
+  });
+
+  test("from 10 km the radius is whole kilometres, as in the backend's label", async ({ page }) => {
+    await open(page, () => status({ estimate: { ...status({}).estimate!, radiusM: 43_400 } }));
+    await expect(statusLine(page)).toHaveText("Coverage lost · est. ±43 km");
   });
 
   test("LANDED_INFERRED shows the probability and runway", async ({ page }) => {
