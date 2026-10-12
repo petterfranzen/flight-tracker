@@ -62,7 +62,9 @@ function formatClockTime(iso: string): string {
 }
 
 function formatRadius(radiusM: number): string {
-  return radiusM < 1000 ? `${Math.round(radiusM)} m` : `${(radiusM / 1000).toFixed(1)} km`;
+  // Same steps as the backend's status label: 10 m under 1 km, one decimal under 10 km, whole km above.
+  if (radiusM < 1000) return `${Math.round(radiusM / 10) * 10} m`;
+  return radiusM < 10_000 ? `${(radiusM / 1000).toFixed(1)} km` : `${Math.round(radiusM / 1000)} km`;
 }
 
 /** The dossier's status line for an aircraft that is not live; null when there is nothing to say (LIVE). */

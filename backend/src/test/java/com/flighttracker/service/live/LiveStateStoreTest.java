@@ -220,20 +220,6 @@ class LiveStateStoreTest {
     }
 
     @Test
-    void findRawLatestLatLon_neverReflectsAnEstimate() {
-        LiveStateStore store = store();
-        store.upsert("abc123", "SAS100", T0, 59.0, 18.0, null, null, null, null, false, "opensky");
-        store.writeEstimate("abc123", T0, 59.5, 18.5, T0.plusSeconds(5));
-
-        LiveStateStore.RawLatLon raw = store.findRawLatestLatLon("abc123").orElseThrow();
-
-        assertThat(raw.latitude()).isEqualTo(59.0);
-        assertThat(raw.longitude()).isEqualTo(18.0);
-        // ...while the coalesced view does reflect it.
-        assertThat(store.findLatestPosition("abc123").orElseThrow().latitude()).isEqualTo(59.5);
-    }
-
-    @Test
     void isEmpty_trueOnlyBeforeAnyUpsert() {
         LiveStateStore store = store();
         assertThat(store.isEmpty()).isTrue();

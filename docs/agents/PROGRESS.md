@@ -9,7 +9,7 @@ continue from **Next task**.
 ## Status
 
 - **Current phase:** 1 (physics estimate, state machine, UI)
-- **Next task:** P1-R (Phase 1 review, running), then fix its findings and open the Phase 1 PR. Implementers work in worktrees and the orchestrator cherry-picks their commits onto the phase 1 branch.
+- **Next task:** P1-F (review fixes, running). Then open the Phase 1 PR, merge phase 1 into the phase 2 and phase 3 branches, and run the P2 review. P3 (provider-neutral) is running in parallel. Implementers work in worktrees and the orchestrator cherry-picks their commits onto the phase 1 branch.
 - **Blocked on the human:** the Phase 3 provider choice (see `provider-research.md`). Phases 1 and 2 continue meanwhile.
 
 ## Branches and PRs
@@ -34,9 +34,13 @@ branch. Never merge to `main`; the human merges.
 | P1-B | Pure `CoverageGapEstimator` (Kalman/dead reckoning, runway match, time to touchdown, landed probability) and scenario unit tests | implementer | none | done (a84c0a9): 15 scenario tests |
 | P1-C | Backend wiring: poll-coverage tracker, `EstimatorAgent` on the new estimator, `TrackStatus` on `LiveAircraft`, `GET /api/flights/{icao24}/status`, dossier text | implementer | P1-A, P1-B | done (cd685da, 3bf639a, 636bbf7): backend 179 tests, blackbox 23/23 |
 | P1-D | Frontend: status line with confidence and source, uncertainty cone GL layer, status polling, Playwright tests | implementer | contract below | done (a9c2ab9): 13 new Playwright tests |
-| P1-R | Review Phase 1: diff, all quality gates, check against the brief | reviewer | P1-C, P1-D | running |
-| P2-* | Training data capture (plan below) | | Phase 1 | todo |
-| P3-* | Provider interface, mock provider, upgrade logic (plan below) | | Phase 2 | todo |
+| P1-R | Review Phase 1: diff, all quality gates, check against the brief | reviewer | P1-C, P1-D | done: no blockers, 4 should-fix (`reviews/phase1.md`) |
+| P1-F | Fix the P1-R should-fix items 1–4 and nits 5, 6, 7, 10, 11, 12 | implementer | P1-R | running |
+| P2 | Training data capture: tables, capture and label service, retention, `LandingModel` stub (plan below) | implementer | Phase 1 | done (801b70e on `claude/coverage-gap-phase2`): 198 backend tests |
+| P2-R | Review Phase 2 | reviewer | P2, P1 fixes merged in | todo |
+| P3 | Provider SPI, framework-level cache and rate limit, `ConfirmationStore`, upgrade service, mock provider, UI tweaks (no real provider) | implementer | Phase 2 | done (4d52beb, 2aaefff on `claude/coverage-gap-phase3`): backend 252 tests, coverage-status 15/15 |
+| P3-R | Review Phase 2 + 3 | reviewer | P1-F merged forward | todo |
+| P3-real | Real provider (the human chooses) | implementer | the human's choice | blocked: checkpoint |
 
 ## Phase 0 findings (summary)
 
@@ -198,6 +202,8 @@ stateDiagram-v2
 
 ## Open questions
 
+- **For the human:** training-data volume. P2 estimates 8k–25k feature rows/day, about 5–15 MB/day, so 2–5 GB at the default 365-day retention. The knobs are `flighttracker.training.max-altitude-m` (default 4000; 2000 cuts most general-aviation noise) and `retention-days` (default 365; 180 halves it). Measure with `SELECT COUNT(*) FROM track_end_feature` after a day live.
+- Should a learned model be allowed to change the `state`, not just the probability? Decision for now: no. In Phase 2 the model replaces the probability and the confidence only (source `model`). Revisit in Phase 4.
 - The cone radius at low level grows fast (σa = 1 m/s² gives about 3.6 km at +3 min on approach and over 100 km after 30 min at low level). That's honest, but it may look alarming. Revisit after seeing it live, by lowering σa or capping what is drawn.
 
 ## Log
@@ -226,3 +232,17 @@ stateDiagram-v2
   position, so the elapsed time was counted twice. The dossier label renders landing time in UTC,
   while the frontend renders it in local time; the UI uses the frontend label.
   Open: should `/status` return 404 for aircraft silent > 12 h that are not yet evicted? It currently mirrors `/live`.
+- 2026-10-12: P2 done (801b70e, pushed as `claude/coverage-gap-phase2`, stacked on 4cd1944).
+  - Tables: `track_end_feature` and `track_end_label`.
+  - Writes are queued per tick and flushed in one transaction.
+  - Labels: an ADS-B resume gives `adsb_ground` or `adsb_airborne`.
+  - Provider confirmation: `TrainingDataService.recordConfirmedLanding`. It overrides an airborne label only when the landing time is at or before `resumed_at`.
+  - Retention defaults to 365 days, pruned in `PositionRetentionService`.
+  - `LandingModel` with a no-op `NoLandingModel`. A real model must be `@Primary`.
+- 2026-10-12: P3 (provider-neutral) done and pushed as `claude/coverage-gap-phase3`.
+  - `ConfirmationGateway` does pacing, the daily budget, `PollBackoff` and the TTL cache for every provider.
+  - `ArrivalConfirmationService` picks candidates; `ConfirmationStore` keeps confirmations monotonic.
+  - `MockArrivalProvider` is off by default (`FLIGHTTRACKER_CONFIRMATION_MOCK_ENABLED=true` turns it on).
+  - The frontend refetches every 60 s while LANDED_INFERRED.
+  - The scheduler pool went from 9 to 10.
+  - Note: tune `daily-budget` per provider (AeroDataBox's free tier is 400/month).

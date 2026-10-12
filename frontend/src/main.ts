@@ -3,7 +3,7 @@ import type { AppState } from "./state/appState";
 import { h, clear } from "./ui/h";
 import type { FavoriteAircraft, FavoriteRoute } from "./favorites";
 import { loadFavoriteAircraft, loadFavoriteRoutes, toggleFavoriteAircraft, toggleFavoriteRoute } from "./favorites";
-import type { AirportSelection, Bounds, FlightPosition, LiveMarker, LiveOverview, SelectedPosition } from "./types/flight";
+import type { AirportSelection, Bounds, FlightPosition, LiveMarker, LiveOverview, SelectedPosition, TrackStatus } from "./types/flight";
 import {
   fetchAircraftDossier,
   fetchAirportInfo,
@@ -608,12 +608,34 @@ function boot(): void {
     store.set("trackStatus", null);
     uncertaintyLayer.update(null);
   }
+  /**
+   * The cone refreshes every 15 s while coverage is lost, but the /live poll
+   * (which also dead-reckons) only runs every 72 s, so without this the
+   * marker would trail the cone's centre by minutes of flight. The marker
+   * takes the estimate's position and keeps its heading; its observedAt is
+   * unchanged, so the trail treats it as a movable tip, not a new fix.
+   */
+  function moveSelectedToEstimate(icao24: string, status: TrackStatus): void {
+    const est = status.estimate;
+    const prev = store.get("selectedPos");
+    if (!est || !prev || prev.icao24 !== icao24) return;
+    // A real report newer than this status is already on screen: the status is the stale one.
+    if (Date.parse(prev.observedAt) > Date.parse(status.lastSeenAt)) return;
+    if (prev.latitude === est.lat && prev.longitude === est.lon) return;
+    const moved = { ...prev, latitude: est.lat, longitude: est.lon };
+    const known = positions.get(icao24);
+    if (known && !isNewer(known, moved)) positions.set(icao24, { ...known, latitude: est.lat, longitude: est.lon });
+    store.set("selectedPos", moved);
+    if (lastRouteObservedAt != null) appendRoutePoint(moved);
+    renderAircraftLayer();
+  }
   function refreshStatus(icao24: string): void {
     const seq = ++statusSeq;
     fetchFlightStatus(icao24).then((status) => {
       if (seq !== statusSeq || icao24 !== store.get("selectedId")) return; // superseded, or another plane is selected now
       store.set("trackStatus", status);
       uncertaintyLayer.update(status);
+      if (status?.estimate) moveSelectedToEstimate(icao24, status);
       const wantedMs =
         status?.state === "COVERAGE_LOST" ? COVERAGE_LOST_REFETCH_MS : status?.state === "LANDED_INFERRED" ? LANDED_INFERRED_REFETCH_MS : 0;
       if (statusTimer && statusTimerMs !== wantedMs) {

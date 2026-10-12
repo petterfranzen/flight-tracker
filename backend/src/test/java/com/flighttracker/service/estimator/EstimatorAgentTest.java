@@ -18,11 +18,16 @@ import com.flighttracker.service.training.LandingModel;
 import com.flighttracker.service.training.TrackEndFeatures;
 import com.flighttracker.service.training.NoLandingModel;
 import com.flighttracker.service.training.TrainingDataService;
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.slf4j.LoggerFactory;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -350,5 +355,37 @@ class EstimatorAgentTest {
         agent.refresh(); // the first two are cached; the third gets this tick's budget
         verify(positionRepository, times(3)).findByIcao24AndObservedAtBetween(any(), any(), any());
         verify(liveStateStore, times(5)).writeGapEstimate(any(), any(), any());
+    }
+
+    @Test
+    void snapshotLoadFailures_logOneWarnSummaryPerTick_andTheStacksAtDebug() {
+        Logger logger = (Logger) LoggerFactory.getLogger(EstimatorAgent.class);
+        Level before = logger.getLevel();
+        ListAppender<ILoggingEvent> logs = new ListAppender<>();
+        logs.start();
+        logger.addAppender(logs);
+        logger.setLevel(Level.DEBUG);
+        try {
+            Instant observedAt = NOW.minusSeconds(300);
+            tracker.recordPoll(NOW.minusSeconds(5), null);
+            givenLive(airborne("aaa111", 59.0, 18.0, observedAt),
+                    airborne("bbb222", 59.1, 18.0, observedAt),
+                    airborne("ccc333", 59.2, 18.0, observedAt));
+            when(positionRepository.findByIcao24AndObservedAtBetween(any(), any(), any()))
+                    .thenThrow(new IllegalStateException("db is down"));
+
+            newAgent().refresh();
+
+            List<ILoggingEvent> warns = logs.list.stream().filter(e -> e.getLevel() == Level.WARN).toList();
+            assertThat(warns).hasSize(1);
+            assertThat(warns.get(0).getFormattedMessage()).contains("3 of 3").contains("aaa111").contains("db is down");
+            assertThat(warns.get(0).getThrowableProxy()).isNull();
+            List<ILoggingEvent> stacks = logs.list.stream()
+                    .filter(e -> e.getLevel() == Level.DEBUG && e.getThrowableProxy() != null).toList();
+            assertThat(stacks).hasSize(3);
+        } finally {
+            logger.detachAppender(logs);
+            logger.setLevel(before);
+        }
     }
 }

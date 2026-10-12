@@ -111,6 +111,18 @@ public class AircraftController {
     // reads as unknown instead.
     private static final long MAX_PLAUSIBLE_FLIGHT_MINUTES = 20 * 60;
 
+    /**
+     * The old silence rule: a descending aircraft quiet for longer than
+     * PRESUMED_LANDED_SILENCE is presumed landed. It applies to every
+     * coverage-gap state but LANDED_INFERRED, which has its own touchdown
+     * time; in particular a COVERAGE_LOST descender with a low landing
+     * probability still stops counting flight minutes.
+     */
+    static boolean silentWhileDescending(TrackState state, boolean descendingOrLanding, Duration silence) {
+        return state != TrackState.LANDED_INFERRED && descendingOrLanding
+                && silence.compareTo(LiveVisibilityWindows.PRESUMED_LANDED_SILENCE) > 0;
+    }
+
     private AircraftDossier toDossier(Aircraft stored) {
         Instant now = clock.instant();
         Optional<Instant> legStart = positionRepository.findCurrentLegTakeoffTime(stored.icao24());
@@ -158,15 +170,16 @@ public class AircraftController {
         // recently silent to presume anything) keeps counting up to `now`
         // as before. The coverage-gap estimator's LANDED_INFERRED call is
         // the primary signal (and ends the flight at its touchdown time);
-        // the silence rule only decides for aircraft with no gap estimate.
+        // the silence rule applies to every other state, COVERAGE_LOST included,
+        // so a low-probability descender does not count flight minutes forever.
         boolean descendingOrLanding = phase == FlightPhaseClassifier.FlightPhase.DESCENDING
                 || phase == FlightPhaseClassifier.FlightPhase.LANDING;
         boolean providerConfirmed = status != null
                 && (status.state() == TrackState.LANDED_CONFIRMED || status.state() == TrackState.AT_GATE);
         boolean inferredLanded = providerConfirmed
                 || (status != null && status.state() == TrackState.LANDED_INFERRED);
-        boolean silentWhileDescending = current != null && live != null && live.gap() == null && descendingOrLanding
-                && Duration.between(current.observedAt(), now).compareTo(LiveVisibilityWindows.PRESUMED_LANDED_SILENCE) > 0;
+        boolean silentWhileDescending = current != null && live != null && !providerConfirmed
+                && silentWhileDescending(status.state(), descendingOrLanding, Duration.between(current.observedAt(), now));
         boolean presumedLanded = current != null && (phase == FlightPhaseClassifier.FlightPhase.ON_GROUND
                 || inferredLanded || silentWhileDescending);
         Instant touchdownAt = inferredLanded && status.landing() != null ? status.landing().touchdownAt() : null;
@@ -295,7 +308,7 @@ public class AircraftController {
                 if (s.estimate() != null) out.append(" · est. ±").append(formatRadius(s.estimate().radiusM()));
                 if (where != null) {
                     out.append(" · landing ");
-                    if (landing.touchdownAt() != null) out.append('~').append(HH_MM_UTC.format(landing.touchdownAt())).append(' ');
+                    if (landing.touchdownAt() != null) out.append('~').append(HH_MM_UTC.format(landing.touchdownAt())).append(" UTC ");
                     out.append(where);
                 }
                 return out.toString();

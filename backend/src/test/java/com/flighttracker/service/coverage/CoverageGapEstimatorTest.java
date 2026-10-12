@@ -160,6 +160,71 @@ class CoverageGapEstimatorTest {
         }
     }
 
+    @Test
+    void levelAlignedOverflightKeepsMovingPastTheThreshold() {
+        double[] loss = dest(R19R.thresholdLat(), R19R.thresholdLon(), 13.5, 8_000);
+        List<TrackPoint> pts = backwards(loss, 193.5, 90, ESSA_ELEV + 450, 0, LOSS, 40, 15);
+        GapEstimate e = estimator.estimate(input(pts, ESSA, LOSS.plusSeconds(1800)));
+        assertThat(e.state()).isEqualTo(TrackState.COVERAGE_LOST);
+        assertThat(e.landingProbability()).isLessThan(0.3);
+        // 90 m/s for 30 min is 162 km; the estimate is not parked at the 8 km threshold
+        assertThat(distanceM(loss[0], loss[1], e.estLat(), e.estLon())).isBetween(150_000.0, 170_000.0);
+    }
+
+    @Test
+    void unknownHeightAtJetSpeedIsNeverInferredLanded() {
+        double[] loss = dest(R19R.thresholdLat(), R19R.thresholdLon(), 13.5, 30_000);
+        List<TrackPoint> pts = noAltitude(loss, 193.5, 230);
+        GapEstimate e = estimator.estimate(input(pts, ESSA, LOSS.plusSeconds(3600)));
+        assertThat(e.state()).isEqualTo(TrackState.COVERAGE_LOST);
+        assertThat(e.landingProbability()).isLessThan(0.5);
+    }
+
+    @Test
+    void unknownHeightAtApproachSpeedCanStillBeInferredLanded() {
+        double[] loss = dest(R19R.thresholdLat(), R19R.thresholdLon(), 13.5, 8_000);
+        List<TrackPoint> pts = noAltitude(loss, 193.5, 75);
+        GapEstimate e = estimator.estimate(input(pts, ESSA, LOSS.plusSeconds(1800)));
+        assertThat(e.state()).isEqualTo(TrackState.LANDED_INFERRED);
+        assertThat(e.landingProbability()).isGreaterThan(0.5);
+    }
+
+    // ------------------------------------------------------------ antimeridian
+
+    @Test
+    void cruiseAcrossTheAntimeridianAdvancesAlongTrack() {
+        double[] loss = {60.0, -179.98};
+        List<TrackPoint> pts = backwards(loss, 90, 230, 11_300, 0, LOSS, 10, 15);
+        assertThat(pts.get(0).lon()).isGreaterThan(179);
+        GapEstimate e = estimator.estimate(input(pts, List.of(), LOSS.plusSeconds(600)));
+        double[] expected = dest(loss[0], loss[1], 90, 230.0 * 600);
+        assertThat(distanceM(e.estLat(), e.estLon(), expected[0], expected[1])).isLessThan(3_000);
+        assertThat(e.estLon()).isBetween(-180.0, 180.0);
+        GapEstimate shortGap = estimator.estimate(input(pts, List.of(), LOSS.plusSeconds(5)));
+        assertThat(distanceM(shortGap.estLat(), shortGap.estLon(), loss[0], loss[1])).isLessThan(3_000);
+    }
+
+    @Test
+    void approachToARunwayNextToTheAntimeridianIsMatched() {
+        Runway thr = new Runway("NFFN", "19R", 59.6720, 179.995, 193.5, 20.0, 3000);
+        double[] loss = dest(thr.thresholdLat(), thr.thresholdLon(), 13.5, 8_000);
+        assertThat(loss[1]).isLessThan(-179);
+        List<TrackPoint> pts = backwards(loss, 193.5, 75, 20 + 450, -3.5, LOSS, 40, 15);
+        GapEstimate e = estimator.estimate(input(pts, List.of(thr), LOSS.plusSeconds(900)));
+        assertThat(e.state()).isEqualTo(TrackState.LANDED_INFERRED);
+        assertThat(e.landingRunway()).isEqualTo("19R");
+        assertThat(distanceM(e.estLat(), e.estLon(), thr.thresholdLat(), thr.thresholdLon())).isLessThan(1_500);
+    }
+
+    @Test
+    void estimateInstantsHaveMillisecondPrecision() {
+        double[] loss = dest(R19R.thresholdLat(), R19R.thresholdLon(), 13.5, 8_000);
+        List<TrackPoint> pts = backwards(loss, 193.5, 75, ESSA_ELEV + 450, -3.5, LOSS.plusNanos(123_456_789), 40, 15);
+        GapEstimate e = estimator.estimate(input(pts, ESSA, LOSS.plusSeconds(60).plusNanos(987_654_321)));
+        assertThat(e.at().getNano() % 1_000_000).isZero();
+        assertThat(e.touchdownAt().getNano() % 1_000_000).isZero();
+    }
+
     private void assertNotLanded(List<TrackPoint> pts, List<Runway> runways) {
         for (long s : new long[]{30, 300, 1800}) {
             GapEstimate e = estimator.estimate(input(pts, runways, LOSS.plusSeconds(s)));
@@ -293,6 +358,16 @@ class CoverageGapEstimatorTest {
             double dt = (double) (n - 1 - i) * spacingS;
             double[] p = dest(last[0], last[1], track + 180, gs * dt);
             out.add(0, new TrackPoint(lastAt.minusSeconds((long) dt), p[0], p[1], alt - vs * dt, gs, track, vs, false));
+        }
+        return out;
+    }
+
+    /** Reports with neither altitude nor vertical rate, ending at {@code last} at LOSS. */
+    private static List<TrackPoint> noAltitude(double[] last, double track, double gs) {
+        List<TrackPoint> out = new ArrayList<>();
+        for (int i = 39; i >= 0; i--) {
+            double[] p = dest(last[0], last[1], track + 180, gs * 15.0 * i);
+            out.add(new TrackPoint(LOSS.minusSeconds(15L * i), p[0], p[1], null, gs, track, null, false));
         }
         return out;
     }

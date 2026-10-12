@@ -183,6 +183,8 @@ public class EstimatorAgent {
 
         int written = 0;
         int gapWritten = 0;
+        int failed = 0;
+        String firstFailure = null;
         for (LiveAircraft a : live) {
             try {
                 Optional<Route> route = routeService.cached(a.callsign());
@@ -233,8 +235,14 @@ public class EstimatorAgent {
                         projected ? now : null);
                 if (applied) written++;
             } catch (RuntimeException e) {
-                log.warn("Estimating {} failed this cycle", a.icao24(), e);
+                // One summary line per tick below; the stack of each stays at debug.
+                if (failed++ == 0) firstFailure = a.icao24() + ": " + e;
+                log.debug("Estimating {} failed this cycle", a.icao24(), e);
             }
+        }
+        if (failed > 0) {
+            log.warn("Estimating failed for {} of {} live aircraft this cycle; first: {}",
+                    failed, live.size(), firstFailure);
         }
         snapshots.keySet().retainAll(inGap); // no longer in a gap, or evicted
         training.reconcile(inGap, liveStateStore::get);

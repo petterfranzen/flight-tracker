@@ -16,6 +16,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -49,10 +50,28 @@ class AgentOrchestratorCoverageTest {
         return new RawPositionReport("abc123", "SAS1", NOW, 59.0, 18.0, 10_000.0, 200.0, 90.0, 0.0, false);
     }
 
+    /** A clock the test can move, to see which instant gets recorded. */
+    private final AtomicReference<Instant> clockNow = new AtomicReference<>(NOW);
+    private final Clock clock = new Clock() {
+        @Override
+        public ZoneOffset getZone() {
+            return ZoneOffset.UTC;
+        }
+
+        @Override
+        public Clock withZone(java.time.ZoneId zone) {
+            return this;
+        }
+
+        @Override
+        public Instant instant() {
+            return clockNow.get();
+        }
+    };
+
     private AgentOrchestrator orchestrator() {
         return new AgentOrchestrator(List.of(agent), persistenceService, enrichmentService, pollWindowService,
-                new PhaseLogger(), new SweepHealthTracker(), viewportService, tracker,
-                Clock.fixed(NOW, ZoneOffset.UTC));
+                new PhaseLogger(), new SweepHealthTracker(), viewportService, tracker, clock);
     }
 
     @BeforeEach
@@ -91,6 +110,35 @@ class AgentOrchestratorCoverageTest {
 
         when(agent.pollGlobal()).thenReturn(List.of(report()));
         orchestrator().pollGlobalSweep();
+        assertThat(tracker.lastCoveringPollAt(-30, 150)).contains(NOW);
+    }
+
+    @Test
+    void hotPollIsRecordedAfterPersisting_withTheTimeThePollReturned() {
+        when(agent.poll()).thenReturn(List.of(report()));
+        when(persistenceService.persist(any(), any())).thenAnswer(inv -> {
+            // while the reports are being written, nothing yet says this area was polled
+            assertThat(tracker.lastCoveringPollAt(59, 18)).isEmpty();
+            clockNow.set(NOW.plusSeconds(20)); // persisting takes a while
+            return List.of();
+        });
+
+        orchestrator().pollAll();
+
+        assertThat(tracker.lastCoveringPollAt(59, 18)).contains(NOW);
+    }
+
+    @Test
+    void globalSweepIsRecordedAfterPersistingTheBatch() {
+        when(agent.pollGlobal()).thenReturn(List.of(report()));
+        org.mockito.Mockito.doAnswer(inv -> {
+            assertThat(tracker.lastCoveringPollAt(-30, 150)).isEmpty();
+            clockNow.set(NOW.plusSeconds(90));
+            return null;
+        }).when(persistenceService).persistBatch(any(), any());
+
+        orchestrator().pollGlobalSweep();
+
         assertThat(tracker.lastCoveringPollAt(-30, 150)).contains(NOW);
     }
 }
