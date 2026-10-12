@@ -33,7 +33,7 @@ branch. Never merge to `main`; the human merges.
 | P1-A | Runway data: bundled `runways.tsv`, `runway` table, seed, in-memory `RunwayIndex` | implementer | none | done (fce7e86): 16,520 directional runways, 706 KB TSV, 13 tests |
 | P1-B | Pure `CoverageGapEstimator` (Kalman/dead reckoning, runway match, time to touchdown, landed probability) and scenario unit tests | implementer | none | done (a84c0a9): 15 scenario tests |
 | P1-C | Backend wiring: poll-coverage tracker, `EstimatorAgent` on the new estimator, `TrackStatus` on `LiveAircraft`, `GET /api/flights/{icao24}/status`, dossier text | implementer | P1-A, P1-B | running |
-| P1-D | Frontend: status line with confidence and source, uncertainty cone GL layer, status polling, Playwright tests | implementer | contract below | running |
+| P1-D | Frontend: status line with confidence and source, uncertainty cone GL layer, status polling, Playwright tests | implementer | contract below | done (a9c2ab9): 13 new Playwright tests |
 | P1-R | Review Phase 1: diff, all quality gates, check against the brief | reviewer | P1-C, P1-D | todo |
 | P2-* | Training data capture (plan below) | | Phase 1 | todo |
 | P3-* | Provider interface, mock provider, upgrade logic (plan below) | | Phase 2 | todo |
@@ -215,3 +215,7 @@ stateDiagram-v2
   up to 1.5×; probability ramps from touchdownAt to touchdownAt + margin and is capped at 0.97.
   Normal approach: LANDED_INFERRED at p 0.94. Go-around: p ≤ 0.08. Overflight: p 0. Cruise: p 0,
   and the distance stays within 3% over 2 h. P1-C launched.
+- 2026-10-12: P1-D merged. Results: build green, e2e 110 passed and 3 failed (view-cache is pre-existing;
+  initial-view and mobile-layout are load-flaky and pass alone), perf 2/2, scenarios 5/5, and the new
+  coverage-status spec 13/13, also re-run on the phase 1 branch. New tokens: `--color-uncertainty`,
+  `--color-inferred` and `--color-confirmed`. Landing time is shown as local HH:MM.
