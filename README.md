@@ -98,6 +98,7 @@ All keys are under `flighttracker.confirmation.` (defaults in brackets):
 | `providers.<id>.daily-budget` (global `daily-budget`) | One provider's daily budget in cost units |
 | `providers.<id>.monthly-budget` (unlimited) | One provider's monthly budget in cost units, per UTC month |
 | `board-ttl-seconds` (300) | How long a fetched arrivals board is used before it is fetched again |
+| `board-recheck-minutes` (15) | A candidate that a board had no (new) answer for, such as a GA aircraft, a callsign not on the board, or an aircraft still waiting for its gate time, cannot trigger another fetch of that board until this long after that board was fetched. It still matches fresher boards that other candidates' fetches bring in |
 | `board-max-entries` (100) | Bound of the board cache; the least recently used board goes first |
 | `cache-max-entries` (2000) | Bound of the gateway's result cache; the least recently used entries go first |
 | `store-max-entries` (5000) | Bound of the in-memory confirmation store; the oldest confirmation goes first |
@@ -145,7 +146,14 @@ date (`AirportArrivalsProvider.boardDate`; other providers keep the UTC date).
   above the 2 s Swedavia asks for. A board is cached for `board-ttl-seconds` and
   serves every aircraft at that airport. A 429 backs off for its `Retry-After`
   (60 s if absent); a 400 (date outside the window, 7 days back to 90 ahead) is
-  NOT_FOUND and is not fetched for dates more than 6 days back.
+  NOT_FOUND and is not fetched for dates more than 6 days back. When a daily or
+  monthly budget runs out, one degraded line is logged per day (or month).
+- **Midnight.** A touchdown near local midnight can appear on the next day's
+  board, or under its scheduled date. The ground candidate re-keys on
+  `landedSince`, so the worst case is a delay, not a missed confirmation.
+- **Naming.** `SWEDAVIA_API_KEY` is a deliberate exception to the
+  `FLIGHTTRACKER_CONFIRMATION_<ID>_*` convention: it matches the provider's own
+  name for the key.
 - **What it confirms.** `arrivalTime.actualUtc` becomes the touchdown time (an
   upper bound: the docs do not say whether it is touchdown or in-block). Swedavia
   has no at-gate status, so the aircraft is taken to be **at the gate when the
