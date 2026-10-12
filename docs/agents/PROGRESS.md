@@ -9,14 +9,14 @@ continue from **Next task**.
 ## Status
 
 - **Current phase:** 1 (physics estimate, state machine, UI)
-- **Next task:** P1-F (review fixes, running). Then open the Phase 1 PR, merge phase 1 into the phase 2 and phase 3 branches, and run the P2 review. P3 (provider-neutral) is running in parallel. Implementers work in worktrees and the orchestrator cherry-picks their commits onto the phase 1 branch.
+- **Next task:** P3-R (combined review of Phases 2 and 3, running). Then fix its findings and open the Phase 2 and Phase 3 PRs (stacked). Drive PR #120 to green as CI events arrive.
 - **Blocked on the human:** the Phase 3 provider choice (see `provider-research.md`). Phases 1 and 2 continue meanwhile.
 
 ## Branches and PRs
 
 | Phase | Branch | Based on | PR |
 |---|---|---|---|
-| 1 | `claude/beautiful-thompson-afahki` | `main` | not opened yet |
+| 1 | `claude/beautiful-thompson-afahki` | `main` | [#120](https://github.com/petterfranzen/flight-tracker/pull/120) |
 | 2 | `claude/coverage-gap-phase2` | phase 1 branch (stacked) | not opened yet |
 | 3 | `claude/coverage-gap-phase3` | phase 2 branch (stacked) | not opened yet |
 
@@ -35,11 +35,10 @@ branch. Never merge to `main`; the human merges.
 | P1-C | Backend wiring: poll-coverage tracker, `EstimatorAgent` on the new estimator, `TrackStatus` on `LiveAircraft`, `GET /api/flights/{icao24}/status`, dossier text | implementer | P1-A, P1-B | done (cd685da, 3bf639a, 636bbf7): backend 179 tests, blackbox 23/23 |
 | P1-D | Frontend: status line with confidence and source, uncertainty cone GL layer, status polling, Playwright tests | implementer | contract below | done (a9c2ab9): 13 new Playwright tests |
 | P1-R | Review Phase 1: diff, all quality gates, check against the brief | reviewer | P1-C, P1-D | done: no blockers, 4 should-fix (`reviews/phase1.md`) |
-| P1-F | Fix the P1-R should-fix items 1–4 and nits 5, 6, 7, 10, 11, 12 | implementer | P1-R | running |
+| P1-F | Fix the P1-R should-fix items 1–4 and nits 5, 6, 7, 10, 11, 12 | implementer | P1-R | done: all fixed, 188 backend tests, e2e 118/118 |
 | P2 | Training data capture: tables, capture and label service, retention, `LandingModel` stub (plan below) | implementer | Phase 1 | done (801b70e on `claude/coverage-gap-phase2`): 198 backend tests |
-| P2-R | Review Phase 2 | reviewer | P2, P1 fixes merged in | todo |
 | P3 | Provider SPI, framework-level cache and rate limit, `ConfirmationStore`, upgrade service, mock provider, UI tweaks (no real provider) | implementer | Phase 2 | done (4d52beb, 2aaefff on `claude/coverage-gap-phase3`): backend 252 tests, coverage-status 15/15 |
-| P3-R | Review Phase 2 + 3 | reviewer | P1-F merged forward | todo |
+| P3-R | Review Phases 2 and 3 | reviewer | P1-F merged forward | running |
 | P3-real | Real provider (the human chooses) | implementer | the human's choice | blocked: checkpoint |
 
 ## Phase 0 findings (summary)
@@ -246,3 +245,11 @@ stateDiagram-v2
   - The frontend refetches every 60 s while LANDED_INFERRED.
   - The scheduler pool went from 9 to 10.
   - Note: tune `daily-budget` per provider (AeroDataBox's free tier is 400/month).
+- 2026-10-12: P1-F fixes cherry-picked. The full Phase 1 gate run on this branch:
+  - build green, e2e 118/118, scenarios 5/5, backend `verify -Pwith-frontend` 188 tests;
+  - perf 1/2: the known main-thread test (263 ms against 212 ms) also fails on unmodified `main` here.
+
+  **Phase 1 PR opened: #120**, and this session is subscribed to its activity.
+- 2026-10-12: Phase 1 merged into phase 2 (only an import conflict; 207 tests) and phase 2 into phase 3.
+  The phase 3 merge (48f7b38) needed three hand-resolved conflicts: `AircraftController`, `AircraftStatusLabelTest` and `main.ts`.
+  After the merge: 261 tests, and coverage-status 19/19. P3-R launched over Phases 2 and 3 together.
