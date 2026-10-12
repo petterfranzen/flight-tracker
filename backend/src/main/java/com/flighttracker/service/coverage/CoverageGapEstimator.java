@@ -4,6 +4,7 @@ import org.springframework.stereotype.Component;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -122,6 +123,15 @@ public class CoverageGapEstimator {
     private static final double FALLBACK_FACTOR = 0.75;
     /** Geometric score needed (with a complete time factor) to call it landed. */
     private static final double INFER_THRESHOLD = 0.5;
+    /**
+     * Without a known height the cruise penalty cannot apply, so a fast
+     * aircraft that happens to line up with a runway would otherwise score as
+     * a landing. Above this ground speed (m/s), an unknown height caps the
+     * score below the threshold: nothing is inferred landed at jet cruise
+     * speed on no height evidence.
+     */
+    private static final double UNKNOWN_HEIGHT_MAX_APPROACH_SPEED_MS = 110;
+    private static final double UNKNOWN_HEIGHT_FAST_CAP = 0.45;
     /** Confirmation is a separate step, so inference never reaches certainty. */
     private static final double MAX_PROBABILITY = 0.97;
 
@@ -149,7 +159,7 @@ public class CoverageGapEstimator {
         Filtered f = filter(pts, last, accelSigma);
 
         double p0Lat = last.lat() + Math.toDegrees(f.y.p / EARTH_RADIUS_M);
-        double p0Lon = last.lon() + Math.toDegrees(f.x.p / (EARTH_RADIUS_M * Math.cos(Math.toRadians(last.lat()))));
+        double p0Lon = wrapLon(last.lon() + Math.toDegrees(f.x.p / (EARTH_RADIUS_M * Math.cos(Math.toRadians(last.lat())))));
         double speed = Math.hypot(f.x.v, f.y.v);
         Double trackDeg = null;
         if (speed >= MIN_TRACK_SPEED_MS) {
@@ -167,6 +177,7 @@ public class CoverageGapEstimator {
         double flightRadius = Math.max(MIN_RADIUS_M,
                 RADIUS_SIGMA_FACTOR * Math.sqrt(Math.max(px.ppp, py.ppp)));
 
+        Instant at = in.now().truncatedTo(ChronoUnit.MILLIS);
         Candidate cand = pickCandidate(in, p0Lat, p0Lon, trackDeg, vs);
 
         if (cand == null) {
@@ -175,14 +186,14 @@ public class CoverageGapEstimator {
                     : destinationPoint(p0Lat, p0Lon, trackDeg, dist);
             ApproachGeometry g = new ApproachGeometry(null, vs, speed, null, null, null, null, null, null, null);
             return new GapEstimate(TrackState.COVERAGE_LOST, 0, 1, pos[0], pos[1], flightRadius,
-                    in.now(), null, null, null, g, MODEL);
+                    at, null, null, null, g, MODEL);
         }
 
         // ---- Time to touchdown
         Double height = altitude == null ? null : altitude - cand.elevationM;
         double dTouch = cand.distanceM + (cand.kind == Kind.ALIGNED ? TOUCHDOWN_ZONE_M : 0);
         double ttd = timeToTouchdown(dTouch, speed, height, vs);
-        Instant touchdownAt = last.observedAt().plusMillis(Math.round(ttd * 1000));
+        Instant touchdownAt = last.observedAt().plusMillis(Math.round(ttd * 1000)).truncatedTo(ChronoUnit.MILLIS);
         double margin = Math.max(MARGIN_MIN_S, MARGIN_RATIO * ttd);
         double timeFactor = clamp((elapsedS - ttd) / margin, 0, 1);
 
@@ -190,7 +201,7 @@ public class CoverageGapEstimator {
         double expectedHeight = cand.distanceM * Math.tan(Math.toRadians(GLIDE_SLOPE_DEG));
         Double glideDev = height == null ? null : height - expectedHeight;
         boolean goAround = goAroundSignature(pts, height);
-        double geo = geometricScore(cand, height, vs, glideDev, expectedHeight, goAround, in);
+        double geo = geometricScore(cand, height, vs, glideDev, expectedHeight, goAround, speed, in);
         double probability = Math.min(MAX_PROBABILITY, geo * timeFactor);
 
         boolean landed = timeFactor >= 1 && geo > INFER_THRESHOLD;
@@ -205,12 +216,13 @@ public class CoverageGapEstimator {
             double radius = cand.lengthM != null
                     ? Math.max(cand.lengthM / 2, MIN_LANDED_RADIUS_M) : POINT_LANDED_RADIUS_M;
             return new GapEstimate(TrackState.LANDED_INFERRED, probability, probability, park[0], park[1],
-                    radius, in.now(), cand.airportIcao, cand.ident, touchdownAt, g, MODEL);
+                    radius, at, cand.airportIcao, cand.ident, touchdownAt, g, MODEL);
         }
 
-        // Still in the air: dead-reckon, but an aircraft on final does not overfly its runway.
+        // Still in the air: dead-reckon. An aircraft that looks like it is landing does not
+        // overfly its runway, so it stops at the threshold; a level overflight keeps going.
         double dist = speed * elapsedS;
-        if (trackDeg != null) {
+        if (trackDeg != null && geo >= INFER_THRESHOLD) {
             double[] w = toXY(cand.thrLat, cand.thrLon, p0Lat, p0Lon);
             double tx = Math.sin(Math.toRadians(trackDeg));
             double ty = Math.cos(Math.toRadians(trackDeg));
@@ -219,7 +231,7 @@ public class CoverageGapEstimator {
         double[] pos = trackDeg == null ? new double[]{p0Lat, p0Lon}
                 : destinationPoint(p0Lat, p0Lon, trackDeg, dist);
         return new GapEstimate(TrackState.COVERAGE_LOST, probability, 1 - probability, pos[0], pos[1],
-                flightRadius, in.now(), cand.airportIcao, cand.ident, touchdownAt, g, MODEL);
+                flightRadius, at, cand.airportIcao, cand.ident, touchdownAt, g, MODEL);
     }
 
     // ------------------------------------------------------------------ filter
@@ -480,7 +492,7 @@ public class CoverageGapEstimator {
     // --------------------------------------------------------------------- score
 
     private static double geometricScore(Candidate c, Double height, Double vs, Double glideDev,
-                                         double expectedHeight, boolean goAround, GapInput in) {
+                                         double expectedHeight, boolean goAround, double speed, GapInput in) {
         double alignment;
         if (c.kind == Kind.ALIGNED) {
             alignment = 0.5 * (1 - Math.abs(c.headingDiffDeg) / MAX_HEADING_DIFF_DEG)
@@ -512,6 +524,9 @@ public class CoverageGapEstimator {
             geo *= GO_AROUND_FACTOR;
         } else if (vs != null && vs > -DESCENT_ZERO_MS && (height == null || height >= FLARE_HEIGHT_M)) {
             geo *= LEVEL_FACTOR; // level or climbing at some height: not a landing
+        }
+        if (height == null && speed > UNKNOWN_HEIGHT_MAX_APPROACH_SPEED_MS) {
+            geo = Math.min(geo, UNKNOWN_HEIGHT_FAST_CAP);
         }
         return clamp(geo, 0, 1);
     }
@@ -600,7 +615,7 @@ public class CoverageGapEstimator {
 
     /** East/north metres of (lat, lon) in the tangent plane at (lat0, lon0). */
     private static double[] toXY(double lat, double lon, double lat0, double lon0) {
-        double x = Math.toRadians(lon - lon0) * EARTH_RADIUS_M * Math.cos(Math.toRadians(lat0));
+        double x = Math.toRadians(wrap180(lon - lon0)) * EARTH_RADIUS_M * Math.cos(Math.toRadians(lat0));
         double y = Math.toRadians(lat - lat0) * EARTH_RADIUS_M;
         return new double[]{x, y};
     }
@@ -630,6 +645,10 @@ public class CoverageGapEstimator {
 
     private static double wrap180(double deg) {
         return ((deg + 180) % 360 + 360) % 360 - 180;
+    }
+
+    private static double wrapLon(double lon) {
+        return wrap180(lon);
     }
 
     private static double normalize360(double deg) {
