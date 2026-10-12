@@ -9,9 +9,8 @@ continue from **Next task**.
 ## Status
 
 - **Current phase:** 1 (physics estimate, state machine, UI)
-- **Next task:** run P1-A, P1-B and P1-D in parallel
+- **Next task:** P1-C (backend wiring), once P1-A and P1-B are merged. P1-A, P1-B and P1-D are running in parallel worktrees (local branches `cg/p1-a-runways`, `cg/p1-b-estimator` and `cg/p1-d-frontend`, merged into the phase 1 branch by the orchestrator).
 - **Blocked on the human:** the Phase 3 provider choice (see `provider-research.md`). Phases 1 and 2 continue meanwhile.
-  a checkpoint, and research is running ahead of it.
 
 ## Branches and PRs
 
@@ -31,10 +30,10 @@ branch. Never merge to `main`; the human merges.
 |---|---|---|---|---|
 | P0 | Reconnaissance: code map | explorer | none | done |
 | P3-R | Research confirmation providers (web): `docs/agents/provider-research.md` | explorer | none | done; awaiting human choice |
-| P1-A | Runway data: bundled `runways.tsv`, `runway` table, seed, in-memory `RunwayIndex` | implementer | none | todo |
-| P1-B | Pure `CoverageGapEstimator` (Kalman/dead reckoning, runway match, time to touchdown, landed probability) and scenario unit tests | implementer | none | todo |
+| P1-A | Runway data: bundled `runways.tsv`, `runway` table, seed, in-memory `RunwayIndex` | implementer | none | running |
+| P1-B | Pure `CoverageGapEstimator` (Kalman/dead reckoning, runway match, time to touchdown, landed probability) and scenario unit tests | implementer | none | running |
 | P1-C | Backend wiring: poll-coverage tracker, `EstimatorAgent` on the new estimator, `TrackStatus` on `LiveAircraft`, `GET /api/flights/{icao24}/status`, dossier text | implementer | P1-A, P1-B | todo |
-| P1-D | Frontend: status line with confidence and source, uncertainty cone GL layer, status polling, Playwright tests | implementer | contract below | todo |
+| P1-D | Frontend: status line with confidence and source, uncertainty cone GL layer, status polling, Playwright tests | implementer | contract below | running |
 | P1-R | Review Phase 1: diff, all quality gates, check against the brief | reviewer | P1-C, P1-D | todo |
 | P2-* | Training data capture (plan below) | | Phase 1 | todo |
 | P3-* | Provider interface, mock provider, upgrade logic (plan below) | | Phase 2 | todo |
@@ -204,3 +203,8 @@ stateDiagram-v2
 ## Log
 
 - 2026-10-12: Phase 0 done. The backend baseline (`mvn verify`) is green.
+  On the frontend `test:e2e` baseline (unchanged `main`, cloud env), 99 passed and 2 failed.
+  `view-cache.spec.ts` "returning to a zoom level just seen…" is consistently red here.
+  `route-estimate.spec.ts` "estimated positions move the end of the trail…" is flaky under load and passes alone.
+- 2026-10-12: Provider research done (`provider-research.md`), awaiting the human's choice.
+  P1-A, P1-B and P1-D launched in parallel.
