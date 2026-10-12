@@ -4,6 +4,7 @@ import com.flighttracker.dto.TrackStatus;
 import com.flighttracker.service.coverage.TrackState;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.time.Instant;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -36,12 +37,18 @@ class AircraftStatusLabelTest {
         assertThat(AircraftController.statusLabel(status(TrackState.COVERAGE_LOST, 0.85, 1800, null)))
                 .isEqualTo("Coverage lost · est. ±1.8 km");
         assertThat(AircraftController.statusLabel(status(TrackState.COVERAGE_LOST, 0.85, 1800, ESSA_19R)))
-                .isEqualTo("Coverage lost · est. ±1.8 km · landing ~11:03 ESSA 19R");
+                .isEqualTo("Coverage lost · est. ±1.8 km · landing ~11:03 UTC ESSA 19R");
         assertThat(AircraftController.statusLabel(status(TrackState.COVERAGE_LOST, 0.85, 640,
                 new TrackStatus.Landing("ESSA", null, null))))
                 .isEqualTo("Coverage lost · est. ±640 m · landing ESSA");
         assertThat(AircraftController.statusLabel(status(TrackState.COVERAGE_LOST, 0.1, 43_000, null)))
                 .isEqualTo("Coverage lost · est. ±43 km");
+        assertThat(AircraftController.statusLabel(status(TrackState.COVERAGE_LOST, 0.1, 9_940, null)))
+                .isEqualTo("Coverage lost · est. ±9.9 km");
+        assertThat(AircraftController.statusLabel(status(TrackState.COVERAGE_LOST, 0.1, 10_400, null)))
+                .isEqualTo("Coverage lost · est. ±10 km");
+        assertThat(AircraftController.statusLabel(status(TrackState.COVERAGE_LOST, 0.1, 643, null)))
+                .isEqualTo("Coverage lost · est. ±640 m");
     }
 
     @Test
@@ -60,5 +67,15 @@ class AircraftStatusLabelTest {
                 "confirmed", SEEN, 59.6, 17.9, null, null, null, null, SEEN))).isEqualTo("Landed (confirmed · opensky)");
         assertThat(AircraftController.statusLabel(new TrackStatus("4ca123", TrackState.AT_GATE, 1.0, "opensky",
                 "confirmed", SEEN, 59.6, 17.9, null, null, "B14", null, SEEN))).isEqualTo("At gate B14 (confirmed)");
+    }
+
+    @Test
+    void silenceRule_appliesToEveryStateButLandedInferred() {
+        Duration longSilence = Duration.ofMinutes(31);
+        assertThat(AircraftController.silentWhileDescending(TrackState.COVERAGE_LOST, true, longSilence)).isTrue();
+        assertThat(AircraftController.silentWhileDescending(TrackState.LIVE, true, longSilence)).isTrue();
+        assertThat(AircraftController.silentWhileDescending(TrackState.LANDED_INFERRED, true, longSilence)).isFalse();
+        assertThat(AircraftController.silentWhileDescending(TrackState.COVERAGE_LOST, true, Duration.ofMinutes(29))).isFalse();
+        assertThat(AircraftController.silentWhileDescending(TrackState.COVERAGE_LOST, false, longSilence)).isFalse();
     }
 }

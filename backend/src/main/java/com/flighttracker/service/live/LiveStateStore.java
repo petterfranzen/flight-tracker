@@ -534,13 +534,6 @@ public class LiveStateStore {
         return Optional.ofNullable(byIcao24.get(icao24));
     }
 
-    /** Raw (never coalesced with an estimate) lat/lon — mirrors FlightPositionRepository.findRawLatestLatLon; see that method's own javadoc for why raw matters here. */
-    public Optional<RawLatLon> findRawLatestLatLon(String icao24) {
-        return Optional.ofNullable(byIcao24.get(icao24)).map(a -> new RawLatLon(a.latitude(), a.longitude()));
-    }
-
-    public record RawLatLon(double latitude, double longitude) { }
-
     private static FlightPosition toFlightPosition(LiveAircraft a) {
         return new FlightPosition(a.id(), a.icao24(), a.callsign(), a.observedAt(),
                 a.displayLatitude(), a.displayLongitude(), a.altitudeM(), a.velocityMs(),
