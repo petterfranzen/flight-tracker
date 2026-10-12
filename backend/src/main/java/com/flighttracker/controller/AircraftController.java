@@ -9,6 +9,7 @@ import com.flighttracker.repository.AircraftRepository;
 import com.flighttracker.repository.FlightPositionRepository;
 import com.flighttracker.service.FlightPhaseClassifier;
 import com.flighttracker.service.LiveVisibilityWindows;
+import com.flighttracker.service.confirmation.ConfirmationStore;
 import com.flighttracker.service.enrichment.AircraftEnrichmentService;
 import com.flighttracker.service.enrichment.AirportLookupService;
 import com.flighttracker.service.coverage.TrackState;
@@ -38,6 +39,7 @@ public class AircraftController {
     private final LiveStateStore liveStateStore;
     private final AircraftEnrichmentService enrichmentService;
     private final AirportLookupService airportLookupService;
+    private final ConfirmationStore confirmationStore;
     private final Clock clock;
 
     public AircraftController(AircraftRepository aircraftRepository,
@@ -45,12 +47,14 @@ public class AircraftController {
                                LiveStateStore liveStateStore,
                                AircraftEnrichmentService enrichmentService,
                                AirportLookupService airportLookupService,
+                               ConfirmationStore confirmationStore,
                                Clock clock) {
         this.aircraftRepository = aircraftRepository;
         this.positionRepository = positionRepository;
         this.liveStateStore = liveStateStore;
         this.enrichmentService = enrichmentService;
         this.airportLookupService = airportLookupService;
+        this.confirmationStore = confirmationStore;
         this.clock = clock;
     }
 
@@ -123,7 +127,7 @@ public class AircraftController {
         // the more accurate live position); the coverage-gap state comes from
         // the raw live entry, the same TrackStatus /status serves.
         LiveAircraft live = liveStateStore.get(a.icao24()).orElse(null);
-        TrackStatus status = live == null ? null : TrackStatus.from(live);
+        TrackStatus status = live == null ? null : TrackStatus.from(live, confirmationStore.forAircraft(live));
 
         // Skip the lookup entirely when on the ground — FlightPhaseClassifier
         // only needs the earlier-altitude reference to distinguish
@@ -157,7 +161,10 @@ public class AircraftController {
         // the silence rule only decides for aircraft with no gap estimate.
         boolean descendingOrLanding = phase == FlightPhaseClassifier.FlightPhase.DESCENDING
                 || phase == FlightPhaseClassifier.FlightPhase.LANDING;
-        boolean inferredLanded = status != null && status.state() == TrackState.LANDED_INFERRED;
+        boolean providerConfirmed = status != null
+                && (status.state() == TrackState.LANDED_CONFIRMED || status.state() == TrackState.AT_GATE);
+        boolean inferredLanded = providerConfirmed
+                || (status != null && status.state() == TrackState.LANDED_INFERRED);
         boolean silentWhileDescending = current != null && live != null && live.gap() == null && descendingOrLanding
                 && Duration.between(current.observedAt(), now).compareTo(LiveVisibilityWindows.PRESUMED_LANDED_SILENCE) > 0;
         boolean presumedLanded = current != null && (phase == FlightPhaseClassifier.FlightPhase.ON_GROUND
@@ -192,7 +199,7 @@ public class AircraftController {
         // Only worth spending an OpenSky call on once our own heuristic
         // already presumes landed — see AircraftEnrichmentService.
         // checkLandingIfNeeded for the throttling/caching behind this.
-        Optional<Instant> landingConfirmedAt = presumedLanded
+        Optional<Instant> landingConfirmedAt = presumedLanded && !providerConfirmed
                 ? enrichmentService.checkLandingIfNeeded(a.icao24(), current.observedAt())
                 : Optional.empty();
 
@@ -267,7 +274,8 @@ public class AircraftController {
      */
     private String describeStatus(TrackStatus status, Aircraft a, boolean landingConfirmed) {
         if (status == null) return null;
-        if (status.state() == TrackState.ON_GROUND) return statusLabel(status);
+        if (status.state() == TrackState.ON_GROUND || status.state() == TrackState.LANDED_CONFIRMED
+                || status.state() == TrackState.AT_GATE) return statusLabel(status);
 
         if (landingConfirmed) {
             String dest = a.destinationAirportName() != null ? a.destinationAirportName() : "its destination";

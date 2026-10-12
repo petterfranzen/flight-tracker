@@ -61,4 +61,10 @@ class AircraftStatusLabelTest {
         assertThat(AircraftController.statusLabel(new TrackStatus("4ca123", TrackState.AT_GATE, 1.0, "opensky",
                 "confirmed", SEEN, 59.6, 17.9, null, null, "B14", null, SEEN))).isEqualTo("At gate B14 (confirmed)");
     }
+
+    @Test
+    void atGate_withoutAGate_readsAtGateConfirmed() {
+        assertThat(AircraftController.statusLabel(new TrackStatus("4ca123", TrackState.AT_GATE, 1.0, "mock",
+                "confirmed", SEEN, 59.6, 17.9, null, null, null, null, SEEN))).isEqualTo("At gate (confirmed)");
+    }
 }

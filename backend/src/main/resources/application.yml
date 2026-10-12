@@ -41,9 +41,9 @@ spring:
         # migration A2's PRAGMA optimize pass), EstimatorAgent.refresh(),
         # AirportSeedService.sync(), LiveFeedBroadcaster.sendKeepalive()
         # (the WebSocket ping) and CallsignRouteService.resolveNext() (the
-        # paced callsign->route lookups) — eight — plus one spare so a single
+        # paced callsign->route lookups) and ArrivalConfirmationService.tick() — nine — plus one spare so a single
         # slow/stuck task never leaves the pool fully saturated. Bump this
-        # again if a ninth @Scheduled method is ever added. Retention and
+        # again if a tenth @Scheduled method is ever added. Retention and
         # the estimator refresh in particular must not have to wait on a
         # sweep for a thread: retention's first run after a long outage
         # walks a real backlog, and the estimator needs to keep running on
@@ -54,7 +54,7 @@ spring:
         # would otherwise silently die under Cloudflare's ~100s idle
         # timeout during exactly the kind of long sweep that used to
         # starve everything else.
-        size: 9
+        size: 10
 
 server:
   port: 8080
@@ -82,6 +82,17 @@ flighttracker:
     # or destination candidate was found.
     max-altitude-m: 4000
     retention-days: 365
+  # Arrival confirmation (service/confirmation): provider lookups that upgrade
+  # "landed (inferred)" to "landed (confirmed)" and "at gate". The pacing, budget
+  # and cache below apply to every provider alike (ConfirmationGateway). Each
+  # provider has its own flighttracker.confirmation.<id>.enabled flag; API keys
+  # come from environment variables, never from this file.
+  confirmation:
+    interval-seconds: 30
+    min-interval-seconds: 30
+    daily-budget: 300
+    mock:
+      enabled: ${FLIGHTTRACKER_CONFIRMATION_MOCK_ENABLED:false}
   # Rolling retention for flight_position — see PositionRetentionService,
   # which is also where the reasoning for pruning *only* that table lives.
   retention:
