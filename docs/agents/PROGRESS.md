@@ -9,7 +9,7 @@ continue from **Next task**.
 ## Status
 
 - **Current phase:** 1 (physics estimate, state machine, UI)
-- **Next task:** P2-F and P3-F (running in parallel). Then merge phase 1 → phase 2 → phase 3 (this carries the #119 helper port), then open the Phase 2 and Phase 3 PRs.
+- **Next task:** check the Phase 3 gate run (merged branch at 9e85f22), push `claude/coverage-gap-phase3` and open the Phase 3 PR (base `claude/coverage-gap-phase2`). Keep driving #120 and #121 to green.
 - **Blocked on the human:** the Phase 3 provider choice (see `provider-research.md`). Phases 1 and 2 continue meanwhile.
 
 ## Branches and PRs
@@ -40,7 +40,7 @@ branch. Never merge to `main`; the human merges.
 | P3 | Provider SPI, framework-level cache and rate limit, `ConfirmationStore`, upgrade service, mock provider, UI tweaks (no real provider) | implementer | Phase 2 | done (4d52beb, 2aaefff on `claude/coverage-gap-phase3`): backend 252 tests, coverage-status 15/15 |
 | P3-R | Review Phases 2 and 3 | reviewer | P1-F merged forward | done: no blockers (`reviews/phase2-3.md`) |
 | P2-F | Phase 2 fixes: capture delay, long-gap labels, flush retry, schema `;` | implementer | P3-R | done (99af1b9, 8b82130): 214 backend tests |
-| P3-F | Phase 3 fixes: stale cache, gate re-poll cap, Retry-After cap, pool, refetch, docs | implementer | P3-R | running |
+| P3-F | Phase 3 fixes: stale cache, gate re-poll cap, Retry-After cap, pool, refetch, docs | implementer | P3-R | done (cd6b2ad, b7abeaf, ffa4371, facdea8). The agent hit the session usage limit during its final e2e run, after committing everything; the orchestrator verifies the gates |
 | P3-real | Real provider (the human chooses) | implementer | the human's choice | blocked: checkpoint |
 
 ## Phase 0 findings (summary)
@@ -265,3 +265,14 @@ stateDiagram-v2
   - `capture-delay-seconds` defaults to 600.
   - `max-airborne-label-gap-minutes` defaults to 30.
   - A failed flush re-queues its batch (cap 5,000 writes; a write is dropped after 5 attempts).
+- 2026-10-12: CI on #120 failed again (970587a), in `route-estimate`: another race that #119 fixes.
+  I merged #119's branch into phase 1 unchanged (deb5255), so the two PRs are identical where they overlap.
+  That brings in `waitForMapReady` and the retry-once on CI. Local e2e: 118/118.
+  #119's own route-estimate fix still fails 1 in 20 at its line 48, on #119's branch too. That's for the human,
+  as a follow-up on #119; CI's retry absorbs it. Commented on #120.
+- 2026-10-12: Usage limit hit: the P3-F subagent was stopped (429 "session limit, resets 17:10 UTC") after it
+  had committed all four fixes. The human said "Try again" and the orchestrator continued.
+  - Phase 1 merged into phase 2 and pushed.
+  - P3-F cherry-picked onto phase 3.
+  - Phase 2 merged into phase 3 (9e85f22; README conflict resolved).
+  - Gates are running on phase 3.
