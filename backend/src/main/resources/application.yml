@@ -147,6 +147,14 @@ flighttracker:
       # The terms allow caching for 7 days at most on the Basic plan, so its answers
       # do not become (year-long) training labels unless this is true.
       record-training-labels: false
+      # A lookup is 2 of 400 units a month, 7 a day, so one aircraft must not spend the day:
+      # a flight with a landing but no gate time is not asked again for this long, a flight the
+      # API does not know (yet) for this long, and once the landing is confirmed the gate is not
+      # waited for (AeroDataBox rarely has a distinct in-block time). The gateway never goes
+      # below its own 5 min / 15 min.
+      found-recheck-minutes: 30
+      not-found-recheck-minutes: 180
+      gate-wait-minutes: 0
     mock:
       enabled: ${FLIGHTTRACKER_CONFIRMATION_MOCK_ENABLED:false}
   # Rolling retention for flight_position — see PositionRetentionService,

@@ -16,6 +16,10 @@ import org.springframework.web.client.RestClient;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.ConnectException;
+import java.net.NoRouteToHostException;
+import java.net.SocketTimeoutException;
+import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
@@ -46,9 +50,9 @@ import java.util.regex.Pattern;
  *
  * <p>Choosing the entry: it must arrive at the query's airport (any, if the query has none), within
  * {@value #MAX_TIME_OFFSET_HOURS} h of the expected touchdown, and must not name another airframe
- * (a differing {@code aircraft.modeS}). Among those the operator beats the codeshares
- * ({@code IsOperator}, then {@code Unknown}, then the rest), then the entry nearest the
- * expected arrival wins.
+ * (a differing {@code aircraft.modeS}). The entry nearest the expected arrival wins; among entries
+ * within {@value #TIE_BREAK_HOURS} h of that nearest one the operator beats the codeshares
+ * ({@code IsOperator}, then {@code Unknown}, then the rest).
  *
  * <p>What an entry says:
  * <ul>
@@ -60,6 +64,14 @@ import java.util.regex.Pattern;
  *   <li>Canceled, Diverted, CanceledUncertain and every other status give no times, only the
  *       gate and terminal, which the service ignores without a time.</li>
  * </ul>
+ *
+ * <p>Quota: a lookup costs two of the free plan's 400 monthly units, so the budgets leave 7 lookups a
+ * day. Because the answer rarely gets a distinct in-block time, the provider asks the gateway to keep a
+ * FOUND without a gate time for {@code found-recheck-minutes} (30) and a NOT_FOUND for
+ * {@code not-found-recheck-minutes} (180), and to stop asking once the landing is confirmed
+ * ({@link #gateWait()} is zero). A callsign the API cannot take is {@link #accepts refused} locally,
+ * before any charge; 400, 404 and 422 answers are NOT_FOUND; a request that got no HTTP response
+ * is reported as costing nothing, so the gateway refunds it.
  *
  * <p>A 401/403 fails the lookup, logs one degraded line and switches the provider off until the next
  * UTC midnight (a bad key, or possibly an exhausted quota).
@@ -82,6 +94,10 @@ public class AeroDataBoxArrivalProvider implements ArrivalConfirmationProvider {
     static final int MAX_PARAM_LENGTH = 10;
     /** An entry whose time is further than this from the expected touchdown is another day's flight. */
     static final int MAX_TIME_OFFSET_HOURS = 12;
+    /** Entries this close in time to the nearest one are told apart by the operator rank. */
+    static final int TIE_BREAK_HOURS = 1;
+    static final Duration DEFAULT_FOUND_RECHECK = Duration.ofMinutes(30);
+    static final Duration DEFAULT_NOT_FOUND_RECHECK = Duration.ofHours(3);
 
     private static final Pattern SAFE_PARAM = Pattern.compile("[A-Za-z0-9]+");
     private static final Pattern TIME = Pattern.compile(
@@ -99,6 +115,9 @@ public class AeroDataBoxArrivalProvider implements ArrivalConfirmationProvider {
     private final String host;
     private final String searchBy;
     private final boolean recordTrainingLabels;
+    private final Duration foundRecheck;
+    private final Duration notFoundRecheck;
+    private final Duration gateWait;
 
     /** While the clock is before this, the key was rejected and the provider is off. */
     private volatile Instant lockedUntil = Instant.EPOCH;
@@ -111,13 +130,26 @@ public class AeroDataBoxArrivalProvider implements ArrivalConfirmationProvider {
                                       @Value("${flighttracker.confirmation.aerodatabox.base-url:https://aerodatabox.p.rapidapi.com}") String baseUrl,
                                       @Value("${flighttracker.confirmation.aerodatabox.host:aerodatabox.p.rapidapi.com}") String host,
                                       @Value("${flighttracker.confirmation.aerodatabox.search-by:Number}") String searchBy,
-                                      @Value("${flighttracker.confirmation.aerodatabox.record-training-labels:false}") boolean recordTrainingLabels) {
-        this(clock, phases, enabled, apiKey, baseUrl, host, searchBy, recordTrainingLabels, defaultBuilder());
+                                      @Value("${flighttracker.confirmation.aerodatabox.record-training-labels:false}") boolean recordTrainingLabels,
+                                      @Value("${flighttracker.confirmation.aerodatabox.found-recheck-minutes:30}") long foundRecheckMinutes,
+                                      @Value("${flighttracker.confirmation.aerodatabox.not-found-recheck-minutes:180}") long notFoundRecheckMinutes,
+                                      @Value("${flighttracker.confirmation.aerodatabox.gate-wait-minutes:0}") long gateWaitMinutes) {
+        this(clock, phases, enabled, apiKey, baseUrl, host, searchBy, recordTrainingLabels,
+                Duration.ofMinutes(foundRecheckMinutes), Duration.ofMinutes(notFoundRecheckMinutes),
+                Duration.ofMinutes(gateWaitMinutes), defaultBuilder());
     }
 
-    /** For tests: a builder that may already be bound to a mock server. */
+    /** For tests: a builder that may already be bound to a mock server, and the default recheck intervals. */
     AeroDataBoxArrivalProvider(Clock clock, PhaseLogger phases, boolean enabled, String apiKey, String baseUrl,
                                String host, String searchBy, boolean recordTrainingLabels, RestClient.Builder builder) {
+        this(clock, phases, enabled, apiKey, baseUrl, host, searchBy, recordTrainingLabels,
+                DEFAULT_FOUND_RECHECK, DEFAULT_NOT_FOUND_RECHECK, Duration.ZERO, builder);
+    }
+
+    AeroDataBoxArrivalProvider(Clock clock, PhaseLogger phases, boolean enabled, String apiKey, String baseUrl,
+                               String host, String searchBy, boolean recordTrainingLabels,
+                               Duration foundRecheck, Duration notFoundRecheck, Duration gateWait,
+                               RestClient.Builder builder) {
         this.clock = clock;
         this.phases = phases;
         this.flag = enabled;
@@ -125,6 +157,9 @@ public class AeroDataBoxArrivalProvider implements ArrivalConfirmationProvider {
         this.host = host;
         this.searchBy = normalizeSearchBy(searchBy);
         this.recordTrainingLabels = recordTrainingLabels;
+        this.foundRecheck = foundRecheck;
+        this.notFoundRecheck = notFoundRecheck;
+        this.gateWait = gateWait;
         this.client = builder.baseUrl(baseUrl).build();
         if (flag && this.apiKey.isEmpty()) {
             log.info("AeroDataBox arrival confirmation is disabled: no AERODATABOX_API_KEY configured");
@@ -161,6 +196,30 @@ public class AeroDataBoxArrivalProvider implements ArrivalConfirmationProvider {
         return arrivalAirportIcao != null && !arrivalAirportIcao.isBlank();
     }
 
+    /** The key is present and accepted, and the callsign can be sent as a search parameter. */
+    @Override
+    public boolean accepts(ArrivalQuery query) {
+        return enabled() && searchParam(query.callsign()) != null;
+    }
+
+    /** The gate time rarely moves quickly and a lookup costs two units of a small quota. */
+    @Override
+    public Duration foundRecheck() {
+        return foundRecheck;
+    }
+
+    /** The flight may appear on the API later, but not worth two units every 15 minutes. */
+    @Override
+    public Duration notFoundRecheck() {
+        return notFoundRecheck;
+    }
+
+    /** Zero by default: it rarely has a distinct in-block time, so stop asking once the landing is confirmed. */
+    @Override
+    public Duration gateWait() {
+        return gateWait;
+    }
+
     /** A Tier 2 lookup costs two units. */
     @Override
     public int callCost() {
@@ -186,9 +245,20 @@ public class AeroDataBoxArrivalProvider implements ArrivalConfirmationProvider {
             // Timeouts, DNS, resets: a connection that never produced an answer.
             log.debug("AeroDataBox {} failed: {}", param, e.toString());
             phases.degraded("AeroDataBox unreachable: " + e.getClass().getSimpleName());
-            return LookupResult.failed();
+            // A refused or unresolvable connection never reached the API, so it used no quota.
+            return neverSent(e) ? LookupResult.failed().withCost(0) : LookupResult.failed();
         }
         return interpret(http, query, param);
+    }
+
+    /** True when the cause chain says the request was never sent: no route, refused, unresolvable or a connect timeout. */
+    static boolean neverSent(Throwable e) {
+        for (Throwable t = e; t != null; t = t.getCause() == t ? null : t.getCause()) {
+            if (t instanceof ConnectException || t instanceof UnknownHostException || t instanceof NoRouteToHostException) return true;
+            if (t instanceof SocketTimeoutException && t.getMessage() != null
+                    && t.getMessage().toLowerCase(Locale.ROOT).startsWith("connect")) return true;
+        }
+        return false;
     }
 
     /** The callsign trimmed, spaces removed, upper case; null when it is empty, has odd characters or is too long. */
@@ -221,6 +291,12 @@ public class AeroDataBoxArrivalProvider implements ArrivalConfirmationProvider {
         int status = http.status();
         if (status == 204) return LookupResult.notFound();
         if (status >= 200 && status < 300) {
+            if (http.body() == null) {
+                // The answer arrived but its body could not be read: unknown, not "no flight".
+                log.warn("AeroDataBox {} answered {} but the body could not be read", param, status);
+                phases.degraded("AeroDataBox answered with an unreadable body");
+                return LookupResult.failed();
+            }
             try {
                 return select(parse(http.body()), query);
             } catch (IOException | RuntimeException e) {
@@ -241,6 +317,11 @@ public class AeroDataBoxArrivalProvider implements ArrivalConfirmationProvider {
             log.warn(detail);
             phases.degraded(detail);
             return LookupResult.failed();
+        }
+        if (status == 400 || status == 404 || status == 422) {
+            // The API does not know this flight number (or cannot take it): a stable answer, so cacheable.
+            log.warn("AeroDataBox {} answered {}, treated as no such flight", param, status);
+            return LookupResult.notFound();
         }
         log.warn("AeroDataBox {} answered {}", param, status);
         phases.degraded("AeroDataBox answered " + status);
@@ -306,14 +387,20 @@ public class AeroDataBoxArrivalProvider implements ArrivalConfirmationProvider {
         Instant expected = query.expectedArrivalAt();
         Duration window = Duration.ofHours(MAX_TIME_OFFSET_HOURS);
 
-        Leg best = legs.stream()
+        List<Leg> fit = legs.stream()
                 .filter(l -> airport == null || airport.equalsIgnoreCase(l.arrivalIcao()))
                 .filter(l -> l.modeS() == null || query.icao24() == null || l.modeS().equalsIgnoreCase(query.icao24().trim()))
                 .filter(l -> expected == null || l.bestTime() == null || distance(l, expected).compareTo(window) <= 0)
+                .toList();
+        if (fit.isEmpty()) return LookupResult.notFound();
+        // The nearest in time wins; the operator rank only separates entries close to it.
+        Duration nearest = fit.stream().map(l -> distance(l, expected)).min(Comparator.naturalOrder()).orElseThrow();
+        Duration tie = nearest.plusHours(TIE_BREAK_HOURS);
+        Leg best = fit.stream()
+                .filter(l -> distance(l, expected).compareTo(tie) <= 0)
                 .min(Comparator.comparingInt((Leg l) -> codeshareRank(l.codeshareStatus()))
                         .thenComparing(l -> distance(l, expected)))
-                .orElse(null);
-        if (best == null) return LookupResult.notFound();
+                .orElseThrow();
         return LookupResult.found(info(best, airport));
     }
 

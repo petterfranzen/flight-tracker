@@ -21,6 +21,7 @@ import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestClient;
 
 import java.io.IOException;
+import java.net.ConnectException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
@@ -42,6 +43,7 @@ import static org.springframework.test.web.client.ExpectedCount.manyTimes;
 import static org.springframework.test.web.client.ExpectedCount.once;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
+import static org.springframework.test.web.client.response.MockRestResponseCreators.withException;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withStatus;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
@@ -200,6 +202,94 @@ class AeroDataBoxConfirmationTest {
         ConfirmationGateway.Outcome eighth = gateway.lookup(provider, new ArrivalQuery("780a8c", "CPA999", "EHAM", now));
         assertThat(eighth.kind()).isEqualTo(ConfirmationGateway.Kind.SKIPPED);
         assertThat(gateway.unitsToday("aerodatabox")).isEqualTo(14);
+    }
+
+    // ---- one aircraft must not spend the day (7 lookups)
+
+    /** Ticks every 31 s (the gateway's spacing) until {@code until} after the start; returns the lookups made. */
+    private int tickFor(ArrivalConfirmationService svc, ConfirmationGateway gateway, Duration until) {
+        Instant end = clock.instant().plus(until);
+        while (clock.instant().isBefore(end)) {
+            svc.tick();
+            clock.advance(Duration.ofSeconds(31));
+        }
+        return gateway.unitsToday("aerodatabox") / 2;
+    }
+
+    @Test
+    void anArrivedFlightWithoutAGateCostsExactlyOneLookup() throws IOException {
+        LiveAircraft a = addInferred("780a8c", "CPA271", "EHAM", Instant.parse("2026-10-12T06:00:00Z"));
+        server.expect(manyTimes(), requestTo(CPA271))
+                .andRespond(withSuccess(fixture("cx271-two-days.json"), MediaType.APPLICATION_JSON));
+        ConfirmationGateway gateway = gateway(InMemoryAppState.budgets(clock, 300));
+        ArrivalConfirmationService svc = service(gateway, List.of(provider(false)), List.of());
+
+        int lookups = tickFor(svc, gateway, Duration.ofMinutes(60)); // past the global 45 min gate wait
+
+        assertThat(store.forAircraft(a)).isPresent();
+        assertThat(lookups).isEqualTo(1);
+    }
+
+    @Test
+    void anApproachingFlightIsAskedAgainNoSoonerThanThirtyMinutes() throws IOException {
+        addInferred("780a8c", "CPA271", "EHAM", Instant.parse("2026-10-12T06:00:00Z"));
+        server.expect(manyTimes(), requestTo(CPA271))
+                .andRespond(withSuccess(fixture("approaching.json"), MediaType.APPLICATION_JSON));
+        ConfirmationGateway gateway = gateway(InMemoryAppState.budgets(clock, 300));
+        ArrivalConfirmationService svc = service(gateway, List.of(provider(false)), List.of());
+
+        assertThat(tickFor(svc, gateway, Duration.ofMinutes(29))).isEqualTo(1);
+        assertThat(tickFor(svc, gateway, Duration.ofMinutes(2))).isEqualTo(2);
+        assertThat(tickFor(svc, gateway, Duration.ofMinutes(28))).isEqualTo(2);
+    }
+
+    @Test
+    void anUnknownFlightIsAskedAgainNoSoonerThanThreeHours() {
+        addInferred("780a8c", "CPA271", "EHAM", Instant.parse("2026-10-12T06:00:00Z"));
+        server.expect(manyTimes(), requestTo(CPA271)).andRespond(withStatus(HttpStatus.NO_CONTENT));
+        ConfirmationGateway gateway = gateway(InMemoryAppState.budgets(clock, 300));
+        ArrivalConfirmationService svc = service(gateway, List.of(provider(false)), List.of());
+
+        assertThat(tickFor(svc, gateway, Duration.ofMinutes(179))).isEqualTo(1);
+        assertThat(tickFor(svc, gateway, Duration.ofMinutes(2))).isEqualTo(2);
+    }
+
+    @Test
+    void anUnusableCallsignCostsNothing_andTheNextCandidateIsStillAskedInTheSameTick() throws IOException {
+        // The unusable one sorts first (earlier touchdown).
+        addInferred("111111", "ABC/DEF-TOO-LONG", "EHAM", Instant.parse("2026-10-12T05:50:00Z"));
+        addInferred("780a8c", "CPA271", "EHAM", Instant.parse("2026-10-12T06:00:00Z"));
+        server.expect(once(), requestTo(CPA271))
+                .andRespond(withSuccess(fixture("cx271-two-days.json"), MediaType.APPLICATION_JSON));
+        ConfirmationGateway gateway = gateway(InMemoryAppState.budgets(clock, 300));
+
+        service(gateway, List.of(provider(false)), List.of()).tick();
+
+        server.verify();
+        assertThat(gateway.unitsToday("aerodatabox")).isEqualTo(2); // only CPA271's lookup
+        assertThat(store.forAircraft(aircraft.get("780a8c"))).isPresent();
+    }
+
+    @Test
+    void aRefusedConnectionOrAThrottledCallIsRefunded_butA5xxIsNot() {
+        ConfirmationBudgets budgets = InMemoryAppState.budgets(clock, 300);
+        server.expect(once(), requestTo(CPA271)).andRespond(withException(new ConnectException("Connection refused")));
+        server.expect(once(), requestTo(CPA271)).andRespond(withStatus(HttpStatus.TOO_MANY_REQUESTS));
+        server.expect(once(), requestTo(CPA271)).andRespond(withStatus(HttpStatus.INTERNAL_SERVER_ERROR));
+        AeroDataBoxArrivalProvider provider = provider(false);
+        // A fresh gateway per call: the backoff after a failure is stamped with the system clock.
+        ArrivalQuery query = AeroDataBoxArrivalProviderTest.query(now);
+
+        gateway(budgets).lookup(provider, query);
+        assertThat(budgets.unitsToday("aerodatabox")).as("never reached the API").isZero();
+
+        gateway(budgets).lookup(provider, query);
+        assertThat(budgets.unitsToday("aerodatabox")).as("429").isZero();
+
+        gateway(budgets).lookup(provider, query);
+        server.verify();
+        assertThat(budgets.unitsToday("aerodatabox")).as("5xx").isEqualTo(2);
+        assertThat(budgets.unitsThisMonth("aerodatabox")).isEqualTo(2);
     }
 
     // ---- precedence

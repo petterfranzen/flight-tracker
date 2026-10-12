@@ -9,10 +9,15 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.mock.http.client.MockClientHttpResponse;
 import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestClient;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.net.ConnectException;
+import java.net.SocketTimeoutException;
+import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
@@ -27,6 +32,7 @@ import static org.springframework.test.web.client.ExpectedCount.once;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.header;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
+import static org.springframework.test.web.client.response.MockRestResponseCreators.withException;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withStatus;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
@@ -430,6 +436,135 @@ class AeroDataBoxArrivalProviderTest {
     }
 
     // ---- enabled, cost, coverage, config
+
+    @Test
+    void badRequestNotFoundAndUnprocessableAreNoSuchFlight_notAFailure() {
+        for (HttpStatus status : new HttpStatus[] {HttpStatus.BAD_REQUEST, HttpStatus.NOT_FOUND, HttpStatus.UNPROCESSABLE_ENTITY}) {
+            server = MockRestServiceServer.bindTo(builder).build();
+            server.expect(once(), requestTo(CPA271)).andRespond(withStatus(status));
+
+            LookupResult result = provider().lookup(query(LANDED));
+
+            assertThat(result.status()).as(status.toString()).isEqualTo(LookupResult.Status.NOT_FOUND);
+            assertThat(result.costUnits()).as("a real answer: the charge stands").isNull();
+        }
+    }
+
+    @Test
+    void otherClientErrorsAndServerErrorsStayFailures_and429StaysThrottled() {
+        server.expect(once(), requestTo(CPA271)).andRespond(withStatus(HttpStatus.BAD_GATEWAY));
+        assertThat(provider().lookup(query(LANDED)).status()).isEqualTo(LookupResult.Status.FAILED);
+
+        server = MockRestServiceServer.bindTo(builder).build();
+        server.expect(once(), requestTo(CPA271)).andRespond(withStatus(HttpStatus.TOO_MANY_REQUESTS));
+        assertThat(provider().lookup(query(LANDED)).status()).isEqualTo(LookupResult.Status.THROTTLED);
+
+        server = MockRestServiceServer.bindTo(builder).build();
+        server.expect(once(), requestTo(CPA271)).andRespond(withStatus(HttpStatus.METHOD_NOT_ALLOWED));
+        assertThat(provider().lookup(query(LANDED)).status()).isEqualTo(LookupResult.Status.FAILED);
+    }
+
+    @Test
+    void aBodyThatCannotBeReadFailsInsteadOfReadingAsNoFlight() {
+        server.expect(once(), requestTo(CPA271)).andRespond(request -> {
+            MockClientHttpResponse response = new MockClientHttpResponse(new InputStream() {
+                @Override public int read() throws IOException {
+                    throw new IOException("connection reset");
+                }
+            }, HttpStatus.OK);
+            response.getHeaders().setContentType(MediaType.APPLICATION_JSON);
+            return response;
+        });
+
+        LookupResult result = provider().lookup(query(LANDED));
+
+        assertThat(result.status()).isEqualTo(LookupResult.Status.FAILED);
+        assertThat(result.costUnits()).as("the request reached the API").isNull();
+        verify(phases).degraded(contains("unreadable"));
+    }
+
+    @Test
+    void aConnectionThatNeverReachedTheApiReportsNoCost_butATimeoutWhileReadingKeepsIt() {
+        server.expect(once(), requestTo(CPA271)).andRespond(withException(new ConnectException("Connection refused")));
+        LookupResult refused = provider().lookup(query(LANDED));
+        assertThat(refused.status()).isEqualTo(LookupResult.Status.FAILED);
+        assertThat(refused.costUnits()).isZero();
+
+        server = MockRestServiceServer.bindTo(builder).build();
+        server.expect(once(), requestTo(CPA271)).andRespond(withException(new UnknownHostException("aerodatabox.p.rapidapi.com")));
+        assertThat(provider().lookup(query(LANDED)).costUnits()).isZero();
+
+        server = MockRestServiceServer.bindTo(builder).build();
+        server.expect(once(), requestTo(CPA271)).andRespond(withException(new SocketTimeoutException("connect timed out")));
+        assertThat(provider().lookup(query(LANDED)).costUnits()).isZero();
+
+        server = MockRestServiceServer.bindTo(builder).build();
+        server.expect(once(), requestTo(CPA271)).andRespond(withException(new SocketTimeoutException("Read timed out")));
+        LookupResult slow = provider().lookup(query(LANDED));
+        assertThat(slow.status()).isEqualTo(LookupResult.Status.FAILED);
+        assertThat(slow.costUnits()).as("the API may have billed it").isNull();
+    }
+
+    @Test
+    void acceptsOnlyAUsableCallsignWhileEnabled() {
+        AeroDataBoxArrivalProvider p = provider();
+
+        assertThat(p.accepts(query(LANDED))).isTrue();
+        assertThat(p.accepts(new ArrivalQuery("780a8c", "cpa 271", "EHAM", LANDED))).isTrue();
+        assertThat(p.accepts(new ArrivalQuery("780a8c", "ABCDEFGHIJK", "EHAM", LANDED))).isFalse();
+        assertThat(p.accepts(new ArrivalQuery("780a8c", "CPA/271", "EHAM", LANDED))).isFalse();
+        assertThat(p.accepts(new ArrivalQuery("780a8c", " ", "EHAM", LANDED))).isFalse();
+        assertThat(p.accepts(new ArrivalQuery("780a8c", null, "EHAM", LANDED))).isFalse();
+        assertThat(provider(true, "", "Number", false).accepts(query(LANDED))).as("no key").isFalse();
+        assertThat(provider(false, "key", "Number", false).accepts(query(LANDED))).as("flag off").isFalse();
+    }
+
+    @Test
+    void aLockedOutProviderDoesNotAccept() {
+        server.expect(once(), requestTo(CPA271)).andRespond(withStatus(HttpStatus.FORBIDDEN));
+        AeroDataBoxArrivalProvider p = provider();
+        p.lookup(query(LANDED));
+
+        assertThat(p.accepts(query(LANDED))).isFalse();
+    }
+
+    @Test
+    void recheckIntervalsAndGateWaitDefaultToThirtyMinutesThreeHoursAndNone() {
+        AeroDataBoxArrivalProvider p = provider();
+
+        assertThat(p.foundRecheck()).isEqualTo(Duration.ofMinutes(30));
+        assertThat(p.notFoundRecheck()).isEqualTo(Duration.ofHours(3));
+        assertThat(p.gateWait()).isEqualTo(Duration.ZERO);
+    }
+
+    @Test
+    void applicationYmlSetsTheRecheckIntervalsAndNoGateWait() {
+        YamlPropertiesFactoryBean yaml = new YamlPropertiesFactoryBean();
+        yaml.setResources(new ClassPathResource("application.yml"));
+        Properties props = yaml.getObject();
+
+        assertThat(props.getProperty("flighttracker.confirmation.aerodatabox.found-recheck-minutes")).isEqualTo("30");
+        assertThat(props.getProperty("flighttracker.confirmation.aerodatabox.not-found-recheck-minutes")).isEqualTo("180");
+        assertThat(props.getProperty("flighttracker.confirmation.aerodatabox.gate-wait-minutes")).isEqualTo("0");
+    }
+
+    @Test
+    void theNearestEntryInTimeBeatsAnOperatorLegHoursAway_theRankOnlyBreaksCloseTies() {
+        LookupResult result = lookupBody("["
+                + "{\"status\":\"Arrived\",\"codeshareStatus\":\"IsOperator\",\"arrival\":{\"airport\":{\"icao\":\"EHAM\"},\"runwayTime\":{\"utc\":\"2026-10-12 17:00Z\"}}},"
+                + "{\"status\":\"Arrived\",\"codeshareStatus\":\"Unknown\",\"arrival\":{\"airport\":{\"icao\":\"EHAM\"},\"runwayTime\":{\"utc\":\"2026-10-12 06:09Z\"}}}]",
+                query(LANDED));
+
+        assertThat(result.info().actualOn()).isEqualTo(Instant.parse("2026-10-12T06:09:00Z"));
+
+        // 50 minutes apart: close enough for the operator to win.
+        server = MockRestServiceServer.bindTo(builder).build();
+        result = lookupBody("["
+                + "{\"status\":\"Arrived\",\"codeshareStatus\":\"IsOperator\",\"arrival\":{\"airport\":{\"icao\":\"EHAM\"},\"runwayTime\":{\"utc\":\"2026-10-12 06:55Z\"}}},"
+                + "{\"status\":\"Arrived\",\"codeshareStatus\":\"Unknown\",\"arrival\":{\"airport\":{\"icao\":\"EHAM\"},\"runwayTime\":{\"utc\":\"2026-10-12 06:05Z\"}}}]",
+                query(LANDED));
+        assertThat(result.info().actualOn()).isEqualTo(Instant.parse("2026-10-12T06:55:00Z"));
+    }
 
     @Test
     void isDisabledWithoutAKeyOrWithTheFlagOffAndMakesNoCall() {
