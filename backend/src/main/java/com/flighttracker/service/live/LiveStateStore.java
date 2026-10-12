@@ -7,6 +7,7 @@ import com.flighttracker.dto.LiveOverview;
 import com.flighttracker.model.FlightPosition;
 import com.flighttracker.repository.Timestamps;
 import com.flighttracker.service.LiveVisibilityWindows;
+import com.flighttracker.service.coverage.GapEstimate;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -156,7 +157,7 @@ public class LiveStateStore {
                     onGround,
                     rs.getString("agent_source"),
                     Timestamps.fromEpochMilli(landedSinceMillis),
-                    null, null, null); // no estimate to restore — EstimatorAgent recomputes on its own next cycle
+                    null, null, null, null); // no estimate to restore — EstimatorAgent recomputes on its own next cycle
             byIcao24.put(aircraft.icao24(), aircraft);
             loaded[0]++;
         }, cutoff.toEpochMilli());
@@ -208,7 +209,7 @@ public class LiveStateStore {
             long id = existing != null ? existing.id() : idSequence.incrementAndGet();
             return new LiveAircraft(id, icao24, callsign, observedAt, latitude, longitude,
                     altitudeM, velocityMs, headingDeg, verticalRateMs, onGround, agentSource,
-                    landedSince, null, null, null);
+                    landedSince, null, null, null, null);
         });
         return accepted.get();
     }
@@ -243,7 +244,30 @@ public class LiveStateStore {
             return new LiveAircraft(existing.id(), existing.icao24(), existing.callsign(), existing.observedAt(),
                     existing.latitude(), existing.longitude(), existing.altitudeM(), existing.velocityMs(),
                     existing.headingDeg(), existing.verticalRateMs(), existing.onGround(), existing.agentSource(),
-                    existing.landedSince(), estimatedLatitude, estimatedLongitude, estimatedAt);
+                    existing.landedSince(), estimatedLatitude, estimatedLongitude, estimatedAt, null);
+        });
+        return applied.get();
+    }
+
+    /**
+     * Same compare-and-set as {@link #writeEstimate}, for the coverage-gap
+     * estimator: stores the {@link GapEstimate} and makes its position the
+     * display position. A newer real report (upsert) clears it again.
+     *
+     * @return true if the write applied; false if the aircraft is gone or a
+     *         real report superseded the one this estimate was computed from.
+     */
+    public boolean writeGapEstimate(String icao24, Instant expectedObservedAt, GapEstimate gap) {
+        AtomicReference<Boolean> applied = new AtomicReference<>(Boolean.FALSE);
+        byIcao24.computeIfPresent(icao24, (key, existing) -> {
+            if (!existing.observedAt().equals(expectedObservedAt)) {
+                return existing; // superseded by a real report since this cycle's read
+            }
+            applied.set(Boolean.TRUE);
+            return new LiveAircraft(existing.id(), existing.icao24(), existing.callsign(), existing.observedAt(),
+                    existing.latitude(), existing.longitude(), existing.altitudeM(), existing.velocityMs(),
+                    existing.headingDeg(), existing.verticalRateMs(), existing.onGround(), existing.agentSource(),
+                    existing.landedSince(), gap.estLat(), gap.estLon(), gap.at(), gap);
         });
         return applied.get();
     }
@@ -509,13 +533,6 @@ public class LiveStateStore {
     public Optional<LiveAircraft> get(String icao24) {
         return Optional.ofNullable(byIcao24.get(icao24));
     }
-
-    /** Raw (never coalesced with an estimate) lat/lon — mirrors FlightPositionRepository.findRawLatestLatLon; see that method's own javadoc for why raw matters here. */
-    public Optional<RawLatLon> findRawLatestLatLon(String icao24) {
-        return Optional.ofNullable(byIcao24.get(icao24)).map(a -> new RawLatLon(a.latitude(), a.longitude()));
-    }
-
-    public record RawLatLon(double latitude, double longitude) { }
 
     private static FlightPosition toFlightPosition(LiveAircraft a) {
         return new FlightPosition(a.id(), a.icao24(), a.callsign(), a.observedAt(),

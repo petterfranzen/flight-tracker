@@ -1,113 +1,139 @@
 package com.flighttracker.service.estimator;
 
-import com.flighttracker.model.Aircraft;
+import com.flighttracker.dto.Bounds;
 import com.flighttracker.model.FlightPosition;
 import com.flighttracker.observability.PhaseLogger;
-import com.flighttracker.repository.AircraftRepository;
+import com.flighttracker.repository.FlightPositionRepository;
+import com.flighttracker.service.coverage.CoverageGapEstimator;
+import com.flighttracker.service.coverage.GapEstimate;
+import com.flighttracker.service.coverage.PollCoverageTracker;
+import com.flighttracker.service.coverage.RunwayIndex;
+import com.flighttracker.service.coverage.TrackState;
+import com.flighttracker.service.enrichment.CallsignRouteService;
+import com.flighttracker.service.enrichment.Route;
+import com.flighttracker.service.live.LiveAircraft;
 import com.flighttracker.service.live.LiveStateStore;
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.slf4j.LoggerFactory;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 /**
- * No DB — LiveStateStore/AircraftRepository are mocked. Verifies
- * EstimatorAgent calls LiveStateStore.writeEstimate with the right values
- * for each case (the CAS-guard race fix and the skip-already-null
- * optimization — see EstimatorAgent's class javadoc for both), which is
- * where the actual eligibility/skip logic lives now that the write itself
- * is a plain in-memory map update rather than a batched JDBC statement.
+ * No DB: LiveStateStore, the position repository, the runway index and the
+ * route cache are mocked; the poll tracker and the gap estimator are real
+ * (both are cheap and deterministic). Verifies which estimate EstimatorAgent
+ * writes for each aircraft (gap estimate, dead reckoning, clearing a stale
+ * estimate, or nothing), the CAS-guard expectation on every write, and the
+ * snapshot cache around the gap estimate.
  */
 @ExtendWith(MockitoExtension.class)
 class EstimatorAgentTest {
 
+    private static final Instant NOW = Instant.parse("2026-10-12T12:00:00Z");
+    private static final Bounds WORLDISH = new Bounds(-80, 80, -170, 170);
+
     @Mock
     private LiveStateStore liveStateStore;
     @Mock
-    private AircraftRepository aircraftRepository;
+    private FlightPositionRepository positionRepository;
+    @Mock
+    private RunwayIndex runwayIndex;
+    @Mock
+    private CallsignRouteService routeService;
 
-    private static FlightPosition livePosition(String icao24, double lat, double lon, Instant observedAt) {
-        return new FlightPosition(icao24, "SAS123", observedAt, lat, lon,
-                10_000.0, 200.0, 90.0, 0.0, false, "opensky");
+    // routeService answers Optional.empty() unless a test stubs a route (Mockito's default for Optional)
+    private final PollCoverageTracker tracker = new PollCoverageTracker();
+
+    private static LiveAircraft airborne(String icao24, double lat, double lon, Instant observedAt) {
+        return new LiveAircraft(1L, icao24, "SAS123", observedAt, lat, lon,
+                10_000.0, 200.0, 90.0, 0.0, false, "opensky", null, null, null, null, null);
     }
 
-    private static Aircraft withDestination(String icao24, double destLat, double destLon) {
-        return new Aircraft(icao24, null, null, null, null, null, null, null,
-                null, null, destLat, destLon, null, null, null, null, null);
+    private static LiveAircraft onGround(String icao24, Instant observedAt) {
+        return new LiveAircraft(2L, icao24, "SAS456", observedAt, 59.0, 18.0,
+                0.0, 0.0, null, 0.0, true, "opensky", observedAt, null, null, null, null);
     }
 
-    /**
-     * A real PhaseLogger rather than a mock: it only writes a log line,
-     * and none of these tests are about what it writes — see
-     * PhaseLoggerTest for that.
-     */
+    private static Route routeTo(double destLat, double destLon) {
+        return new Route(null, null, null, null, "ESSA", "Arlanda", destLat, destLon);
+    }
+
     private EstimatorAgent newAgent() {
-        return new EstimatorAgent(liveStateStore, aircraftRepository, new PhaseLogger());
+        return newAgent(300);
     }
 
-    private void givenLive(List<FlightPosition> live) {
-        when(liveStateStore.liveFlightPositions(any(), any(), isNull())).thenReturn(live);
+    /** A real PhaseLogger rather than a mock: it only writes a log line (see PhaseLoggerTest). */
+    private EstimatorAgent newAgent(int maxSnapshotLoadsPerTick) {
+        return new EstimatorAgent(liveStateStore, new PhaseLogger(), Clock.fixed(NOW, ZoneOffset.UTC), tracker,
+                positionRepository, runwayIndex, new CoverageGapEstimator(), routeService,
+                60, 10, maxSnapshotLoadsPerTick, 50);
     }
+
+    private void givenLive(LiveAircraft... live) {
+        when(liveStateStore.liveAircraft(any(), any())).thenReturn(List.of(live));
+    }
+
+    private static FlightPosition report(String icao24, Instant at, double lat, double lon) {
+        return new FlightPosition(icao24, "SAS123", at, lat, lon, 10_000.0, 200.0, 90.0, 0.0, false, "opensky");
+    }
+
+    // ---- dead reckoning (aircraft not in a gap)
 
     @Test
     void emptyLiveSet_noWriteIssued() {
-        givenLive(List.of());
+        givenLive();
 
         newAgent().refresh();
 
         verify(liveStateStore, never()).writeEstimate(any(), any(), any(), any(), any());
-        verifyNoMoreInteractions(aircraftRepository);
+        verify(liveStateStore, never()).writeGapEstimate(any(), any(), any());
     }
 
     @Test
-    void eligibleAircraft_writesProjectedValuesAndTheExactObservedAtRead() {
-        Instant observedAt = Instant.now().minus(Duration.ofHours(1));
-        FlightPosition p = livePosition("abc123", 0.0, 0.0, observedAt);
-        givenLive(List.of(p));
-        when(aircraftRepository.findAllById(List.of("abc123")))
-                .thenReturn(List.of(withDestination("abc123", 0.0, 90.0))); // far east, won't clip
-        when(liveStateStore.icao24sWithEstimate()).thenReturn(Set.of());
+    void eligibleAircraft_projectsFromTheRawReportTowardsTheCallsignRouteDestination() {
+        Instant observedAt = NOW.minus(Duration.ofMinutes(5));
+        // The display position is already a stale estimate; only the raw report must be projected.
+        LiveAircraft a = new LiveAircraft(1L, "abc123", "SAS123", observedAt, 0.0, 0.0,
+                10_000.0, 200.0, 90.0, 0.0, false, "opensky", null, 5.0, 5.0, NOW.minusSeconds(30), null);
+        givenLive(a);
+        when(routeService.cached("SAS123")).thenReturn(Optional.of(routeTo(0.0, 90.0))); // far east, won't clip
 
         newAgent().refresh();
 
         ArgumentCaptor<Double> lat = ArgumentCaptor.forClass(Double.class);
         ArgumentCaptor<Double> lon = ArgumentCaptor.forClass(Double.class);
-        ArgumentCaptor<Instant> at = ArgumentCaptor.forClass(Instant.class);
-        verify(liveStateStore).writeEstimate(eq("abc123"), eq(observedAt), lat.capture(), lon.capture(), at.capture());
-        assertThat(lat.getValue()).isNotNull();
-        assertThat(lon.getValue()).isNotNull();
-        assertThat(at.getValue()).isNotNull();
+        verify(liveStateStore).writeEstimate(eq("abc123"), eq(observedAt), lat.capture(), lon.capture(), eq(NOW));
+        assertThat(lat.getValue()).isCloseTo(0.0, org.assertj.core.data.Offset.offset(0.01));
+        // 200 m/s for 300 s due east from lon 0 is about 0.54 degrees, not 5.5
+        assertThat(lon.getValue()).isBetween(0.4, 0.7);
+        verify(liveStateStore, never()).writeGapEstimate(any(), any(), any());
     }
 
     @Test
-    void ineligibleAircraftNeverEstimated_writeSkippedEntirely() {
-        // The common steady-state case: grounded (or no destination/too
-        // slow/too recent), and there's no stored estimate to clear either
-        // - this is the case the skip-optimization exists for (see
-        // EstimatorAgent's javadoc).
-        Instant observedAt = Instant.now().minus(Duration.ofHours(1));
-        FlightPosition onGround = new FlightPosition("def456", "SAS456", observedAt, 59.0, 18.0,
-                0.0, 0.0, null, 0.0, true, "opensky"); // on_ground = true
-        givenLive(List.of(onGround));
-        when(aircraftRepository.findAllById(List.of("def456")))
-                .thenReturn(List.of(withDestination("def456", 0.0, 90.0)));
-        when(liveStateStore.icao24sWithEstimate()).thenReturn(Set.of()); // not previously estimated
+    void aircraftWithoutARoute_neverEstimated_writeSkippedEntirely() {
+        givenLive(airborne("abc123", 0.0, 0.0, NOW.minus(Duration.ofHours(1))));
 
         newAgent().refresh();
 
@@ -116,16 +142,9 @@ class EstimatorAgentTest {
 
     @Test
     void ineligibleAircraftWithStaleEstimate_clearsItToNullRatherThanSkipping() {
-        // Was projecting last cycle (destination got cleared, or it just
-        // landed) - this aircraft currently has a stored estimate, so this
-        // write is real: clearing a stale estimate, not a no-op.
-        Instant observedAt = Instant.now().minus(Duration.ofHours(1));
-        FlightPosition onGround = new FlightPosition("def456", "SAS456", observedAt, 59.0, 18.0,
-                0.0, 0.0, null, 0.0, true, "opensky"); // on_ground = true
-        givenLive(List.of(onGround));
-        when(aircraftRepository.findAllById(List.of("def456")))
-                .thenReturn(List.of(withDestination("def456", 0.0, 90.0)));
-        when(liveStateStore.icao24sWithEstimate()).thenReturn(Set.of("def456")); // has a stale estimate
+        Instant observedAt = NOW.minus(Duration.ofHours(1));
+        givenLive(onGround("def456", observedAt));
+        when(liveStateStore.icao24sWithEstimate()).thenReturn(Set.of("def456"));
 
         newAgent().refresh();
 
@@ -133,16 +152,10 @@ class EstimatorAgentTest {
     }
 
     @Test
-    void mixedEligibleAndIneligibleWithStaleEstimate_bothWrittenWithCorrectValues() {
-        Instant observedAt = Instant.now().minus(Duration.ofHours(1));
-        FlightPosition eligible = livePosition("abc123", 0.0, 0.0, observedAt);
-        FlightPosition onGround = new FlightPosition("def456", "SAS456", observedAt, 59.0, 18.0,
-                0.0, 0.0, null, 0.0, true, "opensky");
-        givenLive(List.of(eligible, onGround));
-        when(aircraftRepository.findAllById(List.of("abc123", "def456")))
-                .thenReturn(List.of(withDestination("abc123", 0.0, 90.0), withDestination("def456", 0.0, 90.0)));
-        // def456 has a stale estimate to clear; abc123's presence never
-        // depends on this set (a genuine projection always writes).
+    void eligibleAndStaleEstimateAircraft_bothWrittenWithCorrectValues() {
+        Instant observedAt = NOW.minus(Duration.ofHours(1));
+        givenLive(airborne("abc123", 0.0, 0.0, observedAt), onGround("def456", observedAt));
+        when(routeService.cached("SAS123")).thenReturn(Optional.of(routeTo(0.0, 90.0)));
         when(liveStateStore.icao24sWithEstimate()).thenReturn(Set.of("def456"));
 
         newAgent().refresh();
@@ -152,16 +165,145 @@ class EstimatorAgentTest {
         verify(liveStateStore, times(2)).writeEstimate(any(), any(), any(), any(), any());
     }
 
+    // ---- coverage gaps
+
     @Test
-    void aircraftWithNoMatchingDestinationRowAndStaleEstimate_treatedAsIneligibleNotAnException() {
-        Instant observedAt = Instant.now().minus(Duration.ofHours(1));
-        FlightPosition p = livePosition("zzz999", 0.0, 0.0, observedAt);
-        givenLive(List.of(p));
-        when(aircraftRepository.findAllById(List.of("zzz999"))).thenReturn(List.of()); // no Aircraft row at all
-        when(liveStateStore.icao24sWithEstimate()).thenReturn(Set.of("zzz999")); // exercise the clear-write path
+    void covered_butReportedWithinTheGraceAfterTheLastPoll_isNotAGap() {
+        Instant observedAt = NOW.minusSeconds(300);
+        givenLive(airborne("abc123", 59.0, 18.0, observedAt));
+        tracker.recordPoll(observedAt.plusSeconds(30), null); // 30 s < the 60 s grace
 
-        newAgent().refresh(); // must not throw
+        newAgent().refresh();
 
-        verify(liveStateStore).writeEstimate("zzz999", observedAt, null, null, null);
+        verify(liveStateStore, never()).writeGapEstimate(any(), any(), any());
+        verify(positionRepository, never()).findByIcao24AndObservedAtBetween(any(), any(), any());
+    }
+
+    @Test
+    void hotPollThatDidNotCoverThePosition_isNotAGap() {
+        givenLive(airborne("abc123", 59.0, 18.0, NOW.minusSeconds(300)));
+        tracker.recordPoll(NOW.minusSeconds(10), new Bounds(0, 10, 0, 10));
+
+        newAgent().refresh();
+
+        verify(liveStateStore, never()).writeGapEstimate(any(), any(), any());
+    }
+
+    @Test
+    void onGroundAircraft_isNeverInAGap() {
+        givenLive(onGround("def456", NOW.minusSeconds(300)));
+        tracker.recordPoll(NOW.minusSeconds(10), null);
+
+        newAgent().refresh();
+
+        verify(liveStateStore, never()).writeGapEstimate(any(), any(), any());
+    }
+
+    @Test
+    void airborneAircraftMissedByACoveringPoll_getsAGapEstimateGuardedByObservedAt() {
+        Instant observedAt = NOW.minusSeconds(300);
+        LiveAircraft a = airborne("abc123", 59.0, 18.0, observedAt);
+        givenLive(a);
+        tracker.recordPoll(NOW.minusSeconds(20), WORLDISH);
+        when(positionRepository.findByIcao24AndObservedAtBetween("abc123", observedAt.minus(Duration.ofMinutes(10)), observedAt))
+                .thenReturn(List.of(
+                        report("abc123", observedAt.minusSeconds(60), 59.0, 17.98),
+                        report("abc123", observedAt.minusSeconds(30), 59.0, 17.99),
+                        report("abc123", observedAt, 59.0, 18.0))); // the live report itself, must not be doubled
+
+        newAgent().refresh();
+
+        ArgumentCaptor<GapEstimate> gap = ArgumentCaptor.forClass(GapEstimate.class);
+        verify(liveStateStore).writeGapEstimate(eq("abc123"), eq(observedAt), gap.capture());
+        assertThat(gap.getValue().state()).isEqualTo(TrackState.COVERAGE_LOST);
+        assertThat(gap.getValue().at()).isEqualTo(NOW);
+        assertThat(gap.getValue().estLon()).isGreaterThan(18.0); // dead-reckoned east, along its track
+        verify(runwayIndex).near(59.0, 18.0, 50_000.0);
+        verify(liveStateStore, never()).writeEstimate(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void gapSnapshot_isReadOncePerObservedAt_andAgainWhenTheReportChanges() {
+        Instant first = NOW.minusSeconds(300);
+        Instant second = NOW.minusSeconds(200);
+        tracker.recordPoll(NOW.minusSeconds(5), null);
+        EstimatorAgent agent = newAgent();
+
+        givenLive(airborne("abc123", 59.0, 18.0, first));
+        agent.refresh();
+        agent.refresh();
+        verify(positionRepository, times(1)).findByIcao24AndObservedAtBetween(any(), any(), any());
+
+        givenLive(airborne("abc123", 59.0, 18.1, second)); // a new real report, then silent again
+        agent.refresh();
+        verify(positionRepository, times(2)).findByIcao24AndObservedAtBetween(any(), any(), any());
+        verify(liveStateStore, times(3)).writeGapEstimate(eq("abc123"), any(), any());
+    }
+
+    @Test
+    void gapSnapshot_isDroppedWhenTheAircraftLeavesTheLiveSet() {
+        Instant observedAt = NOW.minusSeconds(300);
+        tracker.recordPoll(NOW.minusSeconds(5), null);
+        EstimatorAgent agent = newAgent();
+        LiveAircraft a = airborne("abc123", 59.0, 18.0, observedAt);
+
+        givenLive(a);
+        agent.refresh();
+        givenLive(airborne("other99", 10.0, 10.0, NOW.minusSeconds(5))); // abc123 evicted
+        agent.refresh();
+        givenLive(a);
+        agent.refresh();
+
+        verify(positionRepository, times(2)).findByIcao24AndObservedAtBetween(eq("abc123"), any(), any());
+    }
+
+    @Test
+    void newSnapshotLoadsPerTick_areCapped_andTheRestWaitForTheNextTick() {
+        Instant observedAt = NOW.minusSeconds(300);
+        tracker.recordPoll(NOW.minusSeconds(5), null);
+        givenLive(airborne("aaa111", 59.0, 18.0, observedAt),
+                airborne("bbb222", 59.1, 18.0, observedAt),
+                airborne("ccc333", 59.2, 18.0, observedAt));
+        EstimatorAgent agent = newAgent(2);
+
+        agent.refresh();
+        verify(positionRepository, times(2)).findByIcao24AndObservedAtBetween(any(), any(), any());
+        verify(liveStateStore, times(2)).writeGapEstimate(any(), any(), any());
+
+        agent.refresh(); // the first two are cached; the third gets this tick's budget
+        verify(positionRepository, times(3)).findByIcao24AndObservedAtBetween(any(), any(), any());
+        verify(liveStateStore, times(5)).writeGapEstimate(any(), any(), any());
+    }
+
+    @Test
+    void snapshotLoadFailures_logOneWarnSummaryPerTick_andTheStacksAtDebug() {
+        Logger logger = (Logger) LoggerFactory.getLogger(EstimatorAgent.class);
+        Level before = logger.getLevel();
+        ListAppender<ILoggingEvent> logs = new ListAppender<>();
+        logs.start();
+        logger.addAppender(logs);
+        logger.setLevel(Level.DEBUG);
+        try {
+            Instant observedAt = NOW.minusSeconds(300);
+            tracker.recordPoll(NOW.minusSeconds(5), null);
+            givenLive(airborne("aaa111", 59.0, 18.0, observedAt),
+                    airborne("bbb222", 59.1, 18.0, observedAt),
+                    airborne("ccc333", 59.2, 18.0, observedAt));
+            when(positionRepository.findByIcao24AndObservedAtBetween(any(), any(), any()))
+                    .thenThrow(new IllegalStateException("db is down"));
+
+            newAgent().refresh();
+
+            List<ILoggingEvent> warns = logs.list.stream().filter(e -> e.getLevel() == Level.WARN).toList();
+            assertThat(warns).hasSize(1);
+            assertThat(warns.get(0).getFormattedMessage()).contains("3 of 3").contains("aaa111").contains("db is down");
+            assertThat(warns.get(0).getThrowableProxy()).isNull();
+            List<ILoggingEvent> stacks = logs.list.stream()
+                    .filter(e -> e.getLevel() == Level.DEBUG && e.getThrowableProxy() != null).toList();
+            assertThat(stacks).hasSize(3);
+        } finally {
+            logger.detachAppender(logs);
+            logger.setLevel(before);
+        }
     }
 }

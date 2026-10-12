@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { INITIAL_MAX_PLANES, INITIAL_MIN_PLANES, LOCAL_EMPTY_BELOW, pickInitialView, planesInWindow } from "../src/map/initialView";
-import { mockFlightApi, setMapView, withMap } from "./helpers";
+import { freezeClock, mockFlightApi, setMapView, waitForMapReady, withMap } from "./helpers";
 
 // The map opens where there is traffic, at a zoom that draws individual
 // aircraft, not on a wide view of aggregated bubbles (which reads as broken).
@@ -73,8 +73,12 @@ test.describe("pickInitialView (pure)", () => {
 async function open(page: import("@playwright/test").Page, clusters: ReturnType<typeof cell>[], geo?: { lat: number; lon: number } | null) {
   await mockFlightApi(page, { clusters, geo });
   await page.setViewportSize(DESKTOP);
+  // The opening view gives the summary 1.5 s (INITIAL_VIEW_TIMEOUT_MS), then
+  // keeps the default. A busy machine could miss that with mocked data, so
+  // the page's clock stands still: only the data decides.
+  await freezeClock(page);
   await page.goto("/");
-  await page.waitForSelector(".map-container", { timeout: 10_000 });
+  await waitForMapReady(page);
 }
 
 test.describe("opening view in the app", () => {
@@ -113,7 +117,6 @@ test.describe("opening view in the app", () => {
 
   test("no location from the server keeps the default view", async ({ page }) => {
     await open(page, [], null);
-    await page.waitForTimeout(1_500);
     const c = await withMap(page, (m) => m.getCenter());
     expect(c.lat).toBeCloseTo(59.33, 1);
     expect(c.lon).toBeCloseTo(18.06, 1);
@@ -121,7 +124,6 @@ test.describe("opening view in the app", () => {
 
   test("with no usable traffic data the default view is kept", async ({ page }) => {
     await open(page, []);
-    await page.waitForTimeout(1_500);
     expect(await withMap(page, (m) => m.getZoom())).toBe(6);
   });
 
@@ -135,11 +137,12 @@ test.describe("opening view in the app", () => {
       await route.fulfill({ json: [cell(50.1, 8.6, 90)] }).catch(() => {});
     });
     await page.setViewportSize(DESKTOP);
+    await freezeClock(page); // as in open(): the summary can't time out
     await page.goto("/");
-    await page.waitForSelector(".map-container", { timeout: 10_000 });
+    await page.waitForSelector(".map-container", { timeout: 10_000 }); // not ready: the summary is held
     await setMapView(page, 10, 10, 5);
     release();
-    await page.waitForTimeout(1_500);
+    await waitForMapReady(page); // the opening view has seen the summary
     expect(await withMap(page, (m) => m.getZoom())).toBe(5);
     const c = await withMap(page, (m) => m.getCenter());
     expect(c.lat).toBeCloseTo(10, 1);

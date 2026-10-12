@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { mockFlightApi, planeTarget, renderedPlanes, setMapView } from "./helpers";
+import { mockFlightApi, planeTarget, renderedPlanes, setMapView, waitForMapReady } from "./helpers";
 
 // The server keeps landed aircraft for 48 h, so the map can show a plane whose
 // last report is hours old, or one that has since left a stand under whatever
@@ -19,7 +19,7 @@ async function serve(page: Page, list: ReturnType<typeof marker>[]) {
   // Later registration wins over the shared mock's /live.
   await page.route(/\/api\/flights\/live(\?|$)/, (route) => route.fulfill({ json: list }));
   await page.goto("/");
-  await page.waitForSelector(".map-container", { timeout: 10_000 });
+  await waitForMapReady(page);
 }
 
 /** Callsigns of every drawn plane, split into dimmed and live. */

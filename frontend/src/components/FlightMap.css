@@ -59,6 +59,10 @@ html, body {
   --color-marker: #ffb020;
   --color-marker-selected: #4db2ff;
   --color-focus: #4db2ff;
+  /* The coverage-gap cone on the map and the status line in the dossier: where an aircraft out of coverage may be. */
+  --color-uncertainty: #ff9f43;
+  --color-inferred: #ff9f43;
+  --color-confirmed: #4ddc8a;
   /* Map-drawn marks (map/planes.ts, ui/defaultAirports.ts draw them on the
      GL canvas from these values): the plane's outline and shadow, the
      selected plane's halo and callsign chip, the airport dot and its chip. */
@@ -107,6 +111,9 @@ html, body {
   --color-marker: #3ce0ff;
   --color-marker-selected: #ffb63c;
   --color-focus: #3ce0ff;
+  --color-uncertainty: #ff5ed8;
+  --color-inferred: #ff5ed8;
+  --color-confirmed: #5cff9d;
   /* One face for all three roles — heading, body, and tabular data all
      read as "the same app" this way. Previously Rajdhani/Chakra
      Petch/JetBrains Mono per role, which is a legitimate pattern in
@@ -707,6 +714,18 @@ html, body {
   color: var(--color-warn);
   font-weight: 600;
 }
+
+/* The coverage-gap status: observed (ADS-B), inferred (estimated) or confirmed (a provider). */
+.details-panel-status {
+  margin: 4px 0 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+
+.details-panel-status--observed { color: var(--color-text-muted); }
+.details-panel-status--inferred { color: var(--color-inferred); }
+.details-panel-status--confirmed { color: var(--color-confirmed); }
 
 .details-panel-fields {
   display: grid;

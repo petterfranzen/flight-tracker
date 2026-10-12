@@ -63,7 +63,7 @@ class CallsignRouteServiceTest {
 
     private static LiveAircraft live(String icao24, String callsign, double lat, double lon) {
         return new LiveAircraft(1L, icao24, callsign, Instant.now(), lat, lon,
-                null, null, null, null, false, "opensky", null, null, null, null);
+                null, null, null, null, false, "opensky", null, null, null, null, null);
     }
 
     @Test

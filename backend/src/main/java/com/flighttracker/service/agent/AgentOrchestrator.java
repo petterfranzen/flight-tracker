@@ -1,7 +1,10 @@
 package com.flighttracker.service.agent;
 
+import com.flighttracker.dto.Bounds;
 import com.flighttracker.observability.PhaseLogger;
 import com.flighttracker.service.PollWindowService;
+import com.flighttracker.service.ViewportService;
+import com.flighttracker.service.coverage.PollCoverageTracker;
 import com.flighttracker.service.enrichment.AircraftEnrichmentService;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
@@ -9,6 +12,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
+import java.time.Clock;
+import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -34,6 +39,9 @@ public class AgentOrchestrator {
     private final PollWindowService pollWindowService;
     private final PhaseLogger phases;
     private final SweepHealthTracker sweepHealthTracker;
+    private final ViewportService viewportService;
+    private final PollCoverageTracker coverageTracker;
+    private final Clock clock;
 
     // Local-only, just to avoid a log line every poll cycle while the
     // window stays closed — the authoritative state is PollWindowService.
@@ -48,13 +56,19 @@ public class AgentOrchestrator {
                               AircraftEnrichmentService enrichmentService,
                               PollWindowService pollWindowService,
                               PhaseLogger phases,
-                              SweepHealthTracker sweepHealthTracker) {
+                              SweepHealthTracker sweepHealthTracker,
+                              ViewportService viewportService,
+                              PollCoverageTracker coverageTracker,
+                              Clock clock) {
         this.agents = agents;
         this.persistenceService = persistenceService;
         this.enrichmentService = enrichmentService;
         this.pollWindowService = pollWindowService;
         this.phases = phases;
         this.sweepHealthTracker = sweepHealthTracker;
+        this.viewportService = viewportService;
+        this.coverageTracker = coverageTracker;
+        this.clock = clock;
     }
 
     // Opens the window on every container boot, same as the old in-memory
@@ -114,7 +128,10 @@ public class AgentOrchestrator {
 
         for (FlightDataAgent agent : agents) {
             try {
+                // The area this poll covers: the agents read the same viewport.
+                Bounds polled = viewportService.current();
                 List<RawPositionReport> reports = agent.poll();
+                Instant polledAt = clock.instant(); // when the poll returned, not when persisting ends
                 // Counted per agent, not per cycle: each configured
                 // FlightDataAgent's poll() is its own outbound call to its
                 // own data source. Counted even when poll() itself skipped
@@ -125,7 +142,12 @@ public class AgentOrchestrator {
                 // run of failures is the safer side to be wrong on.
                 pollWindowService.recordHotPollCall();
                 if (!reports.isEmpty()) {
+                    // Only a poll that returned something counts as coverage: a
+                    // failed one (throttled, backing off) is an empty list too.
                     List<RawPositionReport> newAircraft = persistenceService.persist(agent.sourceName(), reports);
+                    // Recorded after persisting, so no aircraft in this poll looks gapped
+                    // while its report is still being written; stamped with the poll's time.
+                    coverageTracker.recordPoll(polledAt, polled);
                     // Fired after persist()'s transaction has committed (we're back
                     // on the caller now), not from inside it — the enrichment lookup
                     // runs on a separate @Async thread, so kicking it off mid-transaction
@@ -169,12 +191,14 @@ public class AgentOrchestrator {
         for (FlightDataAgent agent : agents) {
             try {
                 List<RawPositionReport> reports = agent.pollGlobal();
+                Instant polledAt = clock.instant();
                 if (!reports.isEmpty()) {
                     // persistBatch, not persist: this list can be ~13k
                     // reports worldwide, where persist()'s one-row-at-a-time
                     // approach measured taking ~14 minutes in production —
                     // see PositionPersistenceService.persistBatch's javadoc.
                     persistenceService.persistBatch(agent.sourceName(), reports);
+                    coverageTracker.recordPoll(polledAt, null); // after the batch, as in pollAll
                 }
             } catch (Exception e) {
                 log.warn("Agent {} global sweep failed", agent.sourceName(), e);

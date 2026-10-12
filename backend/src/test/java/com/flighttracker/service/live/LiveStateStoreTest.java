@@ -5,6 +5,8 @@ import com.flighttracker.dto.ClusterPoint;
 import com.flighttracker.dto.LiveMarker;
 import com.flighttracker.dto.LiveOverview;
 import com.flighttracker.model.FlightPosition;
+import com.flighttracker.service.coverage.GapEstimate;
+import com.flighttracker.service.coverage.TrackState;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
@@ -215,20 +217,6 @@ class LiveStateStoreTest {
         assertThat(applied).isTrue();
         assertThat(store.icao24sWithEstimate()).doesNotContain("abc123");
         assertThat(store.findLatestPosition("abc123").orElseThrow().latitude()).isEqualTo(59.0); // back to the raw report
-    }
-
-    @Test
-    void findRawLatestLatLon_neverReflectsAnEstimate() {
-        LiveStateStore store = store();
-        store.upsert("abc123", "SAS100", T0, 59.0, 18.0, null, null, null, null, false, "opensky");
-        store.writeEstimate("abc123", T0, 59.5, 18.5, T0.plusSeconds(5));
-
-        LiveStateStore.RawLatLon raw = store.findRawLatestLatLon("abc123").orElseThrow();
-
-        assertThat(raw.latitude()).isEqualTo(59.0);
-        assertThat(raw.longitude()).isEqualTo(18.0);
-        // ...while the coalesced view does reflect it.
-        assertThat(store.findLatestPosition("abc123").orElseThrow().latitude()).isEqualTo(59.5);
     }
 
     @Test
@@ -477,5 +465,70 @@ class LiveStateStoreTest {
         store.upsert("gnd004", "G4", now.minus(Duration.ofMinutes(5)), 59.0, 18.0, 0.0, 0.0, 90.0, 0.0, true, "opensky");
 
         assertThat(store.countActive(now.minus(Duration.ofHours(2)))).isEqualTo(2);
+    }
+
+    private static GapEstimate gapAt(double lat, double lon, Instant at) {
+        return new GapEstimate(TrackState.COVERAGE_LOST, 0.1, 0.9, lat, lon, 1800, at,
+                "ESSA", "19R", at.plusSeconds(60), null, "physics-v1");
+    }
+
+    @Test
+    void writeGapEstimate_storesTheGapAndMakesItsPositionTheDisplayPosition() {
+        LiveStateStore store = store();
+        store.upsert("abc123", "SAS100", T0, 59.0, 18.0, null, null, null, null, false, "opensky");
+        GapEstimate gap = gapAt(59.1, 18.1, T0.plusSeconds(120));
+
+        boolean applied = store.writeGapEstimate("abc123", T0, gap);
+
+        assertThat(applied).isTrue();
+        LiveAircraft a = store.get("abc123").orElseThrow();
+        assertThat(a.gap()).isSameAs(gap);
+        assertThat(a.latitude()).isEqualTo(59.0); // the last real report is untouched
+        assertThat(a.displayLatitude()).isEqualTo(59.1);
+        assertThat(a.displayLongitude()).isEqualTo(18.1);
+        assertThat(a.estimatedAt()).isEqualTo(T0.plusSeconds(120));
+        assertThat(store.findLatestPosition("abc123").orElseThrow().latitude()).isEqualTo(59.1);
+        assertThat(store.icao24sWithEstimate()).contains("abc123");
+    }
+
+    @Test
+    void newerRealReport_clearsTheGapEstimate() {
+        LiveStateStore store = store();
+        store.upsert("abc123", "SAS100", T0, 59.0, 18.0, null, null, null, null, false, "opensky");
+        store.writeGapEstimate("abc123", T0, gapAt(59.1, 18.1, T0.plusSeconds(120)));
+
+        store.upsert("abc123", "SAS100", T0.plusSeconds(300), 59.3, 18.3, null, null, null, null, false, "opensky");
+
+        LiveAircraft a = store.get("abc123").orElseThrow();
+        assertThat(a.gap()).isNull();
+        assertThat(a.estimatedLatitude()).isNull();
+        assertThat(a.displayLatitude()).isEqualTo(59.3);
+    }
+
+    @Test
+    void writeGapEstimate_missesWhenObservedAtChanged_orTheAircraftIsUnknown() {
+        LiveStateStore store = store();
+        store.upsert("abc123", "SAS100", T0, 59.0, 18.0, null, null, null, null, false, "opensky");
+        store.upsert("abc123", "SAS100", T0.plusSeconds(5), 59.2, 18.2, null, null, null, null, false, "opensky");
+
+        boolean stale = store.writeGapEstimate("abc123", T0, gapAt(59.1, 18.1, T0.plusSeconds(120)));
+        boolean unknown = store.writeGapEstimate("ghost01", T0, gapAt(1, 1, T0));
+
+        assertThat(stale).isFalse();
+        assertThat(unknown).isFalse();
+        assertThat(store.get("abc123").orElseThrow().gap()).isNull();
+        assertThat(store.get("abc123").orElseThrow().displayLatitude()).isEqualTo(59.2);
+    }
+
+    @Test
+    void writeEstimate_clearsAGapEstimate() {
+        LiveStateStore store = store();
+        store.upsert("abc123", "SAS100", T0, 59.0, 18.0, null, null, null, null, false, "opensky");
+        store.writeGapEstimate("abc123", T0, gapAt(59.1, 18.1, T0.plusSeconds(120)));
+
+        store.writeEstimate("abc123", T0, 59.05, 18.05, T0.plusSeconds(130));
+
+        assertThat(store.get("abc123").orElseThrow().gap()).isNull();
+        assertThat(store.get("abc123").orElseThrow().displayLatitude()).isEqualTo(59.05);
     }
 }

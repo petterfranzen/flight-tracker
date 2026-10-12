@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { mockFlightApi } from "./helpers";
+import { mockFlightApi, waitForMapReady } from "./helpers";
 
 // subscribeLiveFeed (src/api/flightApi.ts): what the browser client does
 // when /ws/live keeps dropping it.
@@ -60,7 +60,7 @@ test.describe("live feed reconnect", () => {
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
     await page.goto("/");
-    await page.waitForSelector(".map-container");
+    await waitForMapReady(page);
     await page.waitForTimeout(1_000);
     expect(errors).toEqual([]);
   });

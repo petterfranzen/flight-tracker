@@ -202,6 +202,15 @@ flighttracker:
     # see EstimatorAgent.refresh() for the other half of this fix (skipping
     # writes that would just re-set an already-null estimate to null).
     refresh-interval-seconds: 30
+  coverage:
+    # An aircraft is in a coverage gap when a poll covering its last position finished this long after its last report.
+    gap-grace-seconds: 60
+    # How much track before the last report the gap estimator is given (read once per gap from flight_position).
+    snapshot-minutes: 10
+    # Cap on new snapshot reads per estimator tick, to bound database work when many aircraft enter a gap at once.
+    max-snapshot-loads-per-tick: 300
+    # Runways within this distance of the last report are candidates for the landing call.
+    runway-radius-km: 50
   # Per-client-IP limits on POST /api/agents/restart specifically — the one
   # endpoint that costs real OpenSky usage. Separate from (and in addition
   # to) the global restart-quota-* above: that one protects the shared
