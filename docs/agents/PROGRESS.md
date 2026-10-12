@@ -9,7 +9,7 @@ continue from **Next task**.
 ## Status
 
 - **Current phase:** 3b, the Swedavia provider. The human chose Swedavia first and AeroDataBox second (2026-10-12). #120, #121 and #122 are green and wait on the human.
-- **Next task:** P3b-Rev (review of #124, running), with CI on #124 in parallel. Fix the findings, then P3c: the AeroDataBox provider (per flight, `callCost()`, monthly budget, attribution).
+- **Next task:** P3c-1 (AeroDataBox backend) and P3c-2 (provider credit link in the dossier) are running in parallel on `wip/coverage-gap-phase3c`. Then a review, and a PR stacked on #124 (`claude/coverage-gap-phase3c-aerodatabox`). #124's CI is running on the P3b-F fixes.
 - **Blocked on the human:** the Phase 3 provider choice (see `provider-research.md`). Phases 1 and 2 continue meanwhile.
 
 ## Working agreements (from the human, 2026-10-12)
@@ -59,9 +59,12 @@ branch. Never merge to `main`; the human merges.
 | P3-real | Real provider (the human chooses) | | | the human chose Swedavia first, AeroDataBox second |
 | P3b-R | Swedavia FlightInfo v2 contract: endpoints, auth, schema, status codes, ActualUtc semantics, limits | explorer | none | done: `docs/agents/swedavia-api.md` |
 | P3b-1 | Framework: `AirportArrivalsProvider` (board per airport and date), board cache, callsign/registration matching, per-provider daily/monthly budgets in units persisted in `app_state` | implementer | none | done (06eff75): 323 tests |
+| P3b-F | Fix the P3b review findings (budget fail-closed, key lockout, recheck memo, skipped fetch, DST tests, docs) | implementer | P3b-Rev | done: 367 tests, pushed to #124 |
 | P3b-2 | `SwedaviaArrivalsProvider` + fixtures + config (`SWEDAVIA_API_KEY` env var, `deploy/hetzner/env.example`, README) | implementer | P3b-R, P3b-1 | done (65feb87, f99edf1): 354 tests; **PR #124** |
-| P3b-Rev | Review Phase 3b | reviewer | P3b-2 | running |
-| P3c | AeroDataBox provider (per flight, units per call, monthly budget, attribution) | implementer | P3b | todo |
+| P3b-Rev | Review Phase 3b | reviewer | P3b-2 | done: no blockers (`reviews/phase3b.md`) |
+| P3c-R | AeroDataBox contract | explorer | none | done: `docs/agents/aerodatabox-api.md` |
+| P3c-1 | `AeroDataBoxArrivalProvider` (nearest-flight lookup, 2 units/call, 380/month, 14/day, precedence after board providers, no training labels by default) | implementer | P3c-R | running |
+| P3c-2 | Provider credit link in the dossier status line (AeroDataBox terms ¶5.4) | implementer | P3c-R | running |
 | R | `CLAUDE.md` pushing, CI and merging rules (from the working agreements) | orchestrator | none | PR #123 |
 
 ## Phase 0 findings (summary)
@@ -224,6 +227,9 @@ stateDiagram-v2
 
 ## Open questions
 
+- **For the human (AeroDataBox terms):** the free Basic plan is **non-commercial** only and requires visible attribution. That is built in.
+  It also allows caching data for **at most 7 days**. So, by default, AeroDataBox-confirmed landings are not written into the 365-day training labels (`flighttracker.confirmation.aerodatabox.record-training-labels=false`). Pro ($8/month) allows commercial use, but the 7-day rule still applies.
+
 - **For the human:** training-data volume. **Measured live: about 70k rows/day, about 20 MB/day, about 7 GB/year at 365 days** (P3-R). P2-F adds a capture delay that drops short between-sweep gaps. The earlier P2 estimate was 8k–25k feature rows/day, about 5–15 MB/day, so 2–5 GB at the default 365-day retention. The knobs are `flighttracker.training.max-altitude-m` (default 4000; 2000 cuts most general-aviation noise) and `retention-days` (default 365; 180 halves it). Measure with `SELECT COUNT(*) FROM track_end_feature` after a day live.
 - Should a learned model be allowed to change the `state`, not just the probability? Decision for now: no. In Phase 2 the model replaces the probability and the confidence only (source `model`). Revisit in Phase 4.
 - The cone radius at low level grows fast (σa = 1 m/s² gives about 3.6 km at +3 min on approach and over 100 km after 30 min at low level). That's honest, but it may look alarming. Revisit after seeing it live, by lowering σa or capping what is drawn.
@@ -316,3 +322,11 @@ stateDiagram-v2
     - budget 9,000/month and 300/day;
     - disabled until `SWEDAVIA_API_KEY` is set.
   - Backend 354 tests. PR #124 is open (stacked on #122); its review and CI are running.
+- 2026-10-12 15:50 UTC: P3b-F fixes pushed to #124.
+  AeroDataBox research: Tier 2 costs 2 units/call, so the 400 free units are about 200 lookups/month. There is no clean in-block time. The plan is non-commercial, needs attribution, and allows 7-day caching.
+  Decisions:
+  - use the nearest-flight lookup (no date, so no local-timezone problem);
+  - fall back only after board providers;
+  - write no training labels from it by default.
+
+  P3c-1 and P3c-2 launched.
