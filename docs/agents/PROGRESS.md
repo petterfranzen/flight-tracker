@@ -9,7 +9,7 @@ continue from **Next task**.
 ## Status
 
 - **Current phase:** 1 (physics estimate, state machine, UI)
-- **Next task:** P1-R (Phase 1 review, running), then fix its findings and open the Phase 1 PR. Implementers work in worktrees and the orchestrator cherry-picks their commits onto the phase 1 branch.
+- **Next task:** P1-R (Phase 1 review, running), then fix its findings and open the Phase 1 PR. P2 is running in parallel; merge any Phase 1 fixes into the phase 2 branch afterwards. Implementers work in worktrees and the orchestrator cherry-picks their commits onto the phase 1 branch.
 - **Blocked on the human:** the Phase 3 provider choice (see `provider-research.md`). Phases 1 and 2 continue meanwhile.
 
 ## Branches and PRs
@@ -35,7 +35,7 @@ branch. Never merge to `main`; the human merges.
 | P1-C | Backend wiring: poll-coverage tracker, `EstimatorAgent` on the new estimator, `TrackStatus` on `LiveAircraft`, `GET /api/flights/{icao24}/status`, dossier text | implementer | P1-A, P1-B | done (cd685da, 3bf639a, 636bbf7): backend 179 tests, blackbox 23/23 |
 | P1-D | Frontend: status line with confidence and source, uncertainty cone GL layer, status polling, Playwright tests | implementer | contract below | done (a9c2ab9): 13 new Playwright tests |
 | P1-R | Review Phase 1: diff, all quality gates, check against the brief | reviewer | P1-C, P1-D | running |
-| P2-* | Training data capture (plan below) | | Phase 1 | todo |
+| P2 | Training data capture: tables, capture and label service, retention, `LandingModel` stub (plan below) | implementer | Phase 1 | running (stacked on 4cd1944, in parallel with P1-R) |
 | P3-* | Provider interface, mock provider, upgrade logic (plan below) | | Phase 2 | todo |
 
 ## Phase 0 findings (summary)
