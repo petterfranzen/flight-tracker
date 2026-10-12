@@ -727,6 +727,12 @@ html, body {
 .details-panel-status--inferred { color: var(--color-inferred); }
 .details-panel-status--confirmed { color: var(--color-confirmed); }
 
+/* The provider credit (AeroDataBox terms 5.4): reads as part of the status line, but is plainly a link. */
+.details-panel-status-credit {
+  color: inherit;
+  text-decoration: underline;
+}
+
 .details-panel-fields {
   display: grid;
   grid-template-columns: auto 1fr;

@@ -100,6 +100,64 @@ test.describe("coverage-gap status line", () => {
     await expect(statusLine(page)).toHaveText("At gate (confirmed)");
   });
 
+  test.describe("provider credit", () => {
+    const credit = (page: Page) => statusLine(page).locator("a");
+
+    test("LANDED_CONFIRMED from AeroDataBox credits it with a link to its site", async ({ page }) => {
+      await open(page, () => status({ state: "LANDED_CONFIRMED", source: "aerodatabox", sourceKind: "confirmed", estimate: null }));
+      await expect(statusLine(page)).toHaveText("Landed (confirmed · AeroDataBox)");
+      await expect(credit(page)).toHaveCount(1);
+      await expect(credit(page)).toHaveText("AeroDataBox");
+      await expect(credit(page)).toHaveAttribute("href", "https://aerodatabox.com");
+      await expect(credit(page)).toHaveAttribute("target", "_blank");
+      await expect(credit(page)).toHaveAttribute("rel", "noopener noreferrer");
+    });
+
+    test("AT_GATE from AeroDataBox shows the gate and the credit", async ({ page }) => {
+      await open(page, () => status({ state: "AT_GATE", source: "aerodatabox", sourceKind: "confirmed", estimate: null, gate: "B14" }));
+      await expect(statusLine(page)).toHaveText("At gate B14 (confirmed · AeroDataBox)");
+      await expect(credit(page)).toHaveText("AeroDataBox");
+      await expect(credit(page)).toHaveAttribute("href", "https://aerodatabox.com");
+      await expect(credit(page)).toHaveAttribute("target", "_blank");
+      await expect(credit(page)).toHaveAttribute("rel", "noopener noreferrer");
+    });
+
+    test("AT_GATE from AeroDataBox without a gate still carries the credit", async ({ page }) => {
+      await open(page, () => status({ state: "AT_GATE", source: "aerodatabox", sourceKind: "confirmed", estimate: null, gate: null }));
+      await expect(statusLine(page)).toHaveText("At gate (confirmed · AeroDataBox)");
+      await expect(credit(page)).toHaveCount(1);
+    });
+
+    test("clicking the credit leaves the panel open", async ({ page }) => {
+      // The link opens a new tab; keep the test offline.
+      await page.context().route("https://aerodatabox.com/**", (route) => route.fulfill({ status: 200, contentType: "text/html", body: "<title>x</title>" }));
+      await open(page, () => status({ state: "LANDED_CONFIRMED", source: "aerodatabox", sourceKind: "confirmed", estimate: null }));
+      const popup = page.waitForEvent("popup");
+      await credit(page).click();
+      await (await popup).close();
+      await expect(page.getByText("ICAO24 4D00D9")).toBeVisible();
+      await expect(statusLine(page)).toHaveText("Landed (confirmed · AeroDataBox)");
+    });
+
+    test("Swedavia reads as its name, with no link", async ({ page }) => {
+      await open(page, () => status({ state: "LANDED_CONFIRMED", source: "swedavia", sourceKind: "confirmed", estimate: null }));
+      await expect(statusLine(page)).toHaveText("Landed (confirmed · Swedavia)");
+      await expect(credit(page)).toHaveCount(0);
+    });
+
+    test("Swedavia at the gate keeps the plain label, with no link", async ({ page }) => {
+      await open(page, () => status({ state: "AT_GATE", source: "swedavia", sourceKind: "confirmed", estimate: null, gate: "B14" }));
+      await expect(statusLine(page)).toHaveText("At gate B14 (confirmed)");
+      await expect(credit(page)).toHaveCount(0);
+    });
+
+    test("an unknown provider is shown as its id, with no link", async ({ page }) => {
+      await open(page, () => status({ state: "LANDED_CONFIRMED", source: "mock", sourceKind: "confirmed", estimate: null }));
+      await expect(statusLine(page)).toHaveText("Landed (confirmed · mock)");
+      await expect(credit(page)).toHaveCount(0);
+    });
+  });
+
   test("LIVE, and an unknown status (404), show no status line and keep the stale explanation", async ({ page }) => {
     await open(page, () => status({ state: "LIVE", confidence: null, source: "adsb", sourceKind: "observed", estimate: null }));
     await page.waitForTimeout(500);
