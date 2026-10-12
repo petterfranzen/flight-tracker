@@ -9,14 +9,14 @@ continue from **Next task**.
 ## Status
 
 - **Current phase:** 1 (physics estimate, state machine, UI)
-- **Next task:** P1-F (review fixes, running). Then open the Phase 1 PR, merge phase 1 into the phase 2 and phase 3 branches, and run the P2 review. P3 (provider-neutral) is running in parallel. Implementers work in worktrees and the orchestrator cherry-picks their commits onto the phase 1 branch.
+- **Next task:** P2-F and P3-F (running in parallel). Then merge phase 1 → phase 2 → phase 3 (this carries the #119 helper port), then open the Phase 2 and Phase 3 PRs.
 - **Blocked on the human:** the Phase 3 provider choice (see `provider-research.md`). Phases 1 and 2 continue meanwhile.
 
 ## Branches and PRs
 
 | Phase | Branch | Based on | PR |
 |---|---|---|---|
-| 1 | `claude/beautiful-thompson-afahki` | `main` | not opened yet |
+| 1 | `claude/beautiful-thompson-afahki` | `main` | [#120](https://github.com/petterfranzen/flight-tracker/pull/120) |
 | 2 | `claude/coverage-gap-phase2` | phase 1 branch (stacked) | not opened yet |
 | 3 | `claude/coverage-gap-phase3` | phase 2 branch (stacked) | not opened yet |
 
@@ -35,11 +35,12 @@ branch. Never merge to `main`; the human merges.
 | P1-C | Backend wiring: poll-coverage tracker, `EstimatorAgent` on the new estimator, `TrackStatus` on `LiveAircraft`, `GET /api/flights/{icao24}/status`, dossier text | implementer | P1-A, P1-B | done (cd685da, 3bf639a, 636bbf7): backend 179 tests, blackbox 23/23 |
 | P1-D | Frontend: status line with confidence and source, uncertainty cone GL layer, status polling, Playwright tests | implementer | contract below | done (a9c2ab9): 13 new Playwright tests |
 | P1-R | Review Phase 1: diff, all quality gates, check against the brief | reviewer | P1-C, P1-D | done: no blockers, 4 should-fix (`reviews/phase1.md`) |
-| P1-F | Fix the P1-R should-fix items 1–4 and nits 5, 6, 7, 10, 11, 12 | implementer | P1-R | running |
+| P1-F | Fix the P1-R should-fix items 1–4 and nits 5, 6, 7, 10, 11, 12 | implementer | P1-R | done: all fixed, 188 backend tests, e2e 118/118 |
 | P2 | Training data capture: tables, capture and label service, retention, `LandingModel` stub (plan below) | implementer | Phase 1 | done (801b70e on `claude/coverage-gap-phase2`): 198 backend tests |
-| P2-R | Review Phase 2 | reviewer | P2, P1 fixes merged in | todo |
 | P3 | Provider SPI, framework-level cache and rate limit, `ConfirmationStore`, upgrade service, mock provider, UI tweaks (no real provider) | implementer | Phase 2 | done (4d52beb, 2aaefff on `claude/coverage-gap-phase3`): backend 252 tests, coverage-status 15/15 |
-| P3-R | Review Phase 2 + 3 | reviewer | P1-F merged forward | todo |
+| P3-R | Review Phases 2 and 3 | reviewer | P1-F merged forward | done: no blockers (`reviews/phase2-3.md`) |
+| P2-F | Phase 2 fixes: capture delay, long-gap labels, flush retry, schema `;` | implementer | P3-R | running |
+| P3-F | Phase 3 fixes: stale cache, gate re-poll cap, Retry-After cap, pool, refetch, docs | implementer | P3-R | running |
 | P3-real | Real provider (the human chooses) | implementer | the human's choice | blocked: checkpoint |
 
 ## Phase 0 findings (summary)
@@ -202,7 +203,7 @@ stateDiagram-v2
 
 ## Open questions
 
-- **For the human:** training-data volume. P2 estimates 8k–25k feature rows/day, about 5–15 MB/day, so 2–5 GB at the default 365-day retention. The knobs are `flighttracker.training.max-altitude-m` (default 4000; 2000 cuts most general-aviation noise) and `retention-days` (default 365; 180 halves it). Measure with `SELECT COUNT(*) FROM track_end_feature` after a day live.
+- **For the human:** training-data volume. **Measured live: about 70k rows/day, about 20 MB/day, about 7 GB/year at 365 days** (P3-R). P2-F adds a capture delay that drops short between-sweep gaps. The earlier P2 estimate was 8k–25k feature rows/day, about 5–15 MB/day, so 2–5 GB at the default 365-day retention. The knobs are `flighttracker.training.max-altitude-m` (default 4000; 2000 cuts most general-aviation noise) and `retention-days` (default 365; 180 halves it). Measure with `SELECT COUNT(*) FROM track_end_feature` after a day live.
 - Should a learned model be allowed to change the `state`, not just the probability? Decision for now: no. In Phase 2 the model replaces the probability and the confidence only (source `model`). Revisit in Phase 4.
 - The cone radius at low level grows fast (σa = 1 m/s² gives about 3.6 km at +3 min on approach and over 100 km after 30 min at low level). That's honest, but it may look alarming. Revisit after seeing it live, by lowering σa or capping what is drawn.
 
@@ -246,3 +247,17 @@ stateDiagram-v2
   - The frontend refetches every 60 s while LANDED_INFERRED.
   - The scheduler pool went from 9 to 10.
   - Note: tune `daily-budget` per provider (AeroDataBox's free tier is 400/month).
+- 2026-10-12: P1-F fixes cherry-picked. The full Phase 1 gate run on this branch:
+  - build green, e2e 118/118, scenarios 5/5, backend `verify -Pwith-frontend` 188 tests;
+  - perf 1/2: the known main-thread test (263 ms against 212 ms) also fails on unmodified `main` here.
+
+  **Phase 1 PR opened: #120**, and this session is subscribed to its activity.
+- 2026-10-12: Phase 1 merged into phase 2 (only an import conflict; 207 tests) and phase 2 into phase 3.
+  The phase 3 merge (48f7b38) needed three hand-resolved conflicts: `AircraftController`, `AircraftStatusLabelTest` and `main.ts`.
+  After the merge: 261 tests, and coverage-status 19/19. P3-R launched over Phases 2 and 3 together.
+- 2026-10-12: CI on #120 (c4e8f41) was red in `frontend`: `declutter.spec.ts` dense-view, a MapLibre
+  "feature index out of bounds" race in the `renderedPlanes()` test helper. It isn't caused by this PR:
+  the test path selects nothing, and #119 fixes the race on main. I ported #119's `retryMidUpdate`
+  helper change unchanged (5e5fd02) and commented on #120. Carry it into the phase 2 and phase 3
+  branches at the next merge.
+  Tip: never run Playwright in two worktrees at once. They share the Vite port 5174, which gives ERR_CONNECTION_REFUSED.
