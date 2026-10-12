@@ -253,3 +253,9 @@ stateDiagram-v2
 - 2026-10-12: Phase 1 merged into phase 2 (only an import conflict; 207 tests) and phase 2 into phase 3.
   The phase 3 merge (48f7b38) needed three hand-resolved conflicts: `AircraftController`, `AircraftStatusLabelTest` and `main.ts`.
   After the merge: 261 tests, and coverage-status 19/19. P3-R launched over Phases 2 and 3 together.
+- 2026-10-12: CI on #120 (c4e8f41) was red in `frontend`: `declutter.spec.ts` dense-view, a MapLibre
+  "feature index out of bounds" race in the `renderedPlanes()` test helper. It isn't caused by this PR:
+  the test path selects nothing, and #119 fixes the race on main. I ported #119's `retryMidUpdate`
+  helper change unchanged (5e5fd02) and commented on #120. Carry it into the phase 2 and phase 3
+  branches at the next merge.
+  Tip: never run Playwright in two worktrees at once. They share the Vite port 5174, which gives ERR_CONNECTION_REFUSED.
