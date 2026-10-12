@@ -45,7 +45,7 @@ class ConfirmationGatewayTest {
     }
 
     private ConfirmationGateway gateway(int dailyBudget, int maxCache) {
-        return new ConfirmationGateway(clock, 30, dailyBudget, maxCache, 300, 60);
+        return new ConfirmationGateway(clock, 30, InMemoryAppState.budgets(clock, dailyBudget), maxCache, 300, 60, 300, 100);
     }
 
     private ArrivalQuery query(String callsign) {
@@ -156,7 +156,7 @@ class ConfirmationGatewayTest {
         gw.lookup(provider, query("SAS123"));
 
         assertThat(gw.lookup(provider, query("SAS123")).kind()).isEqualTo(Kind.CACHED);
-        assertThat(gw.callsToday("p1")).isEqualTo(1);
+        assertThat(gw.unitsToday("p1")).isEqualTo(1);
     }
 
     @Test
@@ -170,12 +170,12 @@ class ConfirmationGatewayTest {
         assertThat(gw.lookup(provider, query("A2")).kind()).isEqualTo(Kind.CALLED);
         clock.advance(Duration.ofMinutes(1));
         assertThat(gw.lookup(provider, query("A3")).kind()).isEqualTo(Kind.SKIPPED);
-        assertThat(gw.callsToday("p1")).isEqualTo(2);
+        assertThat(gw.unitsToday("p1")).isEqualTo(2);
         assertThat(provider.calls).hasSize(2);
 
         clock.set(Instant.parse("2026-10-13T00:00:30Z"));
         assertThat(gw.lookup(provider, new ArrivalQuery("abc123", "A3", "ESSA", clock.instant())).kind()).isEqualTo(Kind.CALLED);
-        assertThat(gw.callsToday("p1")).isEqualTo(1);
+        assertThat(gw.unitsToday("p1")).isEqualTo(1);
     }
 
     @Test

@@ -15,6 +15,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * The one place a provider is called from. It gives every provider the same
@@ -26,8 +27,16 @@ import java.util.Map;
  *       a gate-in time {@value #TTL_FOUND_MINUTES_NO_IN} min (the gate may still
  *       come), FOUND with one 12 h, NOT_FOUND 15 min. THROTTLED and FAILED are
  *       never cached;</li>
+ *   <li>a cache of whole arrivals boards for {@link AirportArrivalsProvider}s,
+ *       keyed by (provider, airport, board date: the UTC date unless the provider
+ *       overrides {@link AirportArrivalsProvider#boardDate}), bounded, fresh for
+ *       {@code board-ttl-seconds}. A board is fetched only when {@link #board}
+ *       is asked for one that is missing or stale; nothing polls in the
+ *       background;</li>
  *   <li>a minimum interval between two real calls to the same provider;</li>
- *   <li>a daily call budget per provider (UTC day), for free tiers with a quota;</li>
+ *   <li>a daily and a monthly budget per provider in cost units
+ *       ({@link ConfirmationBudgets}, kept in app_state across restarts), for
+ *       free tiers with a quota;</li>
  *   <li>{@link PollBackoff} on THROTTLED and FAILED, honouring the retry-after
  *       up to {@code max-retry-after-minutes};</li>
  *   <li>a cached FOUND whose landing time is earlier than the query's expected
@@ -67,40 +76,54 @@ public class ConfirmationGateway {
         static final Outcome SKIPPED = new Outcome(Kind.SKIPPED, null);
     }
 
+    /** Answer to {@link #board}; {@code board} is null only for SKIPPED. */
+    public record BoardOutcome(Kind kind, BoardResult board) {
+        static final BoardOutcome SKIPPED = new BoardOutcome(Kind.SKIPPED, null);
+    }
+
     private record CacheKey(String providerId, String callsign, String airport, LocalDate utcDate) { }
 
     private record CacheEntry(LookupResult result, Instant cachedAt, Instant expiresAt) { }
+
+    private record BoardKey(String providerId, String airport, LocalDate utcDate) { }
+
+    private record BoardCacheEntry(BoardResult board, Instant fetchedAt, Instant expiresAt) { }
 
     /** Per-provider pacing state. Guarded by its own monitor. */
     private static final class ProviderState {
         final PollBackoff backoff = new PollBackoff();
         Instant lastCallAt = Instant.EPOCH;
-        LocalDate budgetDay;
-        int callsToday;
     }
 
     private final Clock clock;
     private final Duration minInterval;
-    private final int dailyBudget;
+    private final ConfirmationBudgets budgets;
     private final int maxCacheEntries;
     private final Duration skewTolerance;
     private final Duration maxRetryAfter;
+    private final Duration boardTtl;
+    private final int maxBoardEntries;
 
     private final Map<String, ProviderState> providers = new HashMap<>();
     private final LinkedHashMap<CacheKey, CacheEntry> cache = new LinkedHashMap<>(256, 0.75f, true);
+    private final LinkedHashMap<BoardKey, BoardCacheEntry> boards = new LinkedHashMap<>(32, 0.75f, true);
 
     public ConfirmationGateway(Clock clock,
                                @Value("${flighttracker.confirmation.min-interval-seconds:30}") long minIntervalSeconds,
-                               @Value("${flighttracker.confirmation.daily-budget:300}") int dailyBudget,
+                               ConfirmationBudgets budgets,
                                @Value("${flighttracker.confirmation.cache-max-entries:2000}") int maxCacheEntries,
                                @Value("${flighttracker.confirmation.skew-tolerance-seconds:300}") long skewToleranceSeconds,
-                               @Value("${flighttracker.confirmation.max-retry-after-minutes:60}") long maxRetryAfterMinutes) {
+                               @Value("${flighttracker.confirmation.max-retry-after-minutes:60}") long maxRetryAfterMinutes,
+                               @Value("${flighttracker.confirmation.board-ttl-seconds:300}") long boardTtlSeconds,
+                               @Value("${flighttracker.confirmation.board-max-entries:100}") int maxBoardEntries) {
         this.clock = clock;
         this.minInterval = Duration.ofSeconds(minIntervalSeconds);
-        this.dailyBudget = dailyBudget;
+        this.budgets = budgets;
         this.maxCacheEntries = maxCacheEntries;
         this.skewTolerance = Duration.ofSeconds(skewToleranceSeconds);
         this.maxRetryAfter = Duration.ofMinutes(maxRetryAfterMinutes);
+        this.boardTtl = Duration.ofSeconds(boardTtlSeconds);
+        this.maxBoardEntries = maxBoardEntries;
     }
 
     /** Cached answer, or one real call if the pacing, budget and backoff allow it. */
@@ -120,22 +143,8 @@ public class ConfirmationGateway {
             }
         }
 
-        ProviderState state;
-        synchronized (providers) {
-            state = providers.computeIfAbsent(provider.id(), id -> new ProviderState());
-        }
-        synchronized (state.backoff) {
-            if (state.backoff.isCoolingDown(now)) return Outcome.SKIPPED;
-            if (now.isBefore(state.lastCallAt.plus(minInterval))) return Outcome.SKIPPED;
-            LocalDate today = now.atZone(ZoneOffset.UTC).toLocalDate();
-            if (!today.equals(state.budgetDay)) {
-                state.budgetDay = today;
-                state.callsToday = 0;
-            }
-            if (state.callsToday >= dailyBudget) return Outcome.SKIPPED;
-            state.callsToday++;
-            state.lastCallAt = now;
-        }
+        ProviderState state = admit(provider.id(), Math.max(1, provider.callCost()), now);
+        if (state == null) return Outcome.SKIPPED;
 
         LookupResult result;
         try {
@@ -146,31 +155,121 @@ public class ConfirmationGateway {
         }
         if (result == null) result = LookupResult.failed();
 
-        switch (result.status()) {
-            case FOUND, NOT_FOUND -> {
-                synchronized (state.backoff) {
-                    state.backoff.recordSuccess();
-                }
-                Duration ttl = ttl(result);
-                synchronized (cache) {
-                    cache.put(key, new CacheEntry(result, now, now.plus(ttl)));
-                    evictOverflow();
-                }
+        if (result.status() == LookupResult.Status.FOUND || result.status() == LookupResult.Status.NOT_FOUND) {
+            recordSuccess(state);
+            Duration ttl = ttl(result);
+            synchronized (cache) {
+                cache.put(key, new CacheEntry(result, now, now.plus(ttl)));
+                evictOverflow();
             }
-            case THROTTLED, FAILED -> {
-                Duration wait;
-                synchronized (state.backoff) {
-                    if (result.retryAfter() != null && !result.retryAfter().isNegative()) {
-                        wait = result.retryAfter().compareTo(maxRetryAfter) > 0 ? maxRetryAfter : result.retryAfter();
-                        state.backoff.recordFailure(wait);
-                    } else {
-                        wait = state.backoff.recordFailure(MIN_BACKOFF, MAX_BACKOFF);
-                    }
-                }
-                log.warn("Confirmation provider {} answered {}, backing off {}", provider.id(), result.status(), wait);
-            }
+        } else {
+            recordFailure(provider.id(), state, result.status(), result.retryAfter());
         }
         return new Outcome(Kind.CALLED, result);
+    }
+
+    /**
+     * The arrivals board of one airport and UTC date: the cached one while it is
+     * fresh, else one real fetch if the pacing, budgets and backoff allow it.
+     * FOUND and NOT_FOUND boards are cached for {@code board-ttl-seconds};
+     * THROTTLED and FAILED never are.
+     */
+    public BoardOutcome board(AirportArrivalsProvider provider, String airportIcao, LocalDate utcDate) {
+        Instant now = clock.instant();
+        BoardKey key = boardKey(provider, airportIcao, utcDate);
+        Optional<BoardResult> hit = freshBoard(key, now);
+        if (hit.isPresent()) return new BoardOutcome(Kind.CACHED, hit.get());
+
+        ProviderState state = admit(provider.id(), 1, now);
+        if (state == null) return BoardOutcome.SKIPPED;
+
+        BoardResult result;
+        try {
+            result = provider.fetchArrivals(airportIcao, utcDate);
+        } catch (RuntimeException e) {
+            log.warn("Confirmation provider {} threw", provider.id(), e);
+            result = BoardResult.failed();
+        }
+        if (result == null) result = BoardResult.failed();
+        budgets.adjust(provider.id(), result.costUnits() - 1); // one unit was charged before the call
+
+        if (result.status() == LookupResult.Status.FOUND || result.status() == LookupResult.Status.NOT_FOUND) {
+            recordSuccess(state);
+            synchronized (boards) {
+                boards.put(key, new BoardCacheEntry(result, now, now.plus(boardTtl)));
+                evictBoardOverflow(now);
+            }
+        } else {
+            recordFailure(provider.id(), state, result.status(), result.retryAfter());
+        }
+        return new BoardOutcome(Kind.CALLED, result);
+    }
+
+    /** The board if it is cached and fresh; never makes a call. */
+    public Optional<BoardResult> cachedBoard(AirportArrivalsProvider provider, String airportIcao, LocalDate utcDate) {
+        return freshBoard(boardKey(provider, airportIcao, utcDate), clock.instant());
+    }
+
+    /** When the fresh cached board was fetched; empty if there is none. Never makes a call. */
+    public Optional<Instant> boardFetchedAt(AirportArrivalsProvider provider, String airportIcao, LocalDate utcDate) {
+        BoardKey key = boardKey(provider, airportIcao, utcDate);
+        Instant now = clock.instant();
+        synchronized (boards) {
+            BoardCacheEntry hit = boards.get(key);
+            return hit != null && hit.expiresAt().isAfter(now) ? Optional.of(hit.fetchedAt()) : Optional.empty();
+        }
+    }
+
+    private static BoardKey boardKey(AirportArrivalsProvider provider, String airportIcao, LocalDate utcDate) {
+        return new BoardKey(provider.id(), airportIcao == null ? "?" : airportIcao.trim().toUpperCase(Locale.ROOT), utcDate);
+    }
+
+    private Optional<BoardResult> freshBoard(BoardKey key, Instant now) {
+        synchronized (boards) {
+            BoardCacheEntry hit = boards.get(key);
+            if (hit == null) return Optional.empty();
+            if (hit.expiresAt().isAfter(now)) return Optional.of(hit.board());
+            boards.remove(key);
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * The gate in front of every real call: not cooling down, the minimum
+     * interval has passed and the budgets have room for {@code units}. Returns
+     * the provider's state with the call already counted, or null to skip.
+     */
+    private ProviderState admit(String providerId, int units, Instant now) {
+        ProviderState state;
+        synchronized (providers) {
+            state = providers.computeIfAbsent(providerId, id -> new ProviderState());
+        }
+        synchronized (state.backoff) {
+            if (state.backoff.isCoolingDown(now)) return null;
+            if (now.isBefore(state.lastCallAt.plus(minInterval))) return null;
+            if (!budgets.tryCharge(providerId, units)) return null;
+            state.lastCallAt = now;
+        }
+        return state;
+    }
+
+    private void recordSuccess(ProviderState state) {
+        synchronized (state.backoff) {
+            state.backoff.recordSuccess();
+        }
+    }
+
+    private void recordFailure(String providerId, ProviderState state, LookupResult.Status status, Duration retryAfter) {
+        Duration wait;
+        synchronized (state.backoff) {
+            if (retryAfter != null && !retryAfter.isNegative()) {
+                wait = retryAfter.compareTo(maxRetryAfter) > 0 ? maxRetryAfter : retryAfter;
+                state.backoff.recordFailure(wait);
+            } else {
+                wait = state.backoff.recordFailure(MIN_BACKOFF, MAX_BACKOFF);
+            }
+        }
+        log.warn("Confirmation provider {} answered {}, backing off {}", providerId, status, wait);
     }
 
     /**
@@ -189,16 +288,14 @@ public class ConfirmationGateway {
         return !hit.cachedAt().plus(TTL_FOUND_NO_IN).isAfter(now);
     }
 
-    /** Real calls made to the provider today (UTC), for tests and logs. */
-    public int callsToday(String providerId) {
-        ProviderState state;
-        synchronized (providers) {
-            state = providers.get(providerId);
-        }
-        if (state == null) return 0;
-        synchronized (state.backoff) {
-            return today().equals(state.budgetDay) ? state.callsToday : 0;
-        }
+    /** Budget units charged to the provider today (UTC), for tests and logs. */
+    public int unitsToday(String providerId) {
+        return budgets.unitsToday(providerId);
+    }
+
+    /** Budget units charged to the provider this UTC month. */
+    public int unitsThisMonth(String providerId) {
+        return budgets.unitsThisMonth(providerId);
     }
 
     public int cacheSize() {
@@ -207,8 +304,10 @@ public class ConfirmationGateway {
         }
     }
 
-    private LocalDate today() {
-        return clock.instant().atZone(ZoneOffset.UTC).toLocalDate();
+    public int boardCacheSize() {
+        synchronized (boards) {
+            return boards.size();
+        }
     }
 
     static Duration ttl(LookupResult result) {
@@ -223,6 +322,17 @@ public class ConfirmationGateway {
         cache.values().removeIf(e -> !e.expiresAt().isAfter(now));
         var it = cache.entrySet().iterator();
         while (cache.size() > maxCacheEntries && it.hasNext()) {
+            it.next();
+            it.remove();
+        }
+    }
+
+    /** Caller holds the boards monitor. Drops expired boards first, then the least recently used. */
+    private void evictBoardOverflow(Instant now) {
+        if (boards.size() <= maxBoardEntries) return;
+        boards.values().removeIf(e -> !e.expiresAt().isAfter(now));
+        var it = boards.entrySet().iterator();
+        while (boards.size() > maxBoardEntries && it.hasNext()) {
             it.next();
             it.remove();
         }

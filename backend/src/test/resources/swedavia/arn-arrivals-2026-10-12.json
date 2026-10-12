@@ -1,0 +1,159 @@
+{
+  "to": {
+    "arrivalAirportIata": "ARN",
+    "arrivalAirportIcao": "ESSA",
+    "flightArrivalDate": "2026-10-12"
+  },
+  "numberOfFlights": 7,
+  "flights": [
+    {
+      "flightId": "SK1402",
+      "airlineOperator": { "iata": "SK", "icao": "SAS", "name": "SAS" },
+      "arrivalTime": {
+        "scheduledUtc": "2026-10-12T10:00:00Z",
+        "estimatedUtc": "2026-10-12T10:03:00Z",
+        "actualUtc": "2026-10-12T10:04:12Z"
+      },
+      "locationAndStatus": {
+        "terminal": "5",
+        "gate": "E5",
+        "flightLegStatus": "LAN",
+        "flightLegStatusSwedish": "Landat",
+        "flightLegStatusEnglish": "Landed"
+      },
+      "baggage": {
+        "estimatedFirstBagUtc": "2026-10-12T10:12:00Z",
+        "firstBagUtc": "2026-10-12T10:14:00Z",
+        "lastBagUtc": "2026-10-12T10:25:00Z",
+        "baggageClaimUnit": "12"
+      },
+      "codeShareData": [],
+      "flightLegIdentifier": {
+        "ifplId": "AA12345678",
+        "callsign": "SAS1402",
+        "aircraftRegistration": "SE-ROA",
+        "ssrCode": "4521",
+        "flightId": "SK1402",
+        "flightDepartureDateUtc": "2026-10-12",
+        "departureAirportIata": "CPH",
+        "arrivalAirportIata": "ARN",
+        "departureAirportIcao": "EKCH",
+        "arrivalAirportIcao": "ESSA"
+      },
+      "remarksEnglish": [ { "text": "Landed 12:04", "indicator": "LAN" } ],
+      "remarksSwedish": [ { "text": "Landat 12:04", "indicator": "LAN" } ],
+      "viaDestinations": [],
+      "diIndicator": "I"
+    },
+    {
+      "flightId": "SK1404",
+      "airlineOperator": { "iata": "SK", "icao": "SAS", "name": "SAS" },
+      "arrivalTime": {
+        "scheduledUtc": "2026-10-12T10:15:00Z",
+        "actualUtc": "2026-10-12T10:20:00Z"
+      },
+      "locationAndStatus": {
+        "terminal": "5",
+        "gate": "F3",
+        "flightLegStatus": "LAN"
+      },
+      "baggage": {
+        "estimatedFirstBagUtc": "2026-10-12T10:30:00Z",
+        "baggageClaimUnit": "13"
+      },
+      "flightLegIdentifier": {
+        "callsign": "SAS1404",
+        "aircraftRegistration": "SE-ROB",
+        "flightId": "SK1404",
+        "departureAirportIata": "OSL",
+        "arrivalAirportIata": "ARN"
+      }
+    },
+    {
+      "flightId": "DY4001",
+      "airlineOperator": { "iata": "DY", "icao": "NOZ", "name": "Norwegian" },
+      "arrivalTime": {
+        "scheduledUtc": "2026-10-12T14:30:00Z",
+        "estimatedUtc": "2026-10-12T14:25:00Z"
+      },
+      "locationAndStatus": {
+        "terminal": "5",
+        "flightLegStatus": "SCH"
+      },
+      "flightLegIdentifier": {
+        "callsign": "NOZ4001",
+        "aircraftRegistration": "LN-NIA",
+        "flightId": "DY4001",
+        "departureAirportIata": "OSL",
+        "arrivalAirportIata": "ARN"
+      }
+    },
+    {
+      "flightId": "SK2012",
+      "airlineOperator": { "iata": "SK", "icao": "SAS", "name": "SAS" },
+      "arrivalTime": {
+        "scheduledUtc": "2026-10-12T11:00:00Z",
+        "actualUtc": "2026-10-12T11:02:00Z"
+      },
+      "locationAndStatus": {
+        "terminal": "5",
+        "gate": "D1",
+        "flightLegStatus": "DEL"
+      },
+      "baggage": { "firstBagUtc": "2026-10-12T11:12:00Z" },
+      "flightLegIdentifier": {
+        "callsign": "SAS2012",
+        "flightId": "SK2012",
+        "arrivalAirportIata": "ARN"
+      }
+    },
+    {
+      "flightId": "SK1500",
+      "airlineOperator": { "iata": "SK", "icao": "SAS", "name": "SAS" },
+      "arrivalTime": {
+        "scheduledUtc": "2026-10-12T11:30:00Z",
+        "actualUtc": "2026-10-12T11:41:00Z"
+      },
+      "locationAndStatus": {
+        "terminal": "5",
+        "gate": "E2",
+        "flightLegStatus": "DIV"
+      },
+      "flightLegIdentifier": {
+        "callsign": "SAS1500",
+        "aircraftRegistration": "SE-ROC",
+        "flightId": "SK1500",
+        "arrivalAirportIata": "ARN"
+      }
+    },
+    {
+      "flightId": "AY861",
+      "airlineOperator": { "iata": "AY", "icao": "FIN", "name": "Finnair" },
+      "arrivalTime": {
+        "scheduledUtc": "2026-10-12T11:25:00Z",
+        "actualUtc": "2026-10-12T11:30:00"
+      },
+      "flightLegIdentifier": {
+        "callsign": "FIN861",
+        "aircraftRegistration": "OH-LXA",
+        "flightId": "AY861",
+        "arrivalAirportIata": "ARN",
+        "diIndicator": "I"
+      }
+    },
+    {
+      "flightId": null,
+      "arrivalTime": {
+        "scheduledUtc": null,
+        "actualUtc": "2026-10-12T12:10:00.250+00:00"
+      },
+      "locationAndStatus": { "terminal": null, "gate": null, "flightLegStatus": "LAN" },
+      "baggage": null,
+      "somethingNew": { "anything": true },
+      "flightLegIdentifier": {
+        "callsign": null,
+        "aircraftRegistration": "SE-RUB"
+      }
+    }
+  ]
+}

@@ -28,19 +28,23 @@ package com.flighttracker.service.confirmation;
  *       Retry-After if given) on HTTP 429, FAILED for anything else. It
  *       should not throw, and it does no caching, pacing or backoff of its own.</li>
  * </ul>
- * Caching, the minimum call interval, the daily call budget and the backoff
- * live in {@link ConfirmationGateway}, so every provider gets them. A provider
- * only maps requests to responses.
+ * Caching, the minimum call interval, the budgets and the backoff live in
+ * {@link ConfirmationGateway}, so every provider gets them. A provider only
+ * maps requests to responses.
  *
- * <h2>Known limitations</h2>
- * <ul>
- *   <li>The daily call budget is per provider and counts calls, not cost
- *       units: a plan that bills some endpoints at several units per call
- *       needs a lower {@code daily-budget} than its quota.</li>
- *   <li>One call asks about one flight. An airport-level batch API (one call
- *       returning many flights' times, such as Swedavia's) would be used far
- *       below its worth and needs an extension of this interface.</li>
- * </ul>
+ * <h2>Two provider shapes</h2>
+ * This interface is the <b>per-flight</b> shape: one call asks about one
+ * flight, and the answer is cached by callsign. A source that serves a whole
+ * arrivals board per airport and date implements {@link AirportArrivalsProvider}
+ * instead: one call then serves every candidate at that airport. Both shapes
+ * share the minimum interval, the backoff and the budgets.
+ *
+ * <h2>Budgets</h2>
+ * Budgets are per provider and counted in cost units, not calls, so a quota
+ * that bills in units is respected: {@code flighttracker.confirmation.providers.<id>.daily-budget}
+ * (default: the global {@code daily-budget}) and {@code .monthly-budget}
+ * (default: unlimited) are kept in {@link ConfirmationBudgets}, which persists
+ * them in app_state. Each {@link #lookup} charges {@link #callCost()} units.
  */
 public interface ArrivalConfirmationProvider {
 
@@ -62,4 +66,13 @@ public interface ArrivalConfirmationProvider {
      * and read timeouts (for example 5 s and 10 s, as {@code OpenSkyAgent} does).
      */
     LookupResult lookup(ArrivalQuery query);
+
+    /**
+     * Budget units one {@link #lookup} costs upstream (default 1). Declare 2 for
+     * a plan that bills a lookup at two units, so the provider's daily and
+     * monthly budgets, which are in units, count it right.
+     */
+    default int callCost() {
+        return 1;
+    }
 }
