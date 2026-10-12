@@ -8,8 +8,8 @@ continue from **Next task**.
 
 ## Status
 
-- **Current phase:** all three PRs open, driving them to green. Phase 3's real provider waits on the human.
-- **Next task:** drive #120, #121 and #122 to green (merge order #120, then #121, then #122). After the human chooses a provider, implement it as one `@Component` (Swedavia needs an SPI batch mode first). Then Phase 4: train the model once enough labels exist.
+- **Current phase:** done, apart from the human's checkpoints. All three PRs are open and green on CI (#120, #121, #122) and wait for human review and merge (in that order).
+- **Next task:** none until the human chooses a provider or reviews the PRs. Then implement the chosen provider as one `@Component` on a branch stacked on phase 3. Swedavia needs an SPI batch mode first; AeroDataBox needs a per-provider monthly budget. Phase 4 is training the model once labels accumulate.
 - **Blocked on the human:** the Phase 3 provider choice (see `provider-research.md`). Phases 1 and 2 continue meanwhile.
 
 ## Branches and PRs
@@ -283,3 +283,5 @@ stateDiagram-v2
   - perf: only the known main-only failure.
 
   **Phase 3 PR opened: #122** (base phase 2). #121's CI is green.
+- 2026-10-12 14:53 UTC: CI is green on all three PRs: #120 (3132db4), #121 (3cd5c77) and #122 (9e85f22).
+  No review comments. Waiting on the human: the provider choice, PR review and merge, and the training volume check after a day live.
