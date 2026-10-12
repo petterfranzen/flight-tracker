@@ -8,8 +8,8 @@ continue from **Next task**.
 
 ## Status
 
-- **Current phase:** 1 (physics estimate, state machine, UI)
-- **Next task:** check the Phase 3 gate run (merged branch at 9e85f22), push `claude/coverage-gap-phase3` and open the Phase 3 PR (base `claude/coverage-gap-phase2`). Keep driving #120 and #121 to green.
+- **Current phase:** all three PRs open, driving them to green. Phase 3's real provider waits on the human.
+- **Next task:** drive #120, #121 and #122 to green (merge order #120, then #121, then #122). After the human chooses a provider, implement it as one `@Component` (Swedavia needs an SPI batch mode first). Then Phase 4: train the model once enough labels exist.
 - **Blocked on the human:** the Phase 3 provider choice (see `provider-research.md`). Phases 1 and 2 continue meanwhile.
 
 ## Branches and PRs
@@ -18,7 +18,7 @@ continue from **Next task**.
 |---|---|---|---|
 | 1 | `claude/beautiful-thompson-afahki` | `main` | [#120](https://github.com/petterfranzen/flight-tracker/pull/120) |
 | 2 | `claude/coverage-gap-phase2` | phase 1 branch (stacked) | [#121](https://github.com/petterfranzen/flight-tracker/pull/121) |
-| 3 | `claude/coverage-gap-phase3` | phase 2 branch (stacked) | not opened yet |
+| 3 | `claude/coverage-gap-phase3` | phase 2 branch (stacked) | [#122](https://github.com/petterfranzen/flight-tracker/pull/122) |
 
 The brief asks for one PR per phase. The later phases build on the earlier
 ones, so the branches are stacked, and each PR targets the previous phase's
@@ -276,3 +276,10 @@ stateDiagram-v2
   - P3-F cherry-picked onto phase 3.
   - Phase 2 merged into phase 3 (9e85f22; README conflict resolved).
   - Gates are running on phase 3.
+- 2026-10-12: Phase 3 gates on 9e85f22:
+  - backend 279 tests;
+  - e2e 121/121 (`cyberpunk-font` first failed only because node_modules was symlinked: Vite's `fs.allow` refuses font files outside the root, so use a real `npm ci` in worktrees);
+  - scenarios 5/5;
+  - perf: only the known main-only failure.
+
+  **Phase 3 PR opened: #122** (base phase 2). #121's CI is green.
