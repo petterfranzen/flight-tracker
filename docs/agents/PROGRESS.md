@@ -17,7 +17,7 @@ continue from **Next task**.
 | Phase | Branch | Based on | PR |
 |---|---|---|---|
 | 1 | `claude/beautiful-thompson-afahki` | `main` | [#120](https://github.com/petterfranzen/flight-tracker/pull/120) |
-| 2 | `claude/coverage-gap-phase2` | phase 1 branch (stacked) | not opened yet |
+| 2 | `claude/coverage-gap-phase2` | phase 1 branch (stacked) | [#121](https://github.com/petterfranzen/flight-tracker/pull/121) |
 | 3 | `claude/coverage-gap-phase3` | phase 2 branch (stacked) | not opened yet |
 
 The brief asks for one PR per phase. The later phases build on the earlier
