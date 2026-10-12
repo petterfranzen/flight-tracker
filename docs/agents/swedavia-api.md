@@ -94,5 +94,5 @@ The ICAO codes are standard but not in Swedavia's docs. The API returns `to.arri
 1. Is the board's `{date}` UTC or local, and what is the exact timestamp format?
 2. Is `diIndicator` at flight level or inside `flightLegIdentifier`?
 3. What does `actualUtc` mean? Compare it with the "Landat HH:MM" remark.
-4. What is the over-quota HTTP status and its headers?
+4. What is the over-quota HTTP status and its headers? Azure API Management can answer 403 (not only 429) when a quota is exhausted, so a 403 from a key that used to work may mean quota exhaustion rather than a rotated key. The provider treats 401 and 403 alike: one call per attempt with the preferred key, the other key on the next attempt, and no calls until the next UTC midnight once every key has been rejected in a row.
 5. What does the real `to` block look like?

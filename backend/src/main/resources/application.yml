@@ -119,8 +119,9 @@ flighttracker:
       enabled: true
       # Subscription key from apideveloper.swedavia.se (FlightInfo product, free tier).
       api-key: ${SWEDAVIA_API_KEY:}
-      # Swedavia rotates primary and secondary keys every 6 months; a 401/403 with
-      # one key is retried once with the other (that call costs 2 budget units).
+      # Swedavia rotates primary and secondary keys every 6 months; a 401/403 fails
+      # that fetch (1 budget unit) and the next attempt uses the other key; once both
+      # were rejected in a row the provider is off until the next UTC midnight.
       api-key-secondary: ${SWEDAVIA_API_KEY_SECONDARY:}
       base-url: https://api.swedavia.se/flightinfo/v2
     mock:

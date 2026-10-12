@@ -21,6 +21,9 @@ import java.util.List;
 import java.util.Properties;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.contains;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.client.ExpectedCount.once;
 import static org.springframework.test.web.client.ExpectedCount.times;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.header;
@@ -179,55 +182,97 @@ class SwedaviaArrivalsProviderTest {
     // ---- keys
 
     @Test
-    void aRejectedPrimaryIsRetriedOnceWithTheSecondaryAndCostsTwo() throws IOException {
+    void aRejectedKeyFailsTheFetchAtCostOne_andTheNextAttemptUsesTheOtherKey() throws IOException {
+        SwedaviaArrivalsProvider provider = provider(true, "primary", "secondary");
         server.expect(once(), requestTo(ARN_TODAY))
                 .andExpect(header("Ocp-Apim-Subscription-Key", "primary"))
                 .andRespond(withStatus(HttpStatus.UNAUTHORIZED));
-        server.expect(once(), requestTo(ARN_TODAY))
+        server.expect(times(2), requestTo(ARN_TODAY))
                 .andExpect(header("Ocp-Apim-Subscription-Key", "secondary"))
                 .andRespond(withSuccess(fixture("empty-arrivals.json"), MediaType.APPLICATION_JSON));
 
-        BoardResult board = provider(true, "primary", "secondary").fetchArrivals("ESSA", TODAY);
+        BoardResult first = provider.fetchArrivals("ESSA", TODAY); // no back-to-back retry
+        assertThat(first.status()).isEqualTo(LookupResult.Status.FAILED);
+        assertThat(first.costUnits()).isEqualTo(1);
+        assertThat(provider.enabled()).isTrue();
 
-        server.verify();
-        assertThat(board.status()).isEqualTo(LookupResult.Status.FOUND);
-        assertThat(board.costUnits()).isEqualTo(2);
-    }
-
-    @Test
-    void aForbiddenPrimaryIsRetriedToo_andTheKeyThatWorkedIsTriedFirstNextTime() throws IOException {
-        SwedaviaArrivalsProvider provider = provider(true, "primary", "secondary");
-        server.expect(once(), requestTo(ARN_TODAY)).andExpect(header("Ocp-Apim-Subscription-Key", "primary"))
-                .andRespond(withStatus(HttpStatus.FORBIDDEN));
-        server.expect(times(2), requestTo(ARN_TODAY)).andExpect(header("Ocp-Apim-Subscription-Key", "secondary"))
-                .andRespond(withSuccess(fixture("empty-arrivals.json"), MediaType.APPLICATION_JSON));
-
-        assertThat(provider.fetchArrivals("ESSA", TODAY).costUnits()).isEqualTo(2);
         BoardResult next = provider.fetchArrivals("ESSA", TODAY);
+        BoardResult after = provider.fetchArrivals("ESSA", TODAY); // the key that worked stays preferred
 
         server.verify();
         assertThat(next.status()).isEqualTo(LookupResult.Status.FOUND);
         assertThat(next.costUnits()).isEqualTo(1);
+        assertThat(after.costUnits()).isEqualTo(1);
     }
 
     @Test
-    void bothKeysRejectedFailsAfterTwoCalls() {
-        server.expect(times(2), requestTo(ARN_TODAY)).andRespond(withStatus(HttpStatus.UNAUTHORIZED));
+    void aForbiddenKeyIsTreatedLikeAnUnauthorisedOne() {
+        SwedaviaArrivalsProvider provider = provider(true, "primary", "secondary");
+        server.expect(once(), requestTo(ARN_TODAY)).andExpect(header("Ocp-Apim-Subscription-Key", "primary"))
+                .andRespond(withStatus(HttpStatus.FORBIDDEN));
+        server.expect(once(), requestTo(ARN_TODAY)).andExpect(header("Ocp-Apim-Subscription-Key", "secondary"))
+                .andRespond(withSuccess("{\"flights\":[]}", MediaType.APPLICATION_JSON));
 
-        BoardResult board = provider(true, "primary", "secondary").fetchArrivals("ESSA", TODAY);
-
-        assertThat(board.status()).isEqualTo(LookupResult.Status.FAILED);
-        assertThat(board.costUnits()).isEqualTo(2);
+        assertThat(provider.fetchArrivals("ESSA", TODAY).costUnits()).isEqualTo(1);
+        assertThat(provider.fetchArrivals("ESSA", TODAY).status()).isEqualTo(LookupResult.Status.FOUND);
+        server.verify();
     }
 
     @Test
-    void aRejectedKeyWithNoSecondaryFailsAfterOneCall() {
+    void bothKeysRejectedInARow_lockTheProviderOutUntilUtcMidnight() {
+        PhaseLogger logger = mock(PhaseLogger.class);
+        SwedaviaArrivalsProvider provider = new SwedaviaArrivalsProvider(clock, logger, true, "primary", "secondary", BASE, builder);
+        server.expect(once(), requestTo(ARN_TODAY)).andExpect(header("Ocp-Apim-Subscription-Key", "primary"))
+                .andRespond(withStatus(HttpStatus.UNAUTHORIZED));
+        server.expect(once(), requestTo(ARN_TODAY)).andExpect(header("Ocp-Apim-Subscription-Key", "secondary"))
+                .andRespond(withStatus(HttpStatus.FORBIDDEN));
+
+        BoardResult first = provider.fetchArrivals("ESSA", TODAY);
+        assertThat(provider.enabled()).isTrue(); // one key left to try
+        BoardResult second = provider.fetchArrivals("ESSA", TODAY);
+
+        server.verify();
+        assertThat(first.costUnits()).isEqualTo(1);
+        assertThat(second.status()).isEqualTo(LookupResult.Status.FAILED);
+        assertThat(second.costUnits()).isEqualTo(1);
+        assertThat(provider.enabled()).isFalse();
+        verify(logger).degraded(contains("rejected every API key"));
+        assertThat(provider.fetchArrivals("ESSA", TODAY).costUnits()).isZero(); // and no call is made while locked
+
+        clock.set(Instant.parse("2026-10-12T23:59:59Z"));
+        assertThat(provider.enabled()).isFalse();
+        clock.set(Instant.parse("2026-10-13T00:00:00Z"));
+        assertThat(provider.enabled()).isTrue();
+    }
+
+    @Test
+    void aKeyThatWorksBetweenTwoRejections_resetsTheCount() throws IOException {
+        SwedaviaArrivalsProvider provider = provider(true, "primary", "secondary");
+        server.expect(once(), requestTo(ARN_TODAY)).andExpect(header("Ocp-Apim-Subscription-Key", "primary"))
+                .andRespond(withStatus(HttpStatus.UNAUTHORIZED));
+        server.expect(once(), requestTo(ARN_TODAY)).andExpect(header("Ocp-Apim-Subscription-Key", "secondary"))
+                .andRespond(withSuccess(fixture("empty-arrivals.json"), MediaType.APPLICATION_JSON));
+        server.expect(once(), requestTo(ARN_TODAY)).andExpect(header("Ocp-Apim-Subscription-Key", "secondary"))
+                .andRespond(withStatus(HttpStatus.UNAUTHORIZED));
+
+        provider.fetchArrivals("ESSA", TODAY);
+        provider.fetchArrivals("ESSA", TODAY);
+        provider.fetchArrivals("ESSA", TODAY);
+
+        server.verify();
+        assertThat(provider.enabled()).isTrue(); // two rejections, but not in a row
+    }
+
+    @Test
+    void aRejectedOnlyKeyFailsAtCostOne_andLocksTheProvider() {
         server.expect(once(), requestTo(ARN_TODAY)).andRespond(withStatus(HttpStatus.UNAUTHORIZED));
+        SwedaviaArrivalsProvider provider = provider();
 
-        BoardResult board = provider().fetchArrivals("ESSA", TODAY);
+        BoardResult board = provider.fetchArrivals("ESSA", TODAY);
 
         assertThat(board.status()).isEqualTo(LookupResult.Status.FAILED);
         assertThat(board.costUnits()).isEqualTo(1);
+        assertThat(provider.enabled()).isFalse();
     }
 
     @Test

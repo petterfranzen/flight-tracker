@@ -133,8 +133,10 @@ date (`AirportArrivalsProvider.boardDate`; other providers keep the UTC date).
   `/etc/flight-tracker/env` on the VM, which the systemd unit reads through its
   `EnvironmentFile`; `deploy/hetzner/env.example` has the commented lines. The key
   is never committed. Without a key the provider is disabled (one INFO line at
-  startup). A 401/403 with one key is retried once with the other, and that
-  call costs 2 budget units.
+  startup). A 401/403 fails that fetch (1 budget unit) and the next attempt, after
+  the usual pacing, uses the other key. When every configured key has been
+  rejected in a row the provider is off until the next UTC midnight (one
+  degraded line says so; a 403 may also mean an exhausted quota).
 - **Settings.** `flighttracker.confirmation.swedavia.enabled` (true),
   `.api-key`, `.api-key-secondary`, `.base-url` (`https://api.swedavia.se/flightinfo/v2`).
 - **Budgets.** `providers.swedavia.monthly-budget: 9000` (headroom under the free

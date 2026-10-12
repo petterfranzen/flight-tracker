@@ -44,9 +44,13 @@ import java.util.Map;
  * touchdown under its Europe/Stockholm date and the gateway caches by it.
  *
  * <p>Auth is a subscription key in {@code Ocp-Apim-Subscription-Key}. Keys
- * rotate every six months between a primary and a secondary, so a 401/403 with
- * the key in use is retried once with the other one (the call then costs 2
- * units), and the key that worked is tried first from then on.
+ * rotate every six months between a primary and a secondary. A fetch makes one
+ * call with the preferred key. A 401/403 fails that fetch (cost 1) and switches
+ * the preferred key, so the next attempt, after the gateway's pacing, uses the
+ * other one: there is no back-to-back retry. Once every configured key has been
+ * rejected in a row (expired keys, or possibly a 403 for an exhausted quota, as
+ * Azure API Management does) the provider is {@link #enabled locked out} until
+ * the next UTC midnight rather than burning a unit on every attempt.
  *
  * <p>What an entry says:
  * <ul>
@@ -95,8 +99,12 @@ public class SwedaviaArrivalsProvider implements AirportArrivalsProvider {
     private final String secondaryKey;
     private final boolean flag;
 
-    /** The key that answered last, so a rotated-out primary is not retried on every fetch. */
+    /** The key to use next: switched on every 401/403, so a rotated-out key is not hammered. */
     private volatile boolean secondaryPreferred;
+    /** Keys rejected one after the other; any answer that is not a 401/403 resets it. */
+    private volatile int rejectedInARow;
+    /** While the clock is before this, every key was rejected and the provider is off. */
+    private volatile Instant lockedUntil = Instant.EPOCH;
 
     @Autowired
     public SwedaviaArrivalsProvider(Clock clock,
@@ -138,10 +146,10 @@ public class SwedaviaArrivalsProvider implements AirportArrivalsProvider {
         return ID;
     }
 
-    /** The flag is on and at least one key is configured. */
+    /** The flag is on, at least one key is configured and the keys have not all just been rejected. */
     @Override
     public boolean enabled() {
-        return flag && hasKey();
+        return flag && hasKey() && !clock.instant().isBefore(lockedUntil);
     }
 
     @Override
@@ -159,7 +167,7 @@ public class SwedaviaArrivalsProvider implements AirportArrivalsProvider {
     public BoardResult fetchArrivals(String arrivalAirportIcao, LocalDate boardDate) {
         String icao = arrivalAirportIcao == null ? "" : arrivalAirportIcao.trim().toUpperCase(Locale.ROOT);
         String iata = IATA_BY_ICAO.get(icao);
-        if (iata == null || boardDate == null || !hasKey()) return BoardResult.failed().withCost(0);
+        if (iata == null || boardDate == null || !enabled()) return BoardResult.failed().withCost(0);
 
         // Outside the window Swedavia answers 400: there is no board, and asking costs quota.
         LocalDate today = boardDate(clock.instant());
@@ -167,35 +175,46 @@ public class SwedaviaArrivalsProvider implements AirportArrivalsProvider {
             return BoardResult.notFound().withCost(0);
         }
 
-        List<String> keys = keysInOrder();
-        int calls = 0;
-        Http http = null;
-        for (int i = 0; i < keys.size(); i++) {
-            try {
-                http = get(iata, boardDate, keys.get(i));
-            } catch (RuntimeException e) {
-                // Timeouts, DNS, resets: a connection that never produced an answer.
-                log.debug("Swedavia {} {} failed: {}", iata, boardDate, e.toString());
-                phases.degraded("Swedavia FlightInfo unreachable: " + e.getClass().getSimpleName());
-                return BoardResult.failed().withCost(calls + 1);
-            }
-            calls++;
-            if (http.status() != 401 && http.status() != 403) {
-                if (i > 0 && http.status() < 400) secondaryPreferred = !secondaryPreferred;
-                break;
-            }
+        String key = preferredKey();
+        Http http;
+        try {
+            http = get(iata, boardDate, key);
+        } catch (RuntimeException e) {
+            // Timeouts, DNS, resets: a connection that never produced an answer.
+            log.debug("Swedavia {} {} failed: {}", iata, boardDate, e.toString());
+            phases.degraded("Swedavia FlightInfo unreachable: " + e.getClass().getSimpleName());
+            return BoardResult.failed().withCost(1);
         }
-        return interpret(http, iata, boardDate, icao).withCost(calls);
+        if (http.status() == 401 || http.status() == 403) {
+            keyRejected();
+        } else {
+            rejectedInARow = 0;
+        }
+        return interpret(http, iata, boardDate, icao).withCost(1);
     }
 
-    /** The primary first, then the secondary; reversed once the secondary has taken over. Blank keys are left out. */
-    private List<String> keysInOrder() {
-        List<String> keys = new ArrayList<>(2);
+    /** The key in use: the preferred one, or the only one configured. */
+    private String preferredKey() {
         String first = secondaryPreferred ? secondaryKey : primaryKey;
         String second = secondaryPreferred ? primaryKey : secondaryKey;
-        if (!first.isEmpty()) keys.add(first);
-        if (!second.isEmpty() && !second.equals(first)) keys.add(second);
-        return keys;
+        return first.isEmpty() ? second : first;
+    }
+
+    private int distinctKeys() {
+        if (primaryKey.isEmpty() || secondaryKey.isEmpty() || primaryKey.equals(secondaryKey)) return 1;
+        return 2;
+    }
+
+    /** Next attempt uses the other key; when all of them have failed in a row, the provider locks until UTC midnight. */
+    private void keyRejected() {
+        secondaryPreferred = !secondaryPreferred;
+        if (++rejectedInARow < distinctKeys()) return;
+        rejectedInARow = 0;
+        lockedUntil = clock.instant().atZone(ZoneOffset.UTC).toLocalDate().plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant();
+        String detail = "Swedavia FlightInfo rejected every API key; off until " + lockedUntil
+                + " (expired keys, or the quota may be exhausted)";
+        log.warn(detail);
+        phases.degraded(detail);
     }
 
     private Http get(String iata, LocalDate date, String key) {
