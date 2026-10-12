@@ -9,7 +9,7 @@ continue from **Next task**.
 ## Status
 
 - **Current phase:** 1 (physics estimate, state machine, UI)
-- **Next task:** P1-R (Phase 1 review, running), then fix its findings and open the Phase 1 PR. P2 is running in parallel; merge any Phase 1 fixes into the phase 2 branch afterwards. Implementers work in worktrees and the orchestrator cherry-picks their commits onto the phase 1 branch.
+- **Next task:** P1-F (review fixes, running). Then open the Phase 1 PR, merge phase 1 into the phase 2 and phase 3 branches, and run the P2 review. P3 (provider-neutral) is running in parallel. Implementers work in worktrees and the orchestrator cherry-picks their commits onto the phase 1 branch.
 - **Blocked on the human:** the Phase 3 provider choice (see `provider-research.md`). Phases 1 and 2 continue meanwhile.
 
 ## Branches and PRs
@@ -34,7 +34,8 @@ branch. Never merge to `main`; the human merges.
 | P1-B | Pure `CoverageGapEstimator` (Kalman/dead reckoning, runway match, time to touchdown, landed probability) and scenario unit tests | implementer | none | done (a84c0a9): 15 scenario tests |
 | P1-C | Backend wiring: poll-coverage tracker, `EstimatorAgent` on the new estimator, `TrackStatus` on `LiveAircraft`, `GET /api/flights/{icao24}/status`, dossier text | implementer | P1-A, P1-B | done (cd685da, 3bf639a, 636bbf7): backend 179 tests, blackbox 23/23 |
 | P1-D | Frontend: status line with confidence and source, uncertainty cone GL layer, status polling, Playwright tests | implementer | contract below | done (a9c2ab9): 13 new Playwright tests |
-| P1-R | Review Phase 1: diff, all quality gates, check against the brief | reviewer | P1-C, P1-D | running |
+| P1-R | Review Phase 1: diff, all quality gates, check against the brief | reviewer | P1-C, P1-D | done: no blockers, 4 should-fix (`reviews/phase1.md`) |
+| P1-F | Fix the P1-R should-fix items 1–4 and nits 5, 6, 7, 10, 11, 12 | implementer | P1-R | running |
 | P2 | Training data capture: tables, capture and label service, retention, `LandingModel` stub (plan below) | implementer | Phase 1 | done (801b70e on `claude/coverage-gap-phase2`): 198 backend tests |
 | P2-R | Review Phase 2 | reviewer | P2, P1 fixes merged in | todo |
 | P3 | Provider SPI, framework-level cache and rate limit, `ConfirmationStore`, upgrade service, mock provider, UI tweaks (no real provider) | implementer | Phase 2 | running (stacked on `claude/coverage-gap-phase2`) |
