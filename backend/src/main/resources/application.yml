@@ -100,7 +100,10 @@ flighttracker:
   confirmation:
     interval-seconds: 30
     min-interval-seconds: 30
+    # Default daily budget per provider, in cost units. A provider overrides it, and
+    # may add a monthly one, under providers.<id>.daily-budget / .monthly-budget.
     daily-budget: 300
+    board-ttl-seconds: 300
     mock:
       enabled: ${FLIGHTTRACKER_CONFIRMATION_MOCK_ENABLED:false}
   # Rolling retention for flight_position — see PositionRetentionService,

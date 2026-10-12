@@ -1,5 +1,7 @@
 package com.flighttracker.service.confirmation;
 
+import com.flighttracker.model.Aircraft;
+import com.flighttracker.repository.AircraftRepository;
 import com.flighttracker.service.LiveVisibilityWindows;
 import com.flighttracker.service.coverage.GapEstimate;
 import com.flighttracker.service.coverage.Runway;
@@ -13,12 +15,15 @@ import com.flighttracker.service.training.TrainingDataService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.lang.Nullable;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -51,6 +56,15 @@ import java.util.Optional;
  * before the aircraft's last report (for a gap) or before it touched down (on
  * the ground) is about an earlier flight and is ignored.
  *
+ * <p>Providers come in two shapes. A per-flight {@link ArrivalConfirmationProvider}
+ * is asked about each candidate in turn. An {@link AirportArrivalsProvider}
+ * serves a whole board per airport and UTC date: the candidate is looked up in
+ * the cached board without a call (by normalised callsign, else by registration
+ * from the aircraft table), and a board is fetched only when none is fresh. One
+ * fetch serves every candidate at that airport in the same tick. The same
+ * rules apply to both: at most one real call per provider per tick, the
+ * skew-tolerance rejection and the candidate order.
+ *
  * <p>When the answer is for a gap, the provider's touchdown time also goes to
  * {@link TrainingDataService#recordConfirmedLanding} under the gap's key (the
  * last report before the gap). An on-ground aircraft has no gap and so no
@@ -67,6 +81,8 @@ public class ArrivalConfirmationService {
     private record Candidate(LiveAircraft aircraft, int priority, String airport, Instant expectedAt, boolean confirmed) { }
 
     private final List<ArrivalConfirmationProvider> providers;
+    private final List<AirportArrivalsProvider> boardProviders;
+    private final AircraftRepository aircraftRepository;
     private final ConfirmationGateway gateway;
     private final ConfirmationStore store;
     private final LiveStateStore liveStateStore;
@@ -80,6 +96,8 @@ public class ArrivalConfirmationService {
     private final Duration gateWait;
 
     public ArrivalConfirmationService(List<ArrivalConfirmationProvider> providers,
+                                      @Nullable List<AirportArrivalsProvider> boardProviders,
+                                      AircraftRepository aircraftRepository,
                                       ConfirmationGateway gateway,
                                       ConfirmationStore store,
                                       LiveStateStore liveStateStore,
@@ -92,6 +110,8 @@ public class ArrivalConfirmationService {
                                       @Value("${flighttracker.confirmation.skew-tolerance-seconds:300}") long skewToleranceSeconds,
                                       @Value("${flighttracker.confirmation.gate-wait-minutes:45}") long gateWaitMinutes) {
         this.providers = providers;
+        this.boardProviders = boardProviders == null ? List.of() : boardProviders;
+        this.aircraftRepository = aircraftRepository;
         this.gateway = gateway;
         this.store = store;
         this.liveStateStore = liveStateStore;
@@ -110,7 +130,8 @@ public class ArrivalConfirmationService {
         try {
             store.prune(liveStateStore::get);
             List<ArrivalConfirmationProvider> active = providers.stream().filter(ArrivalConfirmationProvider::enabled).toList();
-            if (active.isEmpty()) return;
+            List<AirportArrivalsProvider> activeBoards = boardProviders.stream().filter(AirportArrivalsProvider::enabled).toList();
+            if (active.isEmpty() && activeBoards.isEmpty()) return;
 
             Instant now = clock.instant();
             List<Candidate> candidates = candidates(now);
@@ -119,6 +140,13 @@ public class ArrivalConfirmationService {
             for (ArrivalConfirmationProvider provider : active) {
                 try {
                     askProvider(provider, candidates);
+                } catch (RuntimeException e) {
+                    log.warn("Arrival confirmation via {} failed this tick", provider.id(), e);
+                }
+            }
+            for (AirportArrivalsProvider provider : activeBoards) {
+                try {
+                    askBoardProvider(provider, candidates);
                 } catch (RuntimeException e) {
                     log.warn("Arrival confirmation via {} failed this tick", provider.id(), e);
                 }
@@ -138,13 +166,67 @@ public class ArrivalConfirmationService {
             if (outcome.kind() == ConfirmationGateway.Kind.SKIPPED) return;
             LookupResult result = outcome.result();
             if (result.status() == LookupResult.Status.FOUND && result.info() != null) {
-                apply(provider, c, result.info());
+                apply(provider.id(), c, result.info());
             }
             if (outcome.kind() == ConfirmationGateway.Kind.CALLED) return;
         }
     }
 
-    private void apply(ArrivalConfirmationProvider provider, Candidate c, ArrivalInfo info) {
+    /**
+     * Board providers: every candidate at a covered airport is looked up in that
+     * airport's board for the date it touched down. A fresh cached board costs
+     * nothing; a missing or stale one is fetched, at most once per tick, and
+     * then serves all the candidates at that airport. A skipped fetch (paced,
+     * over budget, cooling down) ends this provider's tick, as for per-flight.
+     */
+    private void askBoardProvider(AirportArrivalsProvider provider, List<Candidate> candidates) {
+        boolean called = false;
+        for (Candidate c : candidates) {
+            if (!provider.covers(c.airport())) continue;
+            LocalDate date = c.expectedAt().atZone(ZoneOffset.UTC).toLocalDate();
+            BoardResult board = gateway.cachedBoard(provider, c.airport(), date).orElse(null);
+            if (board == null) {
+                if (called) continue; // the one real call of this tick is spent
+                ConfirmationGateway.BoardOutcome outcome = gateway.board(provider, c.airport(), date);
+                if (outcome.kind() == ConfirmationGateway.Kind.SKIPPED) return;
+                called = outcome.kind() == ConfirmationGateway.Kind.CALLED;
+                board = outcome.board();
+            }
+            if (board.status() != LookupResult.Status.FOUND) continue;
+            BoardEntry entry = match(board, c);
+            if (entry != null && entry.info() != null) {
+                apply(provider.id(), c, entry.info());
+            }
+        }
+    }
+
+    /**
+     * The board entry for the candidate: by normalised callsign, else by
+     * registration when both sides have one (the aircraft table's, from adsbdb).
+     * Several entries with the same callsign (a flight that runs twice a day)
+     * resolve to the one whose landing is nearest the expected touchdown.
+     */
+    private BoardEntry match(BoardResult board, Candidate c) {
+        String callsign = BoardEntry.normalizeCallsign(c.aircraft().callsign());
+        BoardEntry best = nearest(board.entries().stream()
+                .filter(e -> !callsign.isEmpty() && callsign.equals(BoardEntry.normalizeCallsign(e.callsign()))).toList(), c);
+        if (best != null) return best;
+        if (board.entries().stream().noneMatch(e -> !BoardEntry.normalizeRegistration(e.registration()).isEmpty())) return null;
+        String registration = BoardEntry.normalizeRegistration(
+                aircraftRepository.findById(c.aircraft().icao24()).map(Aircraft::registration).orElse(null));
+        if (registration.isEmpty()) return null;
+        return nearest(board.entries().stream()
+                .filter(e -> registration.equals(BoardEntry.normalizeRegistration(e.registration()))).toList(), c);
+    }
+
+    private static BoardEntry nearest(List<BoardEntry> entries, Candidate c) {
+        return entries.stream().min(Comparator.comparingLong((BoardEntry e) -> {
+            Instant landed = e.info() == null ? null : e.info().landedAt();
+            return landed == null ? Long.MAX_VALUE : Math.abs(Duration.between(landed, c.expectedAt()).toMillis());
+        })).orElse(null);
+    }
+
+    private void apply(String sourceId, Candidate c, ArrivalInfo info) {
         LiveAircraft a = c.aircraft();
         Instant landedAt = info.landedAt();
         // A cached or stale answer can be about an earlier landing of the same callsign.
@@ -152,16 +234,16 @@ public class ArrivalConfirmationService {
         Instant floor = a.onGround() && a.landedSince() != null ? a.landedSince() : a.observedAt();
         if (landedAt != null && landedAt.isBefore(floor.minus(skewTolerance))) {
             log.debug("{} answer from {} landed at {}, before {}: an earlier flight, ignored",
-                    a.icao24(), provider.id(), landedAt, floor);
+                    a.icao24(), sourceId, landedAt, floor);
             return;
         }
-        Confirmation confirmation = new Confirmation(provider.id(), info, clock.instant(), a.observedAt());
+        Confirmation confirmation = new Confirmation(sourceId, info, clock.instant(), a.observedAt());
         if (!store.put(a.icao24(), confirmation)) return;
-        log.info("{} confirmed by {}: {}", a.icao24(), provider.id(), info.actualIn() != null ? "at gate" : "landed");
+        log.info("{} confirmed by {}: {}", a.icao24(), sourceId, info.actualIn() != null ? "at gate" : "landed");
         if (info.actualOn() != null && a.gap() != null) {
             try {
                 String airport = info.arrivalAirportIcao() != null ? info.arrivalAirportIcao() : c.airport();
-                training.recordConfirmedLanding(a.icao24(), a.observedAt(), provider.id(), info.actualOn(), airport);
+                training.recordConfirmedLanding(a.icao24(), a.observedAt(), sourceId, info.actualOn(), airport);
             } catch (RuntimeException e) {
                 log.warn("Recording the confirmed landing of {} failed", a.icao24(), e);
             }
