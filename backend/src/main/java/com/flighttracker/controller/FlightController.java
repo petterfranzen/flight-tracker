@@ -4,6 +4,7 @@ import com.flighttracker.dto.Bounds;
 import com.flighttracker.dto.ClusterPoint;
 import com.flighttracker.dto.LiveMarker;
 import com.flighttracker.dto.LiveOverview;
+import com.flighttracker.dto.TrackStatus;
 import com.flighttracker.model.FlightPosition;
 import com.flighttracker.repository.AirportRepository;
 import com.flighttracker.repository.FlightPositionRepository;
@@ -132,6 +133,19 @@ public class FlightController {
     public ResponseEntity<FlightPosition> liveOne(@PathVariable String icao24) {
         return liveStateStore.findLatestPosition(icao24)
                 .map(ResponseEntity::ok)
+                .orElseGet(() -> ResponseEntity.notFound().build());
+    }
+
+    /**
+     * Coverage-gap state of one aircraft: observed (live or on the ground)
+     * or, while it has gone silent, the estimator's inferred position and
+     * landing call. Same lookup as liveOne, so 404 means the same thing:
+     * the live set has no such aircraft.
+     */
+    @GetMapping("/{icao24}/status")
+    public ResponseEntity<TrackStatus> status(@PathVariable String icao24) {
+        return liveStateStore.get(icao24)
+                .map(a -> ResponseEntity.ok(TrackStatus.from(a)))
                 .orElseGet(() -> ResponseEntity.notFound().build());
     }
 

@@ -1,5 +1,7 @@
 package com.flighttracker.service.live;
 
+import com.flighttracker.service.coverage.GapEstimate;
+
 import java.time.Instant;
 
 /**
@@ -28,6 +30,11 @@ import java.time.Instant;
  * (FlightPositionRepository.LATEST_COLUMNS) — now just a plain Java
  * ternary, since there's no SQL expression to keep in sync across queries
  * any more.
+ *
+ * gap is the coverage-gap estimator's answer while the aircraft is silent
+ * (null while it reports normally). When set, estimatedLatitude/Longitude/At
+ * carry the estimate's position, so every reader's display position follows
+ * it; the raw latitude/longitude stay the last real report.
  */
 public record LiveAircraft(
         long id,
@@ -45,7 +52,8 @@ public record LiveAircraft(
         Instant landedSince,
         Double estimatedLatitude,
         Double estimatedLongitude,
-        Instant estimatedAt
+        Instant estimatedAt,
+        GapEstimate gap
 ) {
     public double displayLatitude() {
         return estimatedLatitude != null ? estimatedLatitude : latitude;
