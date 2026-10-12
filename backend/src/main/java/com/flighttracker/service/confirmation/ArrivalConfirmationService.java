@@ -69,7 +69,13 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>When the answer is for a gap, the provider's touchdown time also goes to
  * {@link TrainingDataService#recordConfirmedLanding} under the gap's key (the
  * last report before the gap). An on-ground aircraft has no gap and so no
- * feature row to label; writing one would leave an orphan label.
+ * feature row to label; writing one would leave an orphan label. A provider whose
+ * terms limit how long its data may be kept ({@link ArrivalConfirmationProvider#mayStoreLongTerm})
+ * writes no label.
+ *
+ * <p>Precedence: a per-flight provider is not asked about a candidate whose airport an
+ * enabled board provider covers, so a global fallback source (AeroDataBox) only sees
+ * the airports no board serves.
  */
 @Service
 public class ArrivalConfirmationService {
@@ -148,7 +154,7 @@ public class ArrivalConfirmationService {
 
             for (ArrivalConfirmationProvider provider : active) {
                 try {
-                    askProvider(provider, candidates);
+                    askProvider(provider, candidates, activeBoards);
                 } catch (RuntimeException e) {
                     log.warn("Arrival confirmation via {} failed this tick", provider.id(), e);
                 }
@@ -166,16 +172,19 @@ public class ArrivalConfirmationService {
     }
 
     /** Cached answers are applied as they come; the first real call (or a skipped one) ends this provider's tick. */
-    private void askProvider(ArrivalConfirmationProvider provider, List<Candidate> candidates) {
+    private void askProvider(ArrivalConfirmationProvider provider, List<Candidate> candidates,
+                             List<AirportArrivalsProvider> activeBoards) {
         for (Candidate c : candidates) {
             if (!provider.covers(c.airport())) continue;
+            // An enabled airport board is the better source at its own airports (one call serves every flight).
+            if (c.airport() != null && activeBoards.stream().anyMatch(b -> b.covers(c.airport()))) continue;
             LiveAircraft a = c.aircraft();
             ConfirmationGateway.Outcome outcome = gateway.lookup(provider,
                     new ArrivalQuery(a.icao24(), a.callsign(), c.airport(), c.expectedAt()));
             if (outcome.kind() == ConfirmationGateway.Kind.SKIPPED) return;
             LookupResult result = outcome.result();
             if (result.status() == LookupResult.Status.FOUND && result.info() != null) {
-                apply(provider.id(), c, result.info());
+                apply(provider.id(), c, result.info(), provider.mayStoreLongTerm());
             }
             if (outcome.kind() == ConfirmationGateway.Kind.CALLED) return;
         }
@@ -219,7 +228,7 @@ public class ArrivalConfirmationService {
             }
             if (board.status() != LookupResult.Status.FOUND && board.status() != LookupResult.Status.NOT_FOUND) continue;
             BoardEntry entry = board.status() == LookupResult.Status.FOUND ? match(board, c) : null;
-            boolean answered = entry != null && entry.info() != null && apply(provider.id(), c, entry.info());
+            boolean answered = entry != null && entry.info() != null && apply(provider.id(), c, entry.info(), true);
             if (!answered) {
                 Instant fetchedAt = gateway.boardFetchedAt(provider, c.airport(), date).orElse(now);
                 blanks.merge(key, fetchedAt, (old, fresh) -> fresh.isAfter(old) ? fresh : old);
@@ -254,7 +263,7 @@ public class ArrivalConfirmationService {
     }
 
     /** True when the answer was stored: it confirmed the landing or added the gate time. */
-    private boolean apply(String sourceId, Candidate c, ArrivalInfo info) {
+    private boolean apply(String sourceId, Candidate c, ArrivalInfo info, boolean mayStoreLongTerm) {
         LiveAircraft a = c.aircraft();
         Instant landedAt = info.landedAt();
         // A cached or stale answer can be about an earlier landing of the same callsign.
@@ -268,7 +277,7 @@ public class ArrivalConfirmationService {
         Confirmation confirmation = new Confirmation(sourceId, info, clock.instant(), a.observedAt());
         if (!store.put(a.icao24(), confirmation)) return false;
         log.info("{} confirmed by {}: {}", a.icao24(), sourceId, info.actualIn() != null ? "at gate" : "landed");
-        if (info.actualOn() != null && a.gap() != null) {
+        if (info.actualOn() != null && a.gap() != null && mayStoreLongTerm) {
             try {
                 String airport = info.arrivalAirportIcao() != null ? info.arrivalAirportIcao() : c.airport();
                 training.recordConfirmedLanding(a.icao24(), a.observedAt(), sourceId, info.actualOn(), airport);

@@ -75,4 +75,14 @@ public interface ArrivalConfirmationProvider {
     default int callCost() {
         return 1;
     }
+
+    /**
+     * False when the provider's terms do not allow keeping what it returns beyond a short
+     * cache. {@link ArrivalConfirmationService} then writes no long-lived training label
+     * from its answers (the bounded in-memory caches and the confirmation store are still
+     * used). Default true.
+     */
+    default boolean mayStoreLongTerm() {
+        return true;
+    }
 }

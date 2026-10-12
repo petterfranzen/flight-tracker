@@ -37,6 +37,7 @@ class ArrivalConfirmationServiceTest {
         final String id;
         final List<ArrivalQuery> calls = new ArrayList<>();
         boolean enabled = true;
+        boolean mayStoreLongTerm = true;
         List<String> airports = null; // null = covers everything
         Function<ArrivalQuery, LookupResult> answer = q -> LookupResult.notFound();
 
@@ -46,6 +47,7 @@ class ArrivalConfirmationServiceTest {
 
         @Override public String id() { return id; }
         @Override public boolean enabled() { return enabled; }
+        @Override public boolean mayStoreLongTerm() { return mayStoreLongTerm; }
         @Override public boolean covers(String airport) { return airports == null || (airport != null && airports.contains(airport)); }
         @Override public LookupResult lookup(ArrivalQuery query) {
             calls.add(query);
@@ -278,6 +280,19 @@ class ArrivalConfirmationServiceTest {
         assertThat(c.providerId()).isEqualTo("fake");
         assertThat(c.info().actualOn()).isEqualTo(on);
         verify(training).recordConfirmedLanding("a1", gapKey, "fake", on, "ESSA");
+    }
+
+    @Test
+    void aProviderThatMayNotStoreLongTerm_confirmsButWritesNoTrainingLabel() {
+        Instant td = now.minusSeconds(300);
+        LiveAircraft a = addGap("a1", "SAS1", gap(TrackState.LANDED_INFERRED, 0.92, "ESSA", td), now.minusSeconds(900));
+        provider.mayStoreLongTerm = false;
+        provider.answer = q -> found(now.minusSeconds(280), null);
+
+        service(provider).tick();
+
+        assertThat(store.forAircraft(a)).isPresent();
+        verify(training, never()).recordConfirmedLanding(any(), any(), any(), any(), any());
     }
 
     @Test

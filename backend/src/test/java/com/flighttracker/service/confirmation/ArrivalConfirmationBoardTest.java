@@ -459,6 +459,8 @@ class ArrivalConfirmationBoardTest {
     void aPerFlightProviderAndABoardProvider_workSideBySide() {
         Instant td = now.minus(Duration.ofMinutes(10));
         addInferred("a1", "SAS1", "ESSA", td);
+        addInferred("a2", "FIN2", "EFHK", td);
+        boards.airports = List.of("ESSA");
         List<ArrivalQuery> perFlightCalls = new ArrayList<>();
         ArrivalConfirmationProvider perFlight = new ArrivalConfirmationProvider() {
             @Override public String id() { return "flight"; }
@@ -475,9 +477,39 @@ class ArrivalConfirmationBoardTest {
 
         svc.tick();
 
+        // The per-flight provider is asked only about the airport no board covers.
         assertThat(perFlightCalls).hasSize(1);
+        assertThat(perFlightCalls.get(0).arrivalAirportIcao()).isEqualTo("EFHK");
         assertThat(boards.fetches).hasSize(1);
         assertThat(store.forAircraft(aircraft.get("a1")).orElseThrow().providerId()).isEqualTo("sw");
+    }
+
+    @Test
+    void aPerFlightProviderIsNotAskedAboutAnAirportAnEnabledBoardCovers() {
+        addInferred("a1", "SAS1", "ESSA", now.minus(Duration.ofMinutes(10)));
+        List<ArrivalQuery> perFlightCalls = new ArrayList<>();
+        ArrivalConfirmationProvider perFlight = new ArrivalConfirmationProvider() {
+            @Override public String id() { return "flight"; }
+            @Override public boolean covers(String airport) { return true; }
+            @Override public LookupResult lookup(ArrivalQuery query) {
+                perFlightCalls.add(query);
+                return LookupResult.notFound();
+            }
+        };
+        boards.airports = List.of("ESSA");
+        ConfirmationGateway gateway = new ConfirmationGateway(clock, 0, InMemoryAppState.budgets(clock, 300), 1000, 300, 60, 300, 100);
+
+        boards.enabled = false; // the board has no key: the fallback is asked
+        new ArrivalConfirmationService(List.of(perFlight), List.of(boards), aircraftRepository, gateway, store, live,
+                routes, runways, training, clock, 0.5, 120, 300, 45, 15).tick();
+        assertThat(perFlightCalls).hasSize(1);
+
+        perFlightCalls.clear();
+        boards.enabled = true; // an enabled board wins, even when it has no answer
+        new ArrivalConfirmationService(List.of(perFlight), List.of(boards), aircraftRepository,
+                new ConfirmationGateway(clock, 0, InMemoryAppState.budgets(clock, 300), 1000, 300, 60, 300, 100),
+                store, live, routes, runways, training, clock, 0.5, 120, 300, 45, 15).tick();
+        assertThat(perFlightCalls).isEmpty();
     }
 
     @Test
