@@ -38,7 +38,8 @@ branch. Never merge to `main`; the human merges.
 | P1-F | Fix the P1-R should-fix items 1–4 and nits 5, 6, 7, 10, 11, 12 | implementer | P1-R | running |
 | P2 | Training data capture: tables, capture and label service, retention, `LandingModel` stub (plan below) | implementer | Phase 1 | done (801b70e on `claude/coverage-gap-phase2`): 198 backend tests |
 | P2-R | Review Phase 2 | reviewer | P2, P1 fixes merged in | todo |
-| P3 | Provider SPI, framework-level cache and rate limit, `ConfirmationStore`, upgrade service, mock provider, UI tweaks (no real provider) | implementer | Phase 2 | running (stacked on `claude/coverage-gap-phase2`) |
+| P3 | Provider SPI, framework-level cache and rate limit, `ConfirmationStore`, upgrade service, mock provider, UI tweaks (no real provider) | implementer | Phase 2 | done (4d52beb, 2aaefff on `claude/coverage-gap-phase3`): backend 252 tests, coverage-status 15/15 |
+| P3-R | Review Phase 2 + 3 | reviewer | P1-F merged forward | todo |
 | P3-real | Real provider (the human chooses) | implementer | the human's choice | blocked: checkpoint |
 
 ## Phase 0 findings (summary)
@@ -238,3 +239,10 @@ stateDiagram-v2
   - Provider confirmation: `TrainingDataService.recordConfirmedLanding`. It overrides an airborne label only when the landing time is at or before `resumed_at`.
   - Retention defaults to 365 days, pruned in `PositionRetentionService`.
   - `LandingModel` with a no-op `NoLandingModel`. A real model must be `@Primary`.
+- 2026-10-12: P3 (provider-neutral) done and pushed as `claude/coverage-gap-phase3`.
+  - `ConfirmationGateway` does pacing, the daily budget, `PollBackoff` and the TTL cache for every provider.
+  - `ArrivalConfirmationService` picks candidates; `ConfirmationStore` keeps confirmations monotonic.
+  - `MockArrivalProvider` is off by default (`FLIGHTTRACKER_CONFIRMATION_MOCK_ENABLED=true` turns it on).
+  - The frontend refetches every 60 s while LANDED_INFERRED.
+  - The scheduler pool went from 9 to 10.
+  - Note: tune `daily-budget` per provider (AeroDataBox's free tier is 400/month).
