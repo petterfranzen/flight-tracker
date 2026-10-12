@@ -9,7 +9,7 @@ continue from **Next task**.
 ## Status
 
 - **Current phase:** 1 (physics estimate, state machine, UI)
-- **Next task:** P1-C (backend wiring, running) and P1-D (frontend, running), then P1-R (review). Implementers work in worktrees and the orchestrator cherry-picks their commits onto the phase 1 branch.
+- **Next task:** P1-R (Phase 1 review, running), then fix its findings and open the Phase 1 PR. Implementers work in worktrees and the orchestrator cherry-picks their commits onto the phase 1 branch.
 - **Blocked on the human:** the Phase 3 provider choice (see `provider-research.md`). Phases 1 and 2 continue meanwhile.
 
 ## Branches and PRs
@@ -32,9 +32,9 @@ branch. Never merge to `main`; the human merges.
 | P3-R | Research confirmation providers (web): `docs/agents/provider-research.md` | explorer | none | done; awaiting human choice |
 | P1-A | Runway data: bundled `runways.tsv`, `runway` table, seed, in-memory `RunwayIndex` | implementer | none | done (fce7e86): 16,520 directional runways, 706 KB TSV, 13 tests |
 | P1-B | Pure `CoverageGapEstimator` (Kalman/dead reckoning, runway match, time to touchdown, landed probability) and scenario unit tests | implementer | none | done (a84c0a9): 15 scenario tests |
-| P1-C | Backend wiring: poll-coverage tracker, `EstimatorAgent` on the new estimator, `TrackStatus` on `LiveAircraft`, `GET /api/flights/{icao24}/status`, dossier text | implementer | P1-A, P1-B | running |
+| P1-C | Backend wiring: poll-coverage tracker, `EstimatorAgent` on the new estimator, `TrackStatus` on `LiveAircraft`, `GET /api/flights/{icao24}/status`, dossier text | implementer | P1-A, P1-B | done (cd685da, 3bf639a, 636bbf7): backend 179 tests, blackbox 23/23 |
 | P1-D | Frontend: status line with confidence and source, uncertainty cone GL layer, status polling, Playwright tests | implementer | contract below | done (a9c2ab9): 13 new Playwright tests |
-| P1-R | Review Phase 1: diff, all quality gates, check against the brief | reviewer | P1-C, P1-D | todo |
+| P1-R | Review Phase 1: diff, all quality gates, check against the brief | reviewer | P1-C, P1-D | running |
 | P2-* | Training data capture (plan below) | | Phase 1 | todo |
 | P3-* | Provider interface, mock provider, upgrade logic (plan below) | | Phase 2 | todo |
 
@@ -219,3 +219,10 @@ stateDiagram-v2
   initial-view and mobile-layout are load-flaky and pass alone), perf 2/2, scenarios 5/5, and the new
   coverage-status spec 13/13, also re-run on the phase 1 branch. New tokens: `--color-uncertainty`,
   `--color-inferred` and `--color-confirmed`. Landing time is shown as local HH:MM.
+- 2026-10-12: P1-C merged. Backend `verify -Pwith-frontend`: 179 tests green. Blackbox: 23/23.
+  Live smoke test against real OpenSky (sweep 60 s): out of 10,394 aircraft, 8,224 LIVE, 1,296 ON_GROUND,
+  711 COVERAGE_LOST and 163 LANDED_INFERRED; a LANDED_INFERRED marker sat on VOBL 09L.
+  It also fixed a latent bug: the old estimator projected from the already-estimated display
+  position, so the elapsed time was counted twice. The dossier label renders landing time in UTC,
+  while the frontend renders it in local time; the UI uses the frontend label.
+  Open: should `/status` return 404 for aircraft silent > 12 h that are not yet evicted? It currently mirrors `/live`.
