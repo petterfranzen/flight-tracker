@@ -28,7 +28,8 @@ import java.util.Optional;
  *       come), FOUND with one 12 h, NOT_FOUND 15 min. THROTTLED and FAILED are
  *       never cached;</li>
  *   <li>a cache of whole arrivals boards for {@link AirportArrivalsProvider}s,
- *       keyed by (provider, airport, UTC date), bounded, fresh for
+ *       keyed by (provider, airport, board date: the UTC date unless the provider
+ *       overrides {@link AirportArrivalsProvider#boardDate}), bounded, fresh for
  *       {@code board-ttl-seconds}. A board is fetched only when {@link #board}
  *       is asked for one that is missing or stale; nothing polls in the
  *       background;</li>

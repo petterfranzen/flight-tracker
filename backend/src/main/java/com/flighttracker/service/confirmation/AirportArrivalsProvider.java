@@ -1,6 +1,8 @@
 package com.flighttracker.service.confirmation;
 
+import java.time.Instant;
 import java.time.LocalDate;
+import java.time.ZoneOffset;
 
 /**
  * The second provider shape: a source that serves a whole arrivals board per
@@ -37,10 +39,20 @@ public interface AirportArrivalsProvider {
     boolean covers(String arrivalAirportIcao);
 
     /**
-     * The arrivals board of one airport for one UTC date. Called by the
+     * Which board holds a flight expected to touch down at {@code expectedArrival}.
+     * The service asks the provider, and the gateway keys its board cache by the
+     * answer, so a source whose boards follow local dates overrides this. The
+     * default is the UTC date.
+     */
+    default LocalDate boardDate(Instant expectedArrival) {
+        return expectedArrival.atZone(ZoneOffset.UTC).toLocalDate();
+    }
+
+    /**
+     * The arrivals board of one airport for one board date (see {@link #boardDate}). Called by the
      * gateway, which has already checked the cache, the pacing, the budgets
      * and the backoff. Set {@link BoardResult#costUnits()} to what the call
      * cost upstream when it is not 1 (several pages, a pricier endpoint).
      */
-    BoardResult fetchArrivals(String arrivalAirportIcao, LocalDate dateUtc);
+    BoardResult fetchArrivals(String arrivalAirportIcao, LocalDate boardDate);
 }

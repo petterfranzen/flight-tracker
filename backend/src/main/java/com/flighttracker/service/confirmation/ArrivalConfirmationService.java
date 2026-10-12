@@ -23,7 +23,6 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
-import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -174,7 +173,8 @@ public class ArrivalConfirmationService {
 
     /**
      * Board providers: every candidate at a covered airport is looked up in that
-     * airport's board for the date it touched down. A fresh cached board costs
+     * airport's board for the date the provider files that touchdown under
+     * ({@link AirportArrivalsProvider#boardDate}, the UTC date unless it overrides). A fresh cached board costs
      * nothing; a missing or stale one is fetched, at most once per tick, and
      * then serves all the candidates at that airport. A skipped fetch (paced,
      * over budget, cooling down) ends this provider's tick, as for per-flight.
@@ -183,7 +183,7 @@ public class ArrivalConfirmationService {
         boolean called = false;
         for (Candidate c : candidates) {
             if (!provider.covers(c.airport())) continue;
-            LocalDate date = c.expectedAt().atZone(ZoneOffset.UTC).toLocalDate();
+            LocalDate date = provider.boardDate(c.expectedAt());
             BoardResult board = gateway.cachedBoard(provider, c.airport(), date).orElse(null);
             if (board == null) {
                 if (called) continue; // the one real call of this tick is spent
