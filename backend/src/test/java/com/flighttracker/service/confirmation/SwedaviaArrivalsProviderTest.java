@@ -408,6 +408,27 @@ class SwedaviaArrivalsProviderTest {
     }
 
     @Test
+    void theBoardDateFollowsTheDstSwitchesOfTheLastSundaysOfMarchAndOctober() {
+        SwedaviaArrivalsProvider provider = provider();
+
+        // Sunday 29 March 2026: CET becomes CEST at 01:00Z. 00:30Z is 01:30 CET, still the 29th.
+        assertThat(provider.boardDate(Instant.parse("2026-03-29T00:30:00Z"))).isEqualTo(LocalDate.parse("2026-03-29"));
+        // After the switch it is UTC+2: 21:59Z is 23:59 local, 22:30Z is 00:30 on the 30th.
+        assertThat(provider.boardDate(Instant.parse("2026-03-29T21:59:00Z"))).isEqualTo(LocalDate.parse("2026-03-29"));
+        assertThat(provider.boardDate(Instant.parse("2026-03-29T22:30:00Z"))).isEqualTo(LocalDate.parse("2026-03-30"));
+        // The evening before is still UTC+1: 22:30Z on the 28th is 23:30 local.
+        assertThat(provider.boardDate(Instant.parse("2026-03-28T22:30:00Z"))).isEqualTo(LocalDate.parse("2026-03-28"));
+
+        // Sunday 25 October 2026: CEST becomes CET at 01:00Z. 00:30Z is 02:30 CEST, the 25th.
+        assertThat(provider.boardDate(Instant.parse("2026-10-25T00:30:00Z"))).isEqualTo(LocalDate.parse("2026-10-25"));
+        // After the switch it is UTC+1: 22:30Z is 23:30 local, still the 25th; 23:00Z is the 26th.
+        assertThat(provider.boardDate(Instant.parse("2026-10-25T22:30:00Z"))).isEqualTo(LocalDate.parse("2026-10-25"));
+        assertThat(provider.boardDate(Instant.parse("2026-10-25T23:00:00Z"))).isEqualTo(LocalDate.parse("2026-10-26"));
+        // The evening before is still UTC+2: 22:30Z on the 24th is 00:30 on the 25th.
+        assertThat(provider.boardDate(Instant.parse("2026-10-24T22:30:00Z"))).isEqualTo(LocalDate.parse("2026-10-25"));
+    }
+
+    @Test
     void otherBoardProvidersKeepTheUtcDate() {
         AirportArrivalsProvider utc = new AirportArrivalsProvider() {
             @Override public String id() { return "x"; }
