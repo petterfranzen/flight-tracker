@@ -175,9 +175,9 @@ airport that an enabled board provider covers, so with a Swedavia key it only
 sees the rest of the world. One lookup is
 `GET {base-url}/flights/{searchBy}/{callsign}?withAircraftImage=false&withLocation=false`
 (the "nearest flight" variant, no date), with `X-RapidAPI-Key` and
-`X-RapidAPI-Host`. The entry is chosen by arrival airport, then operator before
-codeshare, then nearest the expected touchdown (and its `aircraft.modeS` must not
-name another airframe).
+`X-RapidAPI-Host`. The entry is chosen by arrival airport (and its `aircraft.modeS`
+must not name another airframe), then nearest the expected touchdown; operator before
+codeshare only separates entries within an hour of the nearest one.
 
 - **Key.** Sign up at rapid.aerodatabox.com and subscribe to the free Basic plan.
   Set `AERODATABOX_API_KEY` in `/etc/flight-tracker/env` (`deploy/hetzner/env.example`
@@ -186,12 +186,27 @@ name another airframe).
   off until the next UTC midnight (one degraded line says so).
 - **Settings.** `flighttracker.confirmation.aerodatabox.enabled` (true), `.api-key`,
   `.base-url` (`https://aerodatabox.p.rapidapi.com`), `.host` (`aerodatabox.p.rapidapi.com`),
-  `.search-by` (`Number`, or `CallSign`) and `.record-training-labels` (false).
+  `.search-by` (`Number`, or `CallSign`), `.record-training-labels` (false),
+  `.found-recheck-minutes` (30), `.not-found-recheck-minutes` (180) and
+  `.gate-wait-minutes` (0).
 - **Budget.** Basic has 400 units a month and a lookup costs 2 units (`callCost()`),
   so `providers.aerodatabox.monthly-budget: 380` allows about **190 lookups a month**,
   with `daily-budget: 14` (7 lookups a day). Once the plan's units are spent the
   upstream rejects calls until it renews. The gateway's 30 s spacing is inside the
   plan's 1 request a second. A 429 backs off for its `Retry-After` (60 s if absent).
+- **Spending the 7 a day.** Seven lookups are all a day allows, so the provider asks
+  the gateway to spend them slowly. A flight it found but without a gate time is not
+  asked again for **30 minutes** (`found-recheck-minutes`), a flight it does not know
+  for **3 hours** (`not-found-recheck-minutes`), and once it has confirmed the landing
+  the gate is not waited for (`gate-wait-minutes: 0`, against the global 45), because
+  AeroDataBox rarely has a distinct in-block time. The gateway never goes below its
+  own 5 min / 15 min, and other providers keep the defaults. So an arrived flight costs
+  one lookup, an approaching one at most two an hour, and the day realistically
+  covers about 7 different flights. Free of charge and without ending the tick: a
+  callsign the API cannot take (empty, over 10 characters, odd characters) is skipped
+  locally; a request that never got an HTTP response (refused connection, DNS) and a
+  429 are refunded; a 400, 404 or 422 counts as "no such flight" and is cached like
+  a 204. A 5xx keeps its charge, since the API may have billed it.
 - **Attribution.** The free plan is non-commercial and must show a clearly visible
   AeroDataBox credit that links to https://aerodatabox.com; the UI shows it next to
   data from this provider.
