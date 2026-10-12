@@ -198,3 +198,78 @@ CREATE TABLE IF NOT EXISTS runway (
     length_m      REAL NOT NULL,
     PRIMARY KEY (airport_icao, ident)
 );
+
+-- Training data for a learned landing model (docs/agents/PROGRESS.md, Phase 2).
+-- One compact row per track end: the moment an aircraft that matters for
+-- landing inference went silent inside coverage (a coverage gap). Written
+-- once by TrainingDataService (INSERT ... ON CONFLICT DO NOTHING, so ticks and
+-- restarts are idempotent) with the last-report kinematics, trend features
+-- from the last ~10 minutes, the approach geometry and the physics estimate
+-- at that moment. The inferred_* columns are set once, when the gap first
+-- reaches LANDED_INFERRED. Only numbers and short text, never a track.
+-- No foreign keys: aircraft and flight_position are pruned after 7 days and
+-- 72 hours and these rows must outlive them (flighttracker.training.retention-days).
+-- geo_* are the ApproachGeometry fields. All times are epoch millis.
+CREATE TABLE IF NOT EXISTS track_end_feature (
+    icao24                       TEXT NOT NULL,
+    last_observed_at             INTEGER NOT NULL,
+    captured_at                  INTEGER NOT NULL,
+    features_version             INTEGER NOT NULL,
+    callsign                     TEXT,
+    origin_icao                  TEXT,
+    destination_icao             TEXT,
+    last_lat                     REAL NOT NULL,
+    last_lon                     REAL NOT NULL,
+    last_altitude_m              REAL,
+    last_vertical_rate_ms        REAL,
+    last_ground_speed_ms         REAL,
+    last_track_deg               REAL,
+    point_count                  INTEGER NOT NULL,
+    window_seconds               REAL,
+    altitude_change_m            REAL,
+    mean_vertical_rate_ms        REAL,
+    geo_height_above_threshold_m REAL,
+    geo_vertical_rate_ms         REAL,
+    geo_ground_speed_ms          REAL,
+    geo_distance_to_threshold_m  REAL,
+    geo_cross_track_m            REAL,
+    geo_heading_diff_deg         REAL,
+    geo_glide_path_deviation_m   REAL,
+    geo_go_around_signature      INTEGER,
+    geo_airport_icao             TEXT,
+    geo_runway_ident             TEXT,
+    state                        TEXT NOT NULL,
+    landing_probability          REAL NOT NULL,
+    touchdown_at                 INTEGER,
+    landing_airport_icao         TEXT,
+    landing_runway               TEXT,
+    estimator_model              TEXT,
+    inferred_state               TEXT,
+    inferred_probability         REAL,
+    inferred_at                  INTEGER,
+    PRIMARY KEY (icao24, last_observed_at)
+);
+-- Serves the retention prune (the key leads with icao24, so it cannot).
+CREATE INDEX IF NOT EXISTS idx_track_end_feature_captured_at ON track_end_feature (captured_at);
+
+-- What happened to a track end: the label for the row above with the same key.
+-- outcome is LANDED or AIRBORNE; label_source is adsb_ground, adsb_airborne
+-- or a confirmation provider id. The first label wins, except that a
+-- provider's LANDED replaces an adsb_airborne label when the landing falls
+-- inside the gap (see TrainingDataRepository.confirmLanded). For a provider
+-- label resumed_at is the reported landing time and resumed_lat/lon are null.
+-- No label means unknown (for example the aircraft was evicted first).
+CREATE TABLE IF NOT EXISTS track_end_label (
+    icao24              TEXT NOT NULL,
+    last_observed_at    INTEGER NOT NULL,
+    outcome             TEXT NOT NULL,
+    label_source        TEXT NOT NULL,
+    resumed_at          INTEGER,
+    resumed_lat         REAL,
+    resumed_lon         REAL,
+    gap_seconds         INTEGER,
+    landed_airport_icao TEXT,
+    labelled_at         INTEGER NOT NULL,
+    PRIMARY KEY (icao24, last_observed_at)
+);
+CREATE INDEX IF NOT EXISTS idx_track_end_label_labelled_at ON track_end_label (labelled_at);

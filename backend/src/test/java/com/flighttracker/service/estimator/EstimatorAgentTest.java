@@ -13,6 +13,11 @@ import com.flighttracker.service.enrichment.CallsignRouteService;
 import com.flighttracker.service.enrichment.Route;
 import com.flighttracker.service.live.LiveAircraft;
 import com.flighttracker.service.live.LiveStateStore;
+import com.flighttracker.dto.TrackStatus;
+import com.flighttracker.service.training.LandingModel;
+import com.flighttracker.service.training.TrackEndFeatures;
+import com.flighttracker.service.training.NoLandingModel;
+import com.flighttracker.service.training.TrainingDataService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -57,6 +62,10 @@ class EstimatorAgentTest {
     private RunwayIndex runwayIndex;
     @Mock
     private CallsignRouteService routeService;
+    @Mock
+    private TrainingDataService training;
+    // the default bean: no model, so physics stands
+    private LandingModel landingModel = new NoLandingModel();
 
     // routeService answers Optional.empty() unless a test stubs a route (Mockito's default for Optional)
     private final PollCoverageTracker tracker = new PollCoverageTracker();
@@ -82,7 +91,7 @@ class EstimatorAgentTest {
     /** A real PhaseLogger rather than a mock: it only writes a log line (see PhaseLoggerTest). */
     private EstimatorAgent newAgent(int maxSnapshotLoadsPerTick) {
         return new EstimatorAgent(liveStateStore, new PhaseLogger(), Clock.fixed(NOW, ZoneOffset.UTC), tracker,
-                positionRepository, runwayIndex, new CoverageGapEstimator(), routeService,
+                positionRepository, runwayIndex, new CoverageGapEstimator(), routeService, training, landingModel,
                 60, 10, maxSnapshotLoadsPerTick, 50);
     }
 
@@ -215,6 +224,79 @@ class EstimatorAgentTest {
         assertThat(gap.getValue().estLon()).isGreaterThan(18.0); // dead-reckoned east, along its track
         verify(runwayIndex).near(59.0, 18.0, 50_000.0);
         verify(liveStateStore, never()).writeEstimate(any(), any(), any(), any(), any());
+    }
+
+    private LiveAircraft givenGapAircraftWithSnapshot() {
+        Instant observedAt = NOW.minusSeconds(300);
+        LiveAircraft a = airborne("abc123", 59.0, 18.0, observedAt);
+        givenLive(a);
+        tracker.recordPoll(NOW.minusSeconds(20), WORLDISH);
+        when(positionRepository.findByIcao24AndObservedAtBetween("abc123", observedAt.minus(Duration.ofMinutes(10)), observedAt))
+                .thenReturn(List.of(report("abc123", observedAt.minusSeconds(30), 59.0, 17.99)));
+        return a;
+    }
+
+    @Test
+    void noLandingModel_keepsThePhysicsEstimate_andHandsItToTraining() {
+        LiveAircraft a = givenGapAircraftWithSnapshot();
+        EstimatorAgent agent = newAgent();
+
+        agent.refresh();
+        agent.refresh();
+
+        ArgumentCaptor<GapEstimate> gap = ArgumentCaptor.forClass(GapEstimate.class);
+        verify(liveStateStore, times(2)).writeGapEstimate(eq("abc123"), eq(a.observedAt()), gap.capture());
+        assertThat(gap.getValue().probabilitySource()).isEqualTo("physics");
+        assertThat(gap.getValue().landingProbability()).isEqualTo(0.0);
+        assertThat(TrackStatus.from(withGap(a, gap.getValue())).source()).isEqualTo("physics");
+
+        ArgumentCaptor<TrackEndFeatures> features = ArgumentCaptor.forClass(TrackEndFeatures.class);
+        verify(training).onGapEstimate(eq(a), features.capture(), eq(true));   // the tick that loaded the snapshot
+        verify(training).onGapEstimate(eq(a), any(), eq(false));               // the tick that reused it
+        assertThat(features.getValue().icao24()).isEqualTo("abc123");
+        assertThat(features.getValue().lastObservedAt()).isEqualTo(a.observedAt());
+        assertThat(features.getValue().pointCount()).isEqualTo(2);
+        assertThat(features.getValue().estimatorModel()).isEqualTo(CoverageGapEstimator.MODEL);
+        verify(training, times(2)).reconcile(eq(Set.of("abc123")), any());
+        verify(training, times(2)).flush();
+    }
+
+    @Test
+    void landingModelAnswer_replacesTheProbabilityAndMarksTheSourceAsModel() {
+        LiveAircraft a = givenGapAircraftWithSnapshot();
+        List<TrackEndFeatures> asked = new java.util.ArrayList<>();
+        landingModel = features -> {
+            asked.add(features);
+            return Optional.of(0.8);
+        };
+
+        newAgent().refresh();
+
+        ArgumentCaptor<GapEstimate> gap = ArgumentCaptor.forClass(GapEstimate.class);
+        verify(liveStateStore).writeGapEstimate(eq("abc123"), eq(a.observedAt()), gap.capture());
+        assertThat(gap.getValue().landingProbability()).isEqualTo(0.8);
+        assertThat(gap.getValue().probabilitySource()).isEqualTo("model");
+        assertThat(gap.getValue().state()).isEqualTo(TrackState.COVERAGE_LOST); // the physics state stays
+        assertThat(gap.getValue().confidence()).isCloseTo(0.2, org.assertj.core.data.Offset.offset(1e-9));
+        assertThat(asked).hasSize(1);
+        assertThat(asked.get(0).landingProbability()).isEqualTo(0.0); // the model sees the physics output
+        assertThat(TrackStatus.from(withGap(a, gap.getValue())).source()).isEqualTo("model");
+    }
+
+    @Test
+    void trainingFailure_doesNotStopTheEstimate() {
+        LiveAircraft a = givenGapAircraftWithSnapshot();
+        org.mockito.Mockito.doThrow(new IllegalStateException("db down")).when(training).onGapEstimate(any(), any(), org.mockito.ArgumentMatchers.anyBoolean());
+
+        newAgent().refresh();
+
+        verify(liveStateStore).writeGapEstimate(eq("abc123"), eq(a.observedAt()), any());
+    }
+
+    private static LiveAircraft withGap(LiveAircraft a, GapEstimate gap) {
+        return new LiveAircraft(a.id(), a.icao24(), a.callsign(), a.observedAt(), a.latitude(), a.longitude(),
+                a.altitudeM(), a.velocityMs(), a.headingDeg(), a.verticalRateMs(), a.onGround(), a.agentSource(),
+                a.landedSince(), gap.estLat(), gap.estLon(), gap.at(), gap);
     }
 
     @Test

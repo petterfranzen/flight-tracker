@@ -15,6 +15,9 @@ import com.flighttracker.service.enrichment.CallsignRouteService;
 import com.flighttracker.service.enrichment.Route;
 import com.flighttracker.service.live.LiveAircraft;
 import com.flighttracker.service.live.LiveStateStore;
+import com.flighttracker.service.training.LandingModel;
+import com.flighttracker.service.training.TrackEndFeatures;
+import com.flighttracker.service.training.TrainingDataService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -117,6 +120,8 @@ public class EstimatorAgent {
     private final RunwayIndex runwayIndex;
     private final CoverageGapEstimator gapEstimator;
     private final CallsignRouteService routeService;
+    private final TrainingDataService training;
+    private final LandingModel landingModel;
     private final Duration gapGrace;
     private final Duration snapshotWindow;
     private final int maxSnapshotLoadsPerTick;
@@ -132,6 +137,8 @@ public class EstimatorAgent {
                            RunwayIndex runwayIndex,
                            CoverageGapEstimator gapEstimator,
                            CallsignRouteService routeService,
+                           TrainingDataService training,
+                           LandingModel landingModel,
                            @Value("${flighttracker.coverage.gap-grace-seconds:60}") long gapGraceSeconds,
                            @Value("${flighttracker.coverage.snapshot-minutes:10}") long snapshotMinutes,
                            @Value("${flighttracker.coverage.max-snapshot-loads-per-tick:300}") int maxSnapshotLoadsPerTick,
@@ -144,6 +151,8 @@ public class EstimatorAgent {
         this.runwayIndex = runwayIndex;
         this.gapEstimator = gapEstimator;
         this.routeService = routeService;
+        this.training = training;
+        this.landingModel = landingModel;
         this.gapGrace = Duration.ofSeconds(gapGraceSeconds);
         this.snapshotWindow = Duration.ofMinutes(snapshotMinutes);
         this.maxSnapshotLoadsPerTick = maxSnapshotLoadsPerTick;
@@ -183,7 +192,8 @@ public class EstimatorAgent {
                 if (isInGap(a)) {
                     inGap.add(a.icao24());
                     Snapshot snap = snapshots.get(a.icao24());
-                    if (snap == null || !snap.observedAt().equals(a.observedAt())) {
+                    boolean freshSnapshot = snap == null || !snap.observedAt().equals(a.observedAt());
+                    if (freshSnapshot) {
                         if (snapshotLoads >= maxSnapshotLoadsPerTick) continue; // next tick; keeps what it shows now
                         snapshotLoads++;
                         snap = loadSnapshot(a);
@@ -194,6 +204,7 @@ public class EstimatorAgent {
                             runwayIndex.near(a.latitude(), a.longitude(), runwayRadiusM),
                             route.map(Route::destinationAirport).orElse(null),
                             destLat, destLon, now));
+                    gap = learn(a, snap, route, gap, freshSnapshot);
                     if (liveStateStore.writeGapEstimate(a.icao24(), a.observedAt(), gap)) {
                         written++;
                         gapWritten++;
@@ -226,9 +237,28 @@ public class EstimatorAgent {
             }
         }
         snapshots.keySet().retainAll(inGap); // no longer in a gap, or evicted
+        training.reconcile(inGap, liveStateStore::get);
+        training.flush();
 
         log.debug("estimated positions for {} of {} live aircraft ({} in a coverage gap, {} snapshot loads)",
                 written, live.size(), gapWritten, snapshotLoads);
+    }
+
+    /**
+     * Hands the physics answer to the training capture, then lets the
+     * landing model replace its probability. Training never breaks the estimate.
+     */
+    private GapEstimate learn(LiveAircraft a, Snapshot snap, Optional<Route> route, GapEstimate physics, boolean freshSnapshot) {
+        try {
+            TrackEndFeatures features = TrackEndFeatures.of(a, snap.recent(),
+                    route.map(Route::originAirport).orElse(null),
+                    route.map(Route::destinationAirport).orElse(null), physics);
+            training.onGapEstimate(a, features, freshSnapshot);
+            return landingModel.landingProbability(features).map(physics::withModelProbability).orElse(physics);
+        } catch (RuntimeException e) {
+            log.warn("Training capture or landing model failed for {}", a.icao24(), e);
+            return physics;
+        }
     }
 
     /** Airborne, and a poll that covered its last position finished well after its last report. */

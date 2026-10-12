@@ -4,6 +4,7 @@ import com.flighttracker.repository.AircraftRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
 import com.flighttracker.service.live.LiveStateStore;
+import com.flighttracker.service.training.TrainingDataRepository;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.transaction.support.TransactionCallback;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -35,7 +36,8 @@ class PositionRetentionServiceTest {
         when(tx.execute(any())).thenAnswer(inv -> ((TransactionCallback<?>) inv.getArgument(0)).doInTransaction(null));
 
         PositionRetentionService retention = new PositionRetentionService(jdbc, mock(AircraftRepository.class), tx,
-                Clock.fixed(Instant.parse("2026-10-01T12:00:00Z"), ZoneOffset.UTC), mock(LiveStateStore.class));
+                Clock.fixed(Instant.parse("2026-10-01T12:00:00Z"), ZoneOffset.UTC), mock(LiveStateStore.class),
+                mock(TrainingDataRepository.class));
         ReflectionTestUtils.setField(retention, "retentionHours", 72.0);
         ReflectionTestUtils.setField(retention, "batchSize", BATCH);
         ReflectionTestUtils.setField(retention, "maxBatchesPerRun", 200);
@@ -62,7 +64,7 @@ class PositionRetentionServiceTest {
         Instant now = Instant.parse("2026-10-01T12:00:00Z");
 
         PositionRetentionService retention = new PositionRetentionService(jdbc, mock(AircraftRepository.class), tx,
-                Clock.fixed(now, ZoneOffset.UTC), live);
+                Clock.fixed(now, ZoneOffset.UTC), live, mock(TrainingDataRepository.class));
         ReflectionTestUtils.setField(retention, "retentionHours", 72.0);
         ReflectionTestUtils.setField(retention, "batchSize", BATCH);
         ReflectionTestUtils.setField(retention, "maxBatchesPerRun", 200);
@@ -70,5 +72,29 @@ class PositionRetentionServiceTest {
         retention.prune();
 
         org.mockito.Mockito.verify(live).evictSilentBefore(now.minus(com.flighttracker.service.LiveVisibilityWindows.LONGEST_VISIBILITY));
+    }
+
+    @Test
+    void pruneDeletesTrainingRowsOnTheirOwnRetention_withoutTouchingThe72hPositionCutoff() {
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        TransactionTemplate tx = mock(TransactionTemplate.class);
+        when(tx.execute(any())).thenAnswer(inv -> ((TransactionCallback<?>) inv.getArgument(0)).doInTransaction(null));
+        when(jdbc.update(anyString(), anyLong(), any())).thenReturn(0);
+        TrainingDataRepository training = mock(TrainingDataRepository.class);
+        Instant now = Instant.parse("2026-10-01T12:00:00Z");
+
+        PositionRetentionService retention = new PositionRetentionService(jdbc, mock(AircraftRepository.class), tx,
+                Clock.fixed(now, ZoneOffset.UTC), mock(LiveStateStore.class), training);
+        ReflectionTestUtils.setField(retention, "retentionHours", 72.0);
+        ReflectionTestUtils.setField(retention, "batchSize", BATCH);
+        ReflectionTestUtils.setField(retention, "maxBatchesPerRun", 200);
+        ReflectionTestUtils.setField(retention, "trainingRetentionDays", 30);
+
+        retention.prune();
+
+        Instant cutoff = now.minus(java.time.Duration.ofDays(30));
+        org.mockito.Mockito.verify(training).deleteFeaturesCapturedBefore(cutoff);
+        org.mockito.Mockito.verify(training).deleteLabelsBefore(cutoff);
+        org.mockito.Mockito.verify(jdbc).update(anyString(), org.mockito.ArgumentMatchers.eq(now.minusSeconds(72 * 3600).toEpochMilli()), any());
     }
 }
