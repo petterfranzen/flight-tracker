@@ -68,6 +68,36 @@ in) on every push and deploys it to a Hetzner VM automatically on green
 [`deploy/hetzner/README.md`](deploy/hetzner/README.md) for operating that
 box (logs, restart, rollback, sqlite3 shell).
 
+## Arrival confirmation providers
+
+After a plane goes silent the estimator only *infers* that it landed
+("Landed 92% (inferred)"). `backend/.../service/confirmation/` can turn that
+into "Landed (confirmed · source)" and "At gate B14 (confirmed)" by asking an
+arrival data provider for the actual touchdown and gate-in times. A provider
+is one `@Component` implementing `ArrivalConfirmationProvider`; the framework
+does the rest, so each provider gets the same protections:
+
+- `ArrivalConfirmationService` picks the candidates every `flighttracker.confirmation.interval-seconds` (30): inferred landings, silent aircraft whose predicted touchdown has passed, and aircraft that landed within the last 2 h (for the gate). It makes at most one real call per provider per tick, and only to providers that cover the airport.
+- `ConfirmationGateway` caches results (FOUND without a gate time 5 min, with one 12 h, NOT_FOUND 15 min; bounded), keeps a minimum interval between calls (`flighttracker.confirmation.min-interval-seconds`, 30), a daily call budget per provider (`daily-budget`, 300) and backs off on throttling or failure, honouring Retry-After.
+- A confirmation is never downgraded by a later estimate, survives taxiing, and is cleared when the aircraft is seen airborne again. A confirmed touchdown also labels the Phase 2 training row.
+
+Each provider has its own `flighttracker.confirmation.<id>.enabled` flag. A
+real provider reads its API key from an environment variable (for example
+`FLIGHTTRACKER_CONFIRMATION_<ID>_API_KEY`), set from a GitHub secret and the
+deploy environment, and the key is never committed. This section lists each
+provider's variable once it is added. No real provider is wired yet; the
+candidates and their limits are in
+[`docs/agents/provider-research.md`](docs/agents/provider-research.md).
+
+To see the whole journey locally without a real feed, enable the mock
+provider (deterministic from the callsign: touchdown on time, gate 8 minutes
+later, about a fifth of callsigns not found, no external calls):
+
+```bash
+FLIGHTTRACKER_CONFIRMATION_MOCK_ENABLED=true mvn -f backend/pom.xml spring-boot:run
+# or: -Dflighttracker.confirmation.mock.enabled=true
+```
+
 ## Phase reporting
 
 The backend process prints a one-line marker when what it's doing changes:
@@ -105,6 +135,7 @@ these are ordinary, fairly useful log lines.
 - `frontend/src/main.ts` — boot/wiring; `frontend/src/map/` — the MapLibre map and its adapter (`map.ts`, app zoom units, click hit-testing), planes as symbol layers (`planes.ts`), overlap hiding (`declutter.ts`: where planes overlap, only the first discovered is drawn; there are no clusters), route; `frontend/src/ui/` — one module per UI component; design tokens are at the top of each component's adjacent `.css`.
 - `backend/.../service/training/` — training data for a future landing model. `EstimatorAgent` hands each new coverage gap (an aircraft near the ground or near a landing candidate that went silent) to `TrainingDataService`, which writes one compact `track_end_feature` row, and a `track_end_label` row (landed or airborne) when the aircraft reports again or a provider confirms. `LandingModel` is the hook for the learned model (the default `NoLandingModel` changes nothing).
 - Both training tables are kept `flighttracker.training.retention-days` (default 365) and pruned by `PositionRetentionService`, independent of the 72 h `flight_position` rule. Capture is controlled by `flighttracker.training.enabled` and `max-altitude-m` (default 4000).
+- `backend/.../service/confirmation/` — arrival confirmation: provider interface, gateway (cache, pacing, budget, backoff), the scheduled service, the confirmation store and the mock provider (see "Arrival confirmation providers").
 - `backend/.../observability/PhaseLogger.java` — the phase markers above.
 - `docs/neovim-basics.md` — Neovim primer for the config in `nvim/init.lua`.
 - `docs/multi-agent-workflow.md` — running Claude Code, Codex, and Gemini CLI on this repo in parallel without them stepping on each other.

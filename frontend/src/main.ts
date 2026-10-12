@@ -49,6 +49,8 @@ import "./components/FlightMap.css"; // app-shell/header/dock/details-panel/trac
 const FETCH_INTERVAL_MS = 72_000;
 // While coverage is lost the estimate's radius grows, so the status is refetched this often.
 const COVERAGE_LOST_REFETCH_MS = 15_000;
+// While the landing is only inferred, a provider may confirm it (and later add the gate) at any time.
+const LANDED_INFERRED_REFETCH_MS = 60_000;
 const FETCH_STOP_MS = 5 * 60_000;
 const DIALOG_STOP_MS = 5 * 60_000;
 
@@ -593,8 +595,11 @@ function boot(): void {
   }
   // ---- coverage-gap status of the selected plane ----
   // Fetched with every priority poll; while coverage is lost it is also
-  // refetched on its own timer, so the uncertainty cone keeps growing.
+  // refetched on its own timer, so the uncertainty cone keeps growing, and
+  // while the landing is inferred more slowly, so a confirmation shows up
+  // without reselecting.
   let statusTimer: ReturnType<typeof setInterval> | null = null;
+  let statusTimerMs = 0;
   let statusSeq = 0;
   function stopStatusPoll(): void {
     if (statusTimer) clearInterval(statusTimer);
@@ -609,11 +614,15 @@ function boot(): void {
       if (seq !== statusSeq || icao24 !== store.get("selectedId")) return; // superseded, or another plane is selected now
       store.set("trackStatus", status);
       uncertaintyLayer.update(status);
-      if (status?.state === "COVERAGE_LOST") {
-        if (!statusTimer) statusTimer = setInterval(() => refreshStatus(icao24), COVERAGE_LOST_REFETCH_MS);
-      } else if (statusTimer) {
+      const wantedMs =
+        status?.state === "COVERAGE_LOST" ? COVERAGE_LOST_REFETCH_MS : status?.state === "LANDED_INFERRED" ? LANDED_INFERRED_REFETCH_MS : 0;
+      if (statusTimer && statusTimerMs !== wantedMs) {
         clearInterval(statusTimer);
         statusTimer = null;
+      }
+      if (wantedMs && !statusTimer) {
+        statusTimerMs = wantedMs;
+        statusTimer = setInterval(() => refreshStatus(icao24), wantedMs);
       }
     });
   }
