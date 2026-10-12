@@ -12,7 +12,7 @@ import java.util.Map;
 import java.util.Optional;
 
 /** app_state without a database, for tests that only need the key/value behaviour. */
-final class InMemoryAppState extends AppStateRepository {
+class InMemoryAppState extends AppStateRepository {
 
     final Map<String, String> rows = new HashMap<>();
 
