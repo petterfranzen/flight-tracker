@@ -19,4 +19,9 @@ public record ArrivalInfo(Instant actualOut,
     public int rank() {
         return actualIn != null ? 2 : actualOn != null ? 1 : 0;
     }
+
+    /** When it landed: actualOn, or actualIn if the provider has no runway time; null when it has neither. */
+    public Instant landedAt() {
+        return actualOn != null ? actualOn : actualIn;
+    }
 }

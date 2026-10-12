@@ -28,7 +28,12 @@ import java.util.Map;
  *       never cached;</li>
  *   <li>a minimum interval between two real calls to the same provider;</li>
  *   <li>a daily call budget per provider (UTC day), for free tiers with a quota;</li>
- *   <li>{@link PollBackoff} on THROTTLED and FAILED, honouring the retry-after.</li>
+ *   <li>{@link PollBackoff} on THROTTLED and FAILED, honouring the retry-after
+ *       up to {@code max-retry-after-minutes};</li>
+ *   <li>a cached FOUND whose landing time is earlier than the query's expected
+ *       arrival (minus {@code skew-tolerance-seconds}) is about an earlier leg
+ *       of the same callsign and airport, so it counts as a miss (re-checked
+ *       at most every {@value #TTL_FOUND_MINUTES_NO_IN} min).</li>
  * </ul>
  *
  * A call that is paced, over budget or cooling down is not made and is not a
@@ -64,7 +69,7 @@ public class ConfirmationGateway {
 
     private record CacheKey(String providerId, String callsign, String airport, LocalDate utcDate) { }
 
-    private record CacheEntry(LookupResult result, Instant expiresAt) { }
+    private record CacheEntry(LookupResult result, Instant cachedAt, Instant expiresAt) { }
 
     /** Per-provider pacing state. Guarded by its own monitor. */
     private static final class ProviderState {
@@ -78,6 +83,8 @@ public class ConfirmationGateway {
     private final Duration minInterval;
     private final int dailyBudget;
     private final int maxCacheEntries;
+    private final Duration skewTolerance;
+    private final Duration maxRetryAfter;
 
     private final Map<String, ProviderState> providers = new HashMap<>();
     private final LinkedHashMap<CacheKey, CacheEntry> cache = new LinkedHashMap<>(256, 0.75f, true);
@@ -85,11 +92,15 @@ public class ConfirmationGateway {
     public ConfirmationGateway(Clock clock,
                                @Value("${flighttracker.confirmation.min-interval-seconds:30}") long minIntervalSeconds,
                                @Value("${flighttracker.confirmation.daily-budget:300}") int dailyBudget,
-                               @Value("${flighttracker.confirmation.cache-max-entries:2000}") int maxCacheEntries) {
+                               @Value("${flighttracker.confirmation.cache-max-entries:2000}") int maxCacheEntries,
+                               @Value("${flighttracker.confirmation.skew-tolerance-seconds:300}") long skewToleranceSeconds,
+                               @Value("${flighttracker.confirmation.max-retry-after-minutes:60}") long maxRetryAfterMinutes) {
         this.clock = clock;
         this.minInterval = Duration.ofSeconds(minIntervalSeconds);
         this.dailyBudget = dailyBudget;
         this.maxCacheEntries = maxCacheEntries;
+        this.skewTolerance = Duration.ofSeconds(skewToleranceSeconds);
+        this.maxRetryAfter = Duration.ofMinutes(maxRetryAfterMinutes);
     }
 
     /** Cached answer, or one real call if the pacing, budget and backoff allow it. */
@@ -102,7 +113,9 @@ public class ConfirmationGateway {
         synchronized (cache) {
             CacheEntry hit = cache.get(key);
             if (hit != null) {
-                if (hit.expiresAt().isAfter(now)) return new Outcome(Kind.CACHED, hit.result());
+                if (hit.expiresAt().isAfter(now) && !isEarlierLeg(hit, query, now)) {
+                    return new Outcome(Kind.CACHED, hit.result());
+                }
                 cache.remove(key);
             }
         }
@@ -140,7 +153,7 @@ public class ConfirmationGateway {
                 }
                 Duration ttl = ttl(result);
                 synchronized (cache) {
-                    cache.put(key, new CacheEntry(result, now.plus(ttl)));
+                    cache.put(key, new CacheEntry(result, now, now.plus(ttl)));
                     evictOverflow();
                 }
             }
@@ -148,8 +161,8 @@ public class ConfirmationGateway {
                 Duration wait;
                 synchronized (state.backoff) {
                     if (result.retryAfter() != null && !result.retryAfter().isNegative()) {
-                        state.backoff.recordFailure(result.retryAfter());
-                        wait = result.retryAfter();
+                        wait = result.retryAfter().compareTo(maxRetryAfter) > 0 ? maxRetryAfter : result.retryAfter();
+                        state.backoff.recordFailure(wait);
                     } else {
                         wait = state.backoff.recordFailure(MIN_BACKOFF, MAX_BACKOFF);
                     }
@@ -158,6 +171,22 @@ public class ConfirmationGateway {
             }
         }
         return new Outcome(Kind.CALLED, result);
+    }
+
+    /**
+     * A cached FOUND that landed before this query's expected arrival is an
+     * earlier leg of the same callsign (a GA aircraft doing circuits, a daily
+     * flight). It counts as a miss, but at most once per {@link #TTL_FOUND_NO_IN}:
+     * a provider that keeps answering with the old leg must not be asked on
+     * every tick.
+     */
+    private boolean isEarlierLeg(CacheEntry hit, ArrivalQuery query, Instant now) {
+        if (hit.result().status() != LookupResult.Status.FOUND || hit.result().info() == null) return false;
+        Instant landedAt = hit.result().info().landedAt();
+        Instant expected = query.expectedArrivalAt();
+        if (landedAt == null || expected == null) return false;
+        if (!landedAt.isBefore(expected.minus(skewTolerance))) return false;
+        return !hit.cachedAt().plus(TTL_FOUND_NO_IN).isAfter(now);
     }
 
     /** Real calls made to the provider today (UTC), for tests and logs. */

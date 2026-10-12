@@ -45,7 +45,7 @@ class ConfirmationGatewayTest {
     }
 
     private ConfirmationGateway gateway(int dailyBudget, int maxCache) {
-        return new ConfirmationGateway(clock, 30, dailyBudget, maxCache);
+        return new ConfirmationGateway(clock, 30, dailyBudget, maxCache, 300, 60);
     }
 
     private ArrivalQuery query(String callsign) {
@@ -219,6 +219,71 @@ class ConfirmationGatewayTest {
 
         assertThat(o.kind()).isEqualTo(Kind.CALLED);
         assertThat(o.result().status()).isEqualTo(LookupResult.Status.FAILED);
+    }
+
+    @Test
+    void aCachedLandingFromAnEarlierLeg_isAMiss_soTheLaterLegGetsAFreshLookup() {
+        ConfirmationGateway gw = gateway(300, 100);
+        clock.set(Instant.parse("2026-10-12T10:00:00Z")); // mid-day, so +3 h stays on the same UTC date
+        landed = clock.instant();
+        provider.answer = q -> found(q.expectedArrivalAt(), q.expectedArrivalAt().plusSeconds(480));
+        gw.lookup(provider, query("SES1")); // landed at `landed`, with a gate: cached 12 h
+
+        // the same callsign and airport lands again 90 minutes later
+        clock.advance(Duration.ofMinutes(90));
+        Instant later = landed.plus(Duration.ofMinutes(90));
+        ConfirmationGateway.Outcome second = gw.lookup(provider, new ArrivalQuery("abc123", "SES1", "ESSA", later));
+
+        assertThat(second.kind()).isEqualTo(Kind.CALLED);
+        assertThat(second.result().info().actualOn()).isEqualTo(later);
+        assertThat(provider.calls).hasSize(2);
+        // and now the entry is the new leg's
+        assertThat(gw.lookup(provider, new ArrivalQuery("abc123", "SES1", "ESSA", later)).kind()).isEqualTo(Kind.CACHED);
+    }
+
+    @Test
+    void aLandingWithinTheSkewTolerance_isStillAHit() {
+        ConfirmationGateway gw = gateway(300, 100);
+        clock.set(Instant.parse("2026-10-12T10:00:00Z")); // mid-day, so +3 h stays on the same UTC date
+        landed = clock.instant();
+        provider.answer = q -> found(q.expectedArrivalAt().minusSeconds(240), null);
+        gw.lookup(provider, query("SAS123"));
+
+        clock.advance(Duration.ofMinutes(1));
+        assertThat(gw.lookup(provider, query("SAS123")).kind()).isEqualTo(Kind.CACHED);
+    }
+
+    @Test
+    void anEarlierLegAnswer_isReCheckedAtMostEveryFiveMinutes() {
+        ConfirmationGateway gw = gateway(300, 100);
+        clock.set(Instant.parse("2026-10-12T10:00:00Z")); // mid-day, so +3 h stays on the same UTC date
+        landed = clock.instant();
+        // a provider that keeps answering with the old leg
+        provider.answer = q -> found(landed, landed.plusSeconds(480));
+        Instant later = landed.plus(Duration.ofHours(3));
+        ArrivalQuery laterQuery = new ArrivalQuery("abc123", "SES1", "ESSA", later);
+        gw.lookup(provider, query("SES1"));
+
+        clock.advance(Duration.ofHours(3)); // old entry is stale: one fresh lookup, same old answer
+        assertThat(gw.lookup(provider, laterQuery).kind()).isEqualTo(Kind.CALLED);
+        clock.advance(Duration.ofMinutes(2));
+        assertThat(gw.lookup(provider, laterQuery).kind()).isEqualTo(Kind.CACHED);
+        clock.advance(Duration.ofMinutes(4));
+        assertThat(gw.lookup(provider, laterQuery).kind()).isEqualTo(Kind.CALLED);
+        assertThat(provider.calls).hasSize(3);
+    }
+
+    @Test
+    void aHugeRetryAfter_isCapped() {
+        ConfirmationGateway gw = gateway(300, 100);
+        provider.answer = q -> LookupResult.throttled(Duration.ofDays(2));
+        gw.lookup(provider, query("SAS123"));
+
+        clock.advance(Duration.ofMinutes(59));
+        assertThat(gw.lookup(provider, query("SAS123")).kind()).isEqualTo(Kind.SKIPPED);
+        clock.advance(Duration.ofMinutes(2));
+        provider.answer = q -> found(landed, null);
+        assertThat(gw.lookup(provider, query("SAS123")).kind()).isEqualTo(Kind.CALLED);
     }
 
     @Test

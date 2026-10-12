@@ -15,7 +15,7 @@ public record Confirmation(String providerId, ArrivalInfo info, Instant confirme
 
     /** When it landed: actualOn, or actualIn if the provider has no runway time. */
     public Instant landedAt() {
-        return info.actualOn() != null ? info.actualOn() : info.actualIn();
+        return info.landedAt();
     }
 
     /** When it reached the gate, or null. */

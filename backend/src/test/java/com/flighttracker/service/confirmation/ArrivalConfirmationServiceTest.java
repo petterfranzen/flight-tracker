@@ -78,9 +78,9 @@ class ArrivalConfirmationServiceTest {
 
     /** minIntervalSeconds 0 so that only the service's own one-call-per-tick rule limits the calls. */
     private ArrivalConfirmationService service(long minIntervalSeconds, ArrivalConfirmationProvider... providers) {
-        ConfirmationGateway gateway = new ConfirmationGateway(clock, minIntervalSeconds, 300, 1000);
+        ConfirmationGateway gateway = new ConfirmationGateway(clock, minIntervalSeconds, 300, 1000, 300, 60);
         return new ArrivalConfirmationService(List.of(providers), gateway, store, live, routes, runways, training, clock,
-                0.5, 120);
+                0.5, 120, 300, 45);
     }
 
     private GapEstimate gap(TrackState state, double probability, String airport, Instant touchdownAt) {
@@ -300,6 +300,113 @@ class ArrivalConfirmationServiceTest {
         svc.tick();
 
         verify(training, org.mockito.Mockito.times(1)).recordConfirmedLanding(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void aConfirmationWithoutAGate_isNotAskedAboutAfterTheGateWait() {
+        Instant on = now.minus(Duration.ofMinutes(20));
+        addGround("g1", "SAS1", on, 59.651, 17.931);
+        provider.answer = q -> found(on, null);
+        ArrivalConfirmationService svc = service(provider);
+        svc.tick();
+        assertThat(provider.calls).hasSize(1);
+
+        clock.set(on.plus(Duration.ofMinutes(40))); // within the 45 min gate wait, cache (5 min) expired
+        svc.tick();
+        assertThat(provider.calls).hasSize(2);
+
+        clock.set(on.plus(Duration.ofMinutes(46))); // past it: no more calls, though still on the ground
+        svc.tick();
+        clock.set(on.plus(Duration.ofMinutes(60)));
+        svc.tick();
+        assertThat(provider.calls).hasSize(2);
+        assertThat(store.forAircraft(aircraft.get("g1"))).isPresent();
+    }
+
+    @Test
+    void aConfirmedAircraftWaitingForItsGate_isAskedAfterTheUnconfirmedOnes() {
+        Instant onConfirmed = now.minus(Duration.ofMinutes(25));
+        addGround("conf", "SAS1", onConfirmed, 59.651, 17.931);
+        provider.answer = q -> q.icao24().equals("conf") ? found(onConfirmed, null) : LookupResult.notFound();
+        ArrivalConfirmationService svc = service(provider);
+        svc.tick(); // conf is confirmed, without a gate
+        assertThat(store.forAircraft(aircraft.get("conf"))).isPresent();
+
+        // a later arrival: oldest-first alone would put conf first, the confirmation puts it last
+        clock.advance(Duration.ofMinutes(6)); // conf's cached answer has expired
+        addGround("fresh", "SAS2", now.minus(Duration.ofMinutes(10)), 59.651, 17.931);
+        svc.tick();
+        svc.tick();
+
+        assertThat(provider.calls).extracting(ArrivalQuery::icao24).containsExactly("conf", "fresh", "conf");
+    }
+
+    @Test
+    void anAnswerFromAnEarlierLanding_isIgnored_andLabelsNothing() {
+        Instant observedAt = now.minusSeconds(900);
+        addGap("a1", "SES1", gap(TrackState.LANDED_INFERRED, 0.9, "ESSA", now.minusSeconds(300)), observedAt);
+        provider.answer = q -> found(observedAt.minus(Duration.ofHours(2)), observedAt.minus(Duration.ofMinutes(110)));
+
+        service(provider).tick();
+
+        assertThat(provider.calls).hasSize(1);
+        assertThat(store.size()).isZero();
+        verify(training, never()).recordConfirmedLanding(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void aLandingJustBeforeTheLastReport_isWithinTheSkewTolerance() {
+        Instant observedAt = now.minusSeconds(900);
+        LiveAircraft a = addGap("a1", "SES1", gap(TrackState.LANDED_INFERRED, 0.9, "ESSA", now.minusSeconds(300)), observedAt);
+        Instant on = observedAt.minusSeconds(120);
+        provider.answer = q -> found(on, null);
+
+        service(provider).tick();
+
+        assertThat(store.forAircraft(a).orElseThrow().landedAt()).isEqualTo(on);
+        verify(training).recordConfirmedLanding("a1", observedAt, "fake", on, "ESSA");
+    }
+
+    /** The reviewed scenario: lands 10:00 and is confirmed with a gate, flies again, lands 11:30 and goes silent. */
+    private void landConfirmFlyAndLandAgain(ArrivalConfirmationService svc) {
+        Instant firstLanding = Instant.parse("2026-10-12T10:00:00Z");
+        clock.set(firstLanding.plus(Duration.ofMinutes(12)));
+        addGround("g1", "SES1", firstLanding, 59.651, 17.931);
+        svc.tick();
+        assertThat(store.forAircraft(aircraft.get("g1"))).isPresent();
+
+        clock.set(Instant.parse("2026-10-12T10:31:00Z"));
+        addAirborne("g1", "SES1", Instant.parse("2026-10-12T10:30:00Z"));
+        svc.tick();
+        assertThat(store.size()).isZero();
+
+        clock.set(Instant.parse("2026-10-12T11:40:00Z"));
+        addGap("g1", "SES1", gap(TrackState.LANDED_INFERRED, 0.9, "ESSA", Instant.parse("2026-10-12T11:30:00Z")),
+                Instant.parse("2026-10-12T11:25:00Z"));
+        svc.tick();
+    }
+
+    @Test
+    void aCachedAnswerForTheFirstLanding_isNotAppliedToTheSecond_whenTheProviderOnlyKnowsTheFirst() {
+        Instant firstLanding = Instant.parse("2026-10-12T10:00:00Z");
+        provider.answer = q -> found(firstLanding, firstLanding.plusSeconds(480)); // keeps answering with the 10:00 leg
+
+        landConfirmFlyAndLandAgain(service(provider));
+
+        assertThat(store.size()).isZero();
+        verify(training, never()).recordConfirmedLanding(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void aCachedAnswerForTheFirstLanding_isNotServedForTheSecond_soTheSecondGetsItsOwnLookup() {
+        provider.answer = q -> found(q.expectedArrivalAt(), q.expectedArrivalAt().plusSeconds(480));
+
+        landConfirmFlyAndLandAgain(service(provider));
+
+        assertThat(provider.calls).extracting(ArrivalQuery::expectedArrivalAt).containsExactly(
+                Instant.parse("2026-10-12T10:00:00Z"), Instant.parse("2026-10-12T11:30:00Z"));
+        Instant secondLanding = Instant.parse("2026-10-12T11:30:00Z");
+        verify(training).recordConfirmedLanding("g1", Instant.parse("2026-10-12T11:25:00Z"), "fake", secondLanding, "ESSA");
     }
 
     @Test

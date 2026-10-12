@@ -7,8 +7,8 @@ import java.time.ZoneId;
 import java.time.ZoneOffset;
 
 /**
- * A clock the test moves by hand. It starts at the real now, rounded to a UTC
- * noon, because PollBackoff stamps its cool-down with the system clock.
+ * A clock the test moves by hand. It starts at the real now (not rounded to
+ * anything), because PollBackoff stamps its cool-down with the system clock.
  */
 final class TestClock extends Clock {
     private Instant now;
