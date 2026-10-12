@@ -12,6 +12,13 @@ continue from **Next task**.
 - **Next task:** none until the human chooses a provider or reviews the PRs. Then implement the chosen provider as one `@Component` on a branch stacked on phase 3. Swedavia needs an SPI batch mode first; AeroDataBox needs a per-provider monthly budget. Phase 4 is training the model once labels accumulate.
 - **Blocked on the human:** the Phase 3 provider choice (see `provider-research.md`). Phases 1 and 2 continue meanwhile.
 
+## Working agreements (from the human, 2026-10-12)
+
+1. CI failure emails are turned off on the human's side (GitHub notification settings). Noise from CI is not a reason to push less.
+2. Always push commits to origin for safekeeping, progress updates included.
+3. GitHub Actions is the test runner. Locally, run only the fast checks for what changed (typecheck/build, the changed spec or test class). Then push and let CI run the full suites (e2e, perf, scenarios, backend, blackbox).
+4. Never merge unless CI is green. Agents never merge anyway; the human merges.
+
 ## Branches and PRs
 
 | Phase | Branch | Based on | PR |
