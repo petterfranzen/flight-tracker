@@ -14,10 +14,16 @@ continue from **Next task**.
 
 ## Working agreements (from the human, 2026-10-12)
 
-1. CI failure emails are turned off on the human's side (GitHub notification settings). Noise from CI is not a reason to push less.
-2. Always push commits to origin for safekeeping, progress updates included.
-3. GitHub Actions is the test runner. Locally, run only the fast checks for what changed (typecheck/build, the changed spec or test class). Then push and let CI run the full suites (e2e, perf, scenarios, backend, blackbox).
-4. Never merge unless CI is green. Agents never merge anyway; the human merges.
+The most important rule: **the code is always safe on origin.**
+
+1. **Push for safekeeping, but never a commit you know will fail.** `build-deploy.yml` runs only on pull requests and on pushes to `main`, so where you push decides whether CI runs.
+   - **Expected to pass** (fast local checks green): push to the PR branch, and CI runs.
+   - **Known broken or half-done:** push to a branch with no PR (`wip/<topic>`, e.g. `wip/coverage-gap-provider`). It is backed up on origin with no CI run. Move it to the PR branch once it passes the fast checks.
+2. **Offload testing to GitHub Actions, without overloading it.** Locally, run only the fast checks for what changed: typecheck/build, plus the changed backend test class or Playwright spec. Then push and let CI run the full suites (e2e, perf, scenarios, backend, blackbox).
+   - Push to a PR branch once per logical unit of work, not once per edit. Each push to an open PR starts a ~12 min run and cancels the one before it.
+   - A progress-only update to this file rides along with the next code push when one is coming soon. Otherwise push it on its own: one run is fine, a burst of them is not.
+3. **Never merge unless CI is green.** Agents never merge; the human does.
+4. CI notification emails are off on the human's side.
 
 ## Branches and PRs
 
