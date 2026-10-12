@@ -78,7 +78,7 @@ is one `@Component`, in one of two shapes; the framework does the rest, so each
 provider gets the same protections:
 
 - `ArrivalConfirmationProvider` (per flight): `lookup(ArrivalQuery)` asks about one flight, and the answer is cached by callsign. It declares `callCost()` (default 1) for plans that bill a lookup at several units.
-- `AirportArrivalsProvider` (per airport board): `fetchArrivals(airport, dateUtc)` returns the whole arrivals board for an airport and UTC date as `BoardEntry`s (callsign, optional IATA flight number and registration, and an `ArrivalInfo`) plus the `costUnits` the call consumed (default 1). One fetch serves every candidate at that airport. The gateway caches boards per (provider, airport, UTC date) for `board-ttl-seconds`; a board is fetched only when a candidate at a covered airport needs confirming and there is no fresh one, never in the background. A provider may keep incremental state (a continuation token); the framework only sees boards. The service matches an aircraft in the cached board without a call, by trimmed upper-case callsign, else by registration (the aircraft table's, from adsbdb) when both sides have one.
+- `AirportArrivalsProvider` (per airport board): `fetchArrivals(airport, boardDate)` returns the whole arrivals board for an airport and board date (the UTC date of the expected touchdown unless the provider overrides `boardDate`) as `BoardEntry`s (callsign, optional IATA flight number and registration, and an `ArrivalInfo`) plus the `costUnits` the call consumed (default 1). One fetch serves every candidate at that airport. The gateway caches boards per (provider, airport, UTC date) for `board-ttl-seconds`; a board is fetched only when a candidate at a covered airport needs confirming and there is no fresh one, never in the background. A provider may keep incremental state (a continuation token); the framework only sees boards. The service matches an aircraft in the cached board without a call, by trimmed upper-case callsign, else by registration (the aircraft table's, from adsbdb) when both sides have one.
 
 
 - `ArrivalConfirmationService` picks the candidates every `flighttracker.confirmation.interval-seconds` (30): inferred landings, silent aircraft whose predicted touchdown has passed, and aircraft that landed within the last 2 h (for the gate). It makes at most one real call per provider per tick, and only to providers that cover the airport.
@@ -114,10 +114,48 @@ Each provider has its own `flighttracker.confirmation.<id>.enabled` flag. A
 real provider reads its API key from an environment variable (for example
 `FLIGHTTRACKER_CONFIRMATION_<ID>_API_KEY`), set from a GitHub secret and the
 deploy environment, and the key is never committed. This section lists each
-provider's variable once it is added. No real provider is wired yet (Swedavia
-FlightInfo, a board provider, is first, AeroDataBox, per flight, second); the
+provider's variable once it is added. Swedavia FlightInfo (a board provider,
+below) is the first real one; AeroDataBox (per flight) is planned second. The
 candidates and their limits are in
 [`docs/agents/provider-research.md`](docs/agents/provider-research.md).
+
+### Swedavia FlightInfo (`swedavia`)
+
+`SwedaviaArrivalsProvider` reads the arrivals board of the ten Swedavia airports
+(ARN, BMA, GOT, MMX, LLA, UME, OSD, VBY, RNB, KRN) with one
+`GET {base-url}/{IATA}/arrivals/{yyyy-MM-dd}` per airport and day. Boards follow
+the **local Swedish date**, so a touchdown is filed under its Europe/Stockholm
+date (`AirportArrivalsProvider.boardDate`; other providers keep the UTC date).
+
+- **Key.** Sign up at apideveloper.swedavia.se and subscribe to the FlightInfo
+  product (free tier). In production set `SWEDAVIA_API_KEY` (and, because Swedavia
+  rotates keys every 6 months, `SWEDAVIA_API_KEY_SECONDARY`) in
+  `/etc/flight-tracker/env` on the VM, which the systemd unit reads through its
+  `EnvironmentFile`; `deploy/hetzner/env.example` has the commented lines. The key
+  is never committed. Without a key the provider is disabled (one INFO line at
+  startup). A 401/403 with one key is retried once with the other, and that
+  call costs 2 budget units.
+- **Settings.** `flighttracker.confirmation.swedavia.enabled` (true),
+  `.api-key`, `.api-key-secondary`, `.base-url` (`https://api.swedavia.se/flightinfo/v2`).
+- **Budgets.** `providers.swedavia.monthly-budget: 9000` (headroom under the free
+  10,000 a month; Swedavia blocks the rest of the month once it is exceeded) and
+  `daily-budget: 300`. The gateway's 30 s minimum spacing between calls is well
+  above the 2 s Swedavia asks for. A board is cached for `board-ttl-seconds` and
+  serves every aircraft at that airport. A 429 backs off for its `Retry-After`
+  (60 s if absent); a 400 (date outside the window, 7 days back to 90 ahead) is
+  NOT_FOUND and is not fetched for dates more than 6 days back.
+- **What it confirms.** `arrivalTime.actualUtc` becomes the touchdown time (an
+  upper bound: the docs do not say whether it is touchdown or in-block). Swedavia
+  has no at-gate status, so the aircraft is taken to be **at the gate when the
+  first bag is on the belt** (`baggage.firstBagUtc`, an upper bound on in-block);
+  the gate and terminal come from `locationAndStatus`. CAN, DEL and DIV never
+  confirm a landing.
+- **Not yet verified against the live API** (no key was available): the board's
+  date semantics (local or UTC) and timestamp format, where `diIndicator` sits,
+  what `actualUtc` means, the over-quota status code, and the real `to` block.
+  See [`docs/agents/swedavia-api.md`](docs/agents/swedavia-api.md). The test
+  fixtures in `backend/src/test/resources/swedavia/` are reconstructed, not
+  recorded.
 
 To see the whole journey locally without a real feed, enable the mock
 provider (deterministic from the callsign: touchdown on time, gate 8 minutes
