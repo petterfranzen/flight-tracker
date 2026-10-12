@@ -8,8 +8,8 @@ continue from **Next task**.
 
 ## Status
 
-- **Current phase:** done, apart from the human's checkpoints. All three PRs are open and green on CI (#120, #121, #122) and wait for human review and merge (in that order).
-- **Next task:** none until the human chooses a provider or reviews the PRs. Then implement the chosen provider as one `@Component` on a branch stacked on phase 3. Swedavia needs an SPI batch mode first; AeroDataBox needs a per-provider monthly budget. Phase 4 is training the model once labels accumulate.
+- **Current phase:** 3b, the Swedavia provider. The human chose Swedavia first and AeroDataBox second (2026-10-12). #120, #121 and #122 are green and wait on the human.
+- **Next task:** P3b-R (Swedavia API research) and P3b-1 (framework: airport-board SPI, per-provider unit budgets persisted in `app_state`) are running in parallel. Then P3b-2 (the `SwedaviaArrivalsProvider` itself), then the review, then a PR stacked on phase 3 (`claude/coverage-gap-phase3b-swedavia`). After that, P3c: AeroDataBox.
 - **Blocked on the human:** the Phase 3 provider choice (see `provider-research.md`). Phases 1 and 2 continue meanwhile.
 
 ## Working agreements (from the human, 2026-10-12)
@@ -54,7 +54,13 @@ branch. Never merge to `main`; the human merges.
 | P3-R | Review Phases 2 and 3 | reviewer | P1-F merged forward | done: no blockers (`reviews/phase2-3.md`) |
 | P2-F | Phase 2 fixes: capture delay, long-gap labels, flush retry, schema `;` | implementer | P3-R | done (99af1b9, 8b82130): 214 backend tests |
 | P3-F | Phase 3 fixes: stale cache, gate re-poll cap, Retry-After cap, pool, refetch, docs | implementer | P3-R | done (cd6b2ad, b7abeaf, ffa4371, facdea8). The agent hit the session usage limit during its final e2e run, after committing everything; the orchestrator verifies the gates |
-| P3-real | Real provider (the human chooses) | implementer | the human's choice | blocked: checkpoint |
+| P3-real | Real provider (the human chooses) | | | the human chose Swedavia first, AeroDataBox second |
+| P3b-R | Swedavia FlightInfo v2 contract: endpoints, auth, schema, status codes, ActualUtc semantics, limits | explorer | none | running |
+| P3b-1 | Framework: `AirportArrivalsProvider` (board per airport and date), board cache, callsign/registration matching, per-provider daily/monthly budgets in units persisted in `app_state` | implementer | none | running (`cg/p3b-1-framework`) |
+| P3b-2 | `SwedaviaArrivalsProvider` + fixtures + config (`SWEDAVIA_API_KEY` env var, `deploy/hetzner/env.example`, README) | implementer | P3b-R, P3b-1 | todo |
+| P3b-Rev | Review Phase 3b | reviewer | P3b-2 | todo |
+| P3c | AeroDataBox provider (per flight, units per call, monthly budget, attribution) | implementer | P3b | todo |
+| R | `CLAUDE.md` pushing, CI and merging rules (from the working agreements) | orchestrator | none | PR #123 |
 
 ## Phase 0 findings (summary)
 
@@ -298,3 +304,4 @@ stateDiagram-v2
   **Phase 3 PR opened: #122** (base phase 2). #121's CI is green.
 - 2026-10-12 14:53 UTC: CI is green on all three PRs: #120 (3132db4), #121 (3cd5c77) and #122 (9e85f22).
   No review comments. Waiting on the human: the provider choice, PR review and merge, and the training volume check after a day live.
+- 2026-10-12 15:20 UTC: The human chose Swedavia first, then AeroDataBox, and asked for the working agreements in CLAUDE.md (PR #123, branch `claude/agent-ci-rules` off main). P3b-R and P3b-1 launched.
