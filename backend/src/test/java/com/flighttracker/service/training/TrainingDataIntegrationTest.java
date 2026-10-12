@@ -83,7 +83,36 @@ class TrainingDataIntegrationTest {
     }
 
     private TrainingDataService service(boolean enabled) {
-        return new TrainingDataService(repository, runways, tx, Clock.fixed(NOW, ZoneOffset.UTC), enabled, 4000);
+        // No capture delay here: most tests are about what is captured, not when.
+        return new TrainingDataService(repository, runways, tx, Clock.fixed(NOW, ZoneOffset.UTC), enabled, 4000, 0, 30);
+    }
+
+    private TrainingDataService service(Clock clock, long captureDelaySeconds, long maxAirborneLabelGapMinutes) {
+        return new TrainingDataService(repository, runways, tx, clock, true, 4000,
+                captureDelaySeconds, maxAirborneLabelGapMinutes);
+    }
+
+    private static final class MutableClock extends Clock {
+        Instant now;
+
+        MutableClock(Instant now) {
+            this.now = now;
+        }
+
+        @Override
+        public java.time.ZoneId getZone() {
+            return ZoneOffset.UTC;
+        }
+
+        @Override
+        public Clock withZone(java.time.ZoneId zone) {
+            return this;
+        }
+
+        @Override
+        public Instant instant() {
+            return now;
+        }
     }
 
     private static LiveAircraft aircraft(String icao24, Instant observedAt, double lat, double lon,
@@ -179,6 +208,181 @@ class TrainingDataIntegrationTest {
 
         assertThat(count("track_end_feature")).isZero();
         assertThat(count("track_end_label")).isZero();
+    }
+
+
+    // ---- capture delay
+
+    @Test
+    void captureDelay_capturesOnTheFirstTickWhereTheGapHasLastedLongEnough() {
+        MutableClock clock = new MutableClock(LAST.plusSeconds(100));
+        TrainingDataService s = service(clock, 600, 30);
+        LiveAircraft a = aircraft("abc123", LAST, 59.7, 17.9, 600.0, false);
+        GapEstimate g = estimate(TrackState.COVERAGE_LOST, 0.2, "ESSA");
+
+        gap(s, a, g, true);
+        clock.now = LAST.plusSeconds(599);
+        gap(s, a, g, false);
+        assertThat(count("track_end_feature")).isZero();
+
+        clock.now = LAST.plusSeconds(600);
+        gap(s, a, g, false);
+        assertThat(count("track_end_feature")).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT captured_at FROM track_end_feature", Long.class))
+                .isEqualTo(LAST.plusSeconds(600).toEpochMilli());
+
+        clock.now = LAST.plusSeconds(660);
+        gap(s, a, g, false);
+        assertThat(jdbc.queryForObject("SELECT captured_at FROM track_end_feature", Long.class))
+                .isEqualTo(LAST.plusSeconds(600).toEpochMilli());
+    }
+
+    @Test
+    void captureDelay_aGapThatEndsEarlierLeavesNoRowAndNoLabel() {
+        MutableClock clock = new MutableClock(LAST.plusSeconds(100));
+        TrainingDataService s = service(clock, 600, 30);
+        gap(s, aircraft("abc123", LAST, 59.7, 17.9, 600.0, false), estimate(TrackState.COVERAGE_LOST, 0.2, "ESSA"), true);
+
+        clock.now = LAST.plusSeconds(300);
+        s.reconcile(Set.of(), id -> Optional.of(aircraft(id, LAST.plusSeconds(280), 59.5, 18.1, 450.0, false)));
+        s.flush();
+        s.reconcile(Set.of(), id -> Optional.of(aircraft(id, LAST.plusSeconds(290), 59.5, 18.1, 450.0, true)));
+        s.flush();
+
+        assertThat(count("track_end_feature")).isZero();
+        assertThat(count("track_end_label")).isZero();
+    }
+
+    @Test
+    void captureDelay_aNonQualifyingGapIsDecidedOnceAtTheDelay() {
+        MutableClock clock = new MutableClock(LAST.plusSeconds(600));
+        TrainingDataService s = service(clock, 600, 30);
+        LiveAircraft high = aircraft("high11", LAST, 10, 10, 11000.0, false);
+        gap(s, high, estimate(TrackState.COVERAGE_LOST, 0, null), true);
+
+        // A later tick that would qualify (a landing candidate appears) does not capture it.
+        clock.now = LAST.plusSeconds(900);
+        gap(s, high, estimate(TrackState.LANDED_INFERRED, 0.9, "ESSA"), false);
+
+        assertThat(count("track_end_feature")).isZero();
+    }
+
+    @Test
+    void captureDelay_delayedCaptureStillGetsItsInferredColumnsAndItsLabel() {
+        MutableClock clock = new MutableClock(LAST.plusSeconds(300));
+        TrainingDataService s = service(clock, 600, 30);
+        LiveAircraft a = aircraft("abc123", LAST, 59.7, 17.9, 600.0, false);
+
+        // Inferred before the delay: nothing is written yet, then captured and inferred in one write.
+        gap(s, a, estimate(TrackState.LANDED_INFERRED, 0.9, "ESSA"), true);
+        assertThat(count("track_end_feature")).isZero();
+        clock.now = LAST.plusSeconds(650);
+        gap(s, a, estimate(TrackState.LANDED_INFERRED, 0.95, "ESSA"), false);
+        assertThat(jdbc.queryForObject("SELECT inferred_state FROM track_end_feature", String.class))
+                .isEqualTo("LANDED_INFERRED");
+        assertThat(jdbc.queryForObject("SELECT inferred_probability FROM track_end_feature", Double.class)).isEqualTo(0.95);
+
+        // Inferred after capture.
+        LiveAircraft b = aircraft("def456", LAST, 59.7, 17.9, 600.0, false);
+        gap(s, b, estimate(TrackState.COVERAGE_LOST, 0.3, "ESSA"), true);
+        clock.now = LAST.plusSeconds(800);
+        gap(s, b, estimate(TrackState.LANDED_INFERRED, 0.92, "ESSA"), false);
+        assertThat(jdbc.queryForObject("SELECT inferred_probability FROM track_end_feature WHERE icao24 = 'def456'",
+                Double.class)).isEqualTo(0.92);
+
+        // And the gaps that were captured are labelled when the aircraft report again.
+        s.reconcile(Set.of(), id -> Optional.of(aircraft(id, LAST.plusSeconds(900), 59.652, 17.921, 0.0, true)));
+        s.flush();
+        assertThat(count("track_end_label")).isEqualTo(2);
+    }
+
+    // ---- ambiguous long gaps
+
+    @Test
+    void airborneResumeAfterALongGap_getsNoLabel_butAGroundResumeStillDoes() {
+        TrainingDataService s = service(Clock.fixed(NOW, ZoneOffset.UTC), 0, 30);
+        Instant longAfter = LAST.plus(Duration.ofMinutes(31));
+        Instant atLimit = LAST.plus(Duration.ofMinutes(30));
+        gap(s, aircraft("air000", LAST, 59.7, 17.9, 600.0, false), estimate(TrackState.COVERAGE_LOST, 0.2, "ESSA"), true);
+        gap(s, aircraft("gnd000", LAST, 59.7, 17.9, 600.0, false), estimate(TrackState.COVERAGE_LOST, 0.2, "ESSA"), true);
+        gap(s, aircraft("lim000", LAST, 59.7, 17.9, 600.0, false), estimate(TrackState.COVERAGE_LOST, 0.2, "ESSA"), true);
+
+        s.reconcile(Set.of(), id -> Optional.of(switch (id) {
+            case "air000" -> aircraft(id, longAfter, 59.5, 18.1, 450.0, false);
+            case "gnd000" -> aircraft(id, longAfter, 59.652, 17.921, 0.0, true);
+            default -> aircraft(id, atLimit, 59.5, 18.1, 450.0, false);
+        }));
+        s.flush();
+
+        assertThat(jdbc.queryForList("SELECT icao24 || '/' || outcome FROM track_end_label ORDER BY icao24", String.class))
+                .containsExactly("gnd000/LANDED", "lim000/AIRBORNE");
+    }
+
+    // ---- failed flush
+
+    @Test
+    void failedFlush_keepsTheWritesAndWritesThemOnTheNextTick() {
+        TrainingDataRepository failingOnce = new TrainingDataRepository(jdbcClient) {
+            boolean failed;
+
+            @Override
+            public boolean insertFeatures(TrackEndFeatures f, Instant capturedAt) {
+                if (!failed) {
+                    failed = true;
+                    throw new org.springframework.dao.TransientDataAccessResourceException("SQLITE_BUSY");
+                }
+                return super.insertFeatures(f, capturedAt);
+            }
+        };
+        TrainingDataService s = new TrainingDataService(failingOnce, runways, tx, Clock.fixed(NOW, ZoneOffset.UTC),
+                true, 4000, 0, 30);
+        LiveAircraft a = aircraft("abc123", LAST, 59.7, 17.9, 600.0, false);
+
+        gap(s, a, estimate(TrackState.LANDED_INFERRED, 0.9, "ESSA"), true); // insert fails, the batch rolls back
+        assertThat(count("track_end_feature")).isZero();
+
+        s.flush(); // next tick, nothing new queued: the batch comes back
+        assertThat(count("track_end_feature")).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT inferred_state FROM track_end_feature", String.class))
+                .isEqualTo("LANDED_INFERRED");
+
+        s.reconcile(Set.of(), id -> Optional.of(aircraft(id, RESUMED, 59.652, 17.921, 0.0, true)));
+        s.flush();
+        assertThat(count("track_end_label")).isEqualTo(1);
+    }
+
+    @Test
+    void failedFlush_dropsAWriteThatNeverSucceeds_andTheQueueStaysBounded() {
+        TrainingDataRepository alwaysFailing = new TrainingDataRepository(jdbcClient) {
+            @Override
+            public boolean insertFeatures(TrackEndFeatures f, Instant capturedAt) {
+                throw new org.springframework.dao.TransientDataAccessResourceException("poison");
+            }
+        };
+        TrainingDataService s = new TrainingDataService(alwaysFailing, runways, tx, Clock.fixed(NOW, ZoneOffset.UTC),
+                true, 4000, 0, 30);
+        gap(s, aircraft("abc123", LAST, 59.7, 17.9, 600.0, false), estimate(TrackState.COVERAGE_LOST, 0.2, "ESSA"), true);
+        for (int i = 0; i < TrainingDataService.MAX_ATTEMPTS + 2; i++) s.flush();
+        @SuppressWarnings("unchecked")
+        List<Object> pending = (List<Object>) ReflectionTestUtils.getField(s, "pending");
+        assertThat(pending).isEmpty();
+
+        // A backlog that fails at commit rather than in a write is capped at the bound.
+        TrainingDataService t = new TrainingDataService(repository, runways,
+                new TransactionTemplate(new DataSourceTransactionManager(dataSource) {
+                    @Override
+                    protected void doCommit(org.springframework.transaction.support.DefaultTransactionStatus status) {
+                        throw new org.springframework.transaction.TransactionSystemException("commit failed");
+                    }
+                }), Clock.fixed(NOW, ZoneOffset.UTC), true, 4000, 0, 30);
+        for (int i = 0; i < TrainingDataService.MAX_PENDING + 50; i++) {
+            LiveAircraft a = aircraft(String.format("x%05d", i), LAST, 59.7, 17.9, 600.0, false);
+            t.onGapEstimate(a, features(a, estimate(TrackState.COVERAGE_LOST, 0.2, "ESSA")), true);
+        }
+        t.flush();
+        @SuppressWarnings("unchecked")
+        List<Object> backlog = (List<Object>) ReflectionTestUtils.getField(t, "pending");
+        assertThat(backlog).hasSize(TrainingDataService.MAX_PENDING);
     }
 
     // ---- inferred update

@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { findMarkerNear, LIVE_FIXTURE, mockFlightApi, setMapView, waitForPlanes } from "./helpers";
+import { findMarkerNear, LIVE_FIXTURE, mockFlightApi, setMapView, waitForMapReady, waitForPlanes } from "./helpers";
 
 // What "Favorite route" does must be stated on screen, including when it is
 // unavailable, and the Favorites list must say what is (not) actionable.
@@ -8,7 +8,7 @@ const target = LIVE_FIXTURE.find((p) => p.icao24 === "4aad15")!;
 
 async function selectTarget(page: import("@playwright/test").Page) {
   await page.goto("/");
-  await page.waitForSelector(".map-container", { timeout: 10_000 });
+  await waitForMapReady(page);
   await setMapView(page, target.latitude, target.longitude, 11);
   await waitForPlanes(page);
   await page.waitForTimeout(500);
@@ -69,7 +69,7 @@ test.describe("favorites clarity", () => {
     // route must have none. Later registrations take priority.
     await page.route("**/api/flights/search*", (route) => route.fulfill({ json: [] }));
     await page.goto("/");
-    await page.waitForSelector(".map-container", { timeout: 10_000 });
+    await waitForMapReady(page);
     await page.locator(".favorites-panel-toggle").click();
     const item = page.locator(".favorites-panel-item", { hasText: "KLR" });
     await expect(item.locator(".favorites-panel-item-status")).toHaveText("no live flight", { timeout: 5_000 });

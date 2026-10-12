@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { mockFlightApi, renderedPlanes, setMapView } from "./helpers";
+import { mockFlightApi, renderedPlanes, setMapView, waitForMapReady } from "./helpers";
 
 // Zoomed out, the server sends a thinned-out set of active aircraft (one per
 // half-icon cell, first discovered first; FlightController.liveOverview with
@@ -25,7 +25,7 @@ test.describe("zoomed-out overview", () => {
       overviewPlanes: [plane("ov0001", 59.2, 17.9), plane("ov0002", 59.9, 20.5), plane("ov0003", 58.4, 15.0)], // well apart: none overlaps another at z6
     });
     await page.goto("/");
-    await page.waitForSelector(".map-container", { timeout: 10_000 });
+    await waitForMapReady(page);
     await setMapView(page, 59.3, 18.0, 6);
     await expect.poll(async () => (await renderedPlanes(page)).length, { timeout: 5_000 }).toBe(3);
     await expect(page.locator(".cluster-icon")).toHaveCount(0);
@@ -38,7 +38,7 @@ test.describe("zoomed-out overview", () => {
     });
     await mockFlightApi(page, { clusters: QUIET_SUMMARY });
     await page.goto("/");
-    await page.waitForSelector(".map-container", { timeout: 10_000 });
+    await waitForMapReady(page);
     await setMapView(page, 59.3, 18.0, 4);
     // The boot view's request (z6) comes first; wait for the z4 one: an icon box is ~25px, half of it
     // ~12px = 12 * 360 / (256 * 16) = ~1.1 deg.
@@ -56,7 +56,7 @@ test.describe("zoomed-out overview", () => {
       push = (frame) => ws.send(JSON.stringify(frame));
     });
     await page.goto("/");
-    await page.waitForSelector(".map-container", { timeout: 10_000 });
+    await waitForMapReady(page);
     await setMapView(page, 59.3, 18.0, 6);
     const x = async () => (await renderedPlanes(page)).find((p) => p.icao24 === "ov0001")?.x ?? 0;
     await expect.poll(async () => (await renderedPlanes(page)).length, { timeout: 5_000 }).toBe(1);

@@ -253,7 +253,7 @@ CREATE TABLE IF NOT EXISTS track_end_feature (
 CREATE INDEX IF NOT EXISTS idx_track_end_feature_captured_at ON track_end_feature (captured_at);
 
 -- What happened to a track end: the label for the row above with the same key.
--- outcome is LANDED or AIRBORNE; label_source is adsb_ground, adsb_airborne
+-- outcome is LANDED or AIRBORNE, and label_source is adsb_ground, adsb_airborne
 -- or a confirmation provider id. The first label wins, except that a
 -- provider's LANDED replaces an adsb_airborne label when the landing falls
 -- inside the gap (see TrainingDataRepository.confirmLanded). For a provider

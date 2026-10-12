@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { mockFlightApi, setMapView, withMap } from "./helpers";
+import { freezeClock, mockFlightApi, setMapView, waitForMapReady, withMap } from "./helpers";
 
 // Wheel and touchpad zoom are MapLibre's own (map/map.ts): continuous and
 // fractional, and every input counts. One 100 px mouse-wheel notch is about
@@ -18,7 +18,7 @@ async function settled(page: Page): Promise<void> {
 async function openAt(page: Page, z: number): Promise<void> {
   await mockFlightApi(page);
   await page.goto("/");
-  await page.waitForSelector(".map-container", { timeout: 10_000 });
+  await waitForMapReady(page);
   await page.waitForSelector("body:not(:has(.boot-screen))", { timeout: 15_000 }); // it covers the map until then
   await setMapView(page, 59.3, 18.0, z);
   const box = (await page.locator(".map-container").boundingBox())!;
@@ -54,6 +54,8 @@ test.describe("wheel and touchpad zoom", () => {
   });
 
   test("a touchpad pinch (a ctrl+wheel stream) zooms continuously, not in one jump", async ({ page }) => {
+    // 80 rendered frames: on a busy machine (software WebGL) that alone can outlast the default 30 s.
+    test.slow();
     await openAt(page, 7);
     // Small ctrl+wheel deltas every frame, the way a touchpad reports a
     // pinch; the zoom is sampled after each one.
@@ -126,27 +128,32 @@ test.describe("data stays keyed by whole zoom levels", () => {
       grids.push(Number(new URL(route.request().url()).searchParams.get("gridDeg")));
       return route.fulfill({ json: { planes: [], clusters: [] } });
     });
+    // The page's clock moves only past each debounce: no neighbour prefetch
+    // (600 ms after a view lands) gets in among the viewport's requests, and
+    // the cached view can't age out (8 s) however slow the machine.
+    await freezeClock(page);
     await page.goto("/");
-    await page.waitForSelector(".map-container", { timeout: 10_000 });
+    await waitForMapReady(page);
 
     await setMapView(page, 59.3, 18.0, 6);
+    await page.clock.runFor(300); // past the viewport debounce (250 ms)
     await expect.poll(() => grids.length, { timeout: 5_000 }).toBeGreaterThan(0);
     const wholeLevelGrid = grids[0];
 
     // Somewhere else (nothing cached there), at a fractional zoom that rounds to 6.
-    await page.waitForTimeout(1_500); // past the neighbour prefetch, so the next request is the viewport's
     grids.length = 0;
     await setMapView(page, 45.0, 5.0, 6.3);
+    await page.clock.runFor(300);
     await expect.poll(() => grids.length, { timeout: 5_000 }).toBeGreaterThan(0);
     expect(grids[0]).toBe(wholeLevelGrid);
 
     // Back to the first place at another fraction of the same level (a
     // little closer in, so the cached view covers it): served from the view
     // cache, no request of its own.
-    await page.waitForTimeout(1_500);
     grids.length = 0;
     await setMapView(page, 59.3, 18.0, 6.2);
-    await page.waitForTimeout(800);
+    await page.clock.runFor(300);
+    await page.waitForTimeout(300); // a request it made would have been recorded by now
     expect(grids).toEqual([]);
   });
 });

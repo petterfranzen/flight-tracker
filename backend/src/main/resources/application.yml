@@ -76,13 +76,21 @@ flighttracker:
   # path under the service's real StateDirectory in production.
   db-path: ${FLIGHTTRACKER_DB_PATH:./data/flighttracker.db}
   # Training data for a learned landing model (TrainingDataService): one row per
-  # coverage gap near the ground or near a landing candidate, labelled when the
-  # aircraft reports again. Pruned in PositionRetentionService.
+  # coverage gap near the ground or near a landing candidate, captured once the
+  # gap has lasted capture-delay-seconds and labelled when the aircraft reports
+  # again. Pruned in PositionRetentionService.
   training:
     enabled: true
     # Gaps whose last altitude is at or above this are only kept when a runway
     # or destination candidate was found.
     max-altitude-m: 4000
+    # A gap is captured on the first tick where now - last report reaches this.
+    # Gaps shorter than a global sweep (360 s) are most of all gaps and are noise
+    # for a landing model, so one that ends sooner leaves no row and no label.
+    capture-delay-seconds: 600
+    # An airborne resume after a longer gap than this gets no label (it may hide
+    # a landing and a new departure). Ground resumes and provider labels are kept.
+    max-airborne-label-gap-minutes: 30
     retention-days: 365
   # Arrival confirmation (service/confirmation): provider lookups that upgrade
   # "landed (inferred)" to "landed (confirmed)" and "at gate". The pacing, budget
