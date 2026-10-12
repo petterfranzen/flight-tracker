@@ -1,4 +1,4 @@
-import type { AircraftDossier, AirportInfo, AircraftUsage, Bounds, ClusterPoint, FlightPosition, LiveMarker, LiveOverview, PollingStatus } from "../types/flight";
+import type { AircraftDossier, AirportInfo, AircraftUsage, Bounds, ClusterPoint, FlightPosition, LiveMarker, LiveOverview, PollingStatus, TrackStatus } from "../types/flight";
 import { clusterMockFleet, filterByBounds, getMockFleet, getMockPlaneCount } from "./mockFleet";
 
 /**
@@ -122,6 +122,23 @@ export async function fetchFlightLive(icao24: string): Promise<FlightPosition | 
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`flight live fetch failed: ${res.status}`);
   return res.json();
+}
+
+/**
+ * What the tracker believes about one aircraft beyond its last report (live,
+ * coverage lost, landed…) — FlightController's /status. Null on 404 (not in
+ * the live set), and on any failure or in the mock-fleet dev mode: the status
+ * is an extra, never a reason to break the selection.
+ */
+export async function fetchFlightStatus(icao24: string): Promise<TrackStatus | null> {
+  if (getMockPlaneCount() != null) return null;
+  try {
+    const res = await fetch(`/api/flights/${icao24}/status`);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
 }
 
 export async function fetchHistory(icao24: string, from: string, to: string): Promise<FlightPosition[]> {
