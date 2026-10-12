@@ -70,6 +70,16 @@ class AircraftStatusLabelTest {
     }
 
     @Test
+    void landedConfirmed_showsTheProvidersDisplayName() {
+        assertThat(AircraftController.statusLabel(new TrackStatus("4ca123", TrackState.LANDED_CONFIRMED, 1.0, "aerodatabox",
+                "confirmed", SEEN, 59.6, 17.9, null, null, null, null, SEEN))).isEqualTo("Landed (confirmed · AeroDataBox)");
+        assertThat(AircraftController.statusLabel(new TrackStatus("4ca123", TrackState.LANDED_CONFIRMED, 1.0, "swedavia",
+                "confirmed", SEEN, 59.6, 17.9, null, null, null, null, SEEN))).isEqualTo("Landed (confirmed · Swedavia)");
+        assertThat(AircraftController.statusLabel(new TrackStatus("4ca123", TrackState.LANDED_CONFIRMED, 1.0, "mock",
+                "confirmed", SEEN, 59.6, 17.9, null, null, null, null, SEEN))).isEqualTo("Landed (confirmed · mock)");
+    }
+
+    @Test
     void atGate_withoutAGate_readsAtGateConfirmed() {
         assertThat(AircraftController.statusLabel(new TrackStatus("4ca123", TrackState.AT_GATE, 1.0, "mock",
                 "confirmed", SEEN, 59.6, 17.9, null, null, null, null, SEEN))).isEqualTo("At gate (confirmed)");
