@@ -63,8 +63,8 @@ branch. Never merge to `main`; the human merges.
 | P3b-2 | `SwedaviaArrivalsProvider` + fixtures + config (`SWEDAVIA_API_KEY` env var, `deploy/hetzner/env.example`, README) | implementer | P3b-R, P3b-1 | done (65feb87, f99edf1): 354 tests; **PR #124** |
 | P3b-Rev | Review Phase 3b | reviewer | P3b-2 | done: no blockers (`reviews/phase3b.md`) |
 | P3c-R | AeroDataBox contract | explorer | none | done: `docs/agents/aerodatabox-api.md` |
-| P3c-1 | `AeroDataBoxArrivalProvider` (nearest-flight lookup, 2 units/call, 380/month, 14/day, precedence after board providers, no training labels by default) | implementer | P3c-R | running |
-| P3c-2 | Provider credit link in the dossier status line (AeroDataBox terms ¶5.4) | implementer | P3c-R | running |
+| P3c-1 | `AeroDataBoxArrivalProvider` (nearest-flight lookup, 2 units/call, 380/month, 14/day, precedence after board providers, no training labels by default) | implementer | P3c-R | running (relaunched 19:12 UTC) |
+| P3c-2 | Provider credit link in the dossier status line (AeroDataBox terms ¶5.4) | implementer | P3c-R | running (relaunched 19:12 UTC) |
 | R | `CLAUDE.md` pushing, CI and merging rules (from the working agreements) | orchestrator | none | PR #123 |
 
 ## Phase 0 findings (summary)
@@ -225,6 +225,10 @@ stateDiagram-v2
 - **Checkpoint:** the human chooses a real provider from the research before
   one is implemented.
 
+## Backlog (from the human)
+
+- **Route search, e.g. London → Barcelona.** The brief is ready: `docs/agent-tasks/route-search.md` on branch `wip/route-search-brief` (no PR yet). It extends the existing origin-OR-destination airport search with `from`/`to`. Start it when the human says so.
+
 ## Open questions
 
 - **For the human (AeroDataBox terms):** the free Basic plan is **non-commercial** only and requires visible attribution. That is built in.
@@ -330,3 +334,6 @@ stateDiagram-v2
   - write no training labels from it by default.
 
   P3c-1 and P3c-2 launched.
+- 2026-10-12 15:55–19:10 UTC: Account usage limit. Both P3c agents were stopped before writing anything. Nothing was lost.
+  #124 is green (36f37ec). P3c-1 and P3c-2 were relaunched at 19:12 UTC.
+  The human asked for a future feature, route search: a brief is queued.
