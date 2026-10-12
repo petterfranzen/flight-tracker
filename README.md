@@ -80,6 +80,26 @@ does the rest, so each provider gets the same protections:
 - `ArrivalConfirmationService` picks the candidates every `flighttracker.confirmation.interval-seconds` (30): inferred landings, silent aircraft whose predicted touchdown has passed, and aircraft that landed within the last 2 h (for the gate). It makes at most one real call per provider per tick, and only to providers that cover the airport.
 - `ConfirmationGateway` caches results (FOUND without a gate time 5 min, with one 12 h, NOT_FOUND 15 min; bounded), keeps a minimum interval between calls (`flighttracker.confirmation.min-interval-seconds`, 30), a daily call budget per provider (`daily-budget`, 300) and backs off on throttling or failure, honouring Retry-After.
 - A confirmation is never downgraded by a later estimate, survives taxiing, and is cleared when the aircraft is seen airborne again. A confirmed touchdown also labels the Phase 2 training row.
+- An answer about an earlier landing of the same callsign is ignored: the service drops one whose landing time is more than `skew-tolerance-seconds` before the aircraft's last report, and the gateway does not serve a cached answer older than the expected arrival.
+- A confirmed aircraft that is still waiting for its gate is asked about until `gate-wait-minutes` after touchdown, and after every unconfirmed one.
+
+All keys are under `flighttracker.confirmation.` (defaults in brackets):
+
+| Key | Meaning |
+| --- | --- |
+| `interval-seconds` (30) | How often candidates are picked |
+| `min-interval-seconds` (30) | Minimum gap between two real calls to one provider |
+| `daily-budget` (300) | Real calls per provider per UTC day (calls, not cost units) |
+| `cache-max-entries` (2000) | Bound of the gateway's result cache; the least recently used entries go first |
+| `store-max-entries` (5000) | Bound of the in-memory confirmation store; the oldest confirmation goes first |
+| `min-landing-probability` (0.5) | Lowest landing probability of a COVERAGE_LOST gap that is asked about |
+| `on-ground-window-minutes` (120) | How long after touchdown an aircraft on the ground is asked about |
+| `gate-wait-minutes` (45) | After this long since touchdown, a confirmed aircraft without a gate time is no longer asked about |
+| `skew-tolerance-seconds` (300) | How far before the aircraft's last report (or expected arrival) a landing time may be and still count |
+| `new-flight-grace-seconds` (120) | Grace between a confirmed touchdown and an airborne report that clears it |
+| `max-retry-after-minutes` (60) | Cap on a provider's Retry-After |
+| `mock.enabled` (false) | The mock provider |
+| `mock.not-found-fraction` (0.2) | Share of callsigns the mock answers NOT_FOUND |
 
 Each provider has its own `flighttracker.confirmation.<id>.enabled` flag. A
 real provider reads its API key from an environment variable (for example

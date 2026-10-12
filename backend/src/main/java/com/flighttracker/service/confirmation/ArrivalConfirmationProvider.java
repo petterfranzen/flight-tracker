@@ -31,6 +31,16 @@ package com.flighttracker.service.confirmation;
  * Caching, the minimum call interval, the daily call budget and the backoff
  * live in {@link ConfirmationGateway}, so every provider gets them. A provider
  * only maps requests to responses.
+ *
+ * <h2>Known limitations</h2>
+ * <ul>
+ *   <li>The daily call budget is per provider and counts calls, not cost
+ *       units: a plan that bills some endpoints at several units per call
+ *       needs a lower {@code daily-budget} than its quota.</li>
+ *   <li>One call asks about one flight. An airport-level batch API (one call
+ *       returning many flights' times, such as Swedavia's) would be used far
+ *       below its worth and needs an extension of this interface.</li>
+ * </ul>
  */
 public interface ArrivalConfirmationProvider {
 
@@ -45,6 +55,11 @@ public interface ArrivalConfirmationProvider {
     /** True when this provider has data for arrivals at the airport (ICAO code, may be null if unknown). */
     boolean covers(String arrivalAirportIcao);
 
-    /** One lookup. Called by the gateway, which has already cached, paced and budgeted it. */
+    /**
+     * One lookup. Called by the gateway, which has already cached, paced and budgeted it.
+     * It runs synchronously on the shared scheduler thread, so it blocks every
+     * other provider and the rest of the tick while it waits: set HTTP connect
+     * and read timeouts (for example 5 s and 10 s, as {@code OpenSkyAgent} does).
+     */
     LookupResult lookup(ArrivalQuery query);
 }
