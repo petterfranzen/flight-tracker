@@ -1,5 +1,7 @@
 package com.flighttracker.service.confirmation;
 
+import java.time.Duration;
+
 /**
  * A source of actual arrival times and gates, such as an airport's flight
  * information API. {@link ArrivalConfirmationService} asks every enabled
@@ -84,5 +86,39 @@ public interface ArrivalConfirmationProvider {
      */
     default boolean mayStoreLongTerm() {
         return true;
+    }
+
+    /**
+     * False for a query this provider can never answer (a callsign its API cannot take,
+     * a missing key, a lockout). Checked by the gateway before anything is charged or paced:
+     * the answer is then NOT_FOUND, uncached and free, and the caller moves on to its next
+     * candidate in the same tick. Must be a cheap local check. Default true.
+     */
+    default boolean accepts(ArrivalQuery query) {
+        return true;
+    }
+
+    /**
+     * How long a FOUND answer without a gate-in time is kept before the provider is asked
+     * again about the same flight. The gateway uses the longer of this and its own default
+     * (5 min). Null: the gateway default. A provider that bills a lookup in quota units
+     * returns something long, since the gate time rarely changes quickly.
+     */
+    default Duration foundRecheck() {
+        return null;
+    }
+
+    /** As {@link #foundRecheck()}, for NOT_FOUND (the gateway default is 15 min). Null: the default. */
+    default Duration notFoundRecheck() {
+        return null;
+    }
+
+    /**
+     * How long after a confirmed landing without a gate time this provider keeps being asked
+     * for the gate. Null: the global {@code gate-wait-minutes}. Zero: stop asking once the
+     * landing is confirmed, for a source that rarely has a distinct in-block time.
+     */
+    default Duration gateWait() {
+        return null;
     }
 }
