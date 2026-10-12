@@ -13,6 +13,9 @@ import com.flighttracker.repository.FlightPositionRepository;
 import com.flighttracker.service.ViewportService;
 import com.flighttracker.service.enrichment.AircraftEnrichmentService;
 import com.flighttracker.service.enrichment.Route;
+import com.flighttracker.service.confirmation.ArrivalInfo;
+import com.flighttracker.service.confirmation.Confirmation;
+import com.flighttracker.service.confirmation.ConfirmationStore;
 import com.flighttracker.service.live.LiveAircraft;
 import com.flighttracker.service.live.LiveStateStore;
 import org.junit.jupiter.api.Test;
@@ -58,9 +61,10 @@ class FlightControllerTest {
     private AircraftEnrichmentService enrichmentService;
     @Mock
     private AirportRepository airportRepository;
+    private final ConfirmationStore confirmationStore = new ConfirmationStore(120, 100);
 
     private FlightController controller() {
-        return new FlightController(liveStateStore, positionRepository, viewportService, enrichmentService, airportRepository);
+        return new FlightController(liveStateStore, positionRepository, viewportService, enrichmentService, airportRepository, confirmationStore);
     }
 
     // LiveAircraft has no public constructor test helper of its own (it's a
@@ -276,5 +280,28 @@ class FlightControllerTest {
         assertThat(json.get("sourceKind").asText()).isEqualTo("inferred");
         assertThat(json.get("estimate").isNull()).isFalse();
         assertThat(json.get("landing").get("touchdownAt").asText()).isEqualTo("2026-10-12T11:03:10Z");
+    }
+
+    @Test
+    void status_providerConfirmation_isServedAsAtGate_withTheContractShape() throws Exception {
+        LiveAircraft a = withGap(false, gap(TrackState.LANDED_INFERRED));
+        Instant on = Instant.parse("2026-10-12T11:03:30Z");
+        Instant in = Instant.parse("2026-10-12T11:11:30Z");
+        confirmationStore.put(a.icao24(), new Confirmation("mock",
+                new ArrivalInfo(null, null, on, in, "B14", "2", "ESSA"), in, a.observedAt()));
+
+        JsonNode json = statusJson(a);
+
+        assertThat(json.get("state").asText()).isEqualTo("AT_GATE");
+        assertThat(json.get("confidence").asDouble()).isEqualTo(1.0);
+        assertThat(json.get("source").asText()).isEqualTo("mock");
+        assertThat(json.get("sourceKind").asText()).isEqualTo("confirmed");
+        assertThat(json.get("estimate").isNull()).isTrue();
+        assertThat(json.get("gate").asText()).isEqualTo("B14");
+        assertThat(json.get("terminal").asText()).isEqualTo("2");
+        assertThat(json.get("confirmedAt").asText()).isEqualTo("2026-10-12T11:11:30Z");
+        assertThat(json.get("landing").get("airportIcao").asText()).isEqualTo("ESSA");
+        assertThat(json.get("landing").get("runway").asText()).isEqualTo("19R");
+        assertThat(json.get("landing").get("touchdownAt").asText()).isEqualTo("2026-10-12T11:03:30Z");
     }
 }

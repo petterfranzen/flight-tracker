@@ -95,6 +95,11 @@ test.describe("coverage-gap status line", () => {
     await expect(statusLine(page)).toHaveAttribute("data-track-state", "AT_GATE");
   });
 
+  test("AT_GATE without a gate reads 'At gate (confirmed)', never 'null'", async ({ page }) => {
+    await open(page, () => status({ state: "AT_GATE", source: "mock", sourceKind: "confirmed", estimate: null, gate: null, terminal: null }));
+    await expect(statusLine(page)).toHaveText("At gate (confirmed)");
+  });
+
   test("LIVE, and an unknown status (404), show no status line and keep the stale explanation", async ({ page }) => {
     await open(page, () => status({ state: "LIVE", confidence: null, source: "adsb", sourceKind: "observed", estimate: null }));
     await page.waitForTimeout(500);
@@ -185,13 +190,50 @@ test.describe("status polling", () => {
     await expect.poll(() => requests.count, { timeout: 5_000 }).toBeGreaterThan(afterSelect);
     await expect(statusLine(page)).toHaveText("Coverage lost · est. ±2.4 km");
 
-    // Landed: no more refetches on the 15 s timer (the 72 s poll is a long way off).
+    // Landed: no more refetches on the 15 s timer (the 72 s poll is a long way off, and LANDED_INFERRED refetches only every 60 s).
     served = status({ state: "LANDED_INFERRED", confidence: 0.92, landing: LANDING });
     await page.clock.runFor(15_000);
     await expect(statusLine(page)).toHaveText("Landed 92% (inferred) · ESSA 19R");
     const afterLanded = requests.count;
     await page.clock.runFor(20_000);
     expect(requests.count).toBe(afterLanded);
+  });
+
+  test("refetches every 60 s while the landing is inferred, so a confirmation appears without reselecting", async ({ page }) => {
+    await page.clock.install();
+    const requests = { count: 0 };
+    let served = status({ state: "LANDED_INFERRED", confidence: 0.92, landing: LANDING });
+    await open(page, () => served, requests);
+    await expect(statusLine(page)).toHaveText("Landed 92% (inferred) · ESSA 19R");
+    const afterSelect = requests.count;
+
+    // Not on the 15 s coverage timer.
+    await page.clock.runFor(20_000);
+    expect(requests.count).toBe(afterSelect);
+
+    served = status({ state: "AT_GATE", source: "mock", sourceKind: "confirmed", estimate: null, landing: LANDING, gate: "B14", terminal: "2" });
+    await page.clock.runFor(41_000);
+    await expect.poll(() => requests.count, { timeout: 5_000 }).toBeGreaterThan(afterSelect);
+    await expect(statusLine(page)).toHaveText("At gate B14 (confirmed)");
+    await expect(statusLine(page)).toHaveAttribute("data-source-kind", "confirmed");
+  });
+
+  test("refetches every 60 s while the landing is confirmed but the gate is not known, so the gate appears without reselecting", async ({ page }) => {
+    await page.clock.install();
+    const requests = { count: 0 };
+    let served = status({ state: "LANDED_CONFIRMED", source: "mock", sourceKind: "confirmed", estimate: null, landing: LANDING });
+    await open(page, () => served, requests);
+    await expect(statusLine(page)).toHaveAttribute("data-track-state", "LANDED_CONFIRMED");
+    const afterSelect = requests.count;
+
+    // Not on the 15 s coverage timer.
+    await page.clock.runFor(20_000);
+    expect(requests.count).toBe(afterSelect);
+
+    served = status({ state: "AT_GATE", source: "mock", sourceKind: "confirmed", estimate: null, landing: LANDING, gate: "B14", terminal: "2" });
+    await page.clock.runFor(41_000);
+    await expect.poll(() => requests.count, { timeout: 5_000 }).toBeGreaterThan(afterSelect);
+    await expect(statusLine(page)).toHaveText("At gate B14 (confirmed)");
   });
 
   test("deselecting stops the refetching and clears the status and cone", async ({ page }) => {

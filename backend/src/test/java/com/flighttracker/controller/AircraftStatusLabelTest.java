@@ -70,6 +70,12 @@ class AircraftStatusLabelTest {
     }
 
     @Test
+    void atGate_withoutAGate_readsAtGateConfirmed() {
+        assertThat(AircraftController.statusLabel(new TrackStatus("4ca123", TrackState.AT_GATE, 1.0, "mock",
+                "confirmed", SEEN, 59.6, 17.9, null, null, null, null, SEEN))).isEqualTo("At gate (confirmed)");
+    }
+
+    @Test
     void silenceRule_appliesToEveryStateButLandedInferred() {
         Duration longSilence = Duration.ofMinutes(31);
         assertThat(AircraftController.silentWhileDescending(TrackState.COVERAGE_LOST, true, longSilence)).isTrue();

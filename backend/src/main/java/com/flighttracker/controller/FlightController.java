@@ -11,6 +11,7 @@ import com.flighttracker.repository.FlightPositionRepository;
 import com.flighttracker.service.LiveVisibilityWindows;
 import com.flighttracker.service.ViewportService;
 import com.flighttracker.service.enrichment.AircraftEnrichmentService;
+import com.flighttracker.service.confirmation.ConfirmationStore;
 import com.flighttracker.service.enrichment.Route;
 import com.flighttracker.service.live.LiveAircraft;
 import com.flighttracker.service.live.LiveStateStore;
@@ -31,17 +32,20 @@ public class FlightController {
     private final ViewportService viewportService;
     private final AircraftEnrichmentService enrichmentService;
     private final AirportRepository airportRepository;
+    private final ConfirmationStore confirmationStore;
 
     public FlightController(LiveStateStore liveStateStore,
                              FlightPositionRepository positionRepository,
                              ViewportService viewportService,
                              AircraftEnrichmentService enrichmentService,
-                             AirportRepository airportRepository) {
+                             AirportRepository airportRepository,
+                             ConfirmationStore confirmationStore) {
         this.liveStateStore = liveStateStore;
         this.positionRepository = positionRepository;
         this.viewportService = viewportService;
         this.enrichmentService = enrichmentService;
         this.airportRepository = airportRepository;
+        this.confirmationStore = confirmationStore;
     }
 
     /**
@@ -139,13 +143,13 @@ public class FlightController {
     /**
      * Coverage-gap state of one aircraft: observed (live or on the ground)
      * or, while it has gone silent, the estimator's inferred position and
-     * landing call. Same lookup as liveOne, so 404 means the same thing:
+     * landing call, or a provider's confirmation (landed, at the gate). Same lookup as liveOne, so 404 means the same thing:
      * the live set has no such aircraft.
      */
     @GetMapping("/{icao24}/status")
     public ResponseEntity<TrackStatus> status(@PathVariable String icao24) {
         return liveStateStore.get(icao24)
-                .map(a -> ResponseEntity.ok(TrackStatus.from(a)))
+                .map(a -> ResponseEntity.ok(TrackStatus.from(a, confirmationStore.forAircraft(a))))
                 .orElseGet(() -> ResponseEntity.notFound().build());
     }
 
