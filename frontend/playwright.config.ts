@@ -8,7 +8,12 @@ import { defineConfig } from "@playwright/test";
 export default defineConfig({
   testDir: "./tests",
   fullyParallel: true,
-  reporter: "list",
+  // CI only: a test that fails and then passes on its retry doesn't fail the
+  // build, but the github reporter annotates it on the run (a "flaky" notice
+  // plus the first attempt's error). A safety net, not a fix: a test that
+  // shows up there needs its race found (CLAUDE.md, "Writing tests that don't flake").
+  retries: process.env.CI ? 1 : 0,
+  reporter: process.env.CI ? [["list"], ["github"]] : "list",
   use: {
     baseURL: "http://localhost:5174",
     trace: "retain-on-failure",

@@ -17,7 +17,7 @@ continue from **Next task**.
 | Phase | Branch | Based on | PR |
 |---|---|---|---|
 | 1 | `claude/beautiful-thompson-afahki` | `main` | [#120](https://github.com/petterfranzen/flight-tracker/pull/120) |
-| 2 | `claude/coverage-gap-phase2` | phase 1 branch (stacked) | not opened yet |
+| 2 | `claude/coverage-gap-phase2` | phase 1 branch (stacked) | [#121](https://github.com/petterfranzen/flight-tracker/pull/121) |
 | 3 | `claude/coverage-gap-phase3` | phase 2 branch (stacked) | not opened yet |
 
 The brief asks for one PR per phase. The later phases build on the earlier
@@ -39,7 +39,7 @@ branch. Never merge to `main`; the human merges.
 | P2 | Training data capture: tables, capture and label service, retention, `LandingModel` stub (plan below) | implementer | Phase 1 | done (801b70e on `claude/coverage-gap-phase2`): 198 backend tests |
 | P3 | Provider SPI, framework-level cache and rate limit, `ConfirmationStore`, upgrade service, mock provider, UI tweaks (no real provider) | implementer | Phase 2 | done (4d52beb, 2aaefff on `claude/coverage-gap-phase3`): backend 252 tests, coverage-status 15/15 |
 | P3-R | Review Phases 2 and 3 | reviewer | P1-F merged forward | done: no blockers (`reviews/phase2-3.md`) |
-| P2-F | Phase 2 fixes: capture delay, long-gap labels, flush retry, schema `;` | implementer | P3-R | running |
+| P2-F | Phase 2 fixes: capture delay, long-gap labels, flush retry, schema `;` | implementer | P3-R | done (99af1b9, 8b82130): 214 backend tests |
 | P3-F | Phase 3 fixes: stale cache, gate re-poll cap, Retry-After cap, pool, refetch, docs | implementer | P3-R | running |
 | P3-real | Real provider (the human chooses) | implementer | the human's choice | blocked: checkpoint |
 
@@ -261,3 +261,7 @@ stateDiagram-v2
   helper change unchanged (5e5fd02) and commented on #120. Carry it into the phase 2 and phase 3
   branches at the next merge.
   Tip: never run Playwright in two worktrees at once. They share the Vite port 5174, which gives ERR_CONNECTION_REFUSED.
+- 2026-10-12: P2-F merged into phase 2 and phase 1 merged forward (18181d1). Clean backend run: 214 tests.
+  - `capture-delay-seconds` defaults to 600.
+  - `max-airborne-label-gap-minutes` defaults to 30.
+  - A failed flush re-queues its batch (cap 5,000 writes; a write is dropped after 5 attempts).
