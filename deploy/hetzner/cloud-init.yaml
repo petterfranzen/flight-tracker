@@ -305,6 +305,13 @@ write_files:
       # in the SECONDARY variable so a rotation does not interrupt it.
       # SWEDAVIA_API_KEY=
       # SWEDAVIA_API_KEY_SECONDARY=
+
+      # AeroDataBox (arrival confirmation, optional; free Basic plan). The fallback for airports
+      # Swedavia does not cover. Get a key: rapid.aerodatabox.com -> sign up on RapidAPI ->
+      # subscribe to the Basic plan (400 units/month, a lookup costs 2) -> copy the X-RapidAPI-Key.
+      # Without a key the provider stays off. The free plan is non-commercial and requires
+      # attribution (the UI shows the credit link); commercial use needs a paid plan.
+      # AERODATABOX_API_KEY=
   - path: /etc/apt/apt.conf.d/20auto-upgrades
     permissions: "0644"
     content: |

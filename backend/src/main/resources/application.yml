@@ -114,6 +114,12 @@ flighttracker:
       swedavia:
         monthly-budget: 9000
         daily-budget: 300
+      # AeroDataBox (RapidAPI Basic plan): 400 units a month, and once they are spent
+      # calls are rejected until it renews. A lookup is Tier 2 = 2 units, so 380 units
+      # is about 190 lookups, with headroom; 14 a day spreads them over the month.
+      aerodatabox:
+        monthly-budget: 380
+        daily-budget: 14
     # Swedavia FlightInfo v2 (SwedaviaArrivalsProvider, arrivals boards for the ten
     # Swedavia airports). Enabled only when the flag is on AND a key is present.
     # Keys come from the environment, never from this file (deploy/hetzner/env.example).
@@ -126,6 +132,29 @@ flighttracker:
       # were rejected in a row the provider is off until the next UTC midnight.
       api-key-secondary: ${SWEDAVIA_API_KEY_SECONDARY:}
       base-url: https://api.swedavia.se/flightinfo/v2
+    # AeroDataBox (AeroDataBoxArrivalProvider, per-flight, global). The fallback for
+    # airports no enabled board provider covers (Swedavia's ten when it has a key).
+    # Enabled only when the flag is on AND a key is present. The free plan is
+    # non-commercial and needs the attribution the UI shows.
+    aerodatabox:
+      enabled: true
+      # RapidAPI key from rapid.aerodatabox.com (Basic plan, free). Never commit it.
+      api-key: ${AERODATABOX_API_KEY:}
+      base-url: https://aerodatabox.p.rapidapi.com
+      host: aerodatabox.p.rapidapi.com
+      # Number (callsign as the flight number) or CallSign.
+      search-by: Number
+      # The terms allow caching for 7 days at most on the Basic plan, so its answers
+      # do not become (year-long) training labels unless this is true.
+      record-training-labels: false
+      # A lookup is 2 of 400 units a month, 7 a day, so one aircraft must not spend the day:
+      # a flight with a landing but no gate time is not asked again for this long, a flight the
+      # API does not know (yet) for this long, and once the landing is confirmed the gate is not
+      # waited for (AeroDataBox rarely has a distinct in-block time). The gateway never goes
+      # below its own 5 min / 15 min.
+      found-recheck-minutes: 30
+      not-found-recheck-minutes: 180
+      gate-wait-minutes: 0
     mock:
       enabled: ${FLIGHTTRACKER_CONFIRMATION_MOCK_ENABLED:false}
   # Rolling retention for flight_position — see PositionRetentionService,

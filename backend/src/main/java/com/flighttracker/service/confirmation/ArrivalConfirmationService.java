@@ -50,7 +50,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * </ol>
  * An aircraft that already has a gate-in time is not asked again, and one
  * confirmed as landed but without a gate is asked only until
- * {@code gate-wait-minutes} (45) after its touchdown, and after every
+ * {@code gate-wait-minutes} (45) after its touchdown (a provider may set its own,
+ * {@link ArrivalConfirmationProvider#gateWait()}; AeroDataBox's is zero), and after every
  * unconfirmed candidate.
  *
  * <p>An answer whose landing time is more than {@code skew-tolerance-seconds}
@@ -69,7 +70,13 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>When the answer is for a gap, the provider's touchdown time also goes to
  * {@link TrainingDataService#recordConfirmedLanding} under the gap's key (the
  * last report before the gap). An on-ground aircraft has no gap and so no
- * feature row to label; writing one would leave an orphan label.
+ * feature row to label; writing one would leave an orphan label. A provider whose
+ * terms limit how long its data may be kept ({@link ArrivalConfirmationProvider#mayStoreLongTerm})
+ * writes no label.
+ *
+ * <p>Precedence: a per-flight provider is not asked about a candidate whose airport an
+ * enabled board provider covers, so a global fallback source (AeroDataBox) only sees
+ * the airports no board serves.
  */
 @Service
 public class ArrivalConfirmationService {
@@ -82,7 +89,12 @@ public class ArrivalConfirmationService {
     /** A candidate's recheck memo: one provider, aircraft, airport and board date. */
     private record RecheckKey(String providerId, String icao24, String airport, LocalDate date) { }
 
-    private record Candidate(LiveAircraft aircraft, int priority, String airport, Instant expectedAt, boolean confirmed) { }
+    /** {@code known} is the landing already confirmed for the aircraft (without a gate time), else null. */
+    private record Candidate(LiveAircraft aircraft, int priority, String airport, Instant expectedAt, Confirmation known) {
+        boolean confirmed() {
+            return known != null;
+        }
+    }
 
     private final List<ArrivalConfirmationProvider> providers;
     private final List<AirportArrivalsProvider> boardProviders;
@@ -148,7 +160,7 @@ public class ArrivalConfirmationService {
 
             for (ArrivalConfirmationProvider provider : active) {
                 try {
-                    askProvider(provider, candidates);
+                    askProvider(provider, candidates, activeBoards);
                 } catch (RuntimeException e) {
                     log.warn("Arrival confirmation via {} failed this tick", provider.id(), e);
                 }
@@ -166,16 +178,21 @@ public class ArrivalConfirmationService {
     }
 
     /** Cached answers are applied as they come; the first real call (or a skipped one) ends this provider's tick. */
-    private void askProvider(ArrivalConfirmationProvider provider, List<Candidate> candidates) {
+    private void askProvider(ArrivalConfirmationProvider provider, List<Candidate> candidates,
+                             List<AirportArrivalsProvider> activeBoards) {
+        Instant now = clock.instant();
         for (Candidate c : candidates) {
             if (!provider.covers(c.airport())) continue;
+            if (gateWaitOver(c, provider.gateWait(), now)) continue;
+            // An enabled airport board is the better source at its own airports (one call serves every flight).
+            if (c.airport() != null && activeBoards.stream().anyMatch(b -> b.covers(c.airport()))) continue;
             LiveAircraft a = c.aircraft();
             ConfirmationGateway.Outcome outcome = gateway.lookup(provider,
                     new ArrivalQuery(a.icao24(), a.callsign(), c.airport(), c.expectedAt()));
             if (outcome.kind() == ConfirmationGateway.Kind.SKIPPED) return;
             LookupResult result = outcome.result();
             if (result.status() == LookupResult.Status.FOUND && result.info() != null) {
-                apply(provider.id(), c, result.info());
+                apply(provider.id(), c, result.info(), provider.mayStoreLongTerm());
             }
             if (outcome.kind() == ConfirmationGateway.Kind.CALLED) return;
         }
@@ -205,6 +222,7 @@ public class ArrivalConfirmationService {
         boolean called = false;
         for (Candidate c : candidates) {
             if (!provider.covers(c.airport())) continue;
+            if (gateWaitOver(c, null, now)) continue;
             LocalDate date = provider.boardDate(c.expectedAt());
             RecheckKey key = new RecheckKey(provider.id(), c.aircraft().icao24(), c.airport(), date);
             BoardResult board = gateway.cachedBoard(provider, c.airport(), date).orElse(null);
@@ -219,7 +237,7 @@ public class ArrivalConfirmationService {
             }
             if (board.status() != LookupResult.Status.FOUND && board.status() != LookupResult.Status.NOT_FOUND) continue;
             BoardEntry entry = board.status() == LookupResult.Status.FOUND ? match(board, c) : null;
-            boolean answered = entry != null && entry.info() != null && apply(provider.id(), c, entry.info());
+            boolean answered = entry != null && entry.info() != null && apply(provider.id(), c, entry.info(), true);
             if (!answered) {
                 Instant fetchedAt = gateway.boardFetchedAt(provider, c.airport(), date).orElse(now);
                 blanks.merge(key, fetchedAt, (old, fresh) -> fresh.isAfter(old) ? fresh : old);
@@ -254,7 +272,7 @@ public class ArrivalConfirmationService {
     }
 
     /** True when the answer was stored: it confirmed the landing or added the gate time. */
-    private boolean apply(String sourceId, Candidate c, ArrivalInfo info) {
+    private boolean apply(String sourceId, Candidate c, ArrivalInfo info, boolean mayStoreLongTerm) {
         LiveAircraft a = c.aircraft();
         Instant landedAt = info.landedAt();
         // A cached or stale answer can be about an earlier landing of the same callsign.
@@ -268,7 +286,7 @@ public class ArrivalConfirmationService {
         Confirmation confirmation = new Confirmation(sourceId, info, clock.instant(), a.observedAt());
         if (!store.put(a.icao24(), confirmation)) return false;
         log.info("{} confirmed by {}: {}", a.icao24(), sourceId, info.actualIn() != null ? "at gate" : "landed");
-        if (info.actualOn() != null && a.gap() != null) {
+        if (info.actualOn() != null && a.gap() != null && mayStoreLongTerm) {
             try {
                 String airport = info.arrivalAirportIcao() != null ? info.arrivalAirportIcao() : c.airport();
                 training.recordConfirmedLanding(a.icao24(), a.observedAt(), sourceId, info.actualOn(), airport);
@@ -290,10 +308,9 @@ public class ArrivalConfirmationService {
             if (existing.isPresent()) {
                 Confirmation known = existing.get();
                 if (known.gateAt() != null) continue;
-                // Landed but no gate yet: wait a while for it, then stop asking.
-                if (!known.landedAt().plus(gateWait).isAfter(now)) continue;
+                // Landed but no gate yet: each provider waits a while for it, see gateWaitOver.
             }
-            Candidate c = candidate(a, now, existing.isPresent());
+            Candidate c = candidate(a, now, existing.orElse(null));
             if (c != null) out.add(c);
         }
         out.sort(Comparator.comparing(Candidate::confirmed)
@@ -303,7 +320,18 @@ public class ArrivalConfirmationService {
         return out;
     }
 
-    private Candidate candidate(LiveAircraft a, Instant now, boolean confirmed) {
+    /**
+     * True when the candidate's landing is already confirmed and the time to wait for its gate has
+     * passed: the provider's own {@link ArrivalConfirmationProvider#gateWait()}, else the global
+     * {@code gate-wait-minutes}.
+     */
+    private boolean gateWaitOver(Candidate c, Duration providerWait, Instant now) {
+        if (c.known() == null) return false;
+        Duration wait = providerWait != null ? providerWait : gateWait;
+        return !c.known().landedAt().plus(wait).isAfter(now);
+    }
+
+    private Candidate candidate(LiveAircraft a, Instant now, Confirmation confirmed) {
         if (a.onGround()) {
             Instant since = a.landedSince();
             if (since == null || since.isBefore(now.minus(onGroundWindow))) return null;

@@ -81,10 +81,10 @@ provider gets the same protections:
 - `AirportArrivalsProvider` (per airport board): `fetchArrivals(airport, boardDate)` returns the whole arrivals board for an airport and board date (the UTC date of the expected touchdown unless the provider overrides `boardDate`) as `BoardEntry`s (callsign, optional IATA flight number and registration, and an `ArrivalInfo`) plus the `costUnits` the call consumed (default 1). One fetch serves every candidate at that airport. The gateway caches boards per (provider, airport, UTC date) for `board-ttl-seconds`; a board is fetched only when a candidate at a covered airport needs confirming and there is no fresh one, never in the background. A provider may keep incremental state (a continuation token); the framework only sees boards. The service matches an aircraft in the cached board without a call, by trimmed upper-case callsign, else by registration (the aircraft table's, from adsbdb) when both sides have one.
 
 
-- `ArrivalConfirmationService` picks the candidates every `flighttracker.confirmation.interval-seconds` (30): inferred landings, silent aircraft whose predicted touchdown has passed, and aircraft that landed within the last 2 h (for the gate). It makes at most one real call per provider per tick, and only to providers that cover the airport.
+- `ArrivalConfirmationService` picks the candidates every `flighttracker.confirmation.interval-seconds` (30): inferred landings, silent aircraft whose predicted touchdown has passed, and aircraft that landed within the last 2 h (for the gate). It makes at most one real call per provider per tick, and only to providers that cover the airport. A per-flight provider is skipped for an airport that an enabled board provider covers.
 - `ConfirmationGateway` caches results (FOUND without a gate time 5 min, with one 12 h, NOT_FOUND 15 min; bounded), keeps a minimum interval between calls (`flighttracker.confirmation.min-interval-seconds`, 30), per-provider budgets in cost units (below) and backs off on throttling or failure, honouring Retry-After. All of it applies to both provider shapes.
 - Budgets are per provider and counted in cost units, not calls: `flighttracker.confirmation.providers.<id>.daily-budget` (default: the global `daily-budget`) resets at UTC midnight, and `providers.<id>.monthly-budget` (default: unlimited) on the 1st (UTC). The counters are written through to the `app_state` table on every charge (one key per provider, `confirmation.budget.<id>`), so a restart cannot overspend a monthly quota. At 80% of a monthly budget one `degraded` phase line is logged.
-- A confirmation is never downgraded by a later estimate, survives taxiing, and is cleared when the aircraft is seen airborne again. A confirmed touchdown also labels the Phase 2 training row.
+- A confirmation is never downgraded by a later estimate, survives taxiing, and is cleared when the aircraft is seen airborne again. A confirmed touchdown also labels the Phase 2 training row, unless the provider's terms limit retention (`mayStoreLongTerm()` is false, as for AeroDataBox by default).
 - An answer about an earlier landing of the same callsign is ignored: the service drops one whose landing time is more than `skew-tolerance-seconds` before the aircraft's last report, and the gateway does not serve a cached answer older than the expected arrival.
 - A confirmed aircraft that is still waiting for its gate is asked about until `gate-wait-minutes` after touchdown, and after every unconfirmed one.
 
@@ -116,7 +116,7 @@ real provider reads its API key from an environment variable (for example
 `FLIGHTTRACKER_CONFIRMATION_<ID>_API_KEY`), set from a GitHub secret and the
 deploy environment, and the key is never committed. This section lists each
 provider's variable once it is added. Swedavia FlightInfo (a board provider,
-below) is the first real one; AeroDataBox (per flight) is planned second. The
+below) is the first real one; AeroDataBox (per flight, a global fallback) is the second. The
 candidates and their limits are in
 [`docs/agents/provider-research.md`](docs/agents/provider-research.md).
 
@@ -165,6 +165,65 @@ date (`AirportArrivalsProvider.boardDate`; other providers keep the UTC date).
   what `actualUtc` means, the over-quota status code, and the real `to` block.
   See [`docs/agents/swedavia-api.md`](docs/agents/swedavia-api.md). The test
   fixtures in `backend/src/test/resources/swedavia/` are reconstructed, not
+  recorded.
+
+### AeroDataBox (`aerodatabox`)
+
+`AeroDataBoxArrivalProvider` is a per-flight provider (via RapidAPI) that covers
+any airport. It is the **global fallback**: the service does not ask it about an
+airport that an enabled board provider covers, so with a Swedavia key it only
+sees the rest of the world. One lookup is
+`GET {base-url}/flights/{searchBy}/{callsign}?withAircraftImage=false&withLocation=false`
+(the "nearest flight" variant, no date), with `X-RapidAPI-Key` and
+`X-RapidAPI-Host`. The entry is chosen by arrival airport (and its `aircraft.modeS`
+must not name another airframe), then nearest the expected touchdown; operator before
+codeshare only separates entries within an hour of the nearest one.
+
+- **Key.** Sign up at rapid.aerodatabox.com and subscribe to the free Basic plan.
+  Set `AERODATABOX_API_KEY` in `/etc/flight-tracker/env` (`deploy/hetzner/env.example`
+  has the commented line); never commit it. Without a key the provider is disabled
+  (one INFO line at startup). A 401/403 fails the lookup and switches the provider
+  off until the next UTC midnight (one degraded line says so).
+- **Settings.** `flighttracker.confirmation.aerodatabox.enabled` (true), `.api-key`,
+  `.base-url` (`https://aerodatabox.p.rapidapi.com`), `.host` (`aerodatabox.p.rapidapi.com`),
+  `.search-by` (`Number`, or `CallSign`), `.record-training-labels` (false),
+  `.found-recheck-minutes` (30), `.not-found-recheck-minutes` (180) and
+  `.gate-wait-minutes` (0).
+- **Budget.** Basic has 400 units a month and a lookup costs 2 units (`callCost()`),
+  so `providers.aerodatabox.monthly-budget: 380` allows about **190 lookups a month**,
+  with `daily-budget: 14` (7 lookups a day). Once the plan's units are spent the
+  upstream rejects calls until it renews. The gateway's 30 s spacing is inside the
+  plan's 1 request a second. A 429 backs off for its `Retry-After` (60 s if absent).
+- **Spending the 7 a day.** Seven lookups are all a day allows, so the provider asks
+  the gateway to spend them slowly. A flight it found but without a gate time is not
+  asked again for **30 minutes** (`found-recheck-minutes`), a flight it does not know
+  for **3 hours** (`not-found-recheck-minutes`), and once it has confirmed the landing
+  the gate is not waited for (`gate-wait-minutes: 0`, against the global 45), because
+  AeroDataBox rarely has a distinct in-block time. The gateway never goes below its
+  own 5 min / 15 min, and other providers keep the defaults. So an arrived flight costs
+  one lookup, an approaching one at most two an hour, and the day realistically
+  covers about 7 different flights. Free of charge and without ending the tick: a
+  callsign the API cannot take (empty, over 10 characters, odd characters) is skipped
+  locally; a request that never got an HTTP response (refused connection, DNS) and a
+  429 are refunded; a 400, 404 or 422 counts as "no such flight" and is cached like
+  a 204. A 5xx keeps its charge, since the API may have billed it.
+- **Attribution.** The free plan is non-commercial and must show a clearly visible
+  AeroDataBox credit that links to https://aerodatabox.com; the UI shows it next to
+  data from this provider.
+- **Retention.** The terms (5.5) allow caching for 7 days at most on Basic. The
+  in-memory caches are short and bounded, but a training label would be kept for
+  `flighttracker.training.retention-days` (365), so this provider's answers do
+  **not** become training labels unless `record-training-labels` is true
+  (`ArrivalConfirmationProvider.mayStoreLongTerm()`).
+- **What it confirms.** Only `status: Arrived` gives times: `arrival.runwayTime.utc` is
+  the touchdown (else `revisedTime`), and `revisedTime` counts as the gate time
+  (AT_GATE) only when a runway time exists and the revised time is later than it.
+  Canceled, Diverted and CanceledUncertain never confirm a landing.
+- **Not yet verified against the live API** (no key was available): whether
+  `Number/<ICAO callsign>` resolves, the over-quota status code and headers, whether
+  Basic blocks a `searchBy`, and a real response where `revisedTime` differs from
+  `runwayTime`. See [`docs/agents/aerodatabox-api.md`](docs/agents/aerodatabox-api.md).
+  The fixtures in `backend/src/test/resources/aerodatabox/` are reconstructed, not
   recorded.
 
 To see the whole journey locally without a real feed, enable the mock
