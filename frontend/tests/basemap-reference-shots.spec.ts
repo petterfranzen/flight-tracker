@@ -1,5 +1,5 @@
 import { test } from "@playwright/test";
-import { mockFlightApi, setMapView } from "./helpers";
+import { mockFlightApi, setMapView, waitForMapReady } from "./helpers";
 
 /**
  * Not an assertion test — captures the cyberpunk basemap at a spread of
@@ -20,7 +20,7 @@ test("cyberpunk basemap reference shots", async ({ page }) => {
   await mockFlightApi(page);
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto("/");
-  await page.waitForSelector(".map-container");
+  await waitForMapReady(page);
   await page.waitForTimeout(6000);
 
   for (const v of VIEWS) {
