@@ -37,7 +37,8 @@ branch. Never merge to `main`; the human merges.
 | P1-R | Review Phase 1: diff, all quality gates, check against the brief | reviewer | P1-C, P1-D | running |
 | P2 | Training data capture: tables, capture and label service, retention, `LandingModel` stub (plan below) | implementer | Phase 1 | done (801b70e on `claude/coverage-gap-phase2`): 198 backend tests |
 | P2-R | Review Phase 2 | reviewer | P2, P1 fixes merged in | todo |
-| P3-* | Provider interface, mock provider, upgrade logic (plan below) | | Phase 2 | todo |
+| P3 | Provider SPI, framework-level cache and rate limit, `ConfirmationStore`, upgrade service, mock provider, UI tweaks (no real provider) | implementer | Phase 2 | running (stacked on `claude/coverage-gap-phase2`) |
+| P3-real | Real provider (the human chooses) | implementer | the human's choice | blocked: checkpoint |
 
 ## Phase 0 findings (summary)
 
