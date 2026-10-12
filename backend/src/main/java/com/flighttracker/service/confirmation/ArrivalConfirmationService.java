@@ -26,7 +26,9 @@ import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Turns "probably landed" into "confirmed" by asking the arrival providers.
@@ -77,6 +79,9 @@ public class ArrivalConfirmationService {
     /** An on-ground report this close to a runway threshold counts as being at its airport. */
     static final double RUNWAY_AIRPORT_RADIUS_M = 5_000;
 
+    /** A candidate's recheck memo: one provider, aircraft, airport and board date. */
+    private record RecheckKey(String providerId, String icao24, String airport, LocalDate date) { }
+
     private record Candidate(LiveAircraft aircraft, int priority, String airport, Instant expectedAt, boolean confirmed) { }
 
     private final List<ArrivalConfirmationProvider> providers;
@@ -93,6 +98,9 @@ public class ArrivalConfirmationService {
     private final Duration onGroundWindow;
     private final Duration skewTolerance;
     private final Duration gateWait;
+    private final Duration boardRecheck;
+    /** When each candidate last drew a blank from a board, as that board's fetch time. */
+    private final Map<RecheckKey, Instant> blanks = new ConcurrentHashMap<>();
 
     public ArrivalConfirmationService(List<ArrivalConfirmationProvider> providers,
                                       @Nullable List<AirportArrivalsProvider> boardProviders,
@@ -107,7 +115,8 @@ public class ArrivalConfirmationService {
                                       @Value("${flighttracker.confirmation.min-landing-probability:0.5}") double minLandingProbability,
                                       @Value("${flighttracker.confirmation.on-ground-window-minutes:120}") long onGroundWindowMinutes,
                                       @Value("${flighttracker.confirmation.skew-tolerance-seconds:300}") long skewToleranceSeconds,
-                                      @Value("${flighttracker.confirmation.gate-wait-minutes:45}") long gateWaitMinutes) {
+                                      @Value("${flighttracker.confirmation.gate-wait-minutes:45}") long gateWaitMinutes,
+                                      @Value("${flighttracker.confirmation.board-recheck-minutes:15}") long boardRecheckMinutes) {
         this.providers = providers;
         this.boardProviders = boardProviders == null ? List.of() : boardProviders;
         this.aircraftRepository = aircraftRepository;
@@ -122,6 +131,7 @@ public class ArrivalConfirmationService {
         this.onGroundWindow = Duration.ofMinutes(onGroundWindowMinutes);
         this.skewTolerance = Duration.ofSeconds(skewToleranceSeconds);
         this.gateWait = Duration.ofMinutes(gateWaitMinutes);
+        this.boardRecheck = Duration.ofMinutes(boardRecheckMinutes);
     }
 
     @Scheduled(fixedDelayString = "#{${flighttracker.confirmation.interval-seconds:30} * 1000}")
@@ -177,25 +187,42 @@ public class ArrivalConfirmationService {
      * ({@link AirportArrivalsProvider#boardDate}, the UTC date unless it overrides). A fresh cached board costs
      * nothing; a missing or stale one is fetched, at most once per tick, and
      * then serves all the candidates at that airport. A skipped fetch (paced,
-     * over budget, cooling down) ends this provider's tick, as for per-flight.
+     * over budget, cooling down) spends that one attempt: later candidates are
+     * still matched against fresh cached boards, for free, but nothing more is asked.
+     *
+     * <p>A candidate that a board has no (new) answer for, whether a GA aircraft, a
+     * callsign that is not on the board or an aircraft still waiting for its gate time,
+     * may not trigger another fetch of that board until
+     * {@code board-recheck-minutes} (15) have passed since that board was fetched.
+     * Without this, every unmatched candidate would refetch the board every
+     * {@code board-ttl-seconds} for as long as it stays a candidate, and the daily
+     * budget would go on boards that cannot change the outcome. It can still be matched against a
+     * fresher board that another candidate's fetch brings in.
      */
     private void askBoardProvider(AirportArrivalsProvider provider, List<Candidate> candidates) {
+        Instant now = clock.instant();
+        blanks.values().removeIf(at -> !at.plus(boardRecheck).isAfter(now));
         boolean called = false;
         for (Candidate c : candidates) {
             if (!provider.covers(c.airport())) continue;
             LocalDate date = provider.boardDate(c.expectedAt());
+            RecheckKey key = new RecheckKey(provider.id(), c.aircraft().icao24(), c.airport(), date);
             BoardResult board = gateway.cachedBoard(provider, c.airport(), date).orElse(null);
             if (board == null) {
                 if (called) continue; // the one real call of this tick is spent
+                Instant blankAt = blanks.get(key);
+                if (blankAt != null && blankAt.plus(boardRecheck).isAfter(now)) continue; // checked recently, not on it
                 ConfirmationGateway.BoardOutcome outcome = gateway.board(provider, c.airport(), date);
-                if (outcome.kind() == ConfirmationGateway.Kind.SKIPPED) return;
-                called = outcome.kind() == ConfirmationGateway.Kind.CALLED;
+                called = outcome.kind() != ConfirmationGateway.Kind.CACHED; // a skipped fetch counts too: the gateway is not asked again this tick
+                if (outcome.kind() == ConfirmationGateway.Kind.SKIPPED) continue;
                 board = outcome.board();
             }
-            if (board.status() != LookupResult.Status.FOUND) continue;
-            BoardEntry entry = match(board, c);
-            if (entry != null && entry.info() != null) {
-                apply(provider.id(), c, entry.info());
+            if (board.status() != LookupResult.Status.FOUND && board.status() != LookupResult.Status.NOT_FOUND) continue;
+            BoardEntry entry = board.status() == LookupResult.Status.FOUND ? match(board, c) : null;
+            boolean answered = entry != null && entry.info() != null && apply(provider.id(), c, entry.info());
+            if (!answered) {
+                Instant fetchedAt = gateway.boardFetchedAt(provider, c.airport(), date).orElse(now);
+                blanks.merge(key, fetchedAt, (old, fresh) -> fresh.isAfter(old) ? fresh : old);
             }
         }
     }
@@ -226,7 +253,8 @@ public class ArrivalConfirmationService {
         })).orElse(null);
     }
 
-    private void apply(String sourceId, Candidate c, ArrivalInfo info) {
+    /** True when the answer was stored: it confirmed the landing or added the gate time. */
+    private boolean apply(String sourceId, Candidate c, ArrivalInfo info) {
         LiveAircraft a = c.aircraft();
         Instant landedAt = info.landedAt();
         // A cached or stale answer can be about an earlier landing of the same callsign.
@@ -235,10 +263,10 @@ public class ArrivalConfirmationService {
         if (landedAt != null && landedAt.isBefore(floor.minus(skewTolerance))) {
             log.debug("{} answer from {} landed at {}, before {}: an earlier flight, ignored",
                     a.icao24(), sourceId, landedAt, floor);
-            return;
+            return false;
         }
         Confirmation confirmation = new Confirmation(sourceId, info, clock.instant(), a.observedAt());
-        if (!store.put(a.icao24(), confirmation)) return;
+        if (!store.put(a.icao24(), confirmation)) return false;
         log.info("{} confirmed by {}: {}", a.icao24(), sourceId, info.actualIn() != null ? "at gate" : "landed");
         if (info.actualOn() != null && a.gap() != null) {
             try {
@@ -248,6 +276,7 @@ public class ArrivalConfirmationService {
                 log.warn("Recording the confirmed landing of {} failed", a.icao24(), e);
             }
         }
+        return true;
     }
 
     private List<Candidate> candidates(Instant now) {

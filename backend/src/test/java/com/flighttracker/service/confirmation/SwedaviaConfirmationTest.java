@@ -66,7 +66,7 @@ class SwedaviaConfirmationTest {
                 SwedaviaArrivalsProviderTest.BASE, builder);
         gateway = new ConfirmationGateway(clock, 30, InMemoryAppState.budgets(clock, 300), 1000, 300, 60, 300, 100);
         service = new ArrivalConfirmationService(List.of(), List.of(provider), aircraftRepository, gateway, store, live,
-                routes, runways, training, clock, 0.5, 120, 300, 45);
+                routes, runways, training, clock, 0.5, 120, 300, 45, 15);
     }
 
     private LiveAircraft addInferred(String icao24, String callsign, String airport, Instant touchdownAt) {

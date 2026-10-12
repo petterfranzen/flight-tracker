@@ -82,7 +82,7 @@ class ArrivalConfirmationServiceTest {
     private ArrivalConfirmationService service(long minIntervalSeconds, ArrivalConfirmationProvider... providers) {
         ConfirmationGateway gateway = new ConfirmationGateway(clock, minIntervalSeconds, InMemoryAppState.budgets(clock, 300), 1000, 300, 60, 300, 100);
         return new ArrivalConfirmationService(List.of(providers), null, aircraftRepository, gateway, store, live, routes, runways, training, clock,
-                0.5, 120, 300, 45);
+                0.5, 120, 300, 45, 15);
     }
 
     private GapEstimate gap(TrackState state, double probability, String airport, Instant touchdownAt) {

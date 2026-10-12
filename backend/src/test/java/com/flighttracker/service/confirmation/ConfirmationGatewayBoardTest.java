@@ -85,6 +85,19 @@ class ConfirmationGatewayBoardTest {
     }
 
     @Test
+    void boardFetchedAt_isTheFetchTimeOfTheFreshCachedBoard() {
+        ConfirmationGateway gw = gateway(100);
+        assertThat(gw.boardFetchedAt(provider, "ESSA", TODAY)).isEmpty();
+
+        gw.board(provider, "ESSA", TODAY);
+        clock.advance(Duration.ofSeconds(120));
+
+        assertThat(gw.boardFetchedAt(provider, "ESSA", TODAY)).contains(Instant.parse("2026-10-12T10:00:00Z"));
+        clock.advance(Duration.ofSeconds(200)); // stale
+        assertThat(gw.boardFetchedAt(provider, "ESSA", TODAY)).isEmpty();
+    }
+
+    @Test
     void cachedBoard_neverCalls() {
         ConfirmationGateway gw = gateway(100);
 

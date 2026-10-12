@@ -79,7 +79,7 @@ class ArrivalConfirmationBoardTest {
     private ArrivalConfirmationService service(AirportArrivalsProvider... boardProviders) {
         ConfirmationGateway gateway = new ConfirmationGateway(clock, 0, InMemoryAppState.budgets(clock, 300), 1000, 300, 60, 300, 100);
         return new ArrivalConfirmationService(List.of(), List.of(boardProviders), aircraftRepository, gateway, store, live,
-                routes, runways, training, clock, 0.5, 120, 300, 45);
+                routes, runways, training, clock, 0.5, 120, 300, 45, 15);
     }
 
     private LiveAircraft addInferred(String icao24, String callsign, String airport, Instant touchdownAt) {
@@ -158,10 +158,117 @@ class ArrivalConfirmationBoardTest {
         assertThat(boards.fetches).hasSize(1);
         assertThat(store.size()).isZero();
 
-        clock.advance(Duration.ofSeconds(2));
+        clock.advance(Duration.ofMinutes(15)); // the board is stale and the recheck memo has run out
         svc.tick();
         assertThat(boards.fetches).hasSize(2);
         assertThat(store.size()).isEqualTo(1);
+    }
+
+    // ---- recheck memo
+
+    @Test
+    void aCandidateThatIsNotOnTheBoard_doesNotRefetchItEveryTtl_butOnlyEveryRecheckInterval() {
+        addInferred("a1", "GA123", "ESSA", now.minus(Duration.ofMinutes(10)));
+        boards.boards.put("ESSA", List.of(entry("SAS9", null, now, null, null)));
+        ArrivalConfirmationService svc = service(boards);
+
+        svc.tick();
+        assertThat(boards.fetches).hasSize(1);
+
+        for (int i = 0; i < 2; i++) { // the board is stale after 5 min: two stale ticks, still no new fetch
+            clock.advance(Duration.ofSeconds(301));
+            svc.tick();
+        }
+        assertThat(boards.fetches).hasSize(1);
+        assertThat(store.size()).isZero();
+    }
+
+    @Test
+    void theRecheckMemoCountsFromTheBoardsFetchTime() {
+        addInferred("a1", "GA123", "ESSA", now.minus(Duration.ofMinutes(10)));
+        boards.boards.put("ESSA", List.of(entry("SAS9", null, now, null, null)));
+        ArrivalConfirmationService svc = service(boards);
+
+        svc.tick(); // fetched at 12:00:00, no GA123 on it
+        clock.advance(Duration.ofSeconds(301)); // 12:05:01, board stale
+        svc.tick();
+        clock.advance(Duration.ofMinutes(9)); // 12:14:01
+        svc.tick();
+        assertThat(boards.fetches).hasSize(1);
+
+        clock.advance(Duration.ofSeconds(59)); // 12:15:00: 15 minutes since that fetch
+        svc.tick();
+        assertThat(boards.fetches).hasSize(2);
+    }
+
+    @Test
+    void aBlankedCandidate_isStillMatchedAgainstAFresherBoardAnotherCandidateFetches() {
+        Instant td = now.minus(Duration.ofMinutes(10));
+        addInferred("a1", "SAS1", "ESSA", td);
+        boards.boards.put("ESSA", List.of());
+        ArrivalConfirmationService svc = service(boards);
+        svc.tick(); // a1 is not on the board
+        assertThat(boards.fetches).hasSize(1);
+
+        clock.advance(Duration.ofSeconds(301)); // stale; a1 may not trigger a refetch, a newcomer may
+        addInferred("a2", "SAS2", "ESSA", td.plusSeconds(60));
+        boards.boards.put("ESSA", List.of(entry("SAS1", null, td, null, null), entry("SAS2", null, td.plusSeconds(60), null, null)));
+        svc.tick();
+        assertThat(boards.fetches).hasSize(2);
+        assertThat(store.forAircraft(aircraft.get("a2"))).isPresent();
+
+        clock.advance(Duration.ofSeconds(30));
+        svc.tick(); // a1 meets the fresher board for free
+        assertThat(boards.fetches).hasSize(2);
+        assertThat(store.forAircraft(aircraft.get("a1"))).isPresent();
+    }
+
+    @Test
+    void anAircraftWaitingForItsGate_isRechecked_atMostOncePerRecheckInterval() {
+        Instant td = now.minus(Duration.ofMinutes(10));
+        addInferred("a1", "SAS1", "ESSA", td);
+        boards.boards.put("ESSA", List.of(entry("SAS1", null, td, null, null)));
+        ArrivalConfirmationService svc = service(boards);
+        svc.tick(); // landing confirmed from the first board
+        assertThat(boards.fetches).hasSize(1);
+
+        clock.advance(Duration.ofSeconds(301));
+        svc.tick(); // asked for the gate once: the board has none
+        assertThat(boards.fetches).hasSize(2);
+
+        clock.advance(Duration.ofSeconds(301));
+        svc.tick();
+        clock.advance(Duration.ofSeconds(301));
+        svc.tick();
+        assertThat(boards.fetches).hasSize(2); // 10 min since the last fetch: not yet
+
+        boards.boards.put("ESSA", List.of(entry("SAS1", null, td, td.plusSeconds(480), "B14")));
+        clock.advance(Duration.ofMinutes(5)); // 15 min after the second fetch
+        svc.tick();
+        assertThat(boards.fetches).hasSize(3);
+        assertThat(store.forAircraft(aircraft.get("a1")).orElseThrow().gateAt()).isEqualTo(td.plusSeconds(480));
+    }
+
+    @Test
+    void aSkippedFetch_doesNotEndTheTick_laterCandidatesStillMatchFreshCachedBoards() {
+        Instant td = now.minus(Duration.ofMinutes(10));
+        addInferred("x1", "SAS1", "ESSA", td);                       // sorts first; its ESSA board is missing
+        addInferred("y1", "SAS2", "ESGG", td.plusSeconds(60));       // ESGG has a fresh cached board
+        boards.boards.put("ESGG", List.of(entry("SAS2", null, td.plusSeconds(60), null, null)));
+        ConfirmationGateway gateway = new ConfirmationGateway(clock, 0, InMemoryAppState.budgets(clock, 300), 1000, 300, 60, 300, 100);
+        LocalDate date = LocalDate.parse("2026-10-12");
+        gateway.board(boards, "ESGG", date);                         // caches the ESGG board
+        boards.override = BoardResult.failed();
+        gateway.board(boards, "ESSA", date);                         // fails: the provider now cools down
+        assertThat(boards.fetches).hasSize(2);
+        ArrivalConfirmationService svc = new ArrivalConfirmationService(List.of(), List.of(boards), aircraftRepository, gateway, store,
+                live, routes, runways, training, clock, 0.5, 120, 300, 45, 15);
+
+        svc.tick();
+
+        assertThat(boards.fetches).hasSize(2); // the gateway was not asked for anything real
+        assertThat(store.forAircraft(aircraft.get("x1"))).isEmpty();
+        assertThat(store.forAircraft(aircraft.get("y1"))).isPresent();
     }
 
     @Test
@@ -364,7 +471,7 @@ class ArrivalConfirmationBoardTest {
         boards.boards.put("ESSA", List.of(entry("SAS1", null, td, null, null)));
         ConfirmationGateway gateway = new ConfirmationGateway(clock, 0, InMemoryAppState.budgets(clock, 300), 1000, 300, 60, 300, 100);
         ArrivalConfirmationService svc = new ArrivalConfirmationService(List.of(perFlight), List.of(boards), aircraftRepository,
-                gateway, store, live, routes, runways, training, clock, 0.5, 120, 300, 45);
+                gateway, store, live, routes, runways, training, clock, 0.5, 120, 300, 45, 15);
 
         svc.tick();
 
@@ -377,7 +484,7 @@ class ArrivalConfirmationBoardTest {
     void aServiceWithoutBoardProviders_acceptsNull() {
         ConfirmationGateway gateway = new ConfirmationGateway(clock, 0, InMemoryAppState.budgets(clock, 300), 1000, 300, 60, 300, 100);
         ArrivalConfirmationService svc = new ArrivalConfirmationService(List.of(), null, aircraftRepository,
-                gateway, store, live, routes, runways, training, clock, 0.5, 120, 300, 45);
+                gateway, store, live, routes, runways, training, clock, 0.5, 120, 300, 45, 15);
         addInferred("a1", "SAS1", "ESSA", now.minusSeconds(300));
 
         svc.tick();

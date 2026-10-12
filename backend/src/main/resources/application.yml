@@ -104,6 +104,8 @@ flighttracker:
     # may add a monthly one, under providers.<id>.daily-budget / .monthly-budget.
     daily-budget: 300
     board-ttl-seconds: 300
+    # A candidate a board had no answer for waits this long before it may trigger another fetch of it.
+    board-recheck-minutes: 15
     # Per-provider budgets (ConfirmationBudgets). Swedavia's free tier allows
     # 10,000 requests a month and blocks the rest of the month once exceeded, so
     # the monthly budget leaves headroom. The 2 s minimum spacing Swedavia asks

@@ -87,7 +87,7 @@ public class ConfirmationGateway {
 
     private record BoardKey(String providerId, String airport, LocalDate utcDate) { }
 
-    private record BoardCacheEntry(BoardResult board, Instant expiresAt) { }
+    private record BoardCacheEntry(BoardResult board, Instant fetchedAt, Instant expiresAt) { }
 
     /** Per-provider pacing state. Guarded by its own monitor. */
     private static final class ProviderState {
@@ -196,7 +196,7 @@ public class ConfirmationGateway {
         if (result.status() == LookupResult.Status.FOUND || result.status() == LookupResult.Status.NOT_FOUND) {
             recordSuccess(state);
             synchronized (boards) {
-                boards.put(key, new BoardCacheEntry(result, now.plus(boardTtl)));
+                boards.put(key, new BoardCacheEntry(result, now, now.plus(boardTtl)));
                 evictBoardOverflow(now);
             }
         } else {
@@ -208,6 +208,16 @@ public class ConfirmationGateway {
     /** The board if it is cached and fresh; never makes a call. */
     public Optional<BoardResult> cachedBoard(AirportArrivalsProvider provider, String airportIcao, LocalDate utcDate) {
         return freshBoard(boardKey(provider, airportIcao, utcDate), clock.instant());
+    }
+
+    /** When the fresh cached board was fetched; empty if there is none. Never makes a call. */
+    public Optional<Instant> boardFetchedAt(AirportArrivalsProvider provider, String airportIcao, LocalDate utcDate) {
+        BoardKey key = boardKey(provider, airportIcao, utcDate);
+        Instant now = clock.instant();
+        synchronized (boards) {
+            BoardCacheEntry hit = boards.get(key);
+            return hit != null && hit.expiresAt().isAfter(now) ? Optional.of(hit.fetchedAt()) : Optional.empty();
+        }
     }
 
     private static BoardKey boardKey(AirportArrivalsProvider provider, String airportIcao, LocalDate utcDate) {
