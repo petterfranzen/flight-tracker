@@ -30,7 +30,7 @@ branch. Never merge to `main`; the human merges.
 |---|---|---|---|---|
 | P0 | Reconnaissance: code map | explorer | none | done |
 | P3-R | Research confirmation providers (web): `docs/agents/provider-research.md` | explorer | none | done; awaiting human choice |
-| P1-A | Runway data: bundled `runways.tsv`, `runway` table, seed, in-memory `RunwayIndex` | implementer | none | running |
+| P1-A | Runway data: bundled `runways.tsv`, `runway` table, seed, in-memory `RunwayIndex` | implementer | none | done (fce7e86): 16,520 directional runways, 706 KB TSV, 13 tests |
 | P1-B | Pure `CoverageGapEstimator` (Kalman/dead reckoning, runway match, time to touchdown, landed probability) and scenario unit tests | implementer | none | running |
 | P1-C | Backend wiring: poll-coverage tracker, `EstimatorAgent` on the new estimator, `TrackStatus` on `LiveAircraft`, `GET /api/flights/{icao24}/status`, dossier text | implementer | P1-A, P1-B | todo |
 | P1-D | Frontend: status line with confidence and source, uncertainty cone GL layer, status polling, Playwright tests | implementer | contract below | running |
@@ -208,3 +208,5 @@ stateDiagram-v2
   `route-estimate.spec.ts` "estimated positions move the end of the trail…" is flaky under load and passes alone.
 - 2026-10-12: Provider research done (`provider-research.md`), awaiting the human's choice.
   P1-A, P1-B and P1-D launched in parallel.
+- 2026-10-12: P1-A merged (cherry-picked; the worktrees branch from an older `main`
+  commit, `de29454`, so their commits are cherry-picked, not merged).
