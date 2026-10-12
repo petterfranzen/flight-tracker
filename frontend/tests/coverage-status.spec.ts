@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { findMarkerNear, getUncertaintyRings, LIVE_FIXTURE, mockFlightApi, setMapView, waitForPlanes } from "./helpers";
+import { findMarkerNear, getMapLatLngToContainerPoint, getUncertaintyRings, renderedPlanes, LIVE_FIXTURE, mockFlightApi, setMapView, waitForPlanes } from "./helpers";
 import type { TrackStatus } from "../src/types/flight";
 
 // The coverage-gap status: the dossier's status line and the uncertainty cone
@@ -30,8 +30,10 @@ function status(overrides: Partial<TrackStatus>): TrackStatus {
 
 const LANDING = { airportIcao: "ESSA", runway: "19R", touchdownAt: "2026-10-12T11:03:10Z" };
 
-async function open(page: Page, served: () => TrackStatus | null, requests?: { count: number }) {
+async function open(page: Page, served: () => TrackStatus | null, requests?: { count: number }, opts?: { noLivePoll?: boolean }) {
   await mockFlightApi(page);
+  // The /live poll would put the plane back at the fixture position; with it off, only the status moves it.
+  if (opts?.noLivePoll) await page.route("**/api/flights/4d00d9/live*", (route) => route.fulfill({ status: 404, json: null }));
   await page.route("**/api/flights/4d00d9/status", (route) => {
     if (requests) requests.count++;
     const s = served();
@@ -134,6 +136,27 @@ test.describe("uncertainty cone", () => {
     expect(widthM / heightM).toBeLessThan(1.02);
   });
 
+  test("near the antimeridian it wraps the longitudes instead of spanning the globe", async ({ page }) => {
+    // lastSeenAt is old, so the selected marker stays where it is (see the marker tests below).
+    const near180 = status({
+      lastSeenAt: "2000-01-01T00:00:00Z",
+      lastSeenLat: 60,
+      lastSeenLon: 179.97,
+      estimate: { lat: 60, lon: -179.98, radiusM: 2000, at: "2026-10-12T11:02:00Z", landingProbability: 0.4 },
+    });
+    await open(page, () => near180);
+    await expect.poll(() => getUncertaintyRings(page).then((r) => r.length), { timeout: 5_000 }).toBe(1);
+    const [ring] = await getUncertaintyRings(page);
+    for (const v of ring) {
+      expect(v.lon).toBeGreaterThanOrEqual(-180);
+      expect(v.lon).toBeLessThanOrEqual(180);
+      const wrapped = ((((v.lon - near180.estimate!.lon + 180) % 360) + 360) % 360) - 180;
+      expect(Math.abs(wrapped)).toBeLessThan(0.1); // a few km, not ~360 degrees away
+    }
+    // the last seen point is a vertex, at its own longitude
+    expect(ring.some((v) => Math.abs(v.lat - 60) < 1e-9 && Math.abs(v.lon - 179.97) < 1e-9)).toBe(true);
+  });
+
   test("is empty without an estimate", async ({ page }) => {
     await open(page, () => status({ state: "ON_GROUND", source: "adsb", sourceKind: "observed", estimate: null }));
     await expect(statusLine(page)).toBeVisible();
@@ -179,5 +202,47 @@ test.describe("status polling", () => {
     await page.clock.runFor(45_000);
     expect(requests.count).toBe(afterClose);
     expect(await getUncertaintyRings(page)).toHaveLength(0);
+  });
+});
+
+test.describe("selected marker follows the estimate", () => {
+  const selectedAt = async (page: Page) => {
+    const p = (await renderedPlanes(page)).find((q) => q.icao24 === plane.icao24);
+    return p ? { x: p.x, y: p.y } : null;
+  };
+  const expectDrawnAt = async (page: Page, lat: number, lon: number) => {
+    await expect
+      .poll(
+        async () => {
+          const drawn = await selectedAt(page);
+          if (!drawn) return Infinity;
+          const want = await getMapLatLngToContainerPoint(page, lat, lon);
+          return Math.hypot(drawn.x - want.x, drawn.y - want.y);
+        },
+        { timeout: 5_000 },
+      )
+      .toBeLessThan(6);
+  };
+
+  test("is drawn at the estimate after each 15 s status refresh", async ({ page }) => {
+    await page.clock.install();
+    const requests = { count: 0 };
+    let served = status({});
+    await open(page, () => served, requests, { noLivePoll: true });
+    await expectDrawnAt(page, served.estimate!.lat, served.estimate!.lon);
+
+    // The cone moves on; the marker goes with it, not 72 s later.
+    const next = { ...served.estimate!, lat: served.estimate!.lat + 0.01, lon: served.estimate!.lon + 0.006 };
+    served = status({ estimate: next });
+    const before = requests.count;
+    await page.clock.runFor(15_000);
+    await expect.poll(() => requests.count, { timeout: 5_000 }).toBeGreaterThan(before);
+    await expectDrawnAt(page, next.lat, next.lon);
+  });
+
+  test("a status older than the shown report does not pull the marker back", async ({ page }) => {
+    await open(page, () => status({ lastSeenAt: "2000-01-01T00:00:00Z" }));
+    await expect(statusLine(page)).toBeVisible();
+    await expectDrawnAt(page, plane.latitude, plane.longitude);
   });
 });
