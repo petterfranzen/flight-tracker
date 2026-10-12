@@ -49,8 +49,9 @@ import "./components/FlightMap.css"; // app-shell/header/dock/details-panel/trac
 const FETCH_INTERVAL_MS = 72_000;
 // While coverage is lost the estimate's radius grows, so the status is refetched this often.
 const COVERAGE_LOST_REFETCH_MS = 15_000;
-// While the landing is only inferred, a provider may confirm it (and later add the gate) at any time.
-const LANDED_INFERRED_REFETCH_MS = 60_000;
+// While the landing is only inferred a provider may confirm it, and while it is confirmed without a gate
+// (LANDED_CONFIRMED) the gate may follow, at any time.
+const LANDED_REFETCH_MS = 60_000;
 const FETCH_STOP_MS = 5 * 60_000;
 const DIALOG_STOP_MS = 5 * 60_000;
 
@@ -636,8 +637,8 @@ function boot(): void {
       store.set("trackStatus", status);
       uncertaintyLayer.update(status);
       if (status?.estimate) moveSelectedToEstimate(icao24, status);
-      const wantedMs =
-        status?.state === "COVERAGE_LOST" ? COVERAGE_LOST_REFETCH_MS : status?.state === "LANDED_INFERRED" ? LANDED_INFERRED_REFETCH_MS : 0;
+      const landed = status?.state === "LANDED_INFERRED" || status?.state === "LANDED_CONFIRMED";
+      const wantedMs = status?.state === "COVERAGE_LOST" ? COVERAGE_LOST_REFETCH_MS : landed ? LANDED_REFETCH_MS : 0;
       if (statusTimer && statusTimerMs !== wantedMs) {
         clearInterval(statusTimer);
         statusTimer = null;
