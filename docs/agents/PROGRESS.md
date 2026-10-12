@@ -8,8 +8,8 @@ continue from **Next task**.
 
 ## Status
 
-- **Current phase:** 3b, the Swedavia provider. The human chose Swedavia first and AeroDataBox second (2026-10-12). #120, #121 and #122 are green and wait on the human.
-- **Next task:** P3c-1 (AeroDataBox backend) and P3c-2 (provider credit link in the dossier) are running in parallel on `wip/coverage-gap-phase3c`. Then a review, and a PR stacked on #124 (`claude/coverage-gap-phase3c-aerodatabox`). #124's CI is running on the P3b-F fixes.
+- **Current phase:** done, apart from the human's checkpoints. All PRs are open and wait for human review and merge, in order: #120, #121, #122, #124, #125. #123 (CLAUDE.md rules) is independent.
+- **Next task:** keep #120–#125 green. Once the human adds `SWEDAVIA_API_KEY` / `AERODATABOX_API_KEY`, check the open items in `docs/agents/swedavia-api.md` and `aerodatabox-api.md` live and replace the reconstructed fixtures. The backlog has route search. Phase 4 is training the model once labels accumulate.
 - **Blocked on the human:** the Phase 3 provider choice (see `provider-research.md`). Phases 1 and 2 continue meanwhile.
 
 ## Working agreements (from the human, 2026-10-12)
@@ -33,7 +33,8 @@ The most important rule: **the code is always safe on origin.**
 | 2 | `claude/coverage-gap-phase2` | phase 1 branch (stacked) | [#121](https://github.com/petterfranzen/flight-tracker/pull/121) |
 | 3 | `claude/coverage-gap-phase3` | phase 2 branch (stacked) | [#122](https://github.com/petterfranzen/flight-tracker/pull/122) |
 | 3b | `claude/coverage-gap-phase3b-swedavia` | phase 3 branch (stacked) | [#124](https://github.com/petterfranzen/flight-tracker/pull/124) |
-| wip | `wip/coverage-gap-phase3b` | no PR, no CI | safekeeping |
+| 3c | `claude/coverage-gap-phase3c-aerodatabox` | phase 3b branch (stacked) | [#125](https://github.com/petterfranzen/flight-tracker/pull/125) |
+| wip | `wip/coverage-gap-phase3b`, `wip/coverage-gap-phase3c`, `wip/route-search-brief` | no PR, no CI | safekeeping |
 
 The brief asks for one PR per phase. The later phases build on the earlier
 ones, so the branches are stacked, and each PR targets the previous phase's
@@ -63,8 +64,10 @@ branch. Never merge to `main`; the human merges.
 | P3b-2 | `SwedaviaArrivalsProvider` + fixtures + config (`SWEDAVIA_API_KEY` env var, `deploy/hetzner/env.example`, README) | implementer | P3b-R, P3b-1 | done (65feb87, f99edf1): 354 tests; **PR #124** |
 | P3b-Rev | Review Phase 3b | reviewer | P3b-2 | done: no blockers (`reviews/phase3b.md`) |
 | P3c-R | AeroDataBox contract | explorer | none | done: `docs/agents/aerodatabox-api.md` |
-| P3c-1 | `AeroDataBoxArrivalProvider` (nearest-flight lookup, 2 units/call, 380/month, 14/day, precedence after board providers, no training labels by default) | implementer | P3c-R | running (relaunched 19:12 UTC) |
-| P3c-2 | Provider credit link in the dossier status line (AeroDataBox terms ¶5.4) | implementer | P3c-R | running (relaunched 19:12 UTC) |
+| P3c-1 | `AeroDataBoxArrivalProvider` (nearest-flight lookup, 2 units/call, 380/month, 14/day, precedence after board providers, no training labels by default) | implementer | P3c-R | done |
+| P3c-2 | Provider credit link in the dossier status line (AeroDataBox terms ¶5.4) | implementer | P3c-R | done |
+| P3c-Rev | Review Phase 3c | reviewer | P3c-1, P3c-2 | done: budget-waste findings (`reviews/phase3c.md`) |
+| P3c-F | Fix the P3c findings: per-provider recheck (30 min/3 h), no gate wait, `accepts()` pre-check, 4xx → NOT_FOUND, refunds, selection, display names | implementer | P3c-Rev | done: 437 tests; **PR #125** |
 | R | `CLAUDE.md` pushing, CI and merging rules (from the working agreements) | orchestrator | none | PR #123 |
 
 ## Phase 0 findings (summary)
@@ -337,3 +340,12 @@ stateDiagram-v2
 - 2026-10-12 15:55–19:10 UTC: Account usage limit. Both P3c agents were stopped before writing anything. Nothing was lost.
   #124 is green (36f37ec). P3c-1 and P3c-2 were relaunched at 19:12 UTC.
   The human asked for a future feature, route search: a brief is queued.
+- 2026-10-12 19:40 UTC: Phase 3c (AeroDataBox) is done.
+  - Provider: nearest-flight lookup, 2 units/call, 380/month and 14/day, a fallback only where no enabled board provider covers the airport, and no training labels by default (7-day terms).
+  - The dossier has an AeroDataBox credit link.
+  - The review found budget waste, now fixed:
+    - recheck after 30 min (found) / 3 h (not found), and no gate wait;
+    - no charge for unusable callsigns;
+    - 400/404/422 map to NOT_FOUND;
+    - refunds for throttled and never-connected calls.
+  - 437 backend tests. PR #125 is stacked on #124.
