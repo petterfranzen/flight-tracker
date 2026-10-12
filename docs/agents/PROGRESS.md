@@ -9,7 +9,7 @@ continue from **Next task**.
 ## Status
 
 - **Current phase:** 1 (physics estimate, state machine, UI)
-- **Next task:** P3-R (combined review of Phases 2 and 3, running). Then fix its findings and open the Phase 2 and Phase 3 PRs (stacked). Drive PR #120 to green as CI events arrive.
+- **Next task:** P2-F and P3-F (running in parallel). Then merge phase 1 → phase 2 → phase 3 (this carries the #119 helper port), then open the Phase 2 and Phase 3 PRs.
 - **Blocked on the human:** the Phase 3 provider choice (see `provider-research.md`). Phases 1 and 2 continue meanwhile.
 
 ## Branches and PRs
@@ -38,7 +38,9 @@ branch. Never merge to `main`; the human merges.
 | P1-F | Fix the P1-R should-fix items 1–4 and nits 5, 6, 7, 10, 11, 12 | implementer | P1-R | done: all fixed, 188 backend tests, e2e 118/118 |
 | P2 | Training data capture: tables, capture and label service, retention, `LandingModel` stub (plan below) | implementer | Phase 1 | done (801b70e on `claude/coverage-gap-phase2`): 198 backend tests |
 | P3 | Provider SPI, framework-level cache and rate limit, `ConfirmationStore`, upgrade service, mock provider, UI tweaks (no real provider) | implementer | Phase 2 | done (4d52beb, 2aaefff on `claude/coverage-gap-phase3`): backend 252 tests, coverage-status 15/15 |
-| P3-R | Review Phases 2 and 3 | reviewer | P1-F merged forward | running |
+| P3-R | Review Phases 2 and 3 | reviewer | P1-F merged forward | done: no blockers (`reviews/phase2-3.md`) |
+| P2-F | Phase 2 fixes: capture delay, long-gap labels, flush retry, schema `;` | implementer | P3-R | running |
+| P3-F | Phase 3 fixes: stale cache, gate re-poll cap, Retry-After cap, pool, refetch, docs | implementer | P3-R | running |
 | P3-real | Real provider (the human chooses) | implementer | the human's choice | blocked: checkpoint |
 
 ## Phase 0 findings (summary)
@@ -201,7 +203,7 @@ stateDiagram-v2
 
 ## Open questions
 
-- **For the human:** training-data volume. P2 estimates 8k–25k feature rows/day, about 5–15 MB/day, so 2–5 GB at the default 365-day retention. The knobs are `flighttracker.training.max-altitude-m` (default 4000; 2000 cuts most general-aviation noise) and `retention-days` (default 365; 180 halves it). Measure with `SELECT COUNT(*) FROM track_end_feature` after a day live.
+- **For the human:** training-data volume. **Measured live: about 70k rows/day, about 20 MB/day, about 7 GB/year at 365 days** (P3-R). P2-F adds a capture delay that drops short between-sweep gaps. The earlier P2 estimate was 8k–25k feature rows/day, about 5–15 MB/day, so 2–5 GB at the default 365-day retention. The knobs are `flighttracker.training.max-altitude-m` (default 4000; 2000 cuts most general-aviation noise) and `retention-days` (default 365; 180 halves it). Measure with `SELECT COUNT(*) FROM track_end_feature` after a day live.
 - Should a learned model be allowed to change the `state`, not just the probability? Decision for now: no. In Phase 2 the model replaces the probability and the confidence only (source `model`). Revisit in Phase 4.
 - The cone radius at low level grows fast (σa = 1 m/s² gives about 3.6 km at +3 min on approach and over 100 km after 30 min at low level). That's honest, but it may look alarming. Revisit after seeing it live, by lowering σa or capping what is drawn.
 
