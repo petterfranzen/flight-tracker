@@ -3,11 +3,34 @@
 Saved 2026-10-12, updated 2026-10-22. Tick these off as you go.
 
 ## 0. Security: patch cloudflared on the VM now (no merge needed)
-- [ ] SSH in, then run:
-      `sudo apt-get update && sudo apt-get install --only-upgrade -y cloudflared && cloudflared --version && sudo systemctl restart cloudflared`
-      (the tunnel drops for a few seconds)
+- [x] Patch cloudflared: done 2026-10-22 from the Hetzner web console.
+- [ ] If you reset the root password for the console, lock it again: `passwd -l root`.
 - [ ] Merge #126, then run the one-time block in `deploy/hetzner/README.md` → "Updates". It installs the auto-update config, so cloudflared is patched nightly from then on.
 - [ ] Repo Settings → Code security: turn on **Dependabot alerts** and **Dependabot security updates**.
+
+## 0b. Fix SSH from your machine (found 2026-10-22)
+`ssh` to both the IP and the hostname hangs, without timing out. #126's one-time step needs SSH (or the console), and so does every CI deploy.
+
+Expected, not a fault:
+- **IP:** `ufw` drops port 22 once bootstrap is over. A silent hang is what a dropped port looks like.
+- **Hostname `flight-ssh.pastabake.cloud` with plain `ssh`:** that name points at Cloudflare's edge, which doesn't serve SSH on port 22. The connection has to go through `cloudflared`.
+
+Steps:
+- [ ] Install `cloudflared` on your machine (`brew install cloudflared`, or Cloudflare's package for your OS).
+- [ ] Add this to `~/.ssh/config`:
+      ```
+      Host flight-ssh.pastabake.cloud
+        User petter
+        ProxyCommand cloudflared access ssh --hostname %h
+      ```
+- [ ] Run `ssh flight-ssh.pastabake.cloud`. A browser opens for the Cloudflare Access login the first time.
+- [ ] If it still hangs or fails, check from the Hetzner console:
+  - `systemctl status cloudflared` and `journalctl -u cloudflared -n 50`: is the tunnel connected, with no errors since the update?
+  - `systemctl status ssh` and `ss -tlnp | grep ':22'`: is sshd listening?
+  - Cloudflare Zero Trust → Networks → Tunnels → this tunnel → Public hostnames: `flight-ssh.pastabake.cloud` should map to `ssh://localhost:22`.
+  - Zero Trust → Access → Applications: is your email allowed on the SSH app?
+- [ ] Check that CI deploys still get through: the last `deploy` job on main uses this same path (with a service token).
+- [ ] Tell Claude what you find. If the config block works, it goes into `deploy/hetzner/README.md`.
 
 ## 1. Review and merge the PRs (in this order)
 - [ ] #120: Phase 1, physics estimate, uncertainty cone, status UI
