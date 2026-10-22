@@ -100,7 +100,32 @@ flighttracker:
   confirmation:
     interval-seconds: 30
     min-interval-seconds: 30
+    # Default daily budget per provider, in cost units. A provider overrides it, and
+    # may add a monthly one, under providers.<id>.daily-budget / .monthly-budget.
     daily-budget: 300
+    board-ttl-seconds: 300
+    # A candidate a board had no answer for waits this long before it may trigger another fetch of it.
+    board-recheck-minutes: 15
+    # Per-provider budgets (ConfirmationBudgets). Swedavia's free tier allows
+    # 10,000 requests a month and blocks the rest of the month once exceeded, so
+    # the monthly budget leaves headroom. The 2 s minimum spacing Swedavia asks
+    # for is covered by min-interval-seconds above (30).
+    providers:
+      swedavia:
+        monthly-budget: 9000
+        daily-budget: 300
+    # Swedavia FlightInfo v2 (SwedaviaArrivalsProvider, arrivals boards for the ten
+    # Swedavia airports). Enabled only when the flag is on AND a key is present.
+    # Keys come from the environment, never from this file (deploy/hetzner/env.example).
+    swedavia:
+      enabled: true
+      # Subscription key from apideveloper.swedavia.se (FlightInfo product, free tier).
+      api-key: ${SWEDAVIA_API_KEY:}
+      # Swedavia rotates primary and secondary keys every 6 months; a 401/403 fails
+      # that fetch (1 budget unit) and the next attempt uses the other key; once both
+      # were rejected in a row the provider is off until the next UTC midnight.
+      api-key-secondary: ${SWEDAVIA_API_KEY_SECONDARY:}
+      base-url: https://api.swedavia.se/flightinfo/v2
     mock:
       enabled: ${FLIGHTTRACKER_CONFIRMATION_MOCK_ENABLED:false}
   # Rolling retention for flight_position — see PositionRetentionService,

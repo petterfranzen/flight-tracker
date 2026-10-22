@@ -1,5 +1,6 @@
 package com.flighttracker.service.confirmation;
 
+import com.flighttracker.repository.AircraftRepository;
 import com.flighttracker.service.coverage.GapEstimate;
 import com.flighttracker.service.coverage.Runway;
 import com.flighttracker.service.coverage.RunwayIndex;
@@ -56,6 +57,7 @@ class ArrivalConfirmationServiceTest {
     private final LiveStateStore live = mock(LiveStateStore.class);
     private final CallsignRouteService routes = mock(CallsignRouteService.class);
     private final TrainingDataService training = mock(TrainingDataService.class);
+    private final AircraftRepository aircraftRepository = mock(AircraftRepository.class);
     private final RunwayIndex runways = new RunwayIndex();
     private final ConfirmationStore store = new ConfirmationStore(120, 100);
     private final Map<String, LiveAircraft> aircraft = new LinkedHashMap<>();
@@ -78,9 +80,9 @@ class ArrivalConfirmationServiceTest {
 
     /** minIntervalSeconds 0 so that only the service's own one-call-per-tick rule limits the calls. */
     private ArrivalConfirmationService service(long minIntervalSeconds, ArrivalConfirmationProvider... providers) {
-        ConfirmationGateway gateway = new ConfirmationGateway(clock, minIntervalSeconds, 300, 1000, 300, 60);
-        return new ArrivalConfirmationService(List.of(providers), gateway, store, live, routes, runways, training, clock,
-                0.5, 120, 300, 45);
+        ConfirmationGateway gateway = new ConfirmationGateway(clock, minIntervalSeconds, InMemoryAppState.budgets(clock, 300), 1000, 300, 60, 300, 100);
+        return new ArrivalConfirmationService(List.of(providers), null, aircraftRepository, gateway, store, live, routes, runways, training, clock,
+                0.5, 120, 300, 45, 15);
     }
 
     private GapEstimate gap(TrackState state, double probability, String airport, Instant touchdownAt) {
