@@ -107,6 +107,46 @@ export interface AircraftDossier {
   legStartAt: string | null;
 }
 
+export type TrackState = "LIVE" | "COVERAGE_LOST" | "LANDED_INFERRED" | "ON_GROUND" | "LANDED_CONFIRMED" | "AT_GATE";
+export type TrackSourceKind = "observed" | "inferred" | "confirmed";
+
+/** Where a silent aircraft probably is: a point and its ~95% horizontal radius. */
+export interface TrackEstimate {
+  lat: number;
+  lon: number;
+  radiusM: number;
+  /** ISO instant the estimate was computed. */
+  at: string;
+  landingProbability: number;
+}
+
+/** The runway an aircraft is predicted (COVERAGE_LOST) or inferred (LANDED_INFERRED) to have landed on. */
+export interface TrackLanding {
+  airportIcao: string;
+  runway: string | null;
+  /** ISO instant: predicted while COVERAGE_LOST, inferred once LANDED_INFERRED. */
+  touchdownAt: string;
+}
+
+/** GET /api/flights/{icao24}/status — what the tracker believes about an aircraft beyond its last report. */
+export interface TrackStatus {
+  icao24: string;
+  state: TrackState;
+  /** Confidence in `state`, 0..1; null for LIVE. */
+  confidence: number | null;
+  /** "adsb" | "physics" | "model" | a provider id. */
+  source: string;
+  sourceKind: TrackSourceKind;
+  lastSeenAt: string;
+  lastSeenLat: number;
+  lastSeenLon: number;
+  estimate: TrackEstimate | null;
+  landing: TrackLanding | null;
+  gate: string | null;
+  terminal: string | null;
+  confirmedAt: string | null;
+}
+
 /** Static reference details for one airport — see AirportInfo.java. */
 export interface AirportInfo {
   icaoCode: string | null;

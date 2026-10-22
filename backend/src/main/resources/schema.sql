@@ -181,3 +181,20 @@ CREATE TABLE IF NOT EXISTS callsign_route (
     destination_airport_lon  REAL,
     fetched_at               INTEGER NOT NULL    -- epoch millis
 );
+
+-- One row per landing direction of a runway (a physical 01L/19R is two
+-- rows), trimmed from OurAirports runways.csv (public domain) to the
+-- airports in `airport` — see RunwaySeedService and scripts/build-runways-tsv.py.
+-- threshold_* is the (displaced) landing threshold and heading_deg the
+-- true heading. Reference data for the coverage-gap estimator, which reads
+-- it through the in-memory RunwayIndex rather than querying this table.
+CREATE TABLE IF NOT EXISTS runway (
+    airport_icao  TEXT NOT NULL,
+    ident         TEXT NOT NULL,
+    threshold_lat REAL NOT NULL,
+    threshold_lon REAL NOT NULL,
+    heading_deg   REAL NOT NULL,
+    elevation_m   REAL,
+    length_m      REAL NOT NULL,
+    PRIMARY KEY (airport_icao, ident)
+);

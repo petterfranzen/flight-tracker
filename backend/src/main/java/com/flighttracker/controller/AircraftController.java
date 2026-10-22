@@ -1,6 +1,7 @@
 package com.flighttracker.controller;
 
 import com.flighttracker.dto.AircraftDossier;
+import com.flighttracker.dto.TrackStatus;
 import com.flighttracker.model.Aircraft;
 import com.flighttracker.model.Airport;
 import com.flighttracker.model.FlightPosition;
@@ -10,7 +11,9 @@ import com.flighttracker.service.FlightPhaseClassifier;
 import com.flighttracker.service.LiveVisibilityWindows;
 import com.flighttracker.service.enrichment.AircraftEnrichmentService;
 import com.flighttracker.service.enrichment.AirportLookupService;
+import com.flighttracker.service.coverage.TrackState;
 import com.flighttracker.service.enrichment.Route;
+import com.flighttracker.service.live.LiveAircraft;
 import com.flighttracker.service.live.LiveStateStore;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -18,8 +21,12 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
+import java.util.Locale;
 import java.util.Optional;
 
 @RestController
@@ -31,17 +38,20 @@ public class AircraftController {
     private final LiveStateStore liveStateStore;
     private final AircraftEnrichmentService enrichmentService;
     private final AirportLookupService airportLookupService;
+    private final Clock clock;
 
     public AircraftController(AircraftRepository aircraftRepository,
                                FlightPositionRepository positionRepository,
                                LiveStateStore liveStateStore,
                                AircraftEnrichmentService enrichmentService,
-                               AirportLookupService airportLookupService) {
+                               AirportLookupService airportLookupService,
+                               Clock clock) {
         this.aircraftRepository = aircraftRepository;
         this.positionRepository = positionRepository;
         this.liveStateStore = liveStateStore;
         this.enrichmentService = enrichmentService;
         this.airportLookupService = airportLookupService;
+        this.clock = clock;
     }
 
     /**
@@ -97,8 +107,20 @@ public class AircraftController {
     // reads as unknown instead.
     private static final long MAX_PLAUSIBLE_FLIGHT_MINUTES = 20 * 60;
 
+    /**
+     * The old silence rule: a descending aircraft quiet for longer than
+     * PRESUMED_LANDED_SILENCE is presumed landed. It applies to every
+     * coverage-gap state but LANDED_INFERRED, which has its own touchdown
+     * time; in particular a COVERAGE_LOST descender with a low landing
+     * probability still stops counting flight minutes.
+     */
+    static boolean silentWhileDescending(TrackState state, boolean descendingOrLanding, Duration silence) {
+        return state != TrackState.LANDED_INFERRED && descendingOrLanding
+                && silence.compareTo(LiveVisibilityWindows.PRESUMED_LANDED_SILENCE) > 0;
+    }
+
     private AircraftDossier toDossier(Aircraft stored) {
-        Instant now = Instant.now();
+        Instant now = clock.instant();
         Optional<Instant> legStart = positionRepository.findCurrentLegTakeoffTime(stored.icao24());
         FlightPosition current = liveStateStore.findLatestPosition(stored.icao24()).orElse(null);
         // The route of *this* flight — by its current callsign, or OpenSky's
@@ -109,14 +131,11 @@ public class AircraftController {
                 : liveStateStore.findLatestCallsign(stored.icao24()).orElse(null);
         Route route = enrichmentService.routeFor(stored.icao24(), callsign, legStart.orElse(null)).orElse(null);
         Aircraft a = withRoute(stored, route);
-        // Raw (never coalesced with EstimatorAgent's estimate) — needed only
-        // for describeLikelyStatus's "at last report" distance text below,
-        // which is documented as describing the last real report, not a
-        // dead-reckoned projection. `current` itself stays coalesced for
-        // everything else (the ETA calc benefits from the more accurate
-        // live position).
-        LiveStateStore.RawLatLon rawPosition =
-                liveStateStore.findRawLatestLatLon(a.icao24()).orElse(null);
+        // `current` is coalesced with the estimate (the ETA calc benefits from
+        // the more accurate live position); the coverage-gap state comes from
+        // the raw live entry, the same TrackStatus /status serves.
+        LiveAircraft live = liveStateStore.get(a.icao24()).orElse(null);
+        TrackStatus status = live == null ? null : TrackStatus.from(live);
 
         // Skip the lookup entirely when on the ground — FlightPhaseClassifier
         // only needs the earlier-altitude reference to distinguish
@@ -145,13 +164,21 @@ public class AircraftController {
         // have landed, rather than running up against `now` indefinitely for
         // a flight that's actually long over. Still airborne (or too
         // recently silent to presume anything) keeps counting up to `now`
-        // as before.
+        // as before. The coverage-gap estimator's LANDED_INFERRED call is
+        // the primary signal (and ends the flight at its touchdown time);
+        // the silence rule applies to every other state, COVERAGE_LOST included,
+        // so a low-probability descender does not count flight minutes forever.
         boolean descendingOrLanding = phase == FlightPhaseClassifier.FlightPhase.DESCENDING
                 || phase == FlightPhaseClassifier.FlightPhase.LANDING;
+        boolean inferredLanded = status != null && status.state() == TrackState.LANDED_INFERRED;
+        boolean silentWhileDescending = current != null && live != null
+                && silentWhileDescending(status.state(), descendingOrLanding, Duration.between(current.observedAt(), now));
         boolean presumedLanded = current != null && (phase == FlightPhaseClassifier.FlightPhase.ON_GROUND
-                || (descendingOrLanding
-                    && Duration.between(current.observedAt(), now).compareTo(LiveVisibilityWindows.PRESUMED_LANDED_SILENCE) > 0));
-        Instant flightEnd = presumedLanded ? current.observedAt() : now;
+                || inferredLanded || silentWhileDescending);
+        Instant touchdownAt = inferredLanded && status.landing() != null ? status.landing().touchdownAt() : null;
+        Instant flightEnd = !presumedLanded ? now
+                : touchdownAt != null && touchdownAt.isBefore(now) ? touchdownAt
+                : current.observedAt();
         Long flightMinutes = legStart.map(takeoff -> Duration.between(takeoff, flightEnd).toMinutes())
                 .filter(minutes -> minutes <= MAX_PLAUSIBLE_FLIGHT_MINUTES)
                 .orElse(null);
@@ -182,7 +209,7 @@ public class AircraftController {
                 ? enrichmentService.checkLandingIfNeeded(a.icao24(), current.observedAt())
                 : Optional.empty();
 
-        String staleExplanation = describeLikelyStatus(current, rawPosition, phase, a, landingConfirmedAt.isPresent());
+        String staleExplanation = describeStatus(status, a, landingConfirmedAt.isPresent());
 
         AirportDisplay origin = resolveAirport(a.originAirport(), a.originAirportName());
         AirportDisplay destination = resolveAirport(a.destinationAirport(), a.destinationAirportName());
@@ -239,66 +266,62 @@ public class AircraftController {
         return new AirportDisplay(name, iataCode);
     }
 
-    // Close enough to the destination, combined with actually descending,
-    // to say "landed" with real confidence rather than just "somewhere
-    // below cruise" — short final approach / taxi-in range, not "in the
-    // same country as the airport."
-    private static final double NEAR_DESTINATION_KM = 30;
+    private static final DateTimeFormatter HH_MM_UTC = DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneOffset.UTC);
 
     /**
-     * The frontend shows this only once a selected aircraft's position has
-     * gone stale (see STALE_POSITION_WARN_MS in FlightMap.tsx) — this just
-     * supplies the best guess at *why*, from what the last report actually
-     * said, not from how long ago it was.
+     * The dossier's status line (staleExplanation), worded from the same
+     * {@link TrackStatus} that /status serves, or null while the aircraft is
+     * simply LIVE. The OpenSky-confirmed landing keeps its own sourced
+     * wording ahead of the inferred states.
      *
-     * @param raw              the last REAL report's lat/lon, never
-     *                         EstimatorAgent's coalesced estimate — the "N
-     *                         km away at last report" text below would
-     *                         otherwise become a self-fulfilling artifact
-     *                         of EstimatedPositionService's own
-     *                         destination-clipping instead of a genuine
-     *                         last-report fact.
      * @param landingConfirmed whether AircraftEnrichmentService.
      *                         checkLandingIfNeeded got an actual OpenSky
-     *                         confirmation for this leg — upgrades the
-     *                         wording from a heuristic guess ("likely") to
-     *                         a sourced fact, rather than changing the
-     *                         underlying guess itself.
+     *                         confirmation for this leg.
      */
-    private String describeLikelyStatus(FlightPosition current, LiveStateStore.RawLatLon raw,
-                                         FlightPhaseClassifier.FlightPhase phase, Aircraft a,
-                                         boolean landingConfirmed) {
-        if (current == null || phase == null) return null;
-
-        if (phase == FlightPhaseClassifier.FlightPhase.ON_GROUND) {
-            return "likely still on the ground (parked, taxiing, or out of ground-receiver range)";
-        }
-
-        boolean descendingOrLanding = phase == FlightPhaseClassifier.FlightPhase.DESCENDING
-                || phase == FlightPhaseClassifier.FlightPhase.LANDING;
-
-        Double distanceToDestKm = null;
-        if (raw != null && a.destinationAirportLat() != null && a.destinationAirportLon() != null) {
-            distanceToDestKm = haversineMeters(
-                    raw.latitude(), raw.longitude(),
-                    a.destinationAirportLat(), a.destinationAirportLon()) / 1000.0;
-        }
+    private String describeStatus(TrackStatus status, Aircraft a, boolean landingConfirmed) {
+        if (status == null) return null;
+        if (status.state() == TrackState.ON_GROUND) return statusLabel(status);
 
         if (landingConfirmed) {
             String dest = a.destinationAirportName() != null ? a.destinationAirportName() : "its destination";
             return String.format("confirmed landed near %s (OpenSky's own flight record shows this leg ended)", dest);
         }
-        if (descendingOrLanding && distanceToDestKm != null && distanceToDestKm <= NEAR_DESTINATION_KM) {
-            String dest = a.destinationAirportName() != null ? a.destinationAirportName() : "its destination";
-            return String.format("likely landed near %s (%.0f km away at last report, and descending)", dest, distanceToDestKm);
+        return statusLabel(status);
+    }
+
+    /** The label table of docs/agents/PROGRESS.md; null for LIVE. */
+    static String statusLabel(TrackStatus s) {
+        TrackStatus.Landing landing = s.landing();
+        String where = landing == null ? null
+                : landing.airportIcao() + (landing.runway() == null ? "" : " " + landing.runway());
+        switch (s.state()) {
+            case COVERAGE_LOST: {
+                StringBuilder out = new StringBuilder("Coverage lost");
+                if (s.estimate() != null) out.append(" · est. ±").append(formatRadius(s.estimate().radiusM()));
+                if (where != null) {
+                    out.append(" · landing ");
+                    if (landing.touchdownAt() != null) out.append('~').append(HH_MM_UTC.format(landing.touchdownAt())).append(" UTC ");
+                    out.append(where);
+                }
+                return out.toString();
+            }
+            case LANDED_INFERRED:
+                return String.format(Locale.ROOT, "Landed %d%% (inferred)", Math.round((s.confidence() == null ? 0 : s.confidence()) * 100))
+                        + (where == null ? "" : " · " + where);
+            case ON_GROUND:
+                return "On ground (ADS-B)";
+            case LANDED_CONFIRMED:
+                return "Landed (confirmed · " + s.source() + ")";
+            case AT_GATE:
+                return "At gate" + (s.gate() == null ? "" : " " + s.gate()) + " (confirmed)";
+            default:
+                return null;
         }
-        if (descendingOrLanding) {
-            return "likely landed or on final approach — descending at last report";
-        }
-        // LEVEL/CLIMBING/TAKING_OFF far from (or with no known) destination:
-        // still airborne is the better read than landed.
-        return "likely still airborne — no recent updates could mean an ADS-B coverage gap"
-                + " (open water, terrain, or a receiver dead zone) rather than having landed";
+    }
+
+    private static String formatRadius(double radiusM) {
+        if (radiusM < 1000) return Math.round(radiusM / 10.0) * 10 + " m";
+        return String.format(Locale.ROOT, radiusM < 10_000 ? "%.1f km" : "%.0f km", radiusM / 1000.0);
     }
 
     private static final double EARTH_RADIUS_M = 6_371_000;

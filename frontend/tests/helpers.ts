@@ -104,6 +104,9 @@ export async function mockFlightApi(
     return route.fulfill({ json: [] });
   });
 
+  // The coverage-gap status (fetchFlightStatus): unknown aircraft (404) unless a test registers its own route.
+  await page.route("**/api/flights/*/status", (route: Route) => route.fulfill({ status: 404, json: null }));
+
   await page.route("**/api/aircraft/*", (route: Route) => route.fulfill({ status: 404, json: null }));
   await page.route("**/api/agents/status", (route: Route) => route.fulfill({ json: { active: false, secondsRemaining: 0 } }));
   // The window is closed (above), so page load reopens it. Unmocked, this went
@@ -397,6 +400,18 @@ export async function getRouteVertices(page: Page): Promise<{ lat: number; lon: 
     if (!source) return [];
     const data = await source.getData();
     return (data.geometry?.coordinates ?? []).map(([lon, lat]) => ({ lat, lon }));
+  });
+}
+
+/** The coverage-gap cone as drawn: the outer ring of each polygon in the uncertainty source, [lat, lon] per vertex (map/uncertainty.ts). */
+export async function getUncertaintyRings(page: Page): Promise<{ lat: number; lon: number }[][]> {
+  return withMap(page, async (map) => {
+    const source = map.gl.getSource("flight-uncertainty") as
+      | { getData(): Promise<{ features: { geometry: { coordinates: [number, number][][] } }[] }> }
+      | undefined;
+    if (!source) return [];
+    const data = await source.getData();
+    return data.features.map((f) => f.geometry.coordinates[0].map(([lon, lat]) => ({ lat, lon })));
   });
 }
 

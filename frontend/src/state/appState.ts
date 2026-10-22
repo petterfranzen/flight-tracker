@@ -1,4 +1,4 @@
-import type { AircraftDossier, AirportInfo, AirportSelection, LiveMarker, SelectedPosition } from "../types/flight";
+import type { AircraftDossier, AirportInfo, AirportSelection, LiveMarker, SelectedPosition, TrackStatus } from "../types/flight";
 import type { FavoriteAircraft, FavoriteRoute } from "../favorites";
 import type { Store } from "./store";
 
@@ -31,6 +31,8 @@ export interface AppState extends Record<string, unknown> {
    */
   selectedPosFresh: boolean;
   dossier: AircraftDossier | null;
+  /** Coverage-gap status of the selected aircraft; null while unknown or unavailable. */
+  trackStatus: TrackStatus | null;
   dossierExpanded: boolean;
   planeOffScreen: boolean;
   focusRequest: number;

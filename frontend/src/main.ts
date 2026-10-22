@@ -3,11 +3,12 @@ import type { AppState } from "./state/appState";
 import { h, clear } from "./ui/h";
 import type { FavoriteAircraft, FavoriteRoute } from "./favorites";
 import { loadFavoriteAircraft, loadFavoriteRoutes, toggleFavoriteAircraft, toggleFavoriteRoute } from "./favorites";
-import type { AirportSelection, Bounds, FlightPosition, LiveMarker, LiveOverview, SelectedPosition } from "./types/flight";
+import type { AirportSelection, Bounds, FlightPosition, LiveMarker, LiveOverview, SelectedPosition, TrackStatus } from "./types/flight";
 import {
   fetchAircraftDossier,
   fetchAirportInfo,
   fetchFlightLive,
+  fetchFlightStatus,
   fetchHistory,
   fetchLiveClusters,
   fetchLiveOverview,
@@ -26,6 +27,7 @@ import { pickInitialView } from "./map/initialView";
 import { getMockPlaneCount } from "./api/mockFleet";
 import { agedIds, findShadowedIds, isActiveTraffic, OVERLAP_MIN_ZOOM } from "./map/staleness";
 import { createRouteLayer } from "./map/route";
+import { createUncertaintyLayer } from "./map/uncertainty";
 import { snapBounds, ViewCache, type CachedView } from "./map/viewCache";
 import * as scaleBar from "./ui/scaleBar";
 import * as dock from "./ui/dock";
@@ -45,6 +47,8 @@ import "./components/FlightMap.css"; // app-shell/header/dock/details-panel/trac
 // See the comment block above FETCH_INTERVAL_MS in the original FlightMap.tsx
 // for the full "watch lifecycle" picture this drives.
 const FETCH_INTERVAL_MS = 72_000;
+// While coverage is lost the estimate's radius grows, so the status is refetched this often.
+const COVERAGE_LOST_REFETCH_MS = 15_000;
 const FETCH_STOP_MS = 5 * 60_000;
 const DIALOG_STOP_MS = 5 * 60_000;
 
@@ -153,6 +157,7 @@ function boot(): void {
     selectedPos: null,
     selectedPosFresh: false,
     dossier: null,
+    trackStatus: null,
     dossierExpanded: false,
     planeOffScreen: false,
     focusRequest: 0,
@@ -586,11 +591,61 @@ function boot(): void {
     if (priorityPollTimer) clearInterval(priorityPollTimer);
     priorityPollTimer = null;
   }
+  // ---- coverage-gap status of the selected plane ----
+  // Fetched with every priority poll; while coverage is lost it is also
+  // refetched on its own timer, so the uncertainty cone keeps growing.
+  let statusTimer: ReturnType<typeof setInterval> | null = null;
+  let statusSeq = 0;
+  function stopStatusPoll(): void {
+    if (statusTimer) clearInterval(statusTimer);
+    statusTimer = null;
+    statusSeq++; // anything still in flight is for a previous selection
+    store.set("trackStatus", null);
+    uncertaintyLayer.update(null);
+  }
+  /**
+   * The cone refreshes every 15 s while coverage is lost, but the /live poll
+   * (which also dead-reckons) only runs every 72 s, so without this the
+   * marker would trail the cone's centre by minutes of flight. The marker
+   * takes the estimate's position and keeps its heading; its observedAt is
+   * unchanged, so the trail treats it as a movable tip, not a new fix.
+   */
+  function moveSelectedToEstimate(icao24: string, status: TrackStatus): void {
+    const est = status.estimate;
+    const prev = store.get("selectedPos");
+    if (!est || !prev || prev.icao24 !== icao24) return;
+    // A real report newer than this status is already on screen: the status is the stale one.
+    if (Date.parse(prev.observedAt) > Date.parse(status.lastSeenAt)) return;
+    if (prev.latitude === est.lat && prev.longitude === est.lon) return;
+    const moved = { ...prev, latitude: est.lat, longitude: est.lon };
+    const known = positions.get(icao24);
+    if (known && !isNewer(known, moved)) positions.set(icao24, { ...known, latitude: est.lat, longitude: est.lon });
+    store.set("selectedPos", moved);
+    if (lastRouteObservedAt != null) appendRoutePoint(moved);
+    renderAircraftLayer();
+  }
+  function refreshStatus(icao24: string): void {
+    const seq = ++statusSeq;
+    fetchFlightStatus(icao24).then((status) => {
+      if (seq !== statusSeq || icao24 !== store.get("selectedId")) return; // superseded, or another plane is selected now
+      store.set("trackStatus", status);
+      uncertaintyLayer.update(status);
+      if (status?.estimate) moveSelectedToEstimate(icao24, status);
+      if (status?.state === "COVERAGE_LOST") {
+        if (!statusTimer) statusTimer = setInterval(() => refreshStatus(icao24), COVERAGE_LOST_REFETCH_MS);
+      } else if (statusTimer) {
+        clearInterval(statusTimer);
+        statusTimer = null;
+      }
+    });
+  }
+
   function startPriorityPoll(icao24: string): void {
     let inFlight = false;
     function poll(): void {
       if (inFlight) return; // never overlap with a slow previous poll
       inFlight = true;
+      refreshStatus(icao24);
       fetchFlightLive(icao24)
         .then((p) => {
           if (!p || p.icao24 !== store.get("selectedId")) return;
@@ -626,6 +681,7 @@ function boot(): void {
   function onSelectedIdChanged(): void {
     const seq = ++selectionEffectSeq;
     stopPriorityPoll();
+    stopStatusPoll();
     stopNowMsTicker();
 
     // Cleared unconditionally: switching directly from aircraft A to B
@@ -772,6 +828,7 @@ function boot(): void {
   if (new URLSearchParams(location.search).has("debug")) import("./ui/debugOverlay").then((m) => m.mountDebugOverlay(map)).catch(() => {});
   const planeLayer = createPlaneLayer(map, handleSelectAircraft);
   const routeLayer = createRouteLayer(map);
+  const uncertaintyLayer = createUncertaintyLayer(map);
   const followSelected = createFollowSelected(map, (offScreen) => store.set("planeOffScreen", offScreen));
 
   // ---- wire real actions into the store now that every closure above exists ----

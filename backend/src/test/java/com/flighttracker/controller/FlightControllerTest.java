@@ -1,7 +1,13 @@
 package com.flighttracker.controller;
 
 import com.flighttracker.dto.LiveOverview;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.flighttracker.dto.TrackStatus;
 import com.flighttracker.model.FlightPosition;
+import com.flighttracker.service.coverage.GapEstimate;
+import com.flighttracker.service.coverage.TrackState;
+import org.springframework.http.ResponseEntity;
 import com.flighttracker.repository.AirportRepository;
 import com.flighttracker.repository.FlightPositionRepository;
 import com.flighttracker.service.ViewportService;
@@ -63,7 +69,7 @@ class FlightControllerTest {
     private static LiveAircraft live(String icao24, String callsign) {
         Instant now = Instant.now();
         return new LiveAircraft(1L, icao24, callsign, now, 59.0, 18.0,
-                null, null, null, null, false, "opensky", null, null, null, null);
+                null, null, null, null, false, "opensky", null, null, null, null, null);
     }
 
     private static Route route(String origin, String originName, String destination, String destinationName) {
@@ -186,5 +192,89 @@ class FlightControllerTest {
 
         assertThat(controller().liveCount(true)).isEqualTo(7L);
         assertThat(controller().liveCount(false)).isEqualTo(70L);
+    }
+
+    // ---- GET /{icao24}/status
+
+    private JsonNode statusJson(LiveAircraft a) throws Exception {
+        when(liveStateStore.get(a.icao24())).thenReturn(Optional.of(a));
+        ResponseEntity<TrackStatus> response = controller().status(a.icao24());
+        assertThat(response.getStatusCode().value()).isEqualTo(200);
+        ObjectMapper mapper = new ObjectMapper().findAndRegisterModules()
+                .configure(com.fasterxml.jackson.databind.SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, false);
+        return mapper.readTree(mapper.writeValueAsString(response.getBody()));
+    }
+
+    private static LiveAircraft withGap(boolean onGround, GapEstimate gap) {
+        Instant seen = Instant.parse("2026-10-12T11:00:00Z");
+        return new LiveAircraft(1L, "4ca123", "SAS123", seen, 59.60, 17.90, null, null, null, null,
+                onGround, "opensky", null, gap == null ? null : gap.estLat(), gap == null ? null : gap.estLon(),
+                gap == null ? null : gap.at(), gap);
+    }
+
+    private static GapEstimate gap(TrackState state) {
+        Instant at = Instant.parse("2026-10-12T11:02:00Z");
+        return new GapEstimate(state, 0.4, 0.85, 59.65, 17.93, 1800, at, "ESSA", "19R",
+                Instant.parse("2026-10-12T11:03:10Z"), null, "physics-v1");
+    }
+
+    @Test
+    void status_unknownAircraft_is404() {
+        when(liveStateStore.get("000000")).thenReturn(Optional.empty());
+
+        assertThat(controller().status("000000").getStatusCode().value()).isEqualTo(404);
+    }
+
+    @Test
+    void status_live_hasTheContractKeys_andNullsWhereNotApplicable() throws Exception {
+        JsonNode json = statusJson(withGap(false, null));
+
+        assertThat(json.get("state").asText()).isEqualTo("LIVE");
+        assertThat(json.get("confidence").isNull()).isTrue();
+        assertThat(json.get("source").asText()).isEqualTo("adsb");
+        assertThat(json.get("sourceKind").asText()).isEqualTo("observed");
+        assertThat(json.get("lastSeenAt").asText()).isEqualTo("2026-10-12T11:00:00Z");
+        for (String k : List.of("estimate", "landing", "gate", "terminal", "confirmedAt")) {
+            assertThat(json.has(k)).as(k).isTrue();
+            assertThat(json.get(k).isNull()).as(k).isTrue();
+        }
+    }
+
+    @Test
+    void status_onGround_isObservedWithFullConfidence() throws Exception {
+        JsonNode json = statusJson(withGap(true, null));
+
+        assertThat(json.get("state").asText()).isEqualTo("ON_GROUND");
+        assertThat(json.get("confidence").asDouble()).isEqualTo(1.0);
+        assertThat(json.get("sourceKind").asText()).isEqualTo("observed");
+        assertThat(json.get("estimate").isNull()).isTrue();
+        assertThat(json.get("landing").isNull()).isTrue();
+    }
+
+    @Test
+    void status_coverageLost_isInferredWithEstimateAndLanding() throws Exception {
+        JsonNode json = statusJson(withGap(false, gap(TrackState.COVERAGE_LOST)));
+
+        assertThat(json.get("state").asText()).isEqualTo("COVERAGE_LOST");
+        assertThat(json.get("confidence").asDouble()).isEqualTo(0.85);
+        assertThat(json.get("source").asText()).isEqualTo("physics");
+        assertThat(json.get("sourceKind").asText()).isEqualTo("inferred");
+        assertThat(json.get("lastSeenLat").asDouble()).isEqualTo(59.60);
+        assertThat(json.get("estimate").get("lat").asDouble()).isEqualTo(59.65);
+        assertThat(json.get("estimate").get("radiusM").asDouble()).isEqualTo(1800);
+        assertThat(json.get("estimate").get("landingProbability").asDouble()).isEqualTo(0.4);
+        assertThat(json.get("landing").get("airportIcao").asText()).isEqualTo("ESSA");
+        assertThat(json.get("landing").get("runway").asText()).isEqualTo("19R");
+        assertThat(json.get("landing").get("touchdownAt").asText()).isEqualTo("2026-10-12T11:03:10Z");
+    }
+
+    @Test
+    void status_landedInferred_isInferredAndKeepsTheLanding() throws Exception {
+        JsonNode json = statusJson(withGap(false, gap(TrackState.LANDED_INFERRED)));
+
+        assertThat(json.get("state").asText()).isEqualTo("LANDED_INFERRED");
+        assertThat(json.get("sourceKind").asText()).isEqualTo("inferred");
+        assertThat(json.get("estimate").isNull()).isFalse();
+        assertThat(json.get("landing").get("touchdownAt").asText()).isEqualTo("2026-10-12T11:03:10Z");
     }
 }

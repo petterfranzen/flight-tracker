@@ -1,4 +1,5 @@
 import type { AppStore } from "../state/appState";
+import type { TrackStatus } from "../types/flight";
 import { isAircraftFavorited, isRouteFavorited } from "../favorites";
 import { h, clear } from "./h";
 
@@ -15,6 +16,12 @@ function formatAgo(observedAtIso: string, nowMs: number): string {
   if (minutes < 60) return `${minutes}m ago`;
   const hours = Math.round(minutes / 60);
   return `${hours}h ago`;
+}
+
+// With a status line shown, the guess at what the silent aircraft is doing is the status's job.
+function staleSuffix(staleExplanation: string | null | undefined, status: TrackStatus | null): string {
+  if (status && statusLabel(status)) return "";
+  return ` — ${staleExplanation ?? "no recent updates"}`;
 }
 
 function formatDurationMinutes(totalMinutes: number): string {
@@ -48,6 +55,49 @@ function formatAirport(name: string | null | undefined, icao: string | null | un
 // `wide` fields (long values like airport names) take a full row on mobile.
 function field(dt: string, dd: string, wide = false): HTMLElement {
   return h("div", { className: `details-panel-field${wide ? " details-panel-field--wide" : ""}` }, h("dt", null, dt), h("dd", null, dd));
+}
+
+function formatClockTime(iso: string): string {
+  return new Date(iso).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+}
+
+function formatRadius(radiusM: number): string {
+  // Same steps as the backend's status label: 10 m under 1 km, one decimal under 10 km, whole km above.
+  if (radiusM < 1000) return `${Math.round(radiusM / 10) * 10} m`;
+  return radiusM < 10_000 ? `${(radiusM / 1000).toFixed(1)} km` : `${Math.round(radiusM / 1000)} km`;
+}
+
+/** The dossier's status line for an aircraft that is not live; null when there is nothing to say (LIVE). */
+export function statusLabel(status: TrackStatus): string | null {
+  const runway = status.landing ? [status.landing.airportIcao, status.landing.runway].filter(Boolean).join(" ") : "";
+  switch (status.state) {
+    case "COVERAGE_LOST": {
+      const estimate = status.estimate ? ` · est. ±${formatRadius(status.estimate.radiusM)}` : "";
+      const landing = status.landing ? ` · landing ~${formatClockTime(status.landing.touchdownAt)} ${runway}` : "";
+      return `Coverage lost${estimate}${landing}`;
+    }
+    case "LANDED_INFERRED":
+      return `Landed${status.confidence != null ? ` ${Math.round(status.confidence * 100)}%` : ""} (inferred)${runway ? ` · ${runway}` : ""}`;
+    case "ON_GROUND":
+      return "On ground (ADS-B)";
+    case "LANDED_CONFIRMED":
+      return `Landed (confirmed · ${status.source})`;
+    case "AT_GATE":
+      return `At gate${status.gate ? ` ${status.gate}` : ""} (confirmed)`;
+    default:
+      return null;
+  }
+}
+
+/** The status line's element, or null when there is no status or the aircraft is live. */
+function statusLine(status: TrackStatus | null): HTMLElement | null {
+  const text = status && statusLabel(status);
+  if (!status || !text) return null;
+  return h(
+    "p",
+    { className: `details-panel-status details-panel-status--${status.sourceKind}`, "data-track-state": status.state, "data-source-kind": status.sourceKind },
+    text,
+  );
 }
 
 /**
@@ -84,19 +134,20 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     if (!selectedPos) return;
     const nowMs = store.get("nowMs");
     const dossier = store.get("dossier");
+    const status = store.get("trackStatus");
     const stale = nowMs - new Date(selectedPos.observedAt).getTime() > STALE_POSITION_WARN_MS;
     updatedLineEl.className = `details-panel-updated${stale ? " details-panel-updated--stale" : ""}`;
     clear(updatedLineEl);
     updatedLineEl.append(
       stale ? "⚠ " : "",
       `Last updated ${formatAgo(selectedPos.observedAt, nowMs)}`,
-      stale ? ` — ${dossier?.staleExplanation ?? "no recent updates"}` : "",
+      stale ? staleSuffix(dossier?.staleExplanation, status) : "",
     );
   }
 
   renderAll();
   const unsubscribeStructural = store.subscribeMany(
-    ["selectedPos", "airportDossier", "dossier", "dossierExpanded", "planeOffScreen", "airportInfo", "favoriteAircraft", "favoriteRoutes"],
+    ["selectedPos", "airportDossier", "dossier", "trackStatus", "dossierExpanded", "planeOffScreen", "airportInfo", "favoriteAircraft", "favoriteRoutes"],
     renderAll,
   );
   const unsubscribeNowMs = store.subscribe("nowMs", updateNowMs);
@@ -116,6 +167,7 @@ function renderAircraftPanel(store: AppStore): { panel: HTMLElement; updatedLine
   const nowMs = store.get("nowMs");
   const favoriteAircraft = store.get("favoriteAircraft");
   const favoriteRoutes = store.get("favoriteRoutes");
+  const status = store.get("trackStatus");
 
   const aircraftFavorited = isAircraftFavorited(favoriteAircraft, selectedPos.icao24);
   const routeFavorited =
@@ -171,7 +223,7 @@ function renderAircraftPanel(store: AppStore): { panel: HTMLElement; updatedLine
     { className: `details-panel-updated${stale ? " details-panel-updated--stale" : ""}` },
     stale ? "⚠ " : "",
     `Last updated ${formatAgo(selectedPos.observedAt, nowMs)}`,
-    stale ? ` — ${dossier?.staleExplanation ?? "no recent updates"}` : "",
+    stale ? staleSuffix(dossier?.staleExplanation, status) : "",
   );
 
   const fields = h(
@@ -224,6 +276,7 @@ function renderAircraftPanel(store: AppStore): { panel: HTMLElement; updatedLine
       h("p", { className: "details-panel-favorite-hint" }, favoriteHint),
       h("p", { className: "details-panel-meta details-panel-meta--secondary" }, `ICAO24 ${selectedPos.icao24.toUpperCase()} · last leg traced above`),
       updatedLine,
+      statusLine(status),
       fields,
       h("button", { className: "details-panel-close", onClick: () => store.get("closeAircraftPanel")(), "aria-label": "Close aircraft details" }, "Close"),
     ),
