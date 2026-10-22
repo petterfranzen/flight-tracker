@@ -48,10 +48,10 @@ Needs #120 to #124 merged and deployed first. Until then the key does nothing.
 - [ ] Create an account at https://apideveloper.swedavia.se
 - [ ] Subscribe to the **FlightInfo** product, free tier (10,000 calls/month), and copy the subscription key.
 - [ ] Read their terms (licence, caching, attribution). They weren't published publicly.
-- [ ] On the Hetzner VM, add the key to `/etc/flight-tracker/env`:
+- [x] On the Hetzner VM, add the key to `/etc/flight-tracker/env` (done 2026-10-22):
       `SWEDAVIA_API_KEY=your-key`
       (and `SWEDAVIA_API_KEY_SECONDARY=…` if you get a second key; keys rotate every 6 months)
-- [ ] `sudo systemctl restart flight-tracker`
+- [ ] No restart needed now: the first deploy after #124 merges picks the key up.
 
 ## 3. AeroDataBox (optional): global fallback
 - [ ] Subscribe to the **Basic** plan (free: 400 units/month, about 7 lookups/day) at https://rapid.aerodatabox.com
@@ -72,3 +72,4 @@ Needs #120 to #124 merged and deployed first. Until then the key does nothing.
 
 ## Later
 - [ ] Route search (e.g. London → Barcelona): the brief is ready in `docs/agent-tasks/route-search.md` on branch `wip/route-search-brief`. Say "start route search".
+- [ ] Secrets from GitHub to the VM on deploy, so adding or rotating a key needs no SSH. The brief is ready in `docs/agent-tasks/env-sync.md` on branch `wip/env-sync-brief`. Say "do env-sync". It needs CI's SSH working (0b).
