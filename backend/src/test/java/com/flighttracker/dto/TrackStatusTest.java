@@ -2,6 +2,8 @@ package com.flighttracker.dto;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.flighttracker.service.confirmation.ArrivalInfo;
+import com.flighttracker.service.confirmation.Confirmation;
 import com.flighttracker.service.coverage.GapEstimate;
 import com.flighttracker.service.coverage.TrackState;
 import com.flighttracker.service.live.LiveAircraft;
@@ -10,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import java.time.Instant;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Optional;
 import java.util.stream.StreamSupport;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -117,5 +120,66 @@ class TrackStatusTest {
         TrackStatus noRunway = TrackStatus.from(aircraft(false, gap(TrackState.COVERAGE_LOST, "ESSA", null)));
         assertThat(noRunway.landing().airportIcao()).isEqualTo("ESSA");
         assertThat(noRunway.landing().runway()).isNull();
+    }
+
+    private static final Instant ON = Instant.parse("2026-10-12T11:03:30Z");
+    private static final Instant IN = Instant.parse("2026-10-12T11:11:30Z");
+
+    private static Optional<Confirmation> confirmation(Instant on, Instant in, String gate) {
+        return Optional.of(new Confirmation("mock", new ArrivalInfo(null, null, on, in, gate, gate == null ? null : "2", "ESSA"),
+                Instant.parse("2026-10-12T11:12:00Z"), SEEN));
+    }
+
+    @Test
+    void confirmedLanding_withoutGateIn_isLandedConfirmed_andReplacesTheEstimate() throws Exception {
+        TrackStatus s = TrackStatus.from(aircraft(false, gap(TrackState.LANDED_INFERRED, "ESSA", "19R")), confirmation(ON, null, null));
+
+        assertThat(s.state()).isEqualTo(TrackState.LANDED_CONFIRMED);
+        assertThat(s.confidence()).isEqualTo(1.0);
+        assertThat(s.source()).isEqualTo("mock");
+        assertThat(s.sourceKind()).isEqualTo("confirmed");
+        assertThat(s.estimate()).isNull();
+        assertThat(s.landing().airportIcao()).isEqualTo("ESSA");
+        assertThat(s.landing().runway()).isEqualTo("19R");
+        assertThat(s.landing().touchdownAt()).isEqualTo(ON);
+        assertThat(s.confirmedAt()).isEqualTo(ON);
+        assertThat(s.gate()).isNull();
+        assertThat(s.lastSeenAt()).isEqualTo(SEEN);
+    }
+
+    @Test
+    void confirmedGateIn_isAtGate_withGateTerminalAndConfirmedAtTheGateTime() throws Exception {
+        TrackStatus s = TrackStatus.from(aircraft(true, null), confirmation(ON, IN, "B14"));
+
+        assertThat(s.state()).isEqualTo(TrackState.AT_GATE);
+        assertThat(s.gate()).isEqualTo("B14");
+        assertThat(s.terminal()).isEqualTo("2");
+        assertThat(s.confirmedAt()).isEqualTo(IN);
+        assertThat(s.landing().airportIcao()).isEqualTo("ESSA");
+        assertThat(s.landing().runway()).isNull();
+
+        JsonNode json = MAPPER.readTree(MAPPER.writeValueAsString(s));
+        assertThat(fieldNames(json)).containsExactly("icao24", "state", "confidence", "source", "sourceKind",
+                "lastSeenAt", "lastSeenLat", "lastSeenLon", "estimate", "landing", "gate", "terminal", "confirmedAt");
+        assertThat(json.get("state").asText()).isEqualTo("AT_GATE");
+        assertThat(json.get("sourceKind").asText()).isEqualTo("confirmed");
+        assertThat(json.get("estimate").isNull()).isTrue();
+        assertThat(json.get("confirmedAt").asText()).isEqualTo("2026-10-12T11:11:30Z");
+    }
+
+    @Test
+    void gateInWithoutTouchdownTime_stillConfirms_andAGatelessGateInHasNullGate() {
+        TrackStatus s = TrackStatus.from(aircraft(true, null), confirmation(null, IN, null));
+
+        assertThat(s.state()).isEqualTo(TrackState.AT_GATE);
+        assertThat(s.gate()).isNull();
+        assertThat(s.confirmedAt()).isEqualTo(IN);
+    }
+
+    @Test
+    void noConfirmation_isTheUnconfirmedStatus() {
+        LiveAircraft a = aircraft(false, gap(TrackState.COVERAGE_LOST, "ESSA", "19R"));
+
+        assertThat(TrackStatus.from(a, Optional.empty())).isEqualTo(TrackStatus.from(a));
     }
 }
