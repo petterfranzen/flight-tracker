@@ -319,12 +319,19 @@ public class AircraftController {
             case ON_GROUND:
                 return "On ground (ADS-B)";
             case LANDED_CONFIRMED:
-                return "Landed (confirmed · " + s.source() + ")";
+                return "Landed (confirmed · " + providerName(s.source()) + ")";
             case AT_GATE:
                 return "At gate" + (s.gate() == null ? "" : " " + s.gate()) + " (confirmed)";
             default:
                 return null;
         }
+    }
+
+    /** The provider's display name, as the frontend shows it; an unknown id is shown as it is. */
+    static String providerName(String id) {
+        if ("aerodatabox".equals(id)) return "AeroDataBox";
+        if ("swedavia".equals(id)) return "Swedavia";
+        return id;
     }
 
     private static String formatRadius(double radiusM) {

@@ -1,0 +1,113 @@
+[
+  {
+    "greatCircleDistance": {
+      "meter": 9300000,
+      "km": 9300,
+      "mile": 5779,
+      "nauticalMile": 5022,
+      "feet": 30511811
+    },
+    "departure": {
+      "airport": {
+        "icao": "VHHH",
+        "iata": "HKG",
+        "name": "Hong Kong"
+      },
+      "quality": [
+        "Basic"
+      ]
+    },
+    "arrival": {
+      "airport": {
+        "icao": "EHAM",
+        "iata": "AMS",
+        "name": "Amsterdam",
+        "timeZone": "Europe/Amsterdam"
+      },
+      "scheduledTime": {
+        "utc": "2026-10-12 06:05Z",
+        "local": "2026-10-12 08:05+02:00"
+      },
+      "revisedTime": {
+        "utc": "2026-10-12 06:03Z",
+        "local": "2026-10-12 08:03+02:00"
+      },
+      "runwayTime": {
+        "utc": "2026-10-12 06:03Z",
+        "local": "2026-10-12 08:03+02:00"
+      },
+      "terminal": "X",
+      "gate": "X9",
+      "quality": [
+        "Basic",
+        "Live"
+      ]
+    },
+    "lastUpdatedUtc": "2026-10-12 06:20Z",
+    "number": "KL 3871",
+    "callSign": "KLM3871",
+    "status": "Arrived",
+    "codeshareStatus": "IsCodeshared",
+    "isCargo": false,
+    "aircraft": {
+      "reg": "B-LRA",
+      "modeS": "780a8c",
+      "model": "Airbus A350-900"
+    }
+  },
+  {
+    "greatCircleDistance": {
+      "meter": 9300000,
+      "km": 9300,
+      "mile": 5779,
+      "nauticalMile": 5022,
+      "feet": 30511811
+    },
+    "departure": {
+      "airport": {
+        "icao": "VHHH",
+        "iata": "HKG",
+        "name": "Hong Kong"
+      },
+      "quality": [
+        "Basic"
+      ]
+    },
+    "arrival": {
+      "airport": {
+        "icao": "EHAM",
+        "iata": "AMS",
+        "name": "Amsterdam",
+        "timeZone": "Europe/Amsterdam"
+      },
+      "scheduledTime": {
+        "utc": "2026-10-12 06:05Z",
+        "local": "2026-10-12 08:05+02:00"
+      },
+      "revisedTime": {
+        "utc": "2026-10-12 06:02Z",
+        "local": "2026-10-12 08:02+02:00"
+      },
+      "runwayTime": {
+        "utc": "2026-10-12 06:02Z",
+        "local": "2026-10-12 08:02+02:00"
+      },
+      "terminal": "2",
+      "quality": [
+        "Basic",
+        "Live"
+      ]
+    },
+    "lastUpdatedUtc": "2026-10-12 06:20Z",
+    "number": "CX 271",
+    "callSign": "CPA271",
+    "status": "Arrived",
+    "codeshareStatus": "IsOperator",
+    "isCargo": false,
+    "aircraft": {
+      "reg": "B-LRA",
+      "modeS": "780a8c",
+      "model": "Airbus A350-900"
+    }
+  }
+]

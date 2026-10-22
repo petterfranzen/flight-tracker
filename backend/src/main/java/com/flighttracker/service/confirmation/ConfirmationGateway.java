@@ -25,8 +25,14 @@ import java.util.Optional;
  *   <li>a result cache keyed by (provider, callsign, arrival airport, UTC date
  *       of the expected arrival), bounded, with a TTL by outcome: FOUND without
  *       a gate-in time {@value #TTL_FOUND_MINUTES_NO_IN} min (the gate may still
- *       come), FOUND with one 12 h, NOT_FOUND 15 min. THROTTLED and FAILED are
- *       never cached;</li>
+ *       come), FOUND with one 12 h, NOT_FOUND 15 min; a provider may lengthen the
+ *       first and the last ({@link ArrivalConfirmationProvider#foundRecheck()},
+ *       {@link ArrivalConfirmationProvider#notFoundRecheck()}) but not shorten them.
+ *       THROTTLED and FAILED are never cached;</li>
+ *   <li>a query the provider does not {@link ArrivalConfirmationProvider#accepts accept}
+ *       is answered NOT_FOUND without a charge, pacing or a call;</li>
+ *   <li>a refund for a call that never did the upstream's work: THROTTLED, or a
+ *       result that reports a lower {@link LookupResult#costUnits()};</li>
  *   <li>a cache of whole arrivals boards for {@link AirportArrivalsProvider}s,
  *       keyed by (provider, airport, board date: the UTC date unless the provider
  *       overrides {@link AirportArrivalsProvider#boardDate}), bounded, fresh for
@@ -136,14 +142,19 @@ public class ConfirmationGateway {
         synchronized (cache) {
             CacheEntry hit = cache.get(key);
             if (hit != null) {
-                if (hit.expiresAt().isAfter(now) && !isEarlierLeg(hit, query, now)) {
+                if (hit.expiresAt().isAfter(now) && !isEarlierLeg(hit, query, now, foundTtl(provider))) {
                     return new Outcome(Kind.CACHED, hit.result());
                 }
                 cache.remove(key);
             }
         }
 
-        ProviderState state = admit(provider.id(), Math.max(1, provider.callCost()), now);
+        // A query the provider can never answer costs nothing and is not a call: no charge, no
+        // pacing, and the caller goes on to its next candidate. Not cached; the check is free.
+        if (!provider.accepts(query)) return new Outcome(Kind.CACHED, LookupResult.notFound());
+
+        int units = Math.max(1, provider.callCost());
+        ProviderState state = admit(provider.id(), units, now);
         if (state == null) return Outcome.SKIPPED;
 
         LookupResult result;
@@ -154,10 +165,11 @@ public class ConfirmationGateway {
             result = LookupResult.failed();
         }
         if (result == null) result = LookupResult.failed();
+        refundUnreached(provider.id(), units, result);
 
         if (result.status() == LookupResult.Status.FOUND || result.status() == LookupResult.Status.NOT_FOUND) {
             recordSuccess(state);
-            Duration ttl = ttl(result);
+            Duration ttl = ttl(result, provider);
             synchronized (cache) {
                 cache.put(key, new CacheEntry(result, now, now.plus(ttl)));
                 evictOverflow();
@@ -166,6 +178,18 @@ public class ConfirmationGateway {
             recordFailure(provider.id(), state, result.status(), result.retryAfter());
         }
         return new Outcome(Kind.CALLED, result);
+    }
+
+    /**
+     * Gives back what a call charged but never used: all of it for THROTTLED (the upstream
+     * rejected it before doing the work), and down to {@code costUnits} when the provider
+     * reports one (0 for a request that never got an HTTP response). A 5xx or other error
+     * answer keeps its charge: the upstream may have billed it.
+     */
+    private void refundUnreached(String providerId, int charged, LookupResult result) {
+        int used = result.status() == LookupResult.Status.THROTTLED ? 0
+                : result.costUnits() == null ? charged : Math.min(charged, result.costUnits());
+        budgets.adjust(providerId, used - charged);
     }
 
     /**
@@ -279,13 +303,13 @@ public class ConfirmationGateway {
      * a provider that keeps answering with the old leg must not be asked on
      * every tick.
      */
-    private boolean isEarlierLeg(CacheEntry hit, ArrivalQuery query, Instant now) {
+    private boolean isEarlierLeg(CacheEntry hit, ArrivalQuery query, Instant now, Duration recheck) {
         if (hit.result().status() != LookupResult.Status.FOUND || hit.result().info() == null) return false;
         Instant landedAt = hit.result().info().landedAt();
         Instant expected = query.expectedArrivalAt();
         if (landedAt == null || expected == null) return false;
         if (!landedAt.isBefore(expected.minus(skewTolerance))) return false;
-        return !hit.cachedAt().plus(TTL_FOUND_NO_IN).isAfter(now);
+        return !hit.cachedAt().plus(recheck).isAfter(now);
     }
 
     /** Budget units charged to the provider today (UTC), for tests and logs. */
@@ -310,9 +334,19 @@ public class ConfirmationGateway {
         }
     }
 
-    static Duration ttl(LookupResult result) {
-        if (result.status() == LookupResult.Status.NOT_FOUND) return TTL_NOT_FOUND;
-        return result.info() != null && result.info().actualIn() != null ? TTL_FOUND_IN : TTL_FOUND_NO_IN;
+    /** The provider's own recheck interval, but never shorter than the gateway default. */
+    private static Duration atLeast(Duration floor, Duration provided) {
+        return provided != null && provided.compareTo(floor) > 0 ? provided : floor;
+    }
+
+    /** How long a FOUND without a gate-in time is kept (and how often an earlier-leg answer is re-asked). */
+    static Duration foundTtl(ArrivalConfirmationProvider provider) {
+        return atLeast(TTL_FOUND_NO_IN, provider.foundRecheck());
+    }
+
+    static Duration ttl(LookupResult result, ArrivalConfirmationProvider provider) {
+        if (result.status() == LookupResult.Status.NOT_FOUND) return atLeast(TTL_NOT_FOUND, provider.notFoundRecheck());
+        return result.info() != null && result.info().actualIn() != null ? TTL_FOUND_IN : foundTtl(provider);
     }
 
     /** Caller holds the cache monitor. Drops expired entries first, then the least recently used. */

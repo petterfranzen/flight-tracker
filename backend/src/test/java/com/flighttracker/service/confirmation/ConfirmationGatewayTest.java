@@ -20,11 +20,19 @@ class ConfirmationGatewayTest {
         final String id;
         final List<ArrivalQuery> calls = new ArrayList<>();
         Function<ArrivalQuery, LookupResult> answer = q -> LookupResult.notFound();
+        Function<ArrivalQuery, Boolean> accepts = q -> true;
+        Duration foundRecheck;
+        Duration notFoundRecheck;
+        int cost = 1;
 
         ScriptedProvider(String id) {
             this.id = id;
         }
 
+        @Override public boolean accepts(ArrivalQuery query) { return accepts.apply(query); }
+        @Override public Duration foundRecheck() { return foundRecheck; }
+        @Override public Duration notFoundRecheck() { return notFoundRecheck; }
+        @Override public int callCost() { return cost; }
         @Override public String id() { return id; }
         @Override public boolean covers(String airport) { return true; }
         @Override public LookupResult lookup(ArrivalQuery query) {
@@ -124,9 +132,82 @@ class ConfirmationGatewayTest {
 
     @Test
     void ttlByOutcome() {
-        assertThat(ConfirmationGateway.ttl(LookupResult.notFound())).isEqualTo(Duration.ofMinutes(15));
-        assertThat(ConfirmationGateway.ttl(found(landed, null))).isEqualTo(Duration.ofMinutes(5));
-        assertThat(ConfirmationGateway.ttl(found(landed, landed))).isEqualTo(Duration.ofHours(12));
+        assertThat(ConfirmationGateway.ttl(LookupResult.notFound(), provider)).isEqualTo(Duration.ofMinutes(15));
+        assertThat(ConfirmationGateway.ttl(found(landed, null), provider)).isEqualTo(Duration.ofMinutes(5));
+        assertThat(ConfirmationGateway.ttl(found(landed, landed), provider)).isEqualTo(Duration.ofHours(12));
+    }
+
+    @Test
+    void aProviderMayLengthenTheRecheckIntervals_butNeverShortenThem() {
+        provider.foundRecheck = Duration.ofMinutes(30);
+        provider.notFoundRecheck = Duration.ofHours(3);
+        assertThat(ConfirmationGateway.ttl(LookupResult.notFound(), provider)).isEqualTo(Duration.ofHours(3));
+        assertThat(ConfirmationGateway.ttl(found(landed, null), provider)).isEqualTo(Duration.ofMinutes(30));
+        assertThat(ConfirmationGateway.ttl(found(landed, landed), provider)).isEqualTo(Duration.ofHours(12));
+
+        provider.foundRecheck = Duration.ofMinutes(1);
+        provider.notFoundRecheck = Duration.ofMinutes(1);
+        assertThat(ConfirmationGateway.ttl(LookupResult.notFound(), provider)).isEqualTo(Duration.ofMinutes(15));
+        assertThat(ConfirmationGateway.ttl(found(landed, null), provider)).isEqualTo(Duration.ofMinutes(5));
+    }
+
+    @Test
+    void aProvidersRecheckIntervalsHoldInTheCache() {
+        ConfirmationGateway gw = gateway(300, 100);
+        provider.foundRecheck = Duration.ofMinutes(30);
+        provider.notFoundRecheck = Duration.ofHours(3);
+        provider.answer = q -> q.callsign().equals("SAS1") ? found(landed, null) : LookupResult.notFound();
+        gw.lookup(provider, query("SAS1"));
+        clock.advance(Duration.ofSeconds(31));
+        gw.lookup(provider, query("SAS2"));
+
+        clock.advance(Duration.ofMinutes(29));
+        assertThat(gw.lookup(provider, query("SAS1")).kind()).isEqualTo(Kind.CACHED);
+        clock.advance(Duration.ofMinutes(2));
+        assertThat(gw.lookup(provider, query("SAS1")).kind()).isEqualTo(Kind.CALLED);
+
+        clock.advance(Duration.ofHours(2).plusMinutes(20)); // 2 h 52 min after SAS2 was asked
+        assertThat(gw.lookup(provider, query("SAS2")).kind()).isEqualTo(Kind.CACHED);
+        clock.advance(Duration.ofMinutes(30));
+        assertThat(gw.lookup(provider, query("SAS2")).kind()).isEqualTo(Kind.CALLED);
+    }
+
+    @Test
+    void aQueryTheProviderDoesNotAccept_isFree_unpaced_andNotCached() {
+        ConfirmationGateway gw = gateway(300, 100);
+        provider.accepts = q -> !q.callsign().equals("BAD/1");
+
+        ConfirmationGateway.Outcome bad = gw.lookup(provider, query("BAD/1"));
+
+        assertThat(bad.kind()).isEqualTo(Kind.CACHED);
+        assertThat(bad.result().status()).isEqualTo(LookupResult.Status.NOT_FOUND);
+        assertThat(provider.calls).isEmpty();
+        assertThat(gw.unitsToday("p1")).isZero();
+        assertThat(gw.cacheSize()).isZero();
+        // No pacing was started either: a real call right after is made.
+        assertThat(gw.lookup(provider, query("SAS123")).kind()).isEqualTo(Kind.CALLED);
+        assertThat(gw.unitsToday("p1")).isEqualTo(1);
+    }
+
+    @Test
+    void throttled_isRefunded_andFailedIsRefundedOnlyWhenTheProviderSaysItNeverReachedTheUpstream() {
+        ConfirmationGateway gw = gateway(300, 100);
+        provider.cost = 2;
+
+        provider.answer = q -> LookupResult.throttled(Duration.ofSeconds(60));
+        assertThat(gw.lookup(provider, query("SAS1")).kind()).isEqualTo(Kind.CALLED);
+        assertThat(gw.unitsToday("p1")).as("throttled: refunded").isZero();
+
+        clock.advance(Duration.ofMinutes(2));
+        provider.answer = q -> LookupResult.failed().withCost(0);
+        gw.lookup(provider, query("SAS2"));
+        assertThat(gw.unitsToday("p1")).as("no HTTP response: refunded").isZero();
+
+        clock.advance(Duration.ofMinutes(20));
+        provider.answer = q -> LookupResult.failed();
+        gw.lookup(provider, query("SAS3"));
+        assertThat(gw.unitsToday("p1")).as("5xx: kept").isEqualTo(2);
+        assertThat(gw.unitsThisMonth("p1")).isEqualTo(2);
     }
 
     @Test

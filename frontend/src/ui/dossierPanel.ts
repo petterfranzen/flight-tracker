@@ -67,6 +67,30 @@ function formatRadius(radiusM: number): string {
   return radiusM < 10_000 ? `${(radiusM / 1000).toFixed(1)} km` : `${Math.round(radiusM / 1000)} km`;
 }
 
+interface ProviderDisplay {
+  name: string;
+  /** Set when the provider's terms require a visible credit that links here. */
+  creditUrl?: string;
+}
+
+// Readable provider names for the confirmed status. AeroDataBox's free plan requires a visible credit linking to
+// its site (terms 5.4); Swedavia states no such requirement. An unknown id is shown as it is.
+const PROVIDERS: Record<string, ProviderDisplay> = {
+  aerodatabox: { name: "AeroDataBox", creditUrl: "https://aerodatabox.com" },
+  swedavia: { name: "Swedavia" },
+};
+
+function providerName(source: string): string {
+  return PROVIDERS[source]?.name ?? source;
+}
+
+/** The provider to credit on this status, or null when its terms ask for none. */
+function creditedProvider(status: TrackStatus): ProviderDisplay | null {
+  if (status.sourceKind !== "confirmed") return null;
+  const provider = PROVIDERS[status.source];
+  return provider?.creditUrl ? provider : null;
+}
+
 /** The dossier's status line for an aircraft that is not live; null when there is nothing to say (LIVE). */
 export function statusLabel(status: TrackStatus): string | null {
   const runway = status.landing ? [status.landing.airportIcao, status.landing.runway].filter(Boolean).join(" ") : "";
@@ -81,9 +105,11 @@ export function statusLabel(status: TrackStatus): string | null {
     case "ON_GROUND":
       return "On ground (ADS-B)";
     case "LANDED_CONFIRMED":
-      return `Landed (confirmed · ${status.source})`;
-    case "AT_GATE":
-      return `At gate${status.gate ? ` ${status.gate}` : ""} (confirmed)`;
+      return `Landed (confirmed · ${providerName(status.source)})`;
+    case "AT_GATE": {
+      const credit = creditedProvider(status);
+      return `At gate${status.gate ? ` ${status.gate}` : ""} (confirmed${credit ? ` · ${credit.name}` : ""})`;
+    }
     default:
       return null;
   }
@@ -93,10 +119,21 @@ export function statusLabel(status: TrackStatus): string | null {
 function statusLine(status: TrackStatus | null): HTMLElement | null {
   const text = status && statusLabel(status);
   if (!status || !text) return null;
+  // The credit is a real link: the provider's name inside the label becomes the anchor.
+  const credit = creditedProvider(status);
+  const at = credit ? text.lastIndexOf(credit.name) : -1;
+  const content =
+    credit && at >= 0
+      ? [
+          text.slice(0, at),
+          h("a", { className: "details-panel-status-credit", href: credit.creditUrl, target: "_blank", rel: "noopener noreferrer" }, credit.name),
+          text.slice(at + credit.name.length),
+        ]
+      : [text];
   return h(
     "p",
     { className: `details-panel-status details-panel-status--${status.sourceKind}`, "data-track-state": status.state, "data-source-kind": status.sourceKind },
-    text,
+    content,
   );
 }
 
