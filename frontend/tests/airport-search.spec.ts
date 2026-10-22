@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { LIVE_FIXTURE, mockFlightApi } from "./helpers";
+import { LIVE_FIXTURE, mockFlightApi, waitForMapReady } from "./helpers";
 
 // Covers the regression this guards against: the airport search
 // used to have two inputs (origin, destination) before they were merged
@@ -14,7 +14,7 @@ test.describe("airport search", () => {
   test("the airport box is always there, under the flight-number box: one input, not separate origin/destination fields", async ({ page }) => {
     await mockFlightApi(page);
     await page.goto("/");
-    await page.waitForSelector(".map-container", { timeout: 10_000 });
+    await waitForMapReady(page);
 
     await expect(page.locator(".flight-search-airport-input")).toHaveCount(1);
     await expect(page.locator(".flight-search-airport-input")).toBeVisible();
@@ -27,7 +27,7 @@ test.describe("airport search", () => {
   test("searching by airport and selecting a result shows that aircraft's dossier", async ({ page }) => {
     await mockFlightApi(page);
     await page.goto("/");
-    await page.waitForSelector(".map-container", { timeout: 10_000 });
+    await waitForMapReady(page);
 
     const target = LIVE_FIXTURE.find((p) => p.icao24 === "4aad15")!;
 

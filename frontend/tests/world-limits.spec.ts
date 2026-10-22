@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { minZoomFor } from "../src/map/zoomLimits";
-import { mockFlightApi, setMapView, withMap } from "./helpers";
+import { mockFlightApi, setMapView, waitForMapReady, withMap } from "./helpers";
 
 // A screen wider than one world used to show the world repeating beside
 // itself when zoomed out or panned to an edge. Zooming out now stops where one
@@ -26,7 +26,7 @@ test.describe("world limits in the app", () => {
       await page.setViewportSize({ width: w, height: h });
       await mockFlightApi(page);
       await page.goto("/");
-      await page.waitForSelector(".map-container", { timeout: 10_000 });
+      await waitForMapReady(page);
       await expect.poll(() => withMap(page, (m) => m.getMinZoom())).toBe(expectedMin);
 
       await setMapView(page, 0, 170, 2); // below the minimum: clamped up

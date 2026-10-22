@@ -87,6 +87,34 @@ Chromium is missing, run `export PW_CHROMIUM_PATH=/opt/pw-browsers/chromium`.
 which is blocked in the cloud, so expect that one failure there. Don't run
 `playwright install`.
 
+## Writing tests that don't flake
+
+CI runs two workers on four shared vCPUs with software WebGL, so every
+timer in a test lands late sometimes. Flaky failures there were all one
+shape: sleep a fixed time, then assert once on something still changing.
+
+- **Start with `waitForMapReady(page)`**, not `.map-container`: until it
+  the opening view can still move the map and add its own request.
+- **Wait for the state, not a duration**: `expect.poll`,
+  `expect(async () => …).toPass()`, `settledBox()` for a panel that
+  re-renders or animates. A fixed sleep is fine only before asserting that
+  something did *not* happen.
+- **The app's own timeouts** (opening view 1.5 s, basemap cap, prefetch
+  600 ms) can beat a mocked response on a busy machine: `freezeClock(page)`,
+  then `page.clock.runFor`. Nothing renders while it stands still.
+- **Count requests per view and level** (`trackRequests`, `overviewLevel`,
+  `requestCentreLon`), not totals. Drive views far from the opening one
+  (Stockholm) when the cache matters.
+- **Mocks agree the way the server does**: every endpoint serves an
+  aircraft's estimated position, not one the raw report and another the
+  estimate.
+- Before handing back a new or changed test, run it under contention:
+  `npx playwright test <file> --repeat-each=5 --workers=4`.
+
+CI retries a failed test once (`playwright.config.ts`). One that passes
+on the retry doesn't fail the build but shows as a "flaky" annotation on
+the run: find its race rather than leaving it to the retry.
+
 ## UI testing browser: Helium, never Vivaldi
 
 Vivaldi is the human's daily browser, so never launch or automate it.

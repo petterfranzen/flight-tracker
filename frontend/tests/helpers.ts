@@ -1,4 +1,4 @@
-import { expect, type Page, type Route } from "@playwright/test";
+import { expect, type Locator, type Page, type Route } from "@playwright/test";
 import type { FlightMap, RenderedAirport, RenderedPlane } from "../src/map/map";
 import liveFixture from "./fixtures/live.json" with { type: "json" };
 import history4aad15 from "./fixtures/history-4aad15.json" with { type: "json" };
@@ -106,6 +106,9 @@ export async function mockFlightApi(
 
   await page.route("**/api/aircraft/*", (route: Route) => route.fulfill({ status: 404, json: null }));
   await page.route("**/api/agents/status", (route: Route) => route.fulfill({ json: { active: false, secondsRemaining: 0 } }));
+  // The window is closed (above), so page load reopens it. Unmocked, this went
+  // to the dev server's proxy and logged a connection error on every test.
+  await page.route("**/api/agents/restart", (route: Route) => route.fulfill({ json: { active: true, secondsRemaining: 300 } }));
 
   // Accept the WebSocket connection so subscribeLiveFeed doesn't error, but
   // never send anything — these tests exercise the REST paths (initial
@@ -172,6 +175,98 @@ export async function getMapLatLngToContainerPoint(page: Page, lat: number, lon:
   );
 }
 
+/**
+ * Waits until the app has chosen its opening view and made its first viewport
+ * request (main.ts sets data-ready on the map container). Drive the map only
+ * after this: before it, the opening view can still move the map, and its
+ * request lands on top of the test's own.
+ */
+export async function waitForMapReady(page: Page, timeout = 10_000): Promise<void> {
+  await page.waitForSelector('.map-container[data-ready="true"]', { timeout });
+}
+
+/**
+ * Records the page's requests whose URL matches `match`: `sent` as they go
+ * out, `landed` once answered, failed or aborted. `settled()` waits until all
+ * have landed and none has followed for `quietMs`. Register before page.goto.
+ */
+export function trackRequests(page: Page, match: RegExp): { sent: string[]; landed: string[]; settled(quietMs?: number): Promise<void> } {
+  const sent: string[] = [];
+  const landed: string[] = [];
+  page.on("request", (r) => {
+    if (match.test(r.url())) sent.push(r.url());
+  });
+  for (const event of ["requestfinished", "requestfailed"] as const) {
+    page.on(event, (r) => {
+      if (match.test(r.url())) landed.push(r.url());
+    });
+  }
+  return {
+    sent,
+    landed,
+    async settled(quietMs = 800) {
+      await expect
+        .poll(
+          async () => {
+            const n = sent.length;
+            await page.waitForTimeout(quietMs);
+            return sent.length === n && landed.length === n;
+          },
+          { timeout: 15_000, message: "requests settled" },
+        )
+        .toBe(true);
+    },
+  };
+}
+
+/** The centre longitude of a bbox request: which view it was for. */
+export function requestCentreLon(url: string): number {
+  const q = new URL(url).searchParams;
+  return (Number(q.get("lonMin")) + Number(q.get("lonMax"))) / 2;
+}
+
+/** The zoom level an overview request is for, from its width: a viewport-wide bbox (snapped outwards a little) at 256 px per 360° at zoom 0. */
+export function overviewLevel(page: Page, url: string): number {
+  const q = new URL(url).searchParams;
+  return Math.round(Math.log2(((page.viewportSize()!.width / 256) * 360) / (Number(q.get("lonMax")) - Number(q.get("lonMin")))));
+}
+
+/**
+ * Stops the page's clock before it loads: its timers then run only when the
+ * test moves time on (page.clock.runFor). For behaviour bounded by the app's
+ * own timeouts, which a busy machine could hit before a mocked response is
+ * handled. Animation frames stop too, so nothing renders; jumps (setView,
+ * jumpTo) still apply.
+ */
+export async function freezeClock(page: Page): Promise<void> {
+  await page.clock.install();
+  // A little ahead: the clock runs until this lands, and it can't jump back.
+  await page.clock.pauseAt(Date.now() + 5_000);
+}
+
+/**
+ * An element's box once it has stopped changing: two reads 100 ms apart that
+ * agree. A panel that is re-rendering reads null for a moment, and one that is
+ * still animating reads a box that is about to change.
+ */
+export async function settledBox(locator: Locator, timeout = 5_000): Promise<{ x: number; y: number; width: number; height: number }> {
+  let prev: Awaited<ReturnType<Locator["boundingBox"]>> = null;
+  let box: Awaited<ReturnType<Locator["boundingBox"]>> = null;
+  const same = (a: NonNullable<typeof box>, b: NonNullable<typeof box>) =>
+    Math.abs(a.x - b.x) < 0.5 && Math.abs(a.y - b.y) < 0.5 && Math.abs(a.width - b.width) < 0.5 && Math.abs(a.height - b.height) < 0.5;
+  await expect
+    .poll(
+      async () => {
+        prev = box;
+        box = await locator.boundingBox();
+        return prev != null && box != null && same(prev, box);
+      },
+      { timeout, intervals: [100], message: "element box settled" },
+    )
+    .toBe(true);
+  return box!;
+}
+
 export async function setMapView(page: Page, lat: number, lon: number, zoom: number): Promise<void> {
   await withMap(
     page,
@@ -192,18 +287,49 @@ export type PagePlane = RenderedPlane;
  * in page pixels: what a user sees, not what the app holds in memory.
  */
 export async function renderedPlanes(page: Page): Promise<PagePlane[]> {
+  return retryMidUpdate(page, () =>
+    withMap(page, (map) => {
+      const rect = map.getContainer().getBoundingClientRect();
+      return map.renderedPlanes().map((p) => ({ ...p, x: p.x + rect.x, y: p.y + rect.y }));
+    }),
+  );
+}
+
+/**
+ * MapLibre's feature query can throw while a source update is half applied
+ * ("feature index out of bounds"): ask again a moment later.
+ */
+async function retryMidUpdate<T>(page: Page, read: () => Promise<T>): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await read();
+    } catch (e) {
+      if (attempt >= 5 || !String(e).includes("feature index out of bounds")) throw e;
+      await page.waitForTimeout(50);
+    }
+  }
+}
+
+/**
+ * icao24s in the plane layer's data, read from its source rather than from
+ * what was drawn: a sign that a response has been applied that works while
+ * freezeClock holds the animation frames (nothing renders then).
+ */
+export async function planeLayerIds(page: Page): Promise<string[]> {
   return withMap(page, (map) => {
-    const rect = map.getContainer().getBoundingClientRect();
-    return map.renderedPlanes().map((p) => ({ ...p, x: p.x + rect.x, y: p.y + rect.y }));
+    const source = map.gl.getSource("planes") as unknown as { serialize(): { data?: { features?: { properties?: { id?: string } }[] } } } | undefined;
+    return (source?.serialize().data?.features ?? []).map((f) => f.properties?.id ?? "");
   });
 }
 
 /** Every airport the airport layer drew in view (ui/defaultAirports.ts), x/y in page pixels. */
 export async function renderedAirports(page: Page): Promise<RenderedAirport[]> {
-  return withMap(page, (map) => {
-    const rect = map.getContainer().getBoundingClientRect();
-    return map.renderedAirports().map((a) => ({ ...a, x: a.x + rect.x, y: a.y + rect.y }));
-  });
+  return retryMidUpdate(page, () =>
+    withMap(page, (map) => {
+      const rect = map.getContainer().getBoundingClientRect();
+      return map.renderedAirports().map((a) => ({ ...a, x: a.x + rect.x, y: a.y + rect.y }));
+    }),
+  );
 }
 
 /** Waits until at least `min` planes are drawn. */
