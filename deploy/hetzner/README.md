@@ -111,3 +111,36 @@ The box has no public inbound port: `ufw` denies everything except what
 through `cloudflared access ssh` against Cloudflare Access; there is nothing
 listening on a public port 22 once bootstrap is done (see the comment next
 to the `ufw allow 22/tcp` rule in `cloud-init.yaml`).
+
+## Updates
+
+What keeps the live box patched, and what doesn't:
+
+| What | How it's updated |
+|---|---|
+| Ubuntu packages, including the Java runtime | `unattended-upgrades`, nightly, from Ubuntu's security archives. |
+| **cloudflared** | `unattended-upgrades` too, but only with `/etc/apt/apt.conf.d/52unattended-upgrades-local`, because Cloudflare's apt repo is not on Ubuntu's default allowlist. A server built from `cloud-init.yaml` has it. The original VM needs the one-time step below. |
+| Restarts after an upgrade | `/usr/local/sbin/restart-if-upgraded` (an apt hook) restarts `cloudflared` or `flight-tracker` only when its binary changed after it started. Kernel and libc updates reboot at 04:30. |
+| The app's own dependencies (Maven, npm, GitHub Actions) | Dependabot opens grouped PRs (`.github/dependabot.yml`). CI tests them; merging deploys. |
+
+### One-time: patch cloudflared now and turn on its auto-updates (existing VM)
+
+`cloud-init.yaml` only runs when a server is created, so the VM that already exists needs these once. SSH in as `petter`, then:
+
+```bash
+# 1. Patch cloudflared right now. Restarting it drops the tunnel for a few seconds.
+sudo apt-get update
+sudo apt-get install --only-upgrade -y cloudflared
+cloudflared --version
+sudo systemctl restart cloudflared
+
+# 2. Install the auto-update config and the restart hook from this repo
+#    (deploy/hetzner/unattended-upgrades-local.conf and restart-if-upgraded).
+sudo install -m 0644 unattended-upgrades-local.conf /etc/apt/apt.conf.d/52unattended-upgrades-local
+sudo install -m 0755 restart-if-upgraded /usr/local/sbin/restart-if-upgraded
+
+# 3. Check that cloudflared is now on the allowlist (it should appear in "Allowed origins").
+sudo unattended-upgrade --dry-run -d 2>&1 | grep -E "Allowed origins|cloudflared" | head -3
+```
+
+To copy the two files over, run `scp` from a checkout, or paste their contents into `sudo tee`.

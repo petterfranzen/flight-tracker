@@ -8,9 +8,22 @@ continue from **Next task**.
 
 ## Status
 
-- **Current phase:** 1 (physics estimate, state machine, UI)
-- **Next task:** P2-F and P3-F (running in parallel). Then merge phase 1 → phase 2 → phase 3 (this carries the #119 helper port), then open the Phase 2 and Phase 3 PRs.
+- **Current phase:** done, apart from the human's checkpoints. All PRs are open and wait for human review and merge, in order: #120, #121, #122, #124, #125. #123 (CLAUDE.md rules) is independent.
+- **Next task:** keep #120–#125 green. Once the human adds `SWEDAVIA_API_KEY` / `AERODATABOX_API_KEY`, check the open items in `docs/agents/swedavia-api.md` and `aerodatabox-api.md` live and replace the reconstructed fixtures. The backlog has route search. Phase 4 is training the model once labels accumulate.
 - **Blocked on the human:** the Phase 3 provider choice (see `provider-research.md`). Phases 1 and 2 continue meanwhile.
+
+## Working agreements (from the human, 2026-10-12)
+
+The most important rule: **the code is always safe on origin.**
+
+1. **Push for safekeeping, but never a commit you know will fail.** `build-deploy.yml` runs only on pull requests and on pushes to `main`, so where you push decides whether CI runs.
+   - **Expected to pass** (fast local checks green): push to the PR branch, and CI runs.
+   - **Known broken or half-done:** push to a branch with no PR (`wip/<topic>`, e.g. `wip/coverage-gap-provider`). It is backed up on origin with no CI run. Move it to the PR branch once it passes the fast checks.
+2. **Offload testing to GitHub Actions, without overloading it.** Locally, run only the fast checks for what changed: typecheck/build, plus the changed backend test class or Playwright spec. Then push and let CI run the full suites (e2e, perf, scenarios, backend, blackbox).
+   - Push to a PR branch once per logical unit of work, not once per edit. Each push to an open PR starts a ~12 min run and cancels the one before it.
+   - A progress-only update to this file rides along with the next code push when one is coming soon. Otherwise push it on its own: one run is fine, a burst of them is not.
+3. **Never merge unless CI is green.** Agents never merge; the human does.
+4. CI notification emails are off on the human's side.
 
 ## Branches and PRs
 
@@ -18,7 +31,10 @@ continue from **Next task**.
 |---|---|---|---|
 | 1 | `claude/beautiful-thompson-afahki` | `main` | [#120](https://github.com/petterfranzen/flight-tracker/pull/120) |
 | 2 | `claude/coverage-gap-phase2` | phase 1 branch (stacked) | [#121](https://github.com/petterfranzen/flight-tracker/pull/121) |
-| 3 | `claude/coverage-gap-phase3` | phase 2 branch (stacked) | not opened yet |
+| 3 | `claude/coverage-gap-phase3` | phase 2 branch (stacked) | [#122](https://github.com/petterfranzen/flight-tracker/pull/122) |
+| 3b | `claude/coverage-gap-phase3b-swedavia` | phase 3 branch (stacked) | [#124](https://github.com/petterfranzen/flight-tracker/pull/124) |
+| 3c | `claude/coverage-gap-phase3c-aerodatabox` | phase 3b branch (stacked) | [#125](https://github.com/petterfranzen/flight-tracker/pull/125) |
+| wip | `wip/coverage-gap-phase3b`, `wip/coverage-gap-phase3c`, `wip/route-search-brief` | no PR, no CI | safekeeping |
 
 The brief asks for one PR per phase. The later phases build on the earlier
 ones, so the branches are stacked, and each PR targets the previous phase's
@@ -40,8 +56,19 @@ branch. Never merge to `main`; the human merges.
 | P3 | Provider SPI, framework-level cache and rate limit, `ConfirmationStore`, upgrade service, mock provider, UI tweaks (no real provider) | implementer | Phase 2 | done (4d52beb, 2aaefff on `claude/coverage-gap-phase3`): backend 252 tests, coverage-status 15/15 |
 | P3-R | Review Phases 2 and 3 | reviewer | P1-F merged forward | done: no blockers (`reviews/phase2-3.md`) |
 | P2-F | Phase 2 fixes: capture delay, long-gap labels, flush retry, schema `;` | implementer | P3-R | done (99af1b9, 8b82130): 214 backend tests |
-| P3-F | Phase 3 fixes: stale cache, gate re-poll cap, Retry-After cap, pool, refetch, docs | implementer | P3-R | running |
-| P3-real | Real provider (the human chooses) | implementer | the human's choice | blocked: checkpoint |
+| P3-F | Phase 3 fixes: stale cache, gate re-poll cap, Retry-After cap, pool, refetch, docs | implementer | P3-R | done (cd6b2ad, b7abeaf, ffa4371, facdea8). The agent hit the session usage limit during its final e2e run, after committing everything; the orchestrator verifies the gates |
+| P3-real | Real provider (the human chooses) | | | the human chose Swedavia first, AeroDataBox second |
+| P3b-R | Swedavia FlightInfo v2 contract: endpoints, auth, schema, status codes, ActualUtc semantics, limits | explorer | none | done: `docs/agents/swedavia-api.md` |
+| P3b-1 | Framework: `AirportArrivalsProvider` (board per airport and date), board cache, callsign/registration matching, per-provider daily/monthly budgets in units persisted in `app_state` | implementer | none | done (06eff75): 323 tests |
+| P3b-F | Fix the P3b review findings (budget fail-closed, key lockout, recheck memo, skipped fetch, DST tests, docs) | implementer | P3b-Rev | done: 367 tests, pushed to #124 |
+| P3b-2 | `SwedaviaArrivalsProvider` + fixtures + config (`SWEDAVIA_API_KEY` env var, `deploy/hetzner/env.example`, README) | implementer | P3b-R, P3b-1 | done (65feb87, f99edf1): 354 tests; **PR #124** |
+| P3b-Rev | Review Phase 3b | reviewer | P3b-2 | done: no blockers (`reviews/phase3b.md`) |
+| P3c-R | AeroDataBox contract | explorer | none | done: `docs/agents/aerodatabox-api.md` |
+| P3c-1 | `AeroDataBoxArrivalProvider` (nearest-flight lookup, 2 units/call, 380/month, 14/day, precedence after board providers, no training labels by default) | implementer | P3c-R | done |
+| P3c-2 | Provider credit link in the dossier status line (AeroDataBox terms ¶5.4) | implementer | P3c-R | done |
+| P3c-Rev | Review Phase 3c | reviewer | P3c-1, P3c-2 | done: budget-waste findings (`reviews/phase3c.md`) |
+| P3c-F | Fix the P3c findings: per-provider recheck (30 min/3 h), no gate wait, `accepts()` pre-check, 4xx → NOT_FOUND, refunds, selection, display names | implementer | P3c-Rev | done: 437 tests; **PR #125** |
+| R | `CLAUDE.md` pushing, CI and merging rules (from the working agreements) | orchestrator | none | PR #123 |
 
 ## Phase 0 findings (summary)
 
@@ -201,7 +228,14 @@ stateDiagram-v2
 - **Checkpoint:** the human chooses a real provider from the research before
   one is implemented.
 
+## Backlog (from the human)
+
+- **Route search, e.g. London → Barcelona.** The brief is ready: `docs/agent-tasks/route-search.md` on branch `wip/route-search-brief` (no PR yet). It extends the existing origin-OR-destination airport search with `from`/`to`. Start it when the human says so.
+
 ## Open questions
+
+- **For the human (AeroDataBox terms):** the free Basic plan is **non-commercial** only and requires visible attribution. That is built in.
+  It also allows caching data for **at most 7 days**. So, by default, AeroDataBox-confirmed landings are not written into the 365-day training labels (`flighttracker.confirmation.aerodatabox.record-training-labels=false`). Pro ($8/month) allows commercial use, but the 7-day rule still applies.
 
 - **For the human:** training-data volume. **Measured live: about 70k rows/day, about 20 MB/day, about 7 GB/year at 365 days** (P3-R). P2-F adds a capture delay that drops short between-sweep gaps. The earlier P2 estimate was 8k–25k feature rows/day, about 5–15 MB/day, so 2–5 GB at the default 365-day retention. The knobs are `flighttracker.training.max-altitude-m` (default 4000; 2000 cuts most general-aviation noise) and `retention-days` (default 365; 180 halves it). Measure with `SELECT COUNT(*) FROM track_end_feature` after a day live.
 - Should a learned model be allowed to change the `state`, not just the probability? Decision for now: no. In Phase 2 the model replaces the probability and the confidence only (source `model`). Revisit in Phase 4.
@@ -265,3 +299,53 @@ stateDiagram-v2
   - `capture-delay-seconds` defaults to 600.
   - `max-airborne-label-gap-minutes` defaults to 30.
   - A failed flush re-queues its batch (cap 5,000 writes; a write is dropped after 5 attempts).
+- 2026-10-12: CI on #120 failed again (970587a), in `route-estimate`: another race that #119 fixes.
+  I merged #119's branch into phase 1 unchanged (deb5255), so the two PRs are identical where they overlap.
+  That brings in `waitForMapReady` and the retry-once on CI. Local e2e: 118/118.
+  #119's own route-estimate fix still fails 1 in 20 at its line 48, on #119's branch too. That's for the human,
+  as a follow-up on #119; CI's retry absorbs it. Commented on #120.
+- 2026-10-12: Usage limit hit: the P3-F subagent was stopped (429 "session limit, resets 17:10 UTC") after it
+  had committed all four fixes. The human said "Try again" and the orchestrator continued.
+  - Phase 1 merged into phase 2 and pushed.
+  - P3-F cherry-picked onto phase 3.
+  - Phase 2 merged into phase 3 (9e85f22; README conflict resolved).
+  - Gates are running on phase 3.
+- 2026-10-12: Phase 3 gates on 9e85f22:
+  - backend 279 tests;
+  - e2e 121/121 (`cyberpunk-font` first failed only because node_modules was symlinked: Vite's `fs.allow` refuses font files outside the root, so use a real `npm ci` in worktrees);
+  - scenarios 5/5;
+  - perf: only the known main-only failure.
+
+  **Phase 3 PR opened: #122** (base phase 2). #121's CI is green.
+- 2026-10-12 14:53 UTC: CI is green on all three PRs: #120 (3132db4), #121 (3cd5c77) and #122 (9e85f22).
+  No review comments. Waiting on the human: the provider choice, PR review and merge, and the training volume check after a day live.
+- 2026-10-12 15:20 UTC: The human chose Swedavia first, then AeroDataBox, and asked for the working agreements in CLAUDE.md (PR #123, branch `claude/agent-ci-rules` off main). P3b-R and P3b-1 launched.
+- 2026-10-12 15:35 UTC: Phase 3b built.
+  - P3b-1 framework: board SPI, board cache, per-provider unit budgets in `app_state`.
+  - P3b-2 `SwedaviaArrivalsProvider`:
+    - Stockholm local board date;
+    - primary and secondary key with a retry on 401/403;
+    - `actualUtc` gives LANDED_CONFIRMED and `firstBagUtc` gives AT_GATE;
+    - budget 9,000/month and 300/day;
+    - disabled until `SWEDAVIA_API_KEY` is set.
+  - Backend 354 tests. PR #124 is open (stacked on #122); its review and CI are running.
+- 2026-10-12 15:50 UTC: P3b-F fixes pushed to #124.
+  AeroDataBox research: Tier 2 costs 2 units/call, so the 400 free units are about 200 lookups/month. There is no clean in-block time. The plan is non-commercial, needs attribution, and allows 7-day caching.
+  Decisions:
+  - use the nearest-flight lookup (no date, so no local-timezone problem);
+  - fall back only after board providers;
+  - write no training labels from it by default.
+
+  P3c-1 and P3c-2 launched.
+- 2026-10-12 15:55–19:10 UTC: Account usage limit. Both P3c agents were stopped before writing anything. Nothing was lost.
+  #124 is green (36f37ec). P3c-1 and P3c-2 were relaunched at 19:12 UTC.
+  The human asked for a future feature, route search: a brief is queued.
+- 2026-10-12 19:40 UTC: Phase 3c (AeroDataBox) is done.
+  - Provider: nearest-flight lookup, 2 units/call, 380/month and 14/day, a fallback only where no enabled board provider covers the airport, and no training labels by default (7-day terms).
+  - The dossier has an AeroDataBox credit link.
+  - The review found budget waste, now fixed:
+    - recheck after 30 min (found) / 3 h (not found), and no gate wait;
+    - no charge for unusable callsigns;
+    - 400/404/422 map to NOT_FOUND;
+    - refunds for throttled and never-connected calls.
+  - 437 backend tests. PR #125 is stacked on #124.
