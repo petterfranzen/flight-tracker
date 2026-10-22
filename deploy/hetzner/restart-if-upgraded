@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# /usr/local/sbin/restart-if-upgraded: called by apt after every dpkg run
+# (unattended-upgrades included, see 52unattended-upgrades-local). Restarts a
+# unit only when its binary on disk is newer than the running process, so an
+# unrelated package upgrade never bounces the tunnel or the app.
+set -uo pipefail
+
+restart_if_newer() { # unit binary
+  local unit="$1" bin started_at bin_mtime
+  bin="$(readlink -f "$2" 2>/dev/null)" || return 0
+  [[ -x "$bin" ]] || return 0
+  systemctl is-active --quiet "$unit" || return 0
+  started_at="$(systemctl show "$unit" -p ExecMainStartTimestamp --value)"
+  [[ -n "$started_at" ]] || return 0
+  started_at="$(date -d "$started_at" +%s 2>/dev/null)" || return 0
+  bin_mtime="$(stat -c %Y "$bin")"
+  if (( bin_mtime > started_at )); then
+    logger -t restart-if-upgraded "restarting $unit: $bin changed after it started"
+    systemctl restart "$unit"
+  fi
+}
+
+restart_if_newer cloudflared.service /usr/bin/cloudflared
+restart_if_newer flight-tracker.service /usr/bin/java

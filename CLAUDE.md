@@ -140,7 +140,30 @@ the bundled Chromium instead (see above).
 - Work on a branch and open a PR. **Never push to or merge into `main`**:
   a push to `main` deploys to production.
 - Never put deploy keys or Cloudflare tokens anywhere an agent runs.
-- Before handing back a frontend change, run `npm run build && npm run test:e2e && npm run test:perf && npm run test:scenarios`.
-  `test:e2e` skips the `@perf` and `@scenario` tests, but CI runs both, and the
-  scenario journeys assert on what the map draws (e.g. cluster icons), so a UI
-  change can leave them red while `test:e2e` is green.
+- A change is ready to hand back when CI is green on the pushed head. CI
+  runs every suite: frontend `test:e2e`, `test:perf` and `test:scenarios`,
+  the backend, and blackbox. `test:e2e` skips the `@perf` and `@scenario`
+  tests, but the scenario journeys assert on what the map draws (e.g. cluster
+  icons), so a UI change can leave them red while `test:e2e` is green.
+
+## Pushing, CI and merging
+
+The code must always be safe on origin. GitHub Actions is where the full
+test suites run: offload to it, but don't flood it.
+
+- **Push often, but never a commit you know will fail.** `build-deploy.yml`
+  runs on pull requests and on pushes to `main`, nowhere else.
+  - **Expected to pass** (fast local checks green): push to the PR branch,
+    and CI runs.
+  - **Known broken or half-done:** push to a branch with no PR, `wip/<topic>`.
+    It is backed up on origin and runs no CI. Move it to the PR branch once
+    it passes the fast checks.
+- **Locally, run only the fast checks for what you changed:** `npm run build`
+  (typecheck), the changed Playwright spec, and the changed backend test
+  class (`mvn -B -q test -Dtest=ClassName`). Leave the full suites to CI.
+  The cloud sandbox's software WebGL makes local `test:perf` unreliable anyway.
+- **Push to a PR branch once per finished piece of work, not after every
+  edit.** Each push starts a ~12 min run and cancels the one still running on
+  that branch.
+- **Never merge unless CI is green on the head.** Agents never merge; the
+  human does.

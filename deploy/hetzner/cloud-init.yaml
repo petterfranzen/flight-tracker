@@ -305,6 +305,52 @@ write_files:
       # in the SECONDARY variable so a rotation does not interrupt it.
       # SWEDAVIA_API_KEY=
       # SWEDAVIA_API_KEY_SECONDARY=
+  - path: /etc/apt/apt.conf.d/52unattended-upgrades-local
+    permissions: "0644"
+    content: |
+      // /etc/apt/apt.conf.d/52unattended-upgrades-local
+      // Ubuntu's unattended-upgrades only installs updates from Ubuntu's own
+      // archives by default. cloudflared comes from Cloudflare's apt repo
+      // (Origin/Label "cloudflared"), so without this it is never patched.
+      Unattended-Upgrade::Origins-Pattern {
+              "origin=cloudflared,label=cloudflared";
+      };
+      // Updates that need a reboot (kernel, libc) take effect at a quiet hour.
+      // The app and the tunnel are systemd units enabled at boot, so the site is
+      // back by itself within a minute or two.
+      Unattended-Upgrade::Automatic-Reboot "true";
+      Unattended-Upgrade::Automatic-Reboot-Time "04:30";
+      // A long-running process keeps executing the old binary after its package is
+      // upgraded. After each dpkg run, restart the units whose binary is newer than
+      // the running process (see restart-if-upgraded).
+      DPkg::Post-Invoke { "/usr/local/sbin/restart-if-upgraded || true"; };
+  - path: /usr/local/sbin/restart-if-upgraded
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      # /usr/local/sbin/restart-if-upgraded: called by apt after every dpkg run
+      # (unattended-upgrades included, see 52unattended-upgrades-local). Restarts a
+      # unit only when its binary on disk is newer than the running process, so an
+      # unrelated package upgrade never bounces the tunnel or the app.
+      set -uo pipefail
+
+      restart_if_newer() { # unit binary
+        local unit="$1" bin started_at bin_mtime
+        bin="$(readlink -f "$2" 2>/dev/null)" || return 0
+        [[ -x "$bin" ]] || return 0
+        systemctl is-active --quiet "$unit" || return 0
+        started_at="$(systemctl show "$unit" -p ExecMainStartTimestamp --value)"
+        [[ -n "$started_at" ]] || return 0
+        started_at="$(date -d "$started_at" +%s 2>/dev/null)" || return 0
+        bin_mtime="$(stat -c %Y "$bin")"
+        if (( bin_mtime > started_at )); then
+          logger -t restart-if-upgraded "restarting $unit: $bin changed after it started"
+          systemctl restart "$unit"
+        fi
+      }
+
+      restart_if_newer cloudflared.service /usr/bin/cloudflared
+      restart_if_newer flight-tracker.service /usr/bin/java
   - path: /etc/apt/apt.conf.d/20auto-upgrades
     permissions: "0644"
     content: |

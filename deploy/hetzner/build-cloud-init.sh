@@ -57,6 +57,8 @@ file_entry /etc/sudoers.d/flight-tracker-deploy 0440;                indent sudo
 file_entry /etc/systemd/system/flight-tracker.service 0644;          indent flight-tracker.service
 file_entry /opt/flight-tracker/bin/deploy.sh 0755;                   indent deploy.sh
 file_entry /etc/flight-tracker/env 0640 root:flighttracker defer;    indent env.example
+file_entry /etc/apt/apt.conf.d/52unattended-upgrades-local 0644;    indent unattended-upgrades-local.conf
+file_entry /usr/local/sbin/restart-if-upgraded 0755;                indent restart-if-upgraded
 cat <<'EOF'
   - path: /etc/apt/apt.conf.d/20auto-upgrades
     permissions: "0644"
