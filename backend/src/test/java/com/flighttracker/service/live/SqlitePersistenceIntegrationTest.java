@@ -120,7 +120,8 @@ class SqlitePersistenceIntegrationTest {
         // window means it's past due for deletion.
         TransactionTemplate transactionTemplate = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
         PositionRetentionService retentionService = new PositionRetentionService(
-                jdbcTemplate, aircraftRepository, transactionTemplate, clock, liveStateStore);
+                jdbcTemplate, aircraftRepository, transactionTemplate, clock, liveStateStore,
+                new com.flighttracker.service.training.TrainingDataRepository(jdbcClient));
         setField(retentionService, "retentionHours", 0.5);
         setField(retentionService, "batchSize", 5000);
         setField(retentionService, "maxBatchesPerRun", 200);

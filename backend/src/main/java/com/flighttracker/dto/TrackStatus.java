@@ -52,7 +52,7 @@ public record TrackStatus(String icao24,
         }
         Landing landing = gap.landingAirportIcao() == null ? null
                 : new Landing(gap.landingAirportIcao(), gap.landingRunway(), gap.touchdownAt());
-        return new TrackStatus(a.icao24(), gap.state(), gap.confidence(), "physics", "inferred",
+        return new TrackStatus(a.icao24(), gap.state(), gap.confidence(), gap.probabilitySource(), "inferred",
                 seenAt, a.latitude(), a.longitude(),
                 new Estimate(gap.estLat(), gap.estLon(), gap.radiusM(), gap.at(), gap.landingProbability()),
                 landing, null, null, null);

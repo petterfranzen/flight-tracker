@@ -3,6 +3,7 @@ package com.flighttracker.service.agent;
 import com.flighttracker.repository.AircraftRepository;
 import com.flighttracker.service.LiveVisibilityWindows;
 import com.flighttracker.service.live.LiveStateStore;
+import com.flighttracker.service.training.TrainingDataRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -84,6 +85,7 @@ public class PositionRetentionService {
     private final AircraftRepository aircraftRepository;
     private final Clock clock;
     private final LiveStateStore liveStateStore;
+    private final TrainingDataRepository trainingData;
     // Each batch commits on its own. Deliberately a TransactionTemplate
     // rather than a @Transactional method on this class: Spring's
     // @Transactional works through a proxy, so a self-invoked call from the
@@ -93,6 +95,10 @@ public class PositionRetentionService {
 
     @Value("${flighttracker.retention.hours:72}")
     private double retentionHours;
+
+    /** The training tables (track_end_feature, track_end_label) are kept far longer than flight_position. */
+    @Value("${flighttracker.training.retention-days:365}")
+    private int trainingRetentionDays = 365;
 
     @Value("${flighttracker.retention.batch-size:5000}")
     private int batchSize;
@@ -126,12 +132,14 @@ public class PositionRetentionService {
                                      AircraftRepository aircraftRepository,
                                      TransactionTemplate transactionTemplate,
                                      Clock clock,
-                                     LiveStateStore liveStateStore) {
+                                     LiveStateStore liveStateStore,
+                                     TrainingDataRepository trainingData) {
         this.jdbcTemplate = jdbcTemplate;
         this.aircraftRepository = aircraftRepository;
         this.transactionTemplate = transactionTemplate;
         this.clock = clock;
         this.liveStateStore = liveStateStore;
+        this.trainingData = trainingData;
     }
 
     /**
@@ -162,6 +170,8 @@ public class PositionRetentionService {
             if (batches == maxBatchesPerRun || stopping) moreRemaining = true;
         }
 
+        pruneTrainingData(now);
+
         int staleAircraftDeleted = aircraftRepository.deleteStaleWithNoPositions(now.minus(AIRCRAFT_STALE_AFTER));
 
         // The in-memory live set is pruned on the same cadence: an aircraft
@@ -188,6 +198,21 @@ public class PositionRetentionService {
                 totalDeleted, retentionHours, staleAircraftDeleted, batches, ms,
                 moreRemaining ? (stopping ? " — stopped early for shutdown, more remaining"
                         : " — hit max-batches-per-run, more remaining for next cycle") : "");
+    }
+
+    /** Separate from the flight_position rule above: these small tables keep a year by default. */
+    private void pruneTrainingData(Instant now) {
+        try {
+            Instant cutoff = now.minus(Duration.ofDays(trainingRetentionDays));
+            int features = trainingData.deleteFeaturesCapturedBefore(cutoff);
+            int labels = trainingData.deleteLabelsBefore(cutoff);
+            if (features > 0 || labels > 0) {
+                log.info("retention: deleted {} track_end_feature and {} track_end_label rows older than {} days",
+                        features, labels, trainingRetentionDays);
+            }
+        } catch (RuntimeException e) {
+            log.warn("retention: pruning the training tables failed", e);
+        }
     }
 
     @EventListener(ContextClosedEvent.class)
