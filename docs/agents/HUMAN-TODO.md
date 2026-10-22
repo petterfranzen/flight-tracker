@@ -1,6 +1,13 @@
 # To do: coverage-gap work (human)
 
-Saved 2026-10-12. Tick these off as you go.
+Saved 2026-10-12, updated 2026-10-22. Tick these off as you go.
+
+## 0. Security: patch cloudflared on the VM now (no merge needed)
+- [ ] SSH in, then run:
+      `sudo apt-get update && sudo apt-get install --only-upgrade -y cloudflared && cloudflared --version && sudo systemctl restart cloudflared`
+      (the tunnel drops for a few seconds)
+- [ ] Merge #126, then run the one-time block in `deploy/hetzner/README.md` → "Updates". It installs the auto-update config, so cloudflared is patched nightly from then on.
+- [ ] Repo Settings → Code security: turn on **Dependabot alerts** and **Dependabot security updates**.
 
 ## 1. Review and merge the PRs (in this order)
 - [ ] #120: Phase 1, physics estimate, uncertainty cone, status UI
@@ -9,10 +16,12 @@ Saved 2026-10-12. Tick these off as you go.
 - [ ] #124: Swedavia provider
 - [ ] #125: AeroDataBox provider and credit link
 - [ ] #123: CLAUDE.md working rules (independent, any time)
+- [ ] #126: VM auto-updates and Dependabot (independent, any time)
 
 Each PR is stacked on the one before. GitHub retargets the next PR when you merge one.
 
 ## 2. Swedavia (recommended): free, 10 Swedish airports
+Needs #120 to #124 merged and deployed first. Until then the key does nothing.
 - [ ] Create an account at https://apideveloper.swedavia.se
 - [ ] Subscribe to the **FlightInfo** product, free tier (10,000 calls/month), and copy the subscription key.
 - [ ] Read their terms (licence, caching, attribution). They weren't published publicly.
