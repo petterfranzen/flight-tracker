@@ -20,14 +20,23 @@ Environment=FLIGHTTRACKER_DB_PATH=/var/lib/flight-tracker/flighttracker.db
 Environment=SERVER_ADDRESS=127.0.0.1
 Environment=SERVER_PORT=8080
 Environment=TRUST_LOCAL=false
-ExecStart=/usr/bin/java -Xms256m -Xmx768m -XX:+UseG1GC -XX:+ExitOnOutOfMemoryError \
+# Heap sized to the measured live set (~200 MB) plus headroom; Serial GC
+# because this is a mostly idle single-user app (G1's own structures were
+# ~60 MB). See docs/perf/PROFILE-2026-10.md.
+ExecStart=/usr/bin/java -Xms128m -Xmx384m -XX:+UseSerialGC -XX:ReservedCodeCacheSize=64m -Xss512k \
+    -XX:+ExitOnOutOfMemoryError \
     -jar /opt/flight-tracker/app/current.jar
 SuccessExitStatus=143
 TimeoutStopSec=30
 Restart=on-failure
 RestartSec=5
 
-# Memory: 768 MB heap + ~300 MB JVM overhead; SQLite page cache is reclaimable.
+# Memory: these limits also count the kernel page cache of the database
+# file. The JVM's anonymous memory (heap, metaspace, code, and SQLite's own
+# per-connection page caches on the native heap) must stay well below
+# MemoryHigh, or the cache the database needs is reclaimed and every query
+# reads from disk (measured: ~600 MB anon with the flags above, vs ~1.2 GB
+# and still growing with the old -Xmx768m G1 setup).
 MemoryHigh=1400M
 MemoryMax=1800M
 
