@@ -75,6 +75,28 @@ class PositionRetentionServiceTest {
     }
 
     @Test
+    void staleAircraftArePrunedNightly_notOnEvery10MinutePrune() {
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        TransactionTemplate tx = mock(TransactionTemplate.class);
+        when(tx.execute(any())).thenAnswer(inv -> ((TransactionCallback<?>) inv.getArgument(0)).doInTransaction(null));
+        when(jdbc.update(anyString(), anyLong(), any())).thenReturn(0);
+        AircraftRepository aircraft = mock(AircraftRepository.class);
+        Instant now = Instant.parse("2026-10-01T03:00:00Z");
+
+        PositionRetentionService retention = new PositionRetentionService(jdbc, aircraft, tx,
+                Clock.fixed(now, ZoneOffset.UTC), mock(LiveStateStore.class), mock(TrainingDataRepository.class));
+        ReflectionTestUtils.setField(retention, "retentionHours", 72.0);
+        ReflectionTestUtils.setField(retention, "batchSize", BATCH);
+        ReflectionTestUtils.setField(retention, "maxBatchesPerRun", 200);
+
+        retention.prune();
+        org.mockito.Mockito.verifyNoInteractions(aircraft);
+
+        retention.nightlyOptimize();
+        org.mockito.Mockito.verify(aircraft).deleteStaleWithNoPositions(now.minus(java.time.Duration.ofDays(7)));
+    }
+
+    @Test
     void pruneDeletesTrainingRowsOnTheirOwnRetention_withoutTouchingThe72hPositionCutoff() {
         JdbcTemplate jdbc = mock(JdbcTemplate.class);
         TransactionTemplate tx = mock(TransactionTemplate.class);

@@ -172,8 +172,6 @@ public class PositionRetentionService {
 
         pruneTrainingData(now);
 
-        int staleAircraftDeleted = aircraftRepository.deleteStaleWithNoPositions(now.minus(AIRCRAFT_STALE_AFTER));
-
         // The in-memory live set is pruned on the same cadence: an aircraft
         // silent past every visibility window can't be live again without a
         // new report, and keeping it only makes every request scan it.
@@ -192,10 +190,10 @@ public class PositionRetentionService {
             jdbcTemplate.execute("PRAGMA wal_checkpoint(TRUNCATE)");
         }
 
-        if (totalDeleted == 0 && staleAircraftDeleted == 0) return;
+        if (totalDeleted == 0) return;
         long ms = (System.nanoTime() - start) / 1_000_000;
-        log.info("retention: deleted {} flight_position rows older than {}h and {} stale aircraft rows in {} batches ({} ms){}",
-                totalDeleted, retentionHours, staleAircraftDeleted, batches, ms,
+        log.info("retention: deleted {} flight_position rows older than {}h in {} batches ({} ms){}",
+                totalDeleted, retentionHours, batches, ms,
                 moreRemaining ? (stopping ? " — stopped early for shutdown, more remaining"
                         : " — hit max-batches-per-run, more remaining for next cycle") : "");
     }
@@ -215,6 +213,22 @@ public class PositionRetentionService {
         }
     }
 
+    /**
+     * Daily, not every prune(): the NOT EXISTS probe runs once per aircraft
+     * first seen over a week ago, which walks most of
+     * idx_position_icao_ground_time (measured: ~127 MB of page reads per run
+     * on a 1.6 GB database, docs/perf/PROFILE-2026-10.md). The rule is "not
+     * seen for 7 days", so checking once a day loses nothing.
+     */
+    void pruneStaleAircraft() {
+        try {
+            int deleted = aircraftRepository.deleteStaleWithNoPositions(clock.instant().minus(AIRCRAFT_STALE_AFTER));
+            if (deleted > 0) log.info("retention: deleted {} stale aircraft rows", deleted);
+        } catch (RuntimeException e) {
+            log.warn("retention: pruning stale aircraft failed", e);
+        }
+    }
+
     @EventListener(ContextClosedEvent.class)
     void stopAfterCurrentBatch() {
         stopping = true;
@@ -230,6 +244,7 @@ public class PositionRetentionService {
      */
     @Scheduled(cron = "0 0 3 * * *")
     public void nightlyOptimize() {
+        pruneStaleAircraft();
         jdbcTemplate.execute("PRAGMA optimize");
         log.info("retention: nightly PRAGMA optimize complete");
     }

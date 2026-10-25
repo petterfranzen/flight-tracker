@@ -64,21 +64,35 @@ public class SqliteDataSourceConfig {
     // batches both take that lock, and 5s covers realistic overlap between
     // them rather than failing a writer outright. temp_store=MEMORY: this
     // app's temp tables/indexes (sort operations, etc.) are small and this
-    // avoids extra disk I/O for them. cache_size=-65536: ~64MB page cache
-    // (negative value = KiB, not page count). mmap_size=268435456: 256MB
+    // avoids extra disk I/O for them. cache_size: per-connection page cache
+    // (negative value = KiB, not page count), see below. mmap_size=268435456: 256MB
     // memory-mapped I/O window, cuts read syscall overhead for the hot
     // working set. foreign_keys=OFF: matches this schema's Postgres
     // predecessor, which never declared FK constraints as CHECK-enforced
     // either (they were documentation-only REFERENCES clauses); SQLite
     // defaults this off anyway, set explicitly so it's never a surprise if
     // that default ever changes.
-    private static final String PRAGMAS =
-            "journal_mode=WAL&synchronous=NORMAL&busy_timeout=5000&temp_store=MEMORY"
-                    + "&cache_size=-65536&mmap_size=268435456&foreign_keys=false";
+    //
+    // cache_size and mmap_size are flighttracker.sqlite.* properties. The page
+    // cache is per connection and lives on the native heap, where it is not
+    // reclaimable like the kernel's page cache: 4 pooled connections x 64 MB
+    // was up to 256 MB of RSS duplicating pages the kernel already caches, and
+    // under the unit's MemoryHigh that squeezes the kernel cache the database
+    // actually needs. 8 MB each covers this app's point lookups and batched
+    // inserts (docs/perf/PROFILE-2026-10.md has the measurements).
+    static final long DEFAULT_CACHE_SIZE_KIB = 8192;
+    static final long DEFAULT_MMAP_SIZE_BYTES = 268435456;
+
+    static String pragmas(long cacheSizeKib, long mmapSizeBytes) {
+        return "journal_mode=WAL&synchronous=NORMAL&busy_timeout=5000&temp_store=MEMORY"
+                + "&cache_size=-" + cacheSizeKib + "&mmap_size=" + mmapSizeBytes + "&foreign_keys=false";
+    }
 
     @Bean
-    public DataSource dataSource(@Value("${flighttracker.db-path:./data/flighttracker.db}") String dbPath) {
-        return buildDataSource(dbPath);
+    public DataSource dataSource(@Value("${flighttracker.db-path:./data/flighttracker.db}") String dbPath,
+                                 @Value("${flighttracker.sqlite.cache-size-kib:" + DEFAULT_CACHE_SIZE_KIB + "}") long cacheSizeKib,
+                                 @Value("${flighttracker.sqlite.mmap-size-bytes:" + DEFAULT_MMAP_SIZE_BYTES + "}") long mmapSizeBytes) {
+        return buildDataSource(dbPath, cacheSizeKib, mmapSizeBytes);
     }
 
     /**
@@ -89,6 +103,10 @@ public class SqliteDataSourceConfig {
      * hand-rolled approximation that could silently drift from it.
      */
     public static DataSource buildDataSource(String dbPath) {
+        return buildDataSource(dbPath, DEFAULT_CACHE_SIZE_KIB, DEFAULT_MMAP_SIZE_BYTES);
+    }
+
+    public static DataSource buildDataSource(String dbPath, long cacheSizeKib, long mmapSizeBytes) {
         File dbFile = new File(dbPath);
         File parent = dbFile.getAbsoluteFile().getParentFile();
         if (parent != null && !parent.exists() && !parent.mkdirs() && !parent.exists()) {
@@ -101,7 +119,7 @@ public class SqliteDataSourceConfig {
         }
 
         HikariConfig config = new HikariConfig();
-        config.setJdbcUrl("jdbc:sqlite:" + dbFile.getAbsolutePath() + "?" + PRAGMAS);
+        config.setJdbcUrl("jdbc:sqlite:" + dbFile.getAbsolutePath() + "?" + pragmas(cacheSizeKib, mmapSizeBytes));
         config.setDriverClassName("org.sqlite.JDBC");
         // PLAN.md §6 item 3: "Hikari maximumPoolSize: 4" — deliberately
         // small. SQLite has exactly one writer at a time regardless of
