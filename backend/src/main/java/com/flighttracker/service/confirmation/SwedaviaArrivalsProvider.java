@@ -1,7 +1,7 @@
 package com.flighttracker.service.confirmation;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 import com.flighttracker.observability.PhaseLogger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -240,7 +240,7 @@ public class SwedaviaArrivalsProvider implements AirportArrivalsProvider {
         if (status >= 200 && status < 300) {
             try {
                 return BoardResult.found(parseBoard(http.body(), icao));
-            } catch (IOException | RuntimeException e) {
+            } catch (RuntimeException e) {
                 log.warn("Swedavia {} {} answered with a body that could not be read: {}", iata, date, e.toString());
                 phases.degraded("Swedavia FlightInfo answered with an unreadable body");
                 return BoardResult.failed();
@@ -286,7 +286,7 @@ public class SwedaviaArrivalsProvider implements AirportArrivalsProvider {
     // ---- parsing
 
     /** Tolerant: unknown fields are ignored, every field may be absent or null. */
-    List<BoardEntry> parseBoard(String body, String icao) throws IOException {
+    List<BoardEntry> parseBoard(String body, String icao) {
         if (body == null || body.isBlank()) return List.of();
         JsonNode flights = mapper.readTree(body).path("flights");
         if (!flights.isArray()) return List.of();

@@ -1,6 +1,7 @@
 package com.flighttracker.service;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.ObjectMapper;
 import com.flighttracker.model.FlightPosition;
 import com.flighttracker.service.live.PositionsPersistedEvent;
 import org.junit.jupiter.api.AfterEach;
@@ -36,7 +37,7 @@ class LiveFeedBroadcasterTest {
 
     private final CountDownLatch release = new CountDownLatch(1);
     private final ViewportService viewport = new ViewportService();
-    private final LiveFeedBroadcaster broadcaster = new LiveFeedBroadcaster(new ObjectMapper().findAndRegisterModules(), viewport);
+    private final LiveFeedBroadcaster broadcaster = new LiveFeedBroadcaster(new JsonMapper(), viewport);
 
     @AfterEach
     void tearDown() {
@@ -120,7 +121,7 @@ class LiveFeedBroadcasterTest {
         WebSocketSession a = session("a");
         WebSocketSession b = session("b");
         try (AnnotationConfigApplicationContext ctx = new AnnotationConfigApplicationContext()) {
-            ctx.registerBean(ObjectMapper.class, () -> new ObjectMapper().findAndRegisterModules());
+            ctx.registerBean(ObjectMapper.class, () -> new JsonMapper());
             ctx.registerBean(ViewportService.class);
             ctx.registerBean(LiveFeedBroadcaster.class);
             ctx.refresh();

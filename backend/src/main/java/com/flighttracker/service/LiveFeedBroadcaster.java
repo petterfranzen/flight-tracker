@@ -1,6 +1,7 @@
 package com.flighttracker.service;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.ObjectMapper;
 import com.flighttracker.model.FlightPosition;
 import com.flighttracker.service.live.PositionsPersistedEvent;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -12,7 +13,7 @@ import com.flighttracker.dto.LiveFrame;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.web.context.WebServerGracefulShutdownLifecycle;
+import org.springframework.boot.web.server.context.WebServerGracefulShutdownLifecycle;
 import org.springframework.context.SmartLifecycle;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.PingMessage;
@@ -146,7 +147,7 @@ public class LiveFeedBroadcaster extends TextWebSocketHandler implements SmartLi
             if (!viewport.contains(position.latitude(), position.longitude())) continue;
             try {
                 messages.add(new TextMessage(mapper.writeValueAsString(LiveFrame.of(position))));
-            } catch (IOException e) {
+            } catch (JacksonException e) {
                 log.debug("Skipping unserializable position {}: {}", position.icao24(), e.toString());
             }
         }
