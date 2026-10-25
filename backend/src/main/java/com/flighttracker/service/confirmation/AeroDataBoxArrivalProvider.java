@@ -1,7 +1,7 @@
 package com.flighttracker.service.confirmation;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 import com.flighttracker.observability.PhaseLogger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -299,7 +299,7 @@ public class AeroDataBoxArrivalProvider implements ArrivalConfirmationProvider {
             }
             try {
                 return select(parse(http.body()), query);
-            } catch (IOException | RuntimeException e) {
+            } catch (RuntimeException e) {
                 log.warn("AeroDataBox {} answered with a body that could not be read: {}", param, e.toString());
                 phases.degraded("AeroDataBox answered with an unreadable body");
                 return LookupResult.failed();
@@ -359,7 +359,7 @@ public class AeroDataBoxArrivalProvider implements ArrivalConfirmationProvider {
     }
 
     /** Tolerant: unknown fields are ignored, every field may be absent or null; an object is read as a one-element array. */
-    List<Leg> parse(String body) throws IOException {
+    List<Leg> parse(String body) {
         if (body == null || body.isBlank()) return List.of();
         JsonNode root = mapper.readTree(body);
         List<JsonNode> nodes = new ArrayList<>();

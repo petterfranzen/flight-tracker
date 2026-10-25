@@ -404,11 +404,11 @@ class LiveStateStoreTest {
         store.upsert("fast33", "FAST", T0, 10.5, 20.5, null, 250.0, 90.0, null, false, "opensky");
         store.upsert("slow11", "SLOW", T0, 10.1, 20.1, null, 60.0, null, null, false, "opensky");
 
-        String json = new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules()
+        String json = new tools.jackson.databind.json.JsonMapper()
                 .writeValueAsString(store.overview(cut, cut, T0.minusSeconds(7200), WORLD, 2.0, 1, 3));
-        com.fasterxml.jackson.databind.JsonNode root = new com.fasterxml.jackson.databind.ObjectMapper().readTree(json);
+        tools.jackson.databind.JsonNode root = new tools.jackson.databind.json.JsonMapper().readTree(json);
 
-        com.fasterxml.jackson.databind.JsonNode plane = root.get("planes").get(0);
+        tools.jackson.databind.JsonNode plane = root.get("planes").get(0);
         assertThat(plane.get("icao24").asText()).isEqualTo("fast33");
         assertThat(plane.get("callsign").asText()).isEqualTo("FAST");
         assertThat(plane.get("latitude").asDouble()).isEqualTo(10.5);
@@ -416,7 +416,7 @@ class LiveStateStoreTest {
         assertThat(plane.get("headingDeg").asDouble()).isEqualTo(90.0);
         assertThat(plane.has("observedAt")).isTrue();
         assertThat(plane.get("onGround").asBoolean()).isFalse();
-        com.fasterxml.jackson.databind.JsonNode cluster = root.get("clusters").get(0);
+        tools.jackson.databind.JsonNode cluster = root.get("clusters").get(0);
         assertThat(cluster.get("lat").asDouble()).isEqualTo(10.1);
         assertThat(cluster.get("lon").asDouble()).isEqualTo(20.1);
         assertThat(cluster.get("count").asLong()).isEqualTo(1);

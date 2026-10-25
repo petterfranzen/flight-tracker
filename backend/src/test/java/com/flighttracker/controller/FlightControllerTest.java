@@ -1,8 +1,10 @@
 package com.flighttracker.controller;
 
 import com.flighttracker.dto.LiveOverview;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.cfg.DateTimeFeature;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 import com.flighttracker.dto.TrackStatus;
 import com.flighttracker.model.FlightPosition;
 import com.flighttracker.service.coverage.GapEstimate;
@@ -204,8 +206,7 @@ class FlightControllerTest {
         when(liveStateStore.get(a.icao24())).thenReturn(Optional.of(a));
         ResponseEntity<TrackStatus> response = controller().status(a.icao24());
         assertThat(response.getStatusCode().value()).isEqualTo(200);
-        ObjectMapper mapper = new ObjectMapper().findAndRegisterModules()
-                .configure(com.fasterxml.jackson.databind.SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, false);
+        ObjectMapper mapper = JsonMapper.builder().disable(DateTimeFeature.WRITE_DATES_AS_TIMESTAMPS).build();
         return mapper.readTree(mapper.writeValueAsString(response.getBody()));
     }
 

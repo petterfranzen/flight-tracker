@@ -1,7 +1,9 @@
 package com.flighttracker.dto;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.cfg.DateTimeFeature;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 import com.flighttracker.service.confirmation.ArrivalInfo;
 import com.flighttracker.service.confirmation.Confirmation;
 import com.flighttracker.service.coverage.GapEstimate;
@@ -10,10 +12,8 @@ import com.flighttracker.service.live.LiveAircraft;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Optional;
-import java.util.stream.StreamSupport;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -23,8 +23,7 @@ class TrackStatusTest {
     private static final Instant SEEN = Instant.parse("2026-10-12T11:00:00Z");
     private static final Instant AT = Instant.parse("2026-10-12T11:02:00Z");
     private static final Instant TOUCHDOWN = Instant.parse("2026-10-12T11:03:10Z");
-    private static final ObjectMapper MAPPER = new ObjectMapper().findAndRegisterModules()
-            .configure(com.fasterxml.jackson.databind.SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, false);
+    private static final ObjectMapper MAPPER = JsonMapper.builder().disable(DateTimeFeature.WRITE_DATES_AS_TIMESTAMPS).build();
 
     private static LiveAircraft aircraft(boolean onGround, GapEstimate gap) {
         return new LiveAircraft(1L, "4ca123", "SAS123", SEEN, 59.60, 17.90,
@@ -38,8 +37,7 @@ class TrackStatusTest {
     }
 
     private static List<String> fieldNames(JsonNode node) {
-        Iterator<String> it = node.fieldNames();
-        return StreamSupport.stream(((Iterable<String>) () -> it).spliterator(), false).toList();
+        return List.copyOf(node.propertyNames());
     }
 
     @Test
