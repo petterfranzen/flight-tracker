@@ -341,5 +341,5 @@ flighttracker:
   # is secret: the audience tag is inside every token, and the signing keys are
   # published at https://<team-domain>/cdn-cgi/access/certs.
   ops:
-    access-team-domain: ${FLIGHTTRACKER_OPS_ACCESS_TEAM_DOMAIN:}
-    access-audience: ${FLIGHTTRACKER_OPS_ACCESS_AUDIENCE:}
+    access-team-domain: ${FLIGHTTRACKER_OPS_ACCESS_TEAM_DOMAIN:pastabake.cloudflareaccess.com}
+    access-audience: ${FLIGHTTRACKER_OPS_ACCESS_AUDIENCE:d0cde769e35a8d512b55cf64a9912ba1915454ce1313091d652dde969a37971f}
