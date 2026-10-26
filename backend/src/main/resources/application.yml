@@ -334,3 +334,12 @@ flighttracker:
     # HotPollUserBudget, wired into AgentController.restart(). Also exempt
     # for local/private-range callers, same as the limits above.
     hot-poll-seconds-per-ip-per-day: 4500
+  # GET /api/ops/stats (ops/OpsStatsFilter): memory, I/O and freshness numbers
+  # for the coordinator and the ops agent. Served only to requests carrying a
+  # valid Cloudflare Access token for this team and application; anything else
+  # gets the SPA fallback like any unknown path. Empty = closed. Neither value
+  # is secret: the audience tag is inside every token, and the signing keys are
+  # published at https://<team-domain>/cdn-cgi/access/certs.
+  ops:
+    access-team-domain: ${FLIGHTTRACKER_OPS_ACCESS_TEAM_DOMAIN:}
+    access-audience: ${FLIGHTTRACKER_OPS_ACCESS_AUDIENCE:}
