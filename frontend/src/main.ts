@@ -532,7 +532,11 @@ function boot(): void {
     if (overviewNext) overviewPlanes = overviewNext; // same ids and order, so overviewIndex still holds
     if (changed) renderAircraftLayer();
     if (selectedUpdate) {
-      store.set("selectedPos", selectedUpdate);
+      // A LiveFrame carries marker fields only: keep the altitude, speed and
+      // vertical rate the selected plane's own poll filled in.
+      const prev = store.get("selectedPos");
+      const update = Object.fromEntries(Object.entries(selectedUpdate).filter(([, v]) => v !== undefined));
+      store.set("selectedPos", prev && prev.icao24 === selectedUpdate.icao24 ? { ...prev, ...update } : selectedUpdate);
       store.set("selectedPosFresh", true);
       appendRoutePoint(selectedUpdate);
     }
