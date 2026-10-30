@@ -13,10 +13,10 @@
   },
   "dependencies": {
     "@fontsource/jetbrains-mono": "^5.3.0",
-    "maplibre-gl": "^6.7.0"
+    "maplibre-gl": "^6.16.0"
   },
   "devDependencies": {
-    "@playwright/test": "^1.62.1",
+    "@playwright/test": "^1.64.1",
     "typescript": "^5.5.4",
     "vite": "^5.4.1"
   }
