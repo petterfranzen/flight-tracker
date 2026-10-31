@@ -118,4 +118,16 @@ class LegDetectionIntegrationTest {
         report(12, "SAS100", 9000, false);
         assertThat(repository.findCurrentLegTakeoffTime(ICAO)).contains(at(0));
     }
+
+    @Test
+    void cruisingAltitudeIgnoresOnGroundAndBelowSeaLevelReports() {
+        // A low hop on a high-pressure day: barometric altitude reads below sea level all the way.
+        report(0, "DFL5800", -23, false);
+        report(5, "DFL5800", -46, false);
+        report(10, "DFL5800", 12, true); // on the ground: not a cruise, whatever it reads
+        assertThat(repository.findMaxAltitudeSince(ICAO, at(0))).isEmpty();
+
+        report(15, "DFL5800", 300, false);
+        assertThat(repository.findMaxAltitudeSince(ICAO, at(0))).contains(300.0);
+    }
 }

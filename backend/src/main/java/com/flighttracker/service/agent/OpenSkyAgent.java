@@ -180,7 +180,7 @@ public class OpenSkyAgent implements FlightDataAgent {
                         s.get(1) == null ? null : ((String) s.get(1)).trim(), // callsign
                         Instant.ofEpochSecond(((Number) s.get(4)).longValue()),
                         lat, lon,
-                        asDouble(s.get(7)),   // baro altitude, m
+                        altitude(s),
                         asDouble(s.get(9)),   // velocity, m/s
                         asDouble(s.get(10)),  // true track, deg
                         asDouble(s.get(11)),  // vertical rate, m/s
@@ -233,6 +233,16 @@ public class OpenSkyAgent implements FlightDataAgent {
         } catch (NumberFormatException ex) {
             return Optional.empty(); // Retry-After can also be an HTTP-date; we just fall back to our own backoff
         }
+    }
+
+    /**
+     * Geometric (GPS) altitude when the state vector has one, else barometric.
+     * Barometric is relative to standard pressure: on a high-pressure day a
+     * low flight near the coast reads below sea level (-46 m was seen).
+     */
+    static Double altitude(List<Object> s) {
+        Double geo = s.size() > 13 ? asDouble(s.get(13)) : null;
+        return geo != null ? geo : asDouble(s.get(7));
     }
 
     private static Double asDouble(Object o) {
