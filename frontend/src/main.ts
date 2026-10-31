@@ -21,7 +21,7 @@ import {
 } from "./api/flightApi";
 import { boundsFromMap, createFollowSelected, createMap, DEFAULT_VIEW, GPUInitializationError } from "./map/map";
 import { createPlaneLayer, planeBoxSize } from "./map/planes";
-import { declutterCellDeg, pickNonOverlapping, type Candidate } from "./map/declutter";
+import { declutterCellDeg, pickNonOverlapping, type Candidate, type DeclutterMemory } from "./map/declutter";
 import { isSmallScreen } from "./map/screen";
 import { pickInitialView } from "./map/initialView";
 import { getMockPlaneCount } from "./api/mockFleet";
@@ -265,6 +265,8 @@ function boot(): void {
   }
 
   // ---- aircraft rendering ----
+  // What was drawn last time, and the spacing for this zoom: a pan keeps both (see pickNonOverlapping).
+  const declutterMemory: DeclutterMemory = { key: "", factor: 1, shown: new Set() };
   function renderAircraftLayer(): void {
     const selectedId = store.get("selectedId");
     const selectedPos = store.get("selectedPos");
@@ -292,7 +294,8 @@ function boot(): void {
       return { icao24: p.icao24, x: pt.x, y: pt.y, active: isActiveTraffic(p, nowMs) };
     });
     const fixed = selectedPos ? [map.project(selectedPos.latitude, selectedPos.longitude)] : [];
-    const keep = pickNonOverlapping(points, fixed, planeBoxSize(zoom), isSmallScreen() ? MAX_DRAWN_MARKERS_SMALL_SCREEN : MAX_DRAWN_MARKERS);
+    const maxDrawn = isSmallScreen() ? MAX_DRAWN_MARKERS_SMALL_SCREEN : MAX_DRAWN_MARKERS;
+    const keep = pickNonOverlapping(points, fixed, planeBoxSize(zoom), maxDrawn, declutterMemory, `${Math.round(zoom)}:${maxDrawn}`);
     const drawn = candidates.filter((p) => keep.has(p.icao24));
 
     planeLayer.update({

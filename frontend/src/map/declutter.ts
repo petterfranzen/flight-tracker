@@ -42,22 +42,79 @@ export interface Candidate {
  * (every area keeps its first-discovered planes, just further apart) rather
  * than the first `maxCount` planes in priority order clumping wherever they
  * happen to be.
+ *
+ * With `memory` (one per map, `key` the zoom level and cap) a pan doesn't
+ * reshuffle the screen:
+ * - The spacing belongs to the zoom level: worked out afresh when `key`
+ *   changes, then kept. More or fewer candidates at the edges no longer
+ *   re-space every plane on screen.
+ * - Planes drawn last time keep their place. Newcomers fill the room between
+ *   them, and if the cap would be passed only the newcomers are spaced
+ *   further apart. Only a true overlap (the base spacing, in normal priority
+ *   order: active first, then first discovered) hides a drawn plane.
  */
-export function pickNonOverlapping(candidates: Candidate[], fixed: { x: number; y: number }[], boxPx: number, maxCount = Infinity): Set<string> {
+export function pickNonOverlapping(
+  candidates: Candidate[],
+  fixed: { x: number; y: number }[],
+  boxPx: number,
+  maxCount = Infinity,
+  memory?: DeclutterMemory,
+  key = "",
+): Set<string> {
   const order = candidates.map((c) => ({ c, rank: discoveryRank(c.icao24) }));
   order.sort((a, b) => (a.c.active === b.c.active ? a.rank - b.rank : a.c.active ? -1 : 1));
 
-  let min = Math.max(1, boxPx * OVERLAP_FRACTION);
-  let shown = pickOnce(order, fixed, min);
-  // Area scales with spacing squared, so this lands close to the cap in one or two more passes.
-  for (let pass = 0; shown.size > maxCount && pass < 6; pass++) {
-    min *= Math.max(1.08, Math.sqrt(shown.size / maxCount));
-    shown = pickOnce(order, fixed, min);
+  const base = Math.max(1, boxPx * OVERLAP_FRACTION);
+  if (!memory) return widen(order, fixed, base, 1, maxCount).shown;
+
+  const free = pickOnce(order, fixed, base); // true overlaps are settled by priority alone
+  const inPlay = order.filter((o) => free.has(o.c.icao24));
+  if (memory.key !== key) {
+    // A new zoom level: space everything afresh, as without memory.
+    const { shown, factor } = widen(inPlay, fixed, base, 1, maxCount);
+    Object.assign(memory, { key, factor, shown });
+    return shown;
   }
+  // The same zoom: what was drawn keeps its spacing, and newcomers fill the
+  // room between, spaced further apart (only from here on) if the cap needs it.
+  const prev = memory.shown;
+  inPlay.sort((a, b) => Number(prev.has(b.c.icao24)) - Number(prev.has(a.c.icao24))); // stable: priority order within each group
+  const keptMin = base * memory.factor;
+  let newMin = keptMin;
+  let shown = pickOnce(inPlay, fixed, keptMin, (c) => (prev.has(c.icao24) ? keptMin : newMin));
+  for (let pass = 0; shown.size > maxCount && pass < 6; pass++) {
+    newMin *= Math.max(1.08, Math.sqrt(shown.size / maxCount));
+    shown = pickOnce(inPlay, fixed, newMin, (c) => (prev.has(c.icao24) ? keptMin : newMin));
+  }
+  memory.shown = shown;
   return shown;
 }
 
-function pickOnce(order: { c: Candidate }[], fixed: { x: number; y: number }[], min: number): Set<string> {
+/** What `pickNonOverlapping` remembers between renders. */
+export interface DeclutterMemory {
+  key: string;
+  /** Spacing over the base overlap distance. */
+  factor: number;
+  shown: Set<string>;
+}
+
+/** Picks at `base * factor`, widening until at most `maxCount` are kept. */
+function widen(order: { c: Candidate }[], fixed: { x: number; y: number }[], base: number, factor: number, maxCount: number): { shown: Set<string>; factor: number } {
+  let shown = pickOnce(order, fixed, base * factor);
+  // Area scales with spacing squared, so this lands close to the cap in one or two more passes.
+  for (let pass = 0; shown.size > maxCount && pass < 6; pass++) {
+    factor *= Math.max(1.08, Math.sqrt(shown.size / maxCount));
+    shown = pickOnce(order, fixed, base * factor);
+  }
+  return { shown, factor };
+}
+
+/**
+ * One pass in `order`. `spacing(c)` is how far a candidate must be from
+ * everything kept before it (default `min`), never more than `min`, which
+ * sizes the grid.
+ */
+function pickOnce(order: { c: Candidate }[], fixed: { x: number; y: number }[], min: number, spacing: (c: Candidate) => number = () => min): Set<string> {
   const grid = new Map<number, { x: number; y: number }[]>();
   const key = (cx: number, cy: number): number => cx * 100_003 + cy;
   const add = (p: { x: number; y: number }): void => {
@@ -66,13 +123,13 @@ function pickOnce(order: { c: Candidate }[], fixed: { x: number; y: number }[], 
     if (bucket) bucket.push(p);
     else grid.set(k, [p]);
   };
-  const blocked = (p: { x: number; y: number }): boolean => {
+  const blocked = (p: { x: number; y: number }, d: number): boolean => {
     const cx = Math.floor(p.x / min);
     const cy = Math.floor(p.y / min);
     for (let dx = -1; dx <= 1; dx++) {
       for (let dy = -1; dy <= 1; dy++) {
         for (const q of grid.get(key(cx + dx, cy + dy)) ?? []) {
-          if (Math.abs(p.x - q.x) < min && Math.abs(p.y - q.y) < min) return true;
+          if (Math.abs(p.x - q.x) < d && Math.abs(p.y - q.y) < d) return true;
         }
       }
     }
@@ -82,7 +139,7 @@ function pickOnce(order: { c: Candidate }[], fixed: { x: number; y: number }[], 
   for (const f of fixed) add(f);
   const shown = new Set<string>();
   for (const { c } of order) {
-    if (blocked(c)) continue;
+    if (blocked(c, spacing(c))) continue;
     add(c);
     shown.add(c.icao24);
   }
