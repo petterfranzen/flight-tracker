@@ -178,7 +178,7 @@ public class SwedaviaArrivalsProvider implements AirportArrivalsProvider {
         String key = preferredKey();
         Http http;
         try {
-            http = get(iata, boardDate, key);
+            http = get(iata, "arrivals", boardDate, key);
         } catch (RuntimeException e) {
             // Timeouts, DNS, resets: a connection that never produced an answer.
             log.debug("Swedavia {} {} failed: {}", iata, boardDate, e.toString());
@@ -191,6 +191,36 @@ public class SwedaviaArrivalsProvider implements AirportArrivalsProvider {
             rejectedInARow = 0;
         }
         return interpret(http, iata, boardDate, icao).withCost(1);
+    }
+
+    /** True for the IATA code of one of the ten Swedavia airports. */
+    public boolean servesIata(String iata) {
+        return iata != null && IATA_BY_ICAO.containsValue(iata.trim().toUpperCase(Locale.ROOT));
+    }
+
+    /**
+     * The raw day board ({@code arrivals} or {@code departures}) for the flight search, using the same
+     * keys, rotation and lock-out as {@link #fetchArrivals}. Empty when the provider is off, the date is
+     * outside the API's window, or the call failed. Callers cache; this does not.
+     */
+    public java.util.Optional<String> fetchBoardBody(String iata, String direction, LocalDate date) {
+        if (!servesIata(iata) || date == null || !enabled()) return java.util.Optional.empty();
+        LocalDate today = boardDate(clock.instant());
+        if (date.isBefore(today.minusDays(MAX_DAYS_BACK)) || date.isAfter(today.plusDays(MAX_DAYS_AHEAD))) {
+            return java.util.Optional.empty();
+        }
+        Http http;
+        try {
+            http = get(iata.trim().toUpperCase(Locale.ROOT), direction, date, preferredKey());
+        } catch (RuntimeException e) {
+            phases.degraded("Swedavia FlightInfo unreachable: " + e.getClass().getSimpleName());
+            return java.util.Optional.empty();
+        }
+        if (http.status() == 401 || http.status() == 403) keyRejected();
+        else rejectedInARow = 0;
+        if (http.status() >= 200 && http.status() < 300 && http.body() != null) return java.util.Optional.of(http.body());
+        log.warn("Swedavia {} {} {} answered {}", iata, direction, date, http.status());
+        return java.util.Optional.empty();
     }
 
     /** The key in use: the preferred one, or the only one configured. */
@@ -217,9 +247,9 @@ public class SwedaviaArrivalsProvider implements AirportArrivalsProvider {
         phases.degraded(detail);
     }
 
-    private Http get(String iata, LocalDate date, String key) {
+    private Http get(String iata, String direction, LocalDate date, String key) {
         return client.get()
-                .uri("/{iata}/arrivals/{date}", iata, date.toString())
+                .uri("/{iata}/{direction}/{date}", iata, direction, date.toString())
                 .header(KEY_HEADER, key)
                 .header(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE)
                 .header(HttpHeaders.CACHE_CONTROL, "no-cache")

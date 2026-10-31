@@ -1,0 +1,23 @@
+{
+  "numberOfFlights": 3,
+  "flights": [
+    {
+      "flightId": "BA778",
+      "airlineOperator": {"iata": "BA", "icao": "BAW", "name": "British Airways"},
+      "arrivalTime": {"scheduledUtc": "2026-11-02T10:05:00Z", "estimatedUtc": "2026-11-02T10:20:00Z"},
+      "locationAndStatus": {"terminal": "5", "gate": "F12", "flightLegStatus": "SCH"},
+      "flightLegIdentifier": {"departureAirportIata": "LHR", "arrivalAirportIata": "ARN"}
+    },
+    {
+      "flightId": "SK 590",
+      "arrivalTime": {"scheduledUtc": "2026-11-02T09:00:00Z"},
+      "locationAndStatus": {"flightLegStatus": "LAN"},
+      "flightLegIdentifier": {"callsign": "SAS590", "departureAirportIata": "LGW", "arrivalAirportIata": "ARN"}
+    },
+    {
+      "flightId": "AY123",
+      "arrivalTime": {"scheduledUtc": "2026-11-02T08:00:00Z"},
+      "flightLegIdentifier": {"departureAirportIata": "HEL", "arrivalAirportIata": "ARN"}
+    }
+  ]
+}
