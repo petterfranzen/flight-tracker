@@ -173,6 +173,11 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     const dossier = store.get("dossier");
     const status = store.get("trackStatus");
     const stale = nowMs - new Date(selectedPos.observedAt).getTime() > STALE_POSITION_WARN_MS;
+    // Going stale changes how speed, climb and ETA read, not just this line.
+    if (stale !== updatedLineEl.classList.contains("details-panel-updated--stale")) {
+      renderAll();
+      return;
+    }
     updatedLineEl.className = `details-panel-updated${stale ? " details-panel-updated--stale" : ""}`;
     clear(updatedLineEl);
     updatedLineEl.append(
@@ -263,6 +268,15 @@ function renderAircraftPanel(store: AppStore): { panel: HTMLElement; updatedLine
     stale ? staleSuffix(dossier?.staleExplanation, status) : "",
   );
 
+  // Speed, climb and ETA describe a flight in progress. Once it has landed
+  // (or sits on the ground with nothing heard for a while) the last airborne
+  // values are history, not its state: "—". Stale but still flying, they are
+  // shown as what they were at the last report.
+  const landed = status?.state === "LANDED_INFERRED" || status?.state === "LANDED_CONFIRMED" || status?.state === "AT_GATE";
+  const over = landed || (stale && Boolean(selectedPos.onGround));
+  const motion = (text: string | null): string => (text == null || over ? "—" : stale ? `${text} (at last report)` : text);
+  const onGround = over || Boolean(selectedPos.onGround) || status?.state === "ON_GROUND";
+
   const fields = h(
     "dl",
     { className: "details-panel-fields" },
@@ -276,13 +290,14 @@ function renderAircraftPanel(store: AppStore): { panel: HTMLElement; updatedLine
     // ground fairly often (sensor noise), and "-23 m" for a parked
     // aircraft reads as a bug, not as a precision artifact.
     field("Altitude", selectedPos.altitudeM != null ? `${Math.round(Math.max(0, selectedPos.altitudeM))} m` : "—"),
-    field("Cruising altitude", dossier?.cruisingAltitudeM != null ? `${Math.round(dossier.cruisingAltitudeM)} m` : "—"),
-    field("Speed", selectedPos.velocityMs != null ? `${Math.round(selectedPos.velocityMs * 3.6)} km/h` : "—"),
+    // Never below zero: that's a barometric reading on a high-pressure day, not a cruise.
+    field("Cruising altitude", dossier?.cruisingAltitudeM != null && dossier.cruisingAltitudeM > 0 ? `${Math.round(dossier.cruisingAltitudeM)} m` : "—"),
+    field("Speed", motion(selectedPos.velocityMs != null ? `${Math.round(selectedPos.velocityMs * 3.6)} km/h` : null)),
     // Signed, not just magnitude: the sign is the only thing that says
     // climbing vs. descending. Level flight reads "+0.0 m/s", not a bare 0.
-    field("Vertical rate", selectedPos.verticalRateMs != null ? formatVerticalRate(selectedPos.verticalRateMs) : "—"),
+    field("Vertical rate", motion(selectedPos.verticalRateMs != null ? formatVerticalRate(selectedPos.verticalRateMs) : null)),
     field("Flight time", dossier?.flightMinutes != null ? formatDurationMinutes(dossier.flightMinutes) : "—"),
-    field("ETA", dossier?.etaMinutes != null ? formatDurationMinutes(dossier.etaMinutes) : "—"),
+    field("ETA", onGround ? "—" : motion(dossier?.etaMinutes != null ? formatDurationMinutes(dossier.etaMinutes) : null)),
   );
 
   const panel = h(

@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { findMarkerNear, getRouteVertices, LIVE_FIXTURE, mockFlightApi, setMapView, waitForMapReady, waitForPlanes } from "./helpers";
+import { findMarkerNear, getRouteVertices, HISTORIES, LIVE_FIXTURE, mockFlightApi, renderedPlanes, setMapView, waitForMapReady, waitForPlanes } from "./helpers";
 
 // The server dead-reckons an aircraft forward from its last real report and
 // sends that estimate with the report's own observedAt. The trail must not
@@ -54,4 +54,33 @@ test("estimated positions move the end of the trail instead of piling up in it",
   expect(tip.lat).toBeCloseTo(plane.latitude - 0.02 * polls, 4);
   // Earlier estimates are gone: only the latest one is in the trail.
   expect(v.filter((p) => Math.abs(p.lat - (plane.latitude - 0.02)) < 1e-6)).toHaveLength(0);
+});
+
+// Intermittent: the selected plane's trail ran ahead of its marker. The trail
+// is the history's real reports; the marker is the estimated position the
+// selection or the last poll gave. A history with a report newer than that
+// position drew the trail past the marker until the next poll caught up.
+test("the trail ends at the selected plane's marker, never past it", async ({ page }) => {
+  await mockFlightApi(page);
+  // The selected plane's own poll is down: the marker keeps the position it was selected at.
+  await page.route("**/api/flights/4d00d9/live*", (route) => route.fulfill({ status: 404, json: null }));
+  const history = HISTORIES["4d00d9"];
+  const last = history[history.length - 1];
+  const newer = { ...last, observedAt: new Date(Date.parse(last.observedAt) + 30_000).toISOString(), latitude: last.latitude - 0.03, longitude: last.longitude - 0.05 };
+  await page.route("**/api/flights/4d00d9/history*", (route) => route.fulfill({ json: [...history, newer] }));
+  await page.goto("/");
+  await waitForMapReady(page);
+  await setMapView(page, plane.latitude, plane.longitude, 11);
+  await waitForPlanes(page);
+  await (await findMarkerNear(page, plane.latitude, plane.longitude)).click();
+  await page.getByText("ICAO24 4D00D9").waitFor({ timeout: 5_000 });
+
+  await expect.poll(() => routeVertices(page).then((v) => v.length), { timeout: 5_000 }).toBeGreaterThan(10);
+  const marker = (await renderedPlanes(page)).find((p) => p.selected)!;
+  expect(marker.icao24).toBe("4d00d9");
+  const v = await routeVertices(page);
+  const end = v[v.length - 1];
+  expect(end.lat).toBeCloseTo(marker.lat, 5);
+  expect(end.lon).toBeCloseTo(marker.lon, 5);
+  expect(v.some((p) => Math.abs(p.lat - newer.latitude) < 1e-6)).toBe(false);
 });

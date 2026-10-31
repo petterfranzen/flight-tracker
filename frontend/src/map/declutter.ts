@@ -29,6 +29,24 @@ export interface Candidate {
   active: boolean;
 }
 
+/** A plane drawn last time is displaced by a higher-priority newcomer only when their centres are closer than this fraction of the spacing: on top of it, not merely near it. */
+export const DISPLACE_FRACTION = 0.5;
+
+/**
+ * What a map remembers between renders so that panning doesn't reshuffle
+ * which planes are drawn: the set drawn last time, and the spacing factor
+ * the cap last needed.
+ */
+export interface DeclutterMemory {
+  drawn: Set<string>;
+  /** Multiplies the zoom's spacing; above 1 only while the cap needs it. */
+  spacing: number;
+}
+
+export function newDeclutterMemory(): DeclutterMemory {
+  return { drawn: new Set(), spacing: 1 };
+}
+
 /**
  * The icao24s to draw: candidates in priority order (active before inactive,
  * then discovery order), each kept only if its box doesn't overlap one
@@ -36,56 +54,105 @@ export interface Candidate {
  * drawn). A grid with cells of the overlap distance means each candidate only
  * looks at nine cells, so this is linear in the number of candidates.
  *
- * `maxCount` bounds how many are kept (every marker is a DOM node, and a
- * zoom step re-places all of them). If more would be kept, the spacing is
- * widened and the pass repeated, so the thinning is even across the screen
- * (every area keeps its first-discovered planes, just further apart) rather
- * than the first `maxCount` planes in priority order clumping wherever they
- * happen to be.
+ * The spacing comes from the zoom (`boxPx`), so it is the same all through a
+ * pan. With `memory`, the planes drawn last time go first and keep their place
+ * unless a higher-priority newcomer lands right on top of one
+ * (DISPLACE_FRACTION). Without it a pan reshuffled the screen: a plane at the
+ * edge entering or leaving the view freed or took a neighbour's spot, that
+ * neighbour's neighbour flipped the other way, and so on across the map.
+ *
+ * `maxCount` bounds how many are kept (every render re-sends the drawn set to
+ * the map). If more would be kept, the spacing is widened and the pass
+ * repeated, so the thinning is even across the screen rather than the first
+ * `maxCount` planes in priority order clumping wherever they happen to be.
+ * The widened spacing is remembered and only drops back once the count is
+ * well under the cap, so a pan through a dense area doesn't change it on
+ * every frame.
  */
-export function pickNonOverlapping(candidates: Candidate[], fixed: { x: number; y: number }[], boxPx: number, maxCount = Infinity): Set<string> {
-  const order = candidates.map((c) => ({ c, rank: discoveryRank(c.icao24) }));
+export function pickNonOverlapping(
+  candidates: Candidate[],
+  fixed: { x: number; y: number }[],
+  boxPx: number,
+  maxCount = Infinity,
+  memory: DeclutterMemory = newDeclutterMemory(),
+): Set<string> {
+  const order = candidates.map((c) => ({ c, rank: discoveryRank(c.icao24), held: memory.drawn.has(c.icao24) }));
   order.sort((a, b) => (a.c.active === b.c.active ? a.rank - b.rank : a.c.active ? -1 : 1));
 
-  let min = Math.max(1, boxPx * OVERLAP_FRACTION);
-  let shown = pickOnce(order, fixed, min);
+  const base = Math.max(1, boxPx * OVERLAP_FRACTION);
+  let factor = memory.spacing;
+  let shown = pickOnce(order, fixed, base * factor);
+  if (factor > 1 && shown.size < maxCount / 2) {
+    // Far under the cap now (zoomed in, or out of the dense area): back to the zoom's own spacing.
+    factor = 1;
+    shown = pickOnce(order, fixed, base);
+  }
   // Area scales with spacing squared, so this lands close to the cap in one or two more passes.
   for (let pass = 0; shown.size > maxCount && pass < 6; pass++) {
-    min *= Math.max(1.08, Math.sqrt(shown.size / maxCount));
-    shown = pickOnce(order, fixed, min);
+    factor *= Math.max(1.08, Math.sqrt(shown.size / maxCount));
+    shown = pickOnce(order, fixed, base * factor);
   }
+  memory.spacing = factor;
+  memory.drawn = shown;
   return shown;
 }
 
-function pickOnce(order: { c: Candidate }[], fixed: { x: number; y: number }[], min: number): Set<string> {
-  const grid = new Map<number, { x: number; y: number }[]>();
+interface Placed {
+  x: number;
+  y: number;
+  /** Index in priority order; -1 for a fixed point. */
+  at: number;
+  held: boolean;
+  icao24?: string;
+  gone?: boolean;
+}
+
+function pickOnce(order: { c: Candidate; held: boolean }[], fixed: { x: number; y: number }[], min: number): Set<string> {
+  const grid = new Map<number, Placed[]>();
   const key = (cx: number, cy: number): number => cx * 100_003 + cy;
-  const add = (p: { x: number; y: number }): void => {
+  const add = (p: Placed): void => {
     const k = key(Math.floor(p.x / min), Math.floor(p.y / min));
     const bucket = grid.get(k);
     if (bucket) bucket.push(p);
     else grid.set(k, [p]);
   };
-  const blocked = (p: { x: number; y: number }): boolean => {
+  const overlapping = (p: { x: number; y: number }): Placed[] => {
     const cx = Math.floor(p.x / min);
     const cy = Math.floor(p.y / min);
+    const out: Placed[] = [];
     for (let dx = -1; dx <= 1; dx++) {
       for (let dy = -1; dy <= 1; dy++) {
         for (const q of grid.get(key(cx + dx, cy + dy)) ?? []) {
-          if (Math.abs(p.x - q.x) < min && Math.abs(p.y - q.y) < min) return true;
+          if (!q.gone && Math.abs(p.x - q.x) < min && Math.abs(p.y - q.y) < min) out.push(q);
         }
       }
     }
-    return false;
+    return out;
   };
 
-  for (const f of fixed) add(f);
+  for (const f of fixed) add({ x: f.x, y: f.y, at: -1, held: true });
   const shown = new Set<string>();
-  for (const { c } of order) {
-    if (blocked(c)) continue;
-    add(c);
+  // Held planes (drawn last time) first, among themselves in priority order:
+  // they only give way to the selected plane or to each other.
+  order.forEach(({ c, held }, at) => {
+    if (!held || overlapping(c).length > 0) return;
+    add({ x: c.x, y: c.y, at, held: true, icao24: c.icao24 });
     shown.add(c.icao24);
-  }
+  });
+  // Then newcomers. One that ranks above a held plane takes its place only if it's right on top of it.
+  const close = min * DISPLACE_FRACTION;
+  order.forEach(({ c, held }, at) => {
+    if (held) return;
+    const hits = overlapping(c);
+    const displaceable = hits.every((q) => q.held && q.at > at && Math.abs(c.x - q.x) < close && Math.abs(c.y - q.y) < close);
+    if (!displaceable) return;
+    for (const q of hits) {
+      q.gone = true;
+      shown.delete(q.icao24!);
+    }
+    add({ x: c.x, y: c.y, at, held: false, icao24: c.icao24 });
+    shown.add(c.icao24);
+  });
   return shown;
 }
 
