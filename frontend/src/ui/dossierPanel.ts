@@ -150,6 +150,8 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
   // every other change (a new selection, dossier arriving, favorites,
   // expand/collapse, …) rebuilds the panel outright.
   let updatedLineEl: HTMLElement | null = null;
+  // Going stale changes the speed, vertical rate and ETA rows too, so that tick rebuilds.
+  let renderedStale = false;
 
   function renderAll(): void {
     clear(root);
@@ -158,6 +160,7 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     const airportDossier = store.get("airportDossier");
     if (selectedPos) {
       const built = renderAircraftPanel(store);
+      renderedStale = built.stale;
       updatedLineEl = built.updatedLine;
       root.appendChild(built.panel);
     } else if (airportDossier) {
@@ -173,6 +176,10 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     const dossier = store.get("dossier");
     const status = store.get("trackStatus");
     const stale = nowMs - new Date(selectedPos.observedAt).getTime() > STALE_POSITION_WARN_MS;
+    if (stale !== renderedStale) {
+      renderAll();
+      return;
+    }
     updatedLineEl.className = `details-panel-updated${stale ? " details-panel-updated--stale" : ""}`;
     clear(updatedLineEl);
     updatedLineEl.append(
@@ -196,7 +203,7 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
   };
 }
 
-function renderAircraftPanel(store: AppStore): { panel: HTMLElement; updatedLine: HTMLElement } {
+function renderAircraftPanel(store: AppStore): { panel: HTMLElement; updatedLine: HTMLElement; stale: boolean } {
   const selectedPos = store.get("selectedPos")!;
   const dossier = store.get("dossier");
   const dossierExpanded = store.get("dossierExpanded");
@@ -263,6 +270,14 @@ function renderAircraftPanel(store: AppStore): { panel: HTMLElement; updatedLine
     stale ? staleSuffix(dossier?.staleExplanation, status) : "",
   );
 
+  // Once it has landed, the last airborne report's speed and climb are history,
+  // not a reading. Stale, they are what it was doing then, and say so. ETA
+  // divides the distance left by the speed: wrong in either case, and on the
+  // ground.
+  const landed = status?.state === "LANDED_INFERRED" || status?.state === "LANDED_CONFIRMED" || status?.state === "AT_GATE";
+  const motion = (value: string): string => (landed ? "—" : stale ? `${value} (last report)` : value);
+  const etaKnown = dossier?.etaMinutes != null && !landed && !stale && !selectedPos.onGround;
+
   const fields = h(
     "dl",
     { className: "details-panel-fields" },
@@ -276,13 +291,14 @@ function renderAircraftPanel(store: AppStore): { panel: HTMLElement; updatedLine
     // ground fairly often (sensor noise), and "-23 m" for a parked
     // aircraft reads as a bug, not as a precision artifact.
     field("Altitude", selectedPos.altitudeM != null ? `${Math.round(Math.max(0, selectedPos.altitudeM))} m` : "—"),
-    field("Cruising altitude", dossier?.cruisingAltitudeM != null ? `${Math.round(dossier.cruisingAltitudeM)} m` : "—"),
-    field("Speed", selectedPos.velocityMs != null ? `${Math.round(selectedPos.velocityMs * 3.6)} km/h` : "—"),
+    // Never below sea level: the server skips such reports, and an older one is no cruise either.
+    field("Cruising altitude", dossier?.cruisingAltitudeM != null && dossier.cruisingAltitudeM > 0 ? `${Math.round(dossier.cruisingAltitudeM)} m` : "—"),
+    field("Speed", selectedPos.velocityMs != null ? motion(`${Math.round(selectedPos.velocityMs * 3.6)} km/h`) : "—"),
     // Signed, not just magnitude: the sign is the only thing that says
     // climbing vs. descending. Level flight reads "+0.0 m/s", not a bare 0.
-    field("Vertical rate", selectedPos.verticalRateMs != null ? formatVerticalRate(selectedPos.verticalRateMs) : "—"),
+    field("Vertical rate", selectedPos.verticalRateMs != null ? motion(formatVerticalRate(selectedPos.verticalRateMs)) : "—"),
     field("Flight time", dossier?.flightMinutes != null ? formatDurationMinutes(dossier.flightMinutes) : "—"),
-    field("ETA", dossier?.etaMinutes != null ? formatDurationMinutes(dossier.etaMinutes) : "—"),
+    field("ETA", etaKnown ? formatDurationMinutes(dossier!.etaMinutes!) : "—"),
   );
 
   const panel = h(
@@ -318,7 +334,7 @@ function renderAircraftPanel(store: AppStore): { panel: HTMLElement; updatedLine
       h("button", { className: "details-panel-close", onClick: () => store.get("closeAircraftPanel")(), "aria-label": "Close aircraft details" }, "Close"),
     ),
   );
-  return { panel, updatedLine };
+  return { panel, updatedLine, stale };
 }
 
 function renderAirportPanel(store: AppStore): HTMLElement {

@@ -1,4 +1,5 @@
-import { expect, test, type WebSocketRoute } from "@playwright/test";
+import { expect, test, type Page, type WebSocketRoute } from "@playwright/test";
+import type { AircraftDossier, TrackStatus } from "../src/types/flight";
 import { findMarkerNear, LIVE_FIXTURE, mockFlightApi, setMapView, waitForMapReady, waitForPlanes } from "./helpers";
 
 // The aircraft dossier's Speed and Vertical rate rows (dossierPanel.ts).
@@ -31,7 +32,7 @@ test.describe("dossier speed and vertical rate", () => {
     await expect(verticalRate).toHaveText("—");
 
     expect(feed).not.toBeNull();
-    const base = Date.parse(target.observedAt);
+    const base = Date.now(); // a current report: the fixture's own time is long stale, which marks these rows
     const push = (i: number, velocityMs: number, verticalRateMs: number) =>
       feed!.send(JSON.stringify({ ...target, observedAt: new Date(base + i * 1_000).toISOString(), velocityMs, verticalRateMs }));
 
@@ -45,5 +46,81 @@ test.describe("dossier speed and vertical rate", () => {
     // -0.04 rounds to -0 — must read as level flight, not "-0.0".
     push(3, 231.4, -0.04);
     await expect(verticalRate).toHaveText("+0.0 m/s");
+  });
+});
+
+// After a landing, or once the data is stale, the last report's speed, climb
+// and ETA are not readings any more (AFR88HJ at ARN: "Landed 90% (inferred)",
+// updated 1 h ago, still showing 230 km/h, -2.9 m/s and ETA 1m).
+test.describe("dossier rows after a landing or when stale", () => {
+  const target = LIVE_FIXTURE.find((p) => p.icao24 === "4d00d9")!;
+  const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
+
+  async function open(page: Page, o: { ageMinutes: number; onGround?: boolean; state?: TrackStatus["state"]; cruisingAltitudeM?: number }) {
+    await mockFlightApi(page);
+    const observedAt = minutesAgo(o.ageMinutes);
+    await page.route("**/api/flights/4d00d9/live*", (route) =>
+      route.fulfill({ json: { ...target, observedAt, onGround: o.onGround ?? false, altitudeM: 400, velocityMs: 63.9, verticalRateMs: -2.9 } }),
+    );
+    await page.route("**/api/flights/4d00d9/status", (route) =>
+      o.state
+        ? route.fulfill({
+            json: {
+              icao24: target.icao24, state: o.state, confidence: 0.9, source: "physics", sourceKind: "inferred",
+              lastSeenAt: observedAt, lastSeenLat: target.latitude, lastSeenLon: target.longitude,
+              estimate: null, landing: null, gate: null, terminal: null, confirmedAt: null,
+            } satisfies TrackStatus,
+          })
+        : route.fulfill({ status: 404, json: null }),
+    );
+    const dossier: AircraftDossier = {
+      icao24: target.icao24, registration: "F-HPJA", model: "A320", operator: "Air France",
+      originAirport: "LFPG", originAirportName: "Paris CDG", originAirportIata: "CDG",
+      destinationAirport: "ESSA", destinationAirportName: "Stockholm Arlanda", destinationAirportIata: "ARN",
+      flightMinutes: 150, etaMinutes: 1, cruisingAltitudeM: o.cruisingAltitudeM ?? 11_000, flightPhase: "LANDING", staleExplanation: null, legStartAt: null,
+    };
+    await page.route("**/api/aircraft/4d00d9", (route) => route.fulfill({ json: dossier }));
+    await page.goto("/");
+    await waitForMapReady(page);
+    await setMapView(page, target.latitude, target.longitude, 11);
+    await waitForPlanes(page);
+    await (await findMarkerNear(page, target.latitude, target.longitude)).click();
+    await page.getByText("ICAO24 4D00D9").waitFor({ timeout: 5_000 });
+    // The dossier has landed once the operator shows.
+    await expect(row(page, "Operator")).toHaveText("Air France");
+  }
+  const row = (page: Page, name: string) => page.locator(".details-panel dt", { hasText: new RegExp(`^${name}$`) }).locator("+ dd");
+
+  test("a current report shows speed, vertical rate and ETA as they are", async ({ page }) => {
+    await open(page, { ageMinutes: 0 });
+    await expect(row(page, "Speed")).toHaveText("230 km/h");
+    await expect(row(page, "Vertical rate")).toHaveText("-2.9 m/s");
+    await expect(row(page, "ETA")).toHaveText("1m");
+  });
+
+  test("once a landing is inferred they read '—'", async ({ page }) => {
+    await open(page, { ageMinutes: 0, state: "LANDED_INFERRED" });
+    await expect(page.locator(".details-panel-status")).toHaveAttribute("data-track-state", "LANDED_INFERRED");
+    await expect(row(page, "Speed")).toHaveText("—");
+    await expect(row(page, "Vertical rate")).toHaveText("—");
+    await expect(row(page, "ETA")).toHaveText("—");
+  });
+
+  test("stale, speed and vertical rate are marked as the last report's, and there is no ETA", async ({ page }) => {
+    await open(page, { ageMinutes: 60 });
+    await expect(row(page, "Speed")).toHaveText("230 km/h (last report)");
+    await expect(row(page, "Vertical rate")).toHaveText("-2.9 m/s (last report)");
+    await expect(row(page, "ETA")).toHaveText("—");
+  });
+
+  test("on the ground there is no ETA", async ({ page }) => {
+    await open(page, { ageMinutes: 0, onGround: true });
+    await expect(row(page, "ETA")).toHaveText("—");
+  });
+
+  test("a cruising altitude below sea level reads '—'", async ({ page }) => {
+    // DFL5800: barometric altitude on a high-pressure day, a low flight near the coast.
+    await open(page, { ageMinutes: 0, cruisingAltitudeM: -23 });
+    await expect(row(page, "Cruising altitude")).toHaveText("—");
   });
 });
