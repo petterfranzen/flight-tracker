@@ -320,13 +320,13 @@ function boot(): void {
     // The selected aircraft stays even if it just left the viewport — its
     // own priority poll keeps it current.
     if (selectedKept && !positions.has(selectedKept.icao24)) positions.set(selectedKept.icao24, selectedKept);
-    renderAircraftLayer();
     const current = selectedId ? positions.get(selectedId) : null;
     if (current) {
       const prev = store.get("selectedPos");
       store.set("selectedPos", prev ? { ...prev, ...current } : { ...current, altitudeM: null, velocityMs: null, verticalRateMs: null });
       appendRoutePoint(current);
     }
+    renderAircraftLayer(); // after selectedPos, which the selected marker is drawn from
   }
 
   function findCachedView(now: number): CachedView<LiveOverview> | CachedView<LiveMarker[]> | null {
@@ -533,12 +533,13 @@ function boot(): void {
     }
     pendingWs.clear();
     if (overviewNext) overviewPlanes = overviewNext; // same ids and order, so overviewIndex still holds
-    if (changed) renderAircraftLayer();
     if (selectedUpdate) {
       store.set("selectedPos", selectedUpdate);
       store.set("selectedPosFresh", true);
       appendRoutePoint(selectedUpdate);
     }
+    // After selectedPos: the selected marker is drawn from it, so rendering first left the trail's new point ahead of it.
+    if (changed) renderAircraftLayer();
   }
 
   function stopFetchCycle(): void {

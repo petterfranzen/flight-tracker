@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { findMarkerNear, getRouteVertices, LIVE_FIXTURE, mockFlightApi, setMapView, waitForMapReady, waitForPlanes } from "./helpers";
+import { findMarkerNear, getRouteVertices, LIVE_FIXTURE, mockFlightApi, renderedPlanes, setMapView, waitForMapReady, waitForPlanes, withMap } from "./helpers";
 
 // The server dead-reckons an aircraft forward from its last real report and
 // sends that estimate with the report's own observedAt. The trail must not
@@ -54,4 +54,47 @@ test("estimated positions move the end of the trail instead of piling up in it",
   expect(tip.lat).toBeCloseTo(plane.latitude - 0.02 * polls, 4);
   // Earlier estimates are gone: only the latest one is in the trail.
   expect(v.filter((p) => Math.abs(p.lat - (plane.latitude - 0.02)) < 1e-6)).toHaveLength(0);
+});
+
+// Seen on SEKHU: the trail's newest point ahead of the marker. A live frame
+// for the selected plane drew the map before it updated the selected
+// position, so the trail took the new point and the marker stayed put.
+test("a live frame moves the selected marker to the trail's newest point", async ({ page }) => {
+  await mockFlightApi(page);
+  await page.route("**/api/flights/4d00d9/live*", (route) => route.fulfill({ status: 404, json: null })); // only the frame moves it
+  let feed: import("@playwright/test").WebSocketRoute | null = null;
+  await page.routeWebSocket("**/ws/live", (ws) => {
+    feed = ws;
+  });
+  await page.goto("/");
+  await waitForMapReady(page);
+  await setMapView(page, plane.latitude, plane.longitude, 11);
+  await waitForPlanes(page);
+  await (await findMarkerNear(page, plane.latitude, plane.longitude)).click();
+  await page.getByText("ICAO24 4D00D9").waitFor({ timeout: 5_000 });
+  await expect.poll(() => routeVertices(page).then((v) => v.length), { timeout: 5_000 }).toBeGreaterThan(10);
+
+  // The first fresh position flies the map to the new selection (and that move redraws everything); the next only moves the plane.
+  const first = { ...plane, observedAt: new Date(Date.now() - 5_000).toISOString() };
+  feed!.send(JSON.stringify(first));
+  await expect.poll(() => routeVertices(page).then((v) => v[v.length - 1].lat), { timeout: 5_000 }).toBeCloseTo(first.latitude, 3);
+  await expect.poll(() => withMap(page, (map) => map.isMoving()), { timeout: 5_000 }).toBe(false);
+
+  const next = { ...plane, observedAt: new Date(Date.now()).toISOString(), latitude: plane.latitude + 0.03, longitude: plane.longitude + 0.02 };
+  feed!.send(JSON.stringify(next));
+
+  // The selected plane's source, read the way getRouteVertices reads the trail's: the same moment, both sides.
+  const selectedSource = () =>
+    withMap(page, async (map) => {
+      const source = map.gl.getSource("plane-selected") as { getData(): Promise<{ features: { geometry: { coordinates: [number, number] } }[] }> } | undefined;
+      const f = source ? (await source.getData()).features[0] : undefined;
+      return f ? { lat: f.geometry.coordinates[1], lon: f.geometry.coordinates[0] } : null;
+    });
+  // The frame updates both at once, so as soon as the trail has the new point the marker must be on it.
+  await expect.poll(() => routeVertices(page).then((v) => v[v.length - 1].lat), { timeout: 5_000, intervals: [20] }).toBeCloseTo(next.latitude, 3);
+  expect((await selectedSource())?.lat).toBeCloseTo(next.latitude, 6);
+  expect((await selectedSource())?.lon).toBeCloseTo(next.longitude, 6);
+  // And that is what is drawn.
+  const selected = async () => (await renderedPlanes(page)).find((p) => p.selected);
+  await expect.poll(async () => (await selected())?.lat, { timeout: 3_000 }).toBeCloseTo(next.latitude, 3);
 });
