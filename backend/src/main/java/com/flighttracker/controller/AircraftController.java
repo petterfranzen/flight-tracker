@@ -72,7 +72,8 @@ public class AircraftController {
      * bulk case this deliberately avoids.
      */
     @GetMapping("/{icao24}")
-    public ResponseEntity<AircraftDossier> get(@PathVariable String icao24) {
+    public ResponseEntity<AircraftDossier> get(@PathVariable("icao24") String rawIcao24) {
+        String icao24 = normalizeIcao24(rawIcao24);
         Aircraft aircraft = aircraftRepository.findById(icao24).orElse(null);
         if (aircraft == null) return ResponseEntity.notFound().build();
 
@@ -83,6 +84,11 @@ public class AircraftController {
         }
 
         return ResponseEntity.ok(toDossier(aircraft));
+    }
+
+    /** icao24s are stored lower case (as OpenSky sends them); a URL typed or pasted in upper case must find the same aircraft. */
+    static String normalizeIcao24(String icao24) {
+        return icao24.trim().toLowerCase(Locale.ROOT);
     }
 
     // Below this, dividing distance by groundspeed stops being a
