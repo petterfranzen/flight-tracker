@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
-import { pickNonOverlapping, type Candidate } from "../src/map/declutter";
-import { mockFlightApi, renderedPlanes, setMapView, waitForMapReady } from "./helpers";
+import { newDeclutterMemory, pickNonOverlapping, type Candidate } from "../src/map/declutter";
+import { mockFlightApi, renderedPlanes, setMapView, waitForMapReady, withMap } from "./helpers";
 
 // No clustering: planes are big, and where two would overlap on screen only the
 // first discovered one is drawn (map/declutter.ts). Discovery order is the
@@ -225,5 +225,77 @@ test.describe("big planes", () => {
     await page.setViewportSize({ width: 400, height: 800 });
     await serve(page, [plane("aaaaaa", "GATE1", BASE.lat, BASE.lon), plane("bbbbbb", "GATE2", BASE.lat + 0.0006, BASE.lon)], 16); // ~67 m
     await expect.poll(() => count(page), { timeout: 10_000 }).toBe(2);
+  });
+});
+
+test.describe("panning at a fixed zoom", () => {
+  // Petter's screencast: panning over Stockholm made planes all over the screen pop in and out.
+  // Rows of planes ~0.6 icons apart, so every plane overlaps its neighbours and only every other
+  // one fits. Re-picking from scratch on each pan let a plane leaving at the edge flip a whole row.
+  const rows = Array.from({ length: 3 }, (_, r) =>
+    Array.from({ length: 180 }, (_, i) => plane(`r${r}${i.toString(16).padStart(4, "0")}`, `R${r}N${i}`, BASE.lat - 0.15 + r * 0.15, 13.5 + i * 0.05)),
+  ).flat();
+
+  /** The icao24s drawn once two reads in a row agree (the pan's render, then the viewport fetch's). */
+  async function settledDrawn(page: Page): Promise<Map<string, { x: number; y: number }>> {
+    let last = "";
+    let drawn = new Map<string, { x: number; y: number }>();
+    await expect
+      .poll(
+        async () => {
+          const planes = await renderedPlanes(page);
+          drawn = new Map(planes.map((p) => [p.icao24, { x: p.x, y: p.y }]));
+          const sig = [...drawn.keys()].sort().join(",");
+          const same = sig === last && drawn.size > 0;
+          last = sig;
+          return same;
+        },
+        { timeout: 10_000, intervals: [400] },
+      )
+      .toBe(true);
+    return drawn;
+  }
+
+  test("a plane on screen in two consecutive views is drawn in both", async ({ page }) => {
+    await serve(page, rows, 9);
+    const box = (await page.locator(".map-container").boundingBox())!;
+    const onScreen = (lat: number, lon: number) => withMap(page, (map, lat: number, lon: number) => map.project(lat, lon), lat, lon);
+    const byId = new Map(rows.map((p) => [p.icao24, p]));
+
+    let lon = BASE.lon;
+    let before = await settledDrawn(page);
+    expect(before.size).toBeGreaterThan(30);
+    for (let step = 0; step < 8; step++) {
+      lon += 0.13; // ~47 px at z9: a short drag
+      await setMapView(page, BASE.lat, lon, 9);
+      const after = await settledDrawn(page);
+      const lost: string[] = [];
+      for (const id of before.keys()) {
+        if (after.has(id)) continue;
+        const p = byId.get(id)!;
+        const pt = await onScreen(p.latitude, p.longitude);
+        // Still well inside the view after the pan, so it should still be drawn.
+        if (pt.x > 40 && pt.x < box.width - 40 && pt.y > 40 && pt.y < box.height - 40) lost.push(p.callsign);
+      }
+      expect(lost, `step ${step}: planes still on screen that stopped being drawn`).toEqual([]);
+      before = after;
+    }
+  });
+});
+
+test.describe("pickNonOverlapping remembers what it drew", () => {
+  const at = (icao24: string, x: number): Candidate => ({ icao24, x, y: 100, active: true });
+  const box = 40; // overlap spacing 28 px; a newcomer displaces a drawn plane within 14 px
+
+  test("a plane drawn last time keeps its place next to a higher-priority newcomer, but not under one", () => {
+    pickNonOverlapping([at("hyA", 0), at("hyB", 500)], [], box); // discovery order: hyA, then hyB
+    const memory = newDeclutterMemory();
+    expect([...pickNonOverlapping([at("hyB", 100)], [], box, Infinity, memory)]).toEqual(["hyB"]);
+    // From scratch hyA wins, being discovered first.
+    expect([...pickNonOverlapping([at("hyA", 120), at("hyB", 100)], [], box)]).toEqual(["hyA"]);
+    // But hyB was just drawn and hyA only overlaps the edge of its box: hyB stays.
+    expect([...pickNonOverlapping([at("hyA", 120), at("hyB", 100)], [], box, Infinity, memory)]).toEqual(["hyB"]);
+    // Right on top of it, the higher-priority plane takes its place.
+    expect([...pickNonOverlapping([at("hyA", 105), at("hyB", 100)], [], box, Infinity, memory)]).toEqual(["hyA"]);
   });
 });

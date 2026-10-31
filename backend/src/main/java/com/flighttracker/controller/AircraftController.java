@@ -73,6 +73,7 @@ public class AircraftController {
      */
     @GetMapping("/{icao24}")
     public ResponseEntity<AircraftDossier> get(@PathVariable String icao24) {
+        icao24 = normalizeIcao24(icao24);
         Aircraft aircraft = aircraftRepository.findById(icao24).orElse(null);
         if (aircraft == null) return ResponseEntity.notFound().build();
 
@@ -83,6 +84,11 @@ public class AircraftController {
         }
 
         return ResponseEntity.ok(toDossier(aircraft));
+    }
+
+    // icao24 is stored lower case; a mixed-case URL must still find it.
+    private static String normalizeIcao24(String icao24) {
+        return icao24.trim().toLowerCase(Locale.ROOT);
     }
 
     // Below this, dividing distance by groundspeed stops being a

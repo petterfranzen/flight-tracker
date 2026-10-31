@@ -152,9 +152,13 @@ public class FlightPositionRepository {
     // "Cruising altitude" for the dossier: the highest altitude reached so
     // far in the current leg (from legStart, i.e. findCurrentLegTakeoffTime
     // above). Still meaningful after landing (it's simply that completed
-    // flight's peak), so this isn't gated on on_ground.
+    // flight's peak), but only airborne, above-zero reports count: an
+    // on-ground or barometric below-zero reading is never a cruising altitude.
     public Optional<Double> findMaxAltitudeSince(String icao24, Instant legStart) {
-        return jdbcClient.sql("SELECT MAX(altitude_m) FROM flight_position WHERE icao24 = :icao24 AND observed_at >= :legStart")
+        return jdbcClient.sql("""
+                SELECT MAX(altitude_m) FROM flight_position
+                WHERE icao24 = :icao24 AND observed_at >= :legStart AND on_ground = 0 AND altitude_m > 0
+                """)
                 .param("icao24", icao24)
                 .param("legStart", toEpochMilli(legStart))
                 .query(Double.class)

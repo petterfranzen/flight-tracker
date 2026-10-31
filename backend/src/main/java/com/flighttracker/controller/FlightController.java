@@ -135,6 +135,7 @@ public class FlightController {
      */
     @GetMapping("/{icao24}/live")
     public ResponseEntity<FlightPosition> liveOne(@PathVariable String icao24) {
+        icao24 = normalizeIcao24(icao24);
         return liveStateStore.findLatestPosition(icao24)
                 .map(ResponseEntity::ok)
                 .orElseGet(() -> ResponseEntity.notFound().build());
@@ -148,6 +149,7 @@ public class FlightController {
      */
     @GetMapping("/{icao24}/status")
     public ResponseEntity<TrackStatus> status(@PathVariable String icao24) {
+        icao24 = normalizeIcao24(icao24);
         return liveStateStore.get(icao24)
                 .map(a -> ResponseEntity.ok(TrackStatus.from(a, confirmationStore.forAircraft(a))))
                 .orElseGet(() -> ResponseEntity.notFound().build());
@@ -351,6 +353,11 @@ public class FlightController {
     public List<FlightPosition> history(@PathVariable String icao24,
                                          @RequestParam Instant from,
                                          @RequestParam Instant to) {
-        return positionRepository.findByIcao24AndObservedAtBetween(icao24, from, to);
+        return positionRepository.findByIcao24AndObservedAtBetween(normalizeIcao24(icao24), from, to);
+    }
+
+    // icao24 is stored lower case; a mixed-case URL must still find it.
+    private static String normalizeIcao24(String icao24) {
+        return icao24.trim().toLowerCase(Locale.ROOT);
     }
 }

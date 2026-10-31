@@ -200,6 +200,16 @@ class FlightControllerTest {
         assertThat(controller().liveCount(false)).isEqualTo(70L);
     }
 
+    @Test
+    void liveOne_mixedCaseIcao24_isLookedUpLowerCase() {
+        when(liveStateStore.findLatestPosition("4aab14"))
+                .thenReturn(Optional.of(new FlightPosition("4aab14", "SAS1", Instant.now(), 59.0, 18.0,
+                        null, null, null, null, false, "opensky")));
+
+        assertThat(controller().liveOne("4AAB14").getStatusCode().value()).isEqualTo(200);
+        verify(liveStateStore).findLatestPosition("4aab14");
+    }
+
     // ---- GET /{icao24}/status
 
     private JsonNode statusJson(LiveAircraft a) throws Exception {

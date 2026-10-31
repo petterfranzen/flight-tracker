@@ -118,4 +118,17 @@ class LegDetectionIntegrationTest {
         report(12, "SAS100", 9000, false);
         assertThat(repository.findCurrentLegTakeoffTime(ICAO)).contains(at(0));
     }
+
+    @Test
+    void cruisingAltitudeCountsOnlyAirborneReportsAboveZero() {
+        // DFL5800 showed a cruising altitude of -23 m: a short hop low over
+        // the sea on a high-pressure day, plus barometric noise on the ground.
+        report(0, "DFL5800", 0, true);
+        report(5, "DFL5800", -23, false);
+        report(10, "DFL5800", 5, true);
+        assertThat(repository.findMaxAltitudeSince(ICAO, at(0))).isEmpty();
+
+        report(15, "DFL5800", 240, false);
+        assertThat(repository.findMaxAltitudeSince(ICAO, at(0))).contains(240.0);
+    }
 }

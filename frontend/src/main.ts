@@ -21,7 +21,7 @@ import {
 } from "./api/flightApi";
 import { boundsFromMap, createFollowSelected, createMap, DEFAULT_VIEW, GPUInitializationError } from "./map/map";
 import { createPlaneLayer, planeBoxSize } from "./map/planes";
-import { declutterCellDeg, pickNonOverlapping, type Candidate } from "./map/declutter";
+import { declutterCellDeg, newDeclutterMemory, pickNonOverlapping, type Candidate } from "./map/declutter";
 import { isSmallScreen } from "./map/screen";
 import { pickInitialView } from "./map/initialView";
 import { getMockPlaneCount } from "./api/mockFleet";
@@ -235,36 +235,41 @@ function boot(): void {
   let priorityPollTimer: ReturnType<typeof setInterval> | null = null;
 
   // ---- route ----
-  // The trail is the real reports (routePoints) plus, at the end, one
-  // movable tip. The server dead-reckons a position forward from the last
-  // real report and sends it with that report's own observedAt, so a point
-  // with an unchanged observedAt is an estimate, not a new fix. Baking each
+  // The trail is the real reports (routePoints) and ends at the marker
+  // (selectedPos), so the two can never disagree. The server dead-reckons a
+  // position forward from the last real report and sends it with that
+  // report's own observedAt, so a point with an unchanged observedAt is an
+  // estimate, not a new fix: it only moves the end of the trail. Baking each
   // one into the trail (as this used to) made it run past the real track
   // whenever only polls were arriving (zoomed out, no live pushes), then
-  // zigzag back when the next real report landed.
-  let routeTip: [number, number] | null = null;
+  // zigzag back when the next real report landed. Likewise reports newer
+  // than the marker's position (a history fetched after the plane was
+  // selected from an older list) wait until the marker gets there: drawn
+  // straight away, they ran the trail ahead of the plane.
   function drawRoute(): void {
-    route = routePoints.map((pt): [number, number] => [pt.lat, pt.lon]);
-    if (routeTip) route.push(routeTip);
+    const pos = store.get("selectedPos");
+    const tip = pos && pos.icao24 === store.get("selectedId") ? pos : null;
+    const until = tip ? Date.parse(tip.observedAt) : Infinity;
+    route = routePoints.filter((pt) => Date.parse(pt.observedAt) <= until).map((pt): [number, number] => [pt.lat, pt.lon]);
+    const end = route[route.length - 1];
+    if (tip && !(end && end[0] === tip.latitude && end[1] === tip.longitude)) route.push([tip.latitude, tip.longitude]);
     routeLayer.update(route);
   }
   function appendRoutePoint(p: LiveMarker): void {
-    if (lastRouteObservedAt != null && p.observedAt < lastRouteObservedAt) return;
-    const last = routePoints[routePoints.length - 1];
-    const sameSpot = last != null && last.lat === p.latitude && last.lon === p.longitude;
     if (lastRouteObservedAt == null || p.observedAt > lastRouteObservedAt) {
-      // A new real report: it joins the trail and replaces any estimate.
+      // A new real report: it joins the trail.
       lastRouteObservedAt = p.observedAt;
-      routeTip = null;
-      if (!sameSpot) routePoints = [...routePoints, { lat: p.latitude, lon: p.longitude, observedAt: p.observedAt }];
-    } else {
-      // Same report as the trail's last: an estimate, or the report itself.
-      routeTip = sameSpot ? null : [p.latitude, p.longitude];
+      const last = routePoints[routePoints.length - 1];
+      if (!(last && last.lat === p.latitude && last.lon === p.longitude)) {
+        routePoints = [...routePoints, { lat: p.latitude, lon: p.longitude, observedAt: p.observedAt }];
+      }
     }
     drawRoute();
   }
 
   // ---- aircraft rendering ----
+  // Which planes were drawn last time, so a pan keeps them (see pickNonOverlapping).
+  const declutterMemory = newDeclutterMemory();
   function renderAircraftLayer(): void {
     const selectedId = store.get("selectedId");
     const selectedPos = store.get("selectedPos");
@@ -292,7 +297,7 @@ function boot(): void {
       return { icao24: p.icao24, x: pt.x, y: pt.y, active: isActiveTraffic(p, nowMs) };
     });
     const fixed = selectedPos ? [map.project(selectedPos.latitude, selectedPos.longitude)] : [];
-    const keep = pickNonOverlapping(points, fixed, planeBoxSize(zoom), isSmallScreen() ? MAX_DRAWN_MARKERS_SMALL_SCREEN : MAX_DRAWN_MARKERS);
+    const keep = pickNonOverlapping(points, fixed, planeBoxSize(zoom), isSmallScreen() ? MAX_DRAWN_MARKERS_SMALL_SCREEN : MAX_DRAWN_MARKERS, declutterMemory);
     const drawn = candidates.filter((p) => keep.has(p.icao24));
 
     planeLayer.update({
@@ -703,7 +708,6 @@ function boot(): void {
     route = [];
     lastRouteObservedAt = null;
     routePoints = [];
-    routeTip = null;
     legStartAt = null;
     routeLayer.update(route);
 
@@ -724,7 +728,6 @@ function boot(): void {
       const filtered = legStartAt ? track.filter((p) => p.observedAt >= legStartAt!) : track;
       if (filtered.length > 0) lastRouteObservedAt = filtered[filtered.length - 1].observedAt;
       routePoints = filtered.map((p) => ({ lat: p.latitude, lon: p.longitude, observedAt: p.observedAt }));
-      routeTip = null;
       drawRoute();
       const currentSelectedPos = store.get("selectedPos");
       if (currentSelectedPos) appendRoutePoint(currentSelectedPos);
@@ -932,6 +935,7 @@ function boot(): void {
 
   // ---- per-selection effect wiring ----
   store.subscribe("selectedId", onSelectedIdChanged);
+  store.subscribe("selectedPos", drawRoute); // the trail ends at the marker, wherever it moves
   onSelectedIdChanged(); // selectedId starts null — harmless initial reset
 
   // ---- mount-only effects ----
