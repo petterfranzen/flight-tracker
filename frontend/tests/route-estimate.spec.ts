@@ -76,11 +76,12 @@ test("the trail ends at the selected plane's marker, never past it", async ({ pa
   await page.getByText("ICAO24 4D00D9").waitFor({ timeout: 5_000 });
 
   await expect.poll(() => routeVertices(page).then((v) => v.length), { timeout: 5_000 }).toBeGreaterThan(10);
+  // The selected marker is drawn on the next frame after the selection.
+  await expect.poll(async () => (await renderedPlanes(page)).find((p) => p.selected)?.icao24, { timeout: 5_000 }).toBe("4d00d9");
   const marker = (await renderedPlanes(page)).find((p) => p.selected)!;
-  expect(marker.icao24).toBe("4d00d9");
   const v = await routeVertices(page);
   const end = v[v.length - 1];
-  expect(end.lat).toBeCloseTo(marker.lat, 5);
-  expect(end.lon).toBeCloseTo(marker.lon, 5);
+  expect(end.lat).toBeCloseTo(marker.lat, 3); // drawn positions are float32: ~10 m, against the 3 km the newer report is off
+  expect(end.lon).toBeCloseTo(marker.lon, 3);
   expect(v.some((p) => Math.abs(p.lat - newer.latitude) < 1e-6)).toBe(false);
 });
