@@ -8,8 +8,8 @@ export interface WatchedFlight {
 
 const KEY = "flighttracker:watchedFlights";
 
-export function watchKey(w: Pick<WatchedFlight, "flightNumber" | "date">): string {
-  return `${w.flightNumber}|${w.date}`;
+export function watchKey(w: Pick<WatchedFlight, "flightNumber" | "date" | "airport">): string {
+  return `${w.flightNumber}|${w.date}|${w.airport}`;
 }
 
 export function loadWatched(): WatchedFlight[] {

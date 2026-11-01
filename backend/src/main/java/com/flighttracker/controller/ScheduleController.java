@@ -6,6 +6,7 @@ import com.flighttracker.service.live.LiveStateStore;
 import com.flighttracker.service.schedule.FlightScheduleService;
 import com.flighttracker.service.schedule.ScheduledFlight;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -32,6 +33,9 @@ public class ScheduleController {
     /** A callsign repeats every day; only a flight within this window of now can be the one in the air. */
     static final Duration MATCH_WINDOW = Duration.ofHours(12);
 
+    /** "ok", "stale" (an older board stood in for one that failed) or "incomplete" (a board is missing). */
+    public static final String STATUS_HEADER = "X-Schedule-Status";
+
     private final FlightScheduleService schedule;
     private final LiveStateStore liveStateStore;
 
@@ -41,7 +45,7 @@ public class ScheduleController {
     }
 
     @GetMapping("/search")
-    public List<ScheduledFlight> search(@RequestParam(required = false) String flight,
+    public ResponseEntity<List<ScheduledFlight>> search(@RequestParam(required = false) String flight,
                                         @RequestParam(required = false) String from,
                                         @RequestParam(required = false) String to,
                                         @RequestParam(required = false) String airport,
@@ -55,15 +59,17 @@ public class ScheduleController {
         } catch (DateTimeParseException e) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "date must be yyyy-MM-dd");
         }
+        FlightScheduleService.Outcome outcome = new FlightScheduleService.Outcome();
         List<ScheduledFlight> found;
         if (flight != null && !flight.isBlank()) {
-            found = schedule.byFlightNumber(flight, day, codes(airport));
+            found = schedule.byFlightNumber(flight, day, codes(airport), outcome);
         } else if (from != null && !from.isBlank() && to != null && !to.isBlank()) {
-            found = schedule.byRoute(codes(from), codes(to), day);
+            found = schedule.byRoute(codes(from), codes(to), day, outcome);
         } else {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "give flight, or from and to");
         }
-        return found.stream().map(this::withLive).toList();
+        return ResponseEntity.ok().header(STATUS_HEADER, outcome.status())
+                .body(found.stream().map(this::withLive).toList());
     }
 
     private static List<String> codes(String csv) {

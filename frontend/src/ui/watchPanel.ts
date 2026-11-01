@@ -130,7 +130,7 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     if (results.length) {
       const list = h("ul", { className: "watch-panel-results" });
       for (const f of results) {
-        const already = watched.some((w) => watchKey(w) === watchKey({ flightNumber: f.flightNumber, date: dateInput.value }));
+        const already = watched.some((w) => watchKey(w) === watchKey({ flightNumber: f.flightNumber, date: dateInput.value, airport: f.airport }));
         list.appendChild(
           h("li", { className: "watch-panel-result" },
             h("span", { className: "watch-panel-name" }, `${f.flightNumber} ${routeOf(f)}`),

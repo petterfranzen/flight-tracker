@@ -198,29 +198,40 @@ public class SwedaviaArrivalsProvider implements AirportArrivalsProvider {
         return iata != null && IATA_BY_ICAO.containsValue(iata.trim().toUpperCase(Locale.ROOT));
     }
 
+    /** What one board request came to: a body, nothing asked (off, outside the window, 400), a failure, or a 429. */
+    public record BoardFetch(String body, boolean failed, Duration retryAfter) {
+        static BoardFetch ok(String body) { return new BoardFetch(body, false, null); }
+        static BoardFetch none() { return new BoardFetch(null, false, null); }
+        static BoardFetch failure() { return new BoardFetch(null, true, null); }
+        static BoardFetch throttled(Duration wait) { return new BoardFetch(null, true, wait); }
+        public boolean hasBody() { return body != null; }
+    }
+
     /**
      * The raw day board ({@code arrivals} or {@code departures}) for the flight search, using the same
-     * keys, rotation and lock-out as {@link #fetchArrivals}. Empty when the provider is off, the date is
-     * outside the API's window, or the call failed. Callers cache; this does not.
+     * keys, rotation and lock-out as {@link #fetchArrivals}. {@link BoardFetch#none()} when the provider is
+     * off or the date is outside the API's window; a failure or 429 is reported so the caller can back off.
+     * Callers cache, budget and pace; this does not.
      */
-    public java.util.Optional<String> fetchBoardBody(String iata, String direction, LocalDate date) {
-        if (!servesIata(iata) || date == null || !enabled()) return java.util.Optional.empty();
+    public BoardFetch fetchBoardBody(String iata, String direction, LocalDate date) {
+        if (!servesIata(iata) || date == null || !enabled()) return BoardFetch.none();
         LocalDate today = boardDate(clock.instant());
         if (date.isBefore(today.minusDays(MAX_DAYS_BACK)) || date.isAfter(today.plusDays(MAX_DAYS_AHEAD))) {
-            return java.util.Optional.empty();
+            return BoardFetch.none();
         }
         Http http;
         try {
             http = get(iata.trim().toUpperCase(Locale.ROOT), direction, date, preferredKey());
         } catch (RuntimeException e) {
             phases.degraded("Swedavia FlightInfo unreachable: " + e.getClass().getSimpleName());
-            return java.util.Optional.empty();
+            return BoardFetch.failure();
         }
         if (http.status() == 401 || http.status() == 403) keyRejected();
         else rejectedInARow = 0;
-        if (http.status() >= 200 && http.status() < 300 && http.body() != null) return java.util.Optional.of(http.body());
+        if (http.status() >= 200 && http.status() < 300 && http.body() != null) return BoardFetch.ok(http.body());
         log.warn("Swedavia {} {} {} answered {}", iata, direction, date, http.status());
-        return java.util.Optional.empty();
+        if (http.status() == 429) return BoardFetch.throttled(retryAfter(http.retryAfter()));
+        return http.status() == 400 ? BoardFetch.none() : BoardFetch.failure();
     }
 
     /** The key in use: the preferred one, or the only one configured. */

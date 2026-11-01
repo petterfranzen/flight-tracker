@@ -95,6 +95,35 @@ class SwedaviaArrivalsProviderTest {
         server.verify();
     }
 
+    // ---- schedule boards (fetchBoardBody)
+
+    @Test
+    void aBoardBodyFetchReportsABodyANothingAskedOrAFailure() {
+        server.expect(once(), requestTo(BASE + "/ARN/departures/2026-10-12")).andRespond(withSuccess("{\"flights\":[]}", MediaType.APPLICATION_JSON));
+        server.expect(once(), requestTo(BASE + "/BMA/arrivals/2026-10-12")).andRespond(withStatus(HttpStatus.BAD_REQUEST));
+        server.expect(once(), requestTo(BASE + "/GOT/arrivals/2026-10-12")).andRespond(withStatus(HttpStatus.INTERNAL_SERVER_ERROR));
+        SwedaviaArrivalsProvider p = provider();
+
+        assertThat(p.fetchBoardBody("ARN", "departures", TODAY).hasBody()).isTrue();
+        SwedaviaArrivalsProvider.BoardFetch noBoard = p.fetchBoardBody("BMA", "arrivals", TODAY);
+        assertThat(noBoard.hasBody()).isFalse();
+        assertThat(noBoard.failed()).isFalse();
+        SwedaviaArrivalsProvider.BoardFetch down = p.fetchBoardBody("GOT", "arrivals", TODAY);
+        assertThat(down.failed()).isTrue();
+        assertThat(down.retryAfter()).isNull();
+    }
+
+    @Test
+    void aBoardBodyFetchOn429CarriesTheRetryAfter() {
+        server.expect(once(), requestTo(BASE + "/ARN/arrivals/2026-10-12"))
+                .andRespond(withStatus(HttpStatus.TOO_MANY_REQUESTS).header(HttpHeaders.RETRY_AFTER, "120"));
+
+        SwedaviaArrivalsProvider.BoardFetch r = provider().fetchBoardBody("ARN", "arrivals", TODAY);
+
+        assertThat(r.failed()).isTrue();
+        assertThat(r.retryAfter()).isEqualTo(java.time.Duration.ofSeconds(120));
+    }
+
     // ---- mapping
 
     @Test
