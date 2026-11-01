@@ -298,7 +298,11 @@ function boot(): void {
       return { icao24: p.icao24, x: pt.x, y: pt.y, active: isActiveTraffic(p, nowMs) };
     });
     const fixed = selectedPos ? [map.project(selectedPos.latitude, selectedPos.longitude)] : [];
-    const keep = pickNonOverlapping(points, fixed, planeBoxSize(zoom), isSmallScreen() ? MAX_DRAWN_MARKERS_SMALL_SCREEN : MAX_DRAWN_MARKERS, declutterMemory);
+    // The spacing belongs to the zoom level and the cap: a pan that keeps both
+    // keeps it too, so the planes already drawn stay where they are and only
+    // the newcomers are spaced further apart when the cap is passed.
+    const maxDrawn = isSmallScreen() ? MAX_DRAWN_MARKERS_SMALL_SCREEN : MAX_DRAWN_MARKERS;
+    const keep = pickNonOverlapping(points, fixed, planeBoxSize(zoom), maxDrawn, declutterMemory, `${Math.round(zoom)}:${maxDrawn}`);
     const drawn = candidates.filter((p) => keep.has(p.icao24));
 
     planeLayer.update({
