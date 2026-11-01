@@ -331,3 +331,32 @@ export async function fetchAirportInfo(code: string): Promise<AirportInfo | null
   if (!res.ok) throw new Error(`airport info fetch failed: ${res.status}`);
   return res.json();
 }
+
+/** One row of a Swedavia board (ScheduleController); `icao24` is set once the flight is airborne in live state. */
+export interface ScheduledFlight {
+  flightNumber: string;
+  callsign: string | null;
+  direction: "arrivals" | "departures";
+  airport: string;
+  departureIata: string | null;
+  arrivalIata: string | null;
+  scheduled: string | null;
+  estimated: string | null;
+  actual: string | null;
+  gate: string | null;
+  terminal: string | null;
+  statusCode: string | null;
+  status: string | null;
+  icao24: string | null;
+  airborne: boolean;
+}
+
+/** Search the schedule by `flight` (BA778) or by `from`/`to` (comma-separated IATA codes); throws with the server's reason. */
+export async function searchSchedule(p: { flight?: string; from?: string; to?: string; airport?: string; date?: string }): Promise<ScheduledFlight[]> {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(p)) if (v) qs.set(k, v);
+  const res = await fetch(`/api/schedule/search?${qs}`);
+  if (res.status === 503) throw new Error("Schedules are not available (no Swedavia key)");
+  if (!res.ok) throw new Error(`Search failed (${res.status})`);
+  return res.json();
+}

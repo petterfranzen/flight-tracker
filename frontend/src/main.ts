@@ -33,6 +33,7 @@ import * as scaleBar from "./ui/scaleBar";
 import * as dock from "./ui/dock";
 import * as flightSearch from "./ui/flightSearch";
 import * as favoritesPanel from "./ui/favoritesPanel";
+import * as watchPanel from "./ui/watchPanel";
 import * as legend from "./ui/legend";
 import * as dossierPanel from "./ui/dossierPanel";
 import * as bootScreen from "./ui/bootScreen";
@@ -867,6 +868,7 @@ function boot(): void {
 
   flightSearch.mount(leftOverlayStack, store);
   favoritesPanel.mount(leftOverlayStack, store);
+  watchPanel.mount(leftOverlayStack, store);
   legend.mount(leftOverlayStack); // no store slots — its open/closed state is purely local (see ui/legend.ts)
   bootScreen.mount(bootScreenRoot, store);
   resumeDialog.mount(resumeDialogRoot, store);
