@@ -22,7 +22,7 @@ const plane = (icao24: string, lat: number, lon: number, onGround = false) => ({
 });
 
 const A = plane("aaaaaa", BASE.lat, BASE.lon - 1);
-const B = plane("bbbbbb", BASE.lat, BASE.lon + 1);
+const B = plane("bbbbbb", BASE.lat, BASE.lon + 1, true); // landed between the two frames
 const G = plane("dddddd", BASE.lat - 1, BASE.lon, true); // parked on the apron
 const H = plane("eeeeee", BASE.lat + 1, BASE.lon, true);
 

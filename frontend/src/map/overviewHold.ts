@@ -1,5 +1,4 @@
 import type { LiveMarker } from "../types/flight";
-import { isActiveTraffic } from "./staleness";
 
 // Two data sources meet at CLUSTER_FETCH_MAX_ZOOM (main.ts): below it the
 // thinned, active-traffic overview; at or above it the full /live set, which
@@ -9,10 +8,15 @@ import { isActiveTraffic } from "./staleness";
 // whole drawn set rather than changing how dense it was (Saito's #2 in
 // section9-hq #49).
 //
-// This holds the frame instead. A plane the overview stops returning is still
-// drawn, at its last known position, for OVERVIEW_HOLD_MS, and the planes
-// already drawn from /live stay on screen when the map crosses back down. Only
-// the density changes at the threshold, not which planes are shown.
+// This holds the frame instead. A *landed* plane the overview stops returning
+// is still drawn, at its last known position, for OVERVIEW_HOLD_MS, and the
+// planes already drawn from /live stay on screen when the map crosses back
+// down. Only the density changes at the threshold, not which planes are shown.
+//
+// Landed only, on purpose: the overview holds one plane per cell, so a plane
+// that lost its cell to another one is drawn within half an icon of it. Holding
+// that plane would hide the new winner (map/declutter.ts keeps the one drawn
+// first), which is the churn Saito's #1 is about, not this.
 
 /** How long a plane the overview no longer returns keeps being drawn. */
 export const OVERVIEW_HOLD_MS = 10 * 60_000;
@@ -32,9 +36,9 @@ export function newOverviewHold(): OverviewHold {
  * `drawn` is what is on screen now (the previous overview's planes, and — at
  * the threshold — the /live ones the map was drawing before it crossed back
  * down); a plane only it knows about is given the same grace, so the crossing
- * changes density, not membership. A held plane that has gone silent in the
- * air is dropped: the grace is for landings and for the thinning, not for
- * aircraft that stopped reporting. `inView` drops a held plane that has left
+ * changes density, not membership. Only planes whose last report is on the
+ * ground are held: an airborne one the thinning drops is another cell's winner
+ * now, and holding it would hide that one. `inView` drops a held plane that has left
  * the viewport: it is remembered but not drawn, and returns if it comes back
  * inside the window. The returned list keeps the response's own planes in the
  * server's order, so a client's discovery order still follows it.
@@ -56,9 +60,9 @@ export function holdOverviewFrame(
       hold.delete(icao24);
       continue;
     }
-    // Live traffic, or a plane that has landed: a plane that went silent in
-    // the air is not held (it is the attrition case, not a landing).
-    if (kept.has(icao24) || !inView(entry.plane) || !(isActiveTraffic(entry.plane, now) || entry.plane.onGround === true)) continue;
+    // Landed planes only: one that went silent in the air, or that lost its
+    // cell to another plane, must not stay behind (see the note above).
+    if (kept.has(icao24) || !inView(entry.plane) || entry.plane.onGround !== true) continue;
     kept.add(icao24);
     out.push(entry.plane);
   }
