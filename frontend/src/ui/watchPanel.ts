@@ -120,7 +120,13 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
   root.appendChild(container);
 
   function render(): void {
-    toggle.textContent = `✈ Watch${watched.length ? ` (${watched.length})` : ""} ${open ? "▲" : "▼"}`;
+    // Static markup, the count is a number. The label and chevron show on desktop;
+    // on a phone the button is a round icon like the search and favourites ones.
+    toggle.innerHTML =
+      `<svg class="watch-panel-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 16v-2l-8-5V3.5a1.5 1.5 0 0 0-3 0V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5z"/></svg>` +
+      `<span class="watch-panel-label">Watch${watched.length ? ` (${watched.length})` : ""} ${open ? "▲" : "▼"}</span>` +
+      (watched.length ? `<span class="watch-panel-count" aria-hidden="true">${watched.length}</span>` : "");
+    toggle.setAttribute("aria-label", `Watch flights${watched.length ? `, ${watched.length} watched` : ""}`);
     toggle.setAttribute("aria-expanded", String(open));
     content.hidden = !open;
     if (!open) return;
