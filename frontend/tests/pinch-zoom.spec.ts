@@ -13,7 +13,9 @@ async function setup(page: import("@playwright/test").Page) {
   await setMapView(page, 59.3, 18.0, 7);
   const cdp = await page.context().newCDPSession(page);
   const pinch = async (scaleFactor: number) => {
-    await cdp.send("Input.synthesizePinchGesture", { x: 200, y: 400, scaleFactor, relativeSpeed: 400, gestureSourceType: "touch" });
+    // x = 300: the pinch is vertical, so a pinch-in starts its fingers ~170 px above the centre, and at
+    // x = 200 that is inside the left overlay column (220 px wide), where a panel can take the touch.
+    await cdp.send("Input.synthesizePinchGesture", { x: 300, y: 400, scaleFactor, relativeSpeed: 400, gestureSourceType: "touch" });
     await page.waitForTimeout(700);
   };
   const zoom = () => withMap(page, (m) => m.getZoom());
