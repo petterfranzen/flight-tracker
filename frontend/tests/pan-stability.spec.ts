@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
-import { newDeclutterMemory, pickNonOverlapping, type Candidate, type DeclutterMemory } from "../src/map/declutter";
+import { newDeclutterMemory, pickNonOverlapping, spacingKey, spacingLevel, type Candidate, type DeclutterMemory } from "../src/map/declutter";
+import { planeBoxSize } from "../src/map/planes";
 import { mockFlightApi, renderedPlanes, setMapView, trackRequests, waitForMapReady } from "./helpers";
 
 // Panning at a fixed zoom must not make planes pop in and out all over the
@@ -148,5 +149,108 @@ test.describe("pickNonOverlapping with memory", () => {
       "z8",
     );
     expect([...shown]).toEqual(["busy"]);
+  });
+});
+
+
+// Follow-ups from the QA of #141 (section9-hq #66). The spacing memory added by
+// #141 is keyed on `<rounded zoom>:<cap>` and never relaxes; both are fixed here,
+// one spec each.
+
+/** A grid of active candidates 20 px apart: far more than the cap at a 30 px box. */
+const gridAt = (cols: number, rows: number, x0 = 0): Candidate[] =>
+  Array.from({ length: cols * rows }, (_, i) => ({ icao24: `g${x0}_${i}`, x: x0 + (i % cols) * 20, y: Math.floor(i / cols) * 20, active: true }));
+
+test.describe("#66 (1) the spacing key follows the whole zoom level", () => {
+  test("a pinch inside one level hands the picker the same box and key, so nothing is re-spaced", () => {
+    // planeBoxSize reads the viewport (window.matchMedia) for the phone factor;
+    // this picker check runs in node, so stand in a desktop viewport.
+    (globalThis as { window?: unknown }).window = { matchMedia: () => ({ matches: false }) };
+    // The box does move inside a whole level — which is why measuring it at the
+    // fractional zoom while keying the memory on the rounded one left the stored
+    // widening applied to a box that had changed under it.
+    expect(planeBoxSize(7.6)).not.toBe(planeBoxSize(7.9));
+    // The call site (main.ts): the box and the key both come from spacingLevel.
+    const box = (zoom: number) => planeBoxSize(spacingLevel(zoom));
+    const key = (zoom: number) => spacingKey("live", zoom, 150);
+    expect(box(7.6)).toBe(box(7.9));
+    expect(key(7.6)).toBe(key(7.9));
+
+    const memory = newDeclutterMemory();
+    const before = pickNonOverlapping(gridAt(40, 30), [], box(7.6), 150, memory, key(7.6));
+    const after = pickNonOverlapping(gridAt(40, 30), [], box(7.9), 150, memory, key(7.9));
+    expect([...after].sort()).toEqual([...before].sort());
+  });
+});
+
+test.describe("#66 (2) a widened spacing relaxes again", () => {
+  const KEY = spacingKey("overview", 7.6, 150);
+
+  test("it relaxes once most of the drawn planes have left, without dropping one", () => {
+    const memory = newDeclutterMemory();
+    const dense = gridAt(60, 40);
+    const first = pickNonOverlapping(dense, [], 30, 150, memory, KEY);
+    expect(first.size).toBeGreaterThan(50);
+    expect(memory.spacing).toBeGreaterThan(1); // the cap widened it
+
+    // Pan out of the dense block: a handful of the planes drawn there are still
+    // on screen, and two newcomers arrive in the room the widening held open.
+    const survivors = dense.filter((c) => first.has(c.icao24)).slice(0, 5);
+    const after = pickNonOverlapping(
+      [...survivors, { icao24: "new1", x: 4_000, y: 0, active: true }, { icao24: "new2", x: 4_200, y: 0, active: true }],
+      [],
+      30,
+      150,
+      memory,
+      KEY,
+    );
+
+    expect(memory.spacing).toBe(1); // back to the zoom's own spacing
+    // Nothing already drawn drops for it: every survivor is still drawn...
+    for (const c of survivors) expect(after.has(c.icao24), `${c.icao24} was on screen and is still drawn`).toBe(true);
+    // ...and the room that was held open fills in.
+    expect(after.has("new1")).toBe(true);
+    expect(after.has("new2")).toBe(true);
+  });
+
+  test("it is kept while most of the drawn planes are still on screen", () => {
+    const memory = newDeclutterMemory();
+    const dense = gridAt(60, 40);
+    const first = pickNonOverlapping(dense, [], 30, 150, memory, KEY);
+    const wide = memory.spacing;
+    expect(wide).toBeGreaterThan(1);
+
+    // The same view: nearly every drawn plane is still there, so the widening is
+    // still doing its job and must not be relaxed under it.
+    const again = pickNonOverlapping(dense.map((c) => ({ ...c })), [], 30, 150, memory, KEY);
+    expect(memory.spacing).toBe(wide);
+    expect([...again].filter((id) => first.has(id)).length).toBeGreaterThan(first.size * 0.9);
+  });
+});
+
+test.describe("#66 (3) the source is part of the spacing key", () => {
+  test("the overview band that rounds to level 8 does not hand its spacing to the live source", () => {
+    // Below CLUSTER_FETCH_MAX_ZOOM the map draws the overview; the 7.5-8.0 band
+    // rounds to level 8, the same level the live source at 8.0 and up uses, so a
+    // level-only key is one string for both.
+    expect(spacingKey("overview", 7.6, 150)).not.toBe(spacingKey("live", 8.2, 150));
+    expect(spacingKey("overview", 7.6, 150)).toBe(spacingKey("overview", 7.9, 150)); // one band, one level
+
+    // With the source in the key, the switch re-works the spacing: level 8's live
+    // frame is the band's own planes, which all fit at the level's spacing.
+    const memory = newDeclutterMemory();
+    const band = pickNonOverlapping(gridAt(60, 40), [], 30, 150, memory, spacingKey("overview", 7.6, 150));
+    expect(memory.spacing).toBeGreaterThan(1);
+    const live = gridAt(60, 40).filter((c) => band.has(c.icao24));
+    const switched = pickNonOverlapping(live, [], 30, 150, memory, spacingKey("live", 8.2, 150));
+    expect(memory.spacing).toBe(1);
+    expect([...switched].sort()).toEqual(live.map((c) => c.icao24).sort());
+
+    // The key without the source in it (what the call site used to pass) is the
+    // same string for both, so the live frame keeps the band's widening instead.
+    const stale = newDeclutterMemory();
+    pickNonOverlapping(gridAt(60, 40), [], 30, 150, stale, "8:150");
+    pickNonOverlapping(live, [], 30, 150, stale, "8:150");
+    expect(stale.spacing).toBeGreaterThan(1);
   });
 });
