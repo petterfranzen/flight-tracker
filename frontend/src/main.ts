@@ -29,6 +29,7 @@ import { agedIds, findShadowedIds, isActiveTraffic, OVERLAP_MIN_ZOOM } from "./m
 import { createRouteLayer } from "./map/route";
 import { createUncertaintyLayer } from "./map/uncertainty";
 import { snapBounds, ViewCache, type CachedView } from "./map/viewCache";
+import { holdOverviewFrame, newOverviewHold } from "./map/overviewHold";
 import * as scaleBar from "./ui/scaleBar";
 import * as dock from "./ui/dock";
 import * as flightSearch from "./ui/flightSearch";
@@ -222,6 +223,18 @@ function boot(): void {
   const clusterCache = new ViewCache<LiveOverview>(VIEW_CACHE_MAX_ENTRIES, VIEW_CACHE_MAX_AGE_MS);
   const liveCache = new ViewCache<LiveMarker[]>(VIEW_CACHE_MAX_ENTRIES, VIEW_CACHE_MAX_AGE_MS);
   let lastAppliedView: CachedView<unknown> | null = null;
+  // The overview's frame is held across refreshes and across the zoom-8
+  // threshold, so a plane that lands or drops out of the cell thinning stays
+  // on screen (see map/overviewHold.ts).
+  const overviewHold = newOverviewHold();
+  // Which source the map is drawing from right now. A cached view from the
+  // other side is not this frame: drawing it would swap the whole set before
+  // the response for the new zoom arrives.
+  let drawnSource: "overview" | "live" | null = null;
+
+  function sourceAt(): "overview" | "live" {
+    return zoom < CLUSTER_FETCH_MAX_ZOOM ? "overview" : "live";
+  }
 
   const pendingWs = new Map<string, FlightPosition>();
   let wsFlushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -316,6 +329,7 @@ function boot(): void {
   // ---- fetch lifecycle ----
   function applyLiveSnapshot(list: LiveMarker[]): void {
     if (overviewPlanes.length > 0) setOverviewPlanes([]); // the snapshot is the source from here on
+    drawnSource = "live";
     const selectedId = store.get("selectedId");
     const selectedKept = selectedId ? positions.get(selectedId) : undefined;
     const previous = new Map(positions);
@@ -344,11 +358,17 @@ function boot(): void {
   }
 
   // The overview replaces the zoomed-in snapshot: its aircraft are what is
-  // drawn now, so the snapshot's are dropped (the selected one is kept).
+  // drawn now, so the snapshot's are dropped (the selected one is kept). What
+  // the response does not return but the map was drawing is held instead of
+  // vanishing (see map/overviewHold.ts), which is also what keeps the frame
+  // whole when the map crosses back down from CLUSTER_FETCH_MAX_ZOOM.
   function applyOverview(planes: LiveMarker[]): void {
-    setOverviewPlanes(planes);
     const selectedId = store.get("selectedId");
+    const drawn = overviewPlanes.concat(Array.from(positions.values()).filter((p) => p.icao24 !== selectedId));
+    const view = bounds ? padBounds(bounds, RENDER_MARGIN) : null;
+    setOverviewPlanes(holdOverviewFrame(overviewHold, planes, drawn, (p) => !view || inBounds(view, p.latitude, p.longitude), Date.now()));
     for (const id of Array.from(positions.keys())) if (id !== selectedId) positions.delete(id);
+    drawnSource = "overview";
     renderAircraftLayer();
   }
 
@@ -356,6 +376,11 @@ function boot(): void {
   function applyCachedView(now: number): CachedView<unknown> | null {
     const hit = findCachedView(now);
     if (!hit || hit === lastAppliedView) return hit;
+    // A cached view of the *other* source, right after the map crossed the
+    // threshold: it is a full frame of stale planes in place of the one on
+    // screen, which the response then has to replace again. Hold what is
+    // drawn until that response lands (fetchViewport below asks for it).
+    if (drawnSource && drawnSource !== sourceAt()) return null;
     lastAppliedView = hit;
     if (zoom < CLUSTER_FETCH_MAX_ZOOM) {
       applyOverview((hit.data as LiveOverview).planes);
