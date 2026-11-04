@@ -21,13 +21,18 @@ export function cellOf(p: Pick<LiveMarker, "latitude" | "longitude">, cellDeg: n
  *
  * `previous` is the frame drawn for this zoom and bbox last time (the cached
  * response), `response` the fresh one. A cell the response returns a plane for
- * keeps `previous`'s plane — at its position, which is the one on screen — if
- * it is still live (`isActiveTraffic`: in the air and reported recently) and
- * still in that cell (its cell is recomputed from where it now is, so a plane
- * that has moved on has left it). Otherwise the response's own plane wins, as
- * does the first frame of a view we have not drawn before. Cells the response
- * does not mention are not drawn at all, so the set stays as sparse as the
- * server thinned it.
+ * keeps `previous`'s plane — where it was drawn, which is the one on screen —
+ * if it is still live (`isActiveTraffic`: in the air and reported recently)
+ * and the response does not return that same aircraft anywhere. Otherwise the
+ * response's own plane wins, as does the first frame of a view we have not
+ * drawn before. Cells the response does not mention are not drawn at all, so
+ * the set stays as sparse as the server thinned it.
+ *
+ * The "anywhere" is what stops a plane that crossed a cell boundary from being
+ * drawn twice: keeping it at the cell it has left would pin a stale copy there
+ * (its report is still fresh, so it would survive for DIM_AFTER_MS) while the
+ * response returns it in the cell it moved to. Its old cell then takes the
+ * server's new winner and the aircraft is drawn once, where it is.
  *
  * The response's plane objects and order are kept wherever they win, so a
  * client's "first discovered" ordering still follows the server's list.
@@ -40,6 +45,10 @@ export function keepCellWinners(previous: LiveMarker[], response: LiveMarker[], 
     if (!held || (!isActiveTraffic(held, nowMs) && isActiveTraffic(p, nowMs))) winners.set(cell, p);
   }
 
+  // Every aircraft the response returns, wherever it returns it: one of these
+  // has moved on and must not be kept at the cell it left.
+  const returned = new Set(response.map((p) => p.icao24));
+
   const out: LiveMarker[] = [];
   const seen = new Set<string>();
   for (const p of response) {
@@ -47,7 +56,8 @@ export function keepCellWinners(previous: LiveMarker[], response: LiveMarker[], 
     if (seen.has(cell)) continue; // one per cell, the server's own rule
     seen.add(cell);
     const held = winners.get(cell);
-    out.push(held && held.icao24 !== p.icao24 && isActiveTraffic(held, nowMs) ? held : p);
+    const keep = held != null && held.icao24 !== p.icao24 && isActiveTraffic(held, nowMs) && !returned.has(held.icao24);
+    out.push(keep ? held : p);
   }
   return out;
 }
