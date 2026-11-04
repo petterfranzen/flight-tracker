@@ -19,7 +19,16 @@ export default defineConfig({
   // changes far less often than the app, so a deploy doesn't re-download it.
   build: {
     chunkSizeWarningLimit: 1_000,
-    rollupOptions: { output: { manualChunks: { maplibre: ["maplibre-gl"] } } },
+    rollupOptions: {
+      output: {
+        // Vite 8 (rolldown) rejects the object form here ("Expected Function
+        // but received Object"); the function form keeps maplibre-gl in its
+        // own stable chunk so a deploy doesn't re-download it.
+        manualChunks(id) {
+          if (id.includes("node_modules/maplibre-gl")) return "maplibre";
+        },
+      },
+    },
   },
   server: {
     proxy: {
