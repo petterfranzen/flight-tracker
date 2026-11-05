@@ -1,4 +1,9 @@
-/** Watched flights (flight number + day), kept in localStorage only, like favorites.ts. */
+/**
+ * Watched flights (flight number + day), kept in localStorage with a
+ * same-origin cookie as a second copy, like favorites.ts — see persist.ts.
+ */
+import { loadList, saveList } from "./persist";
+
 export interface WatchedFlight {
   flightNumber: string;
   date: string; // yyyy-MM-dd, Swedish local date of the board
@@ -13,18 +18,9 @@ export function watchKey(w: Pick<WatchedFlight, "flightNumber" | "date" | "airpo
 }
 
 export function loadWatched(): WatchedFlight[] {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(KEY) ?? "[]");
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
+  return loadList<WatchedFlight>(KEY);
 }
 
 export function saveWatched(list: WatchedFlight[]): void {
-  try {
-    localStorage.setItem(KEY, JSON.stringify(list));
-  } catch {
-    // best-effort, like favorites
-  }
+  saveList(KEY, list);
 }
