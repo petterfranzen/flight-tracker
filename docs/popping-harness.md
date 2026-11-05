@@ -93,7 +93,7 @@ compared with the recorded truth for the current tick:
 | **vanished** | A plane was drawn at the previous step, is gone now, the view did not move, and its recorded position is still inside the drawn area. It should still be there: the pop by eye. |
 | **appeared** | The mirror image: a plane joined the drawn set while the view was still, and it was already inside the drawn area at the previous step. |
 | **backwards** | A plane drawn at both steps whose drawn position moved *against* its own heading by more than `BACKWARDS_TOL_DEG` — a stale cached position (see #53). |
-| **sel off°** | The selected plane's marker away from the end of its drawn trail by more than `TRAIL_TOL_DEG`. |
+| **sel off°** | The selected plane's marker away from the end of its drawn trail by more than `TRAIL_TOL_DEG`. Budgeted as the **worst distance in degrees** (`BUDGET.selectedOffTrailDeg`), not as a count of steps: the count depends on the environment (CI saw the marker behind its trail on 7 of 8 steps, the sandbox on 3 of 8, both at the same ~0.0045° = one 2 s tick of flight), so a count budget would either be toothless or red on a different machine. A real jump is orders of magnitude bigger than one tick. |
 
 The declared-move threshold is `STILL_DEG`: the view counts as still when the
 centre moved under ~2 km and the zoom did not change. A step after a gesture is
@@ -102,11 +102,34 @@ vanished/appeared counts only count on `still` steps, which is where the pop is.
 
 ## The budget
 
-`BUDGET` in `frontend/tests/popping/replay.ts` is the number of events a
-scenario may rack up per run. It is set to the baseline measured on `main` (see
-#86) with a little headroom, so the suite is a durable guard rail rather than a
-red build. When #66 / #53 land, tighten it: the whole point is that the numbers
-go down and stay down.
+`BUDGET` in `frontend/tests/popping/replay.ts` is how many events a scenario
+may rack up per run. It is set to the baseline measured on `main` (see #86) with
+a little headroom, so the suite is a durable guard rail rather than a red build.
+When #66 / #53 land, tighten it: the whole point is that the numbers go down and
+stay down.
+
+Two baselines are recorded, because the numbers depend on the machine. Sandbox,
+one worker:
+
+| scenario | vanished | appeared | backwards | sel off° (steps / worst) |
+| --- | --- | --- | --- | --- |
+| pan across dense traffic | 4 | 1 | 0 | 0 / - |
+| zoom 7 to 9 and back | 1 | 2 | 0 | 0 / - |
+| pinch in and out | 0 | 1 | 0 | 0 / - |
+| select SAS120 then pan and zoom | 1 | 1 | 0 | 3 / 0.0045 |
+
+GitHub Actions, `test:scenarios` (`--workers=1`):
+
+| scenario | vanished | appeared | backwards | sel off° (steps / worst) |
+| --- | --- | --- | --- | --- |
+| pan across dense traffic | 4 | 1 | 0 | 0 / - |
+| zoom 7 to 9 and back | 3 | 1 | 0 | 0 / - |
+| pinch in and out | 0 | 2 | 0 | 0 / - |
+| select SAS120 then pan and zoom | 1 | 1 | 0 | 7 / 0.0045 |
+
+CI's opening overview at z7 drew 64 planes where the sandbox drew 102, so the
+absolute counts are environment-dependent even when the popping is not; the
+budgets are set from the worse of the two.
 
 ## Adding a scenario
 

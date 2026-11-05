@@ -48,6 +48,7 @@ function report(scenario: string, h: Replay): void {
   const appeared = totals((s) => s.appeared.length);
   const backwards = totals((s) => s.backwards.length);
   const offTrail = totals((s) => (s.selectedOffTrail ? 1 : 0));
+  const offTrailMaxDeg = Math.max(0, ...h.steps.map((s) => s.selectedOffTrail?.offDeg ?? 0));
 
   // eslint-disable-next-line no-console
   console.log(`\n[popping] ${scenario}\n${h.table()}\n[popping] ${scenario}: ${h.summary()}\n`);
@@ -55,7 +56,7 @@ function report(scenario: string, h: Replay): void {
   expect(vanished, `${scenario}: ${vanished} planes vanished while the view was still (budget ${BUDGET.vanished})`).toBeLessThanOrEqual(BUDGET.vanished);
   expect(appeared, `${scenario}: ${appeared} planes appeared while the view was still (budget ${BUDGET.appeared})`).toBeLessThanOrEqual(BUDGET.appeared);
   expect(backwards, `${scenario}: ${backwards} planes moved backwards along their track (budget ${BUDGET.backwards})`).toBeLessThanOrEqual(BUDGET.backwards);
-  expect(offTrail, `${scenario}: the selected plane left its trail ${offTrail} times (budget ${BUDGET.selectedOffTrail})`).toBeLessThanOrEqual(BUDGET.selectedOffTrail);
+  expect(offTrailMaxDeg, `${scenario}: the selected plane left its trail by up to ${offTrailMaxDeg.toFixed(4)} deg on ${offTrail} step(s) (budget ${BUDGET.selectedOffTrailDeg} deg)`).toBeLessThanOrEqual(BUDGET.selectedOffTrailDeg);
   expect(h.pageErrors, `${scenario}: page errors`).toEqual([]);
 }
 

@@ -104,7 +104,15 @@ export const BUDGET = {
   vanished: 8,
   appeared: 8,
   backwards: 2,
-  selectedOffTrail: 5,
+  /**
+   * The selected plane's worst distance from the end of its own trail, in
+   * degrees. Counted as a distance rather than "how many steps", because the
+   * step count depends on the environment (CI measured the marker behind its
+   * trail on all 8 steps, the sandbox on 3 of 8, both at the same ~0.0045° —
+   * one 2 s tick of flight). 0.02° ≈ 2 km: well clear of one tick, so only a
+   * real jump trips it. #53's fix should drive the measured value down.
+   */
+  selectedOffTrailDeg: 0.02,
 };
 
 /** A plane is "off its track" when its drawn position moved backwards by more than this (deg) since the last step. */
@@ -455,7 +463,9 @@ export async function startReplay(page: Page, testInfo: TestInfo): Promise<Repla
       return (
         `steps ${steps.length}  drawn ${steps.map((s) => s.drawn).join("/")}  ` +
         `vanished ${sum((s) => s.vanished.length)}  appeared ${sum((s) => s.appeared.length)}  ` +
-        `backwards ${sum((s) => s.backwards.length)}  selectedOffTrail ${sum((s) => (s.selectedOffTrail ? 1 : 0))}`
+        `backwards ${sum((s) => s.backwards.length)}  ` +
+        `selectedOffTrail ${sum((s) => (s.selectedOffTrail ? 1 : 0))} steps  ` +
+        `selectedOffTrailMaxDeg ${Math.max(0, ...steps.map((s) => s.selectedOffTrail?.offDeg ?? 0)).toFixed(4)}`
       );
     },
   };
