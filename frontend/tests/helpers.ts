@@ -1,5 +1,5 @@
 import { expect, type Locator, type Page, type Route } from "@playwright/test";
-import type { FlightMap, RenderedAirport, RenderedPlane } from "../src/map/map";
+import type { FlightMap, RenderedAirport, RenderedPlane, RenderedWatchedAirport } from "../src/map/map";
 import liveFixture from "./fixtures/live.json" with { type: "json" };
 import history4aad15 from "./fixtures/history-4aad15.json" with { type: "json" };
 import history4d00d9 from "./fixtures/history-4d00d9.json" with { type: "json" };
@@ -333,6 +333,27 @@ export async function renderedAirports(page: Page): Promise<RenderedAirport[]> {
       return map.renderedAirports().map((a) => ({ ...a, x: a.x + rect.x, y: a.y + rect.y }));
     }),
   );
+}
+
+/** Every watched, not-yet-airborne flight's origin airport the map drew (ui/watchedAirports.ts), x/y in page pixels. */
+export async function renderedWatchedAirports(page: Page): Promise<RenderedWatchedAirport[]> {
+  return retryMidUpdate(page, () =>
+    withMap(page, (map) => {
+      const rect = map.getContainer().getBoundingClientRect();
+      return map.renderedWatchedAirports().map((a) => ({ ...a, x: a.x + rect.x, y: a.y + rect.y }));
+    }),
+  );
+}
+
+/** Puts a watched list in localStorage before the app loads (tests/…: the watch list is browser-local, like favorites). */
+export async function seedWatched(page: Page, list: unknown[]): Promise<void> {
+  await page.addInitScript((l: unknown[]) => {
+    try {
+      localStorage.setItem("flighttracker:watchedFlights", JSON.stringify(l));
+    } catch {
+      // best-effort, like the app
+    }
+  }, list);
 }
 
 /** Waits until at least `min` planes are drawn. */
