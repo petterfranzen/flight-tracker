@@ -1,0 +1,87 @@
+/* The "Install app" pill / iOS home-screen hint (#85). Fixed to the bottom
+   centre, above the home indicator, and hidden whenever a drawer or the
+   aircraft dossier is open so it can never cover the control the user is
+   actually using. Every colour is a cyberpunk token from FlightMap.css. */
+.install-banner {
+  position: fixed;
+  left: 50%;
+  bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: max-content;
+  max-width: min(420px, calc(100vw - 32px));
+  padding: 10px 10px 10px 16px;
+  background: var(--color-panel);
+  border: 1px solid var(--color-panel-border);
+  border-radius: 10px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+  color: var(--color-text);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.install-banner-text {
+  min-width: 0;
+}
+
+.install-banner-action {
+  flex: none;
+  padding: 7px 12px;
+  border: 1px solid var(--color-accent);
+  border-radius: 7px;
+  background: var(--color-accent);
+  color: var(--color-bg);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.install-banner-action:hover {
+  filter: brightness(1.1);
+}
+
+.install-banner-dismiss {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: 17px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.install-banner-dismiss:hover {
+  background: var(--color-panel-border);
+  color: var(--color-text);
+}
+
+/* Never cover an open drawer, the resume dialog, or the aircraft dossier. */
+.app-shell:has(.details-panel) .install-banner,
+.app-shell:has(.flight-search-panel--open) .install-banner,
+.app-shell:has(.favorites-panel-body--open) .install-banner,
+.app-shell:has(.map-legend-body--open) .install-banner,
+.app-shell:has(.resume-dialog) .install-banner {
+  display: none;
+}
+
+/* Phone: a little tighter, and full-width-ish so the text does not wrap to
+   three lines on a 390 px screen. */
+@media (max-width: 768px) {
+  .install-banner {
+    width: calc(100vw - 32px);
+    max-width: calc(100vw - 32px);
+    font-size: 12.5px;
+  }
+}

@@ -127,6 +127,19 @@ html, body {
   --font-data: "JetBrains Mono", "Courier New", monospace;
 }
 
+/* MapLibre anchors the scale bar and attribution to the map's bottom edge.
+   With viewport-fit=cover that edge is the raw viewport edge, under the home
+   indicator in both orientations; lift those controls into the safe area.
+   Desktop reports a 0 inset, so this is a no-op there. */
+.app-shell .maplibregl-ctrl-bottom-left {
+  margin-left: env(safe-area-inset-left, 0px);
+  margin-bottom: env(safe-area-inset-bottom, 0px);
+}
+.app-shell .maplibregl-ctrl-bottom-right {
+  margin-right: env(safe-area-inset-right, 0px);
+  margin-bottom: env(safe-area-inset-bottom, 0px);
+}
+
 .app-shell {
   position: relative;
   width: 100%;
@@ -167,8 +180,8 @@ html, body {
      of an incidental page scroll, only because we explicitly reposition
      it. */
   position: fixed;
-  top: 16px;
-  right: 16px;
+  top: max(16px, env(safe-area-inset-top, 0px));
+  right: max(16px, env(safe-area-inset-right, 0px));
   z-index: 500;
   display: flex;
   align-items: center;
@@ -392,7 +405,7 @@ html, body {
      DOM nesting depth, keeping this theme's placement exactly as before
      the JSX move. */
   position: fixed;
-  top: 16px;
+  top: max(16px, env(safe-area-inset-top, 0px));
   left: 50%;
   transform: translateX(-50%);
   z-index: 500;
@@ -423,8 +436,10 @@ html, body {
      above. fixed is positioned relative to the viewport itself and
      can't drift with a page scroll regardless of what causes it. */
   position: fixed;
-  top: 16px;
-  left: 16px;
+  /* viewport-fit=cover means the raw viewport edge is under the notch / home
+     indicator; keep floating chrome inside the safe area. */
+  top: max(16px, env(safe-area-inset-top, 0px));
+  left: max(16px, env(safe-area-inset-left, 0px));
   z-index: 500;
   display: flex;
   flex-direction: column;
@@ -597,7 +612,7 @@ html, body {
      regardless of the panel's own (content-dependent) height, which a
      fixed top or bottom anchor isn't. */
   top: 50%;
-  right: 16px;
+  right: max(16px, env(safe-area-inset-right, 0px));
   transform: translateY(-50%);
   width: 300px;
   z-index: 500;
@@ -920,6 +935,7 @@ html, body {
     display: none;
   }
 
+
   /* The actual scrolling element (see .details-panel's overflow: hidden
      above) — capped like the sheet, and scrolls its own content when it
      outgrows that, independent of the clip-path applied to its parent. */
@@ -927,6 +943,9 @@ html, body {
     max-height: 33.334vh;
     max-height: 33.334dvh;
     overflow-y: auto;
+    /* The sheet is edge-to-edge; this keeps its last line above the home
+       indicator when viewport-fit=cover paints under it. */
+    padding-bottom: max(28px, calc(16px + env(safe-area-inset-bottom, 0px)));
   }
 
   /* The collapsed peek: the expand handle, the callsign and how fresh its
