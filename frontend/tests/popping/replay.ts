@@ -104,7 +104,7 @@ export const BUDGET = {
   vanished: 8,
   appeared: 8,
   backwards: 2,
-  selectedOffTrail: 6,
+  selectedOffTrail: 5,
 };
 
 /** A plane is "off its track" when its drawn position moved backwards by more than this (deg) since the last step. */
