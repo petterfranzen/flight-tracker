@@ -148,6 +148,8 @@ export interface StepMetrics {
   appeared: string[];
   backwards: { icao24: string; backDeg: number }[];
   selectedOffTrail: { icao24: string; offDeg: number } | null;
+  /** The drawn set at this step, kept so the next step can diff against it. */
+  truthDrawn: DrawnPlane[];
 }
 
 export interface Replay {
@@ -204,7 +206,7 @@ async function waitApplied(
           }
           return ok / d.length;
         },
-        { timeout: 4_000, intervals: [150], message: "the app applied the current tick" },
+        { timeout: 15_000, intervals: [200], message: "the app applied the current tick" },
       )
       .toBeGreaterThan(0.75);
   } catch {
@@ -230,7 +232,7 @@ export async function startReplay(page: Page, testInfo: TestInfo): Promise<Repla
   await page.route("https://tiles.openfreemap.org/planet", (r) =>
     r.fulfill({ json: { tilejson: "3.0.0", tiles: ["https://tiles.openfreemap.org/t/{z}/{x}/{y}.pbf"], minzoom: 0, maxzoom: 14, vector_layers: [] } }),
   );
-  await page.route(/tiles\.openfreemap\.org\/(t|fonts)\//, (r) => r.fulfill({ body: Buffer.alloc(0), contentType: "application/x-protobuf" }));
+  await page.route(/tiles\.openfreemap\.org\/(t|fonts)\//, (r) => r.fulfill({ body: "", contentType: "application/x-protobuf" }));
   await page.route(/tile\.openstreetmap\.org/, (r) => r.abort());
 
   // ---- the recorded tick, served as the backend ----
@@ -342,7 +344,7 @@ export async function startReplay(page: Page, testInfo: TestInfo): Promise<Repla
     );
 
   const routeEnd = async (): Promise<{ lat: number; lon: number } | null> =>
-    page.evaluate(`(async () => {
+    page.evaluate<{ lat: number; lon: number } | null>(`(async () => {
       const map = document.querySelector(".map-container")._flightMap;
       const src = map.gl.getSource("flight-route");
       if (!src) return null;
@@ -422,15 +424,14 @@ export async function startReplay(page: Page, testInfo: TestInfo): Promise<Repla
         appeared,
         backwards,
         selectedOffTrail,
+        truthDrawn: d,
       };
-      // What was drawn at this step, kept so the next step can diff against it.
-      (metrics as unknown as { truthDrawn: DrawnPlane[] }).truthDrawn = d;
       steps.push(metrics);
 
-      const file = testInfo.outputPath(`${String(steps.length).padStart(2, "0")}-${name.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}.png`);
-      await page.screenshot({ path: file });
-      await testInfo.attach(`step ${steps.length}: ${name}`, { path: file, contentType: "image/png" });
-      await testInfo.attach(`step ${steps.length}: ${name} (metrics)`, { body: JSON.stringify({ ...metrics, truthDrawn: undefined, view: v }), contentType: "application/json" });
+      // The table and these per-step numbers are the evidence. A screenshot
+      // per step was tried and cost more than the whole gesture under four-way
+      // software WebGL, so only the numbers are attached.
+      await testInfo.attach(`step ${steps.length}: ${name}`, { body: JSON.stringify({ ...metrics, truthDrawn: undefined, view: v }), contentType: "application/json" });
       return metrics;
     },
     table() {
@@ -466,9 +467,11 @@ export async function boot(page: Page): Promise<void> {
   await page.goto("/");
   // The app marks the map container ready after its opening view and first
   // viewport report; then the boot screen (data + basemap in) removes itself.
-  await expect(page.locator('.map-container[data-ready="true"]')).toBeVisible({ timeout: 30_000 });
-  await expect(page.locator(".boot-screen")).toHaveCount(0, { timeout: 30_000 });
-  await expect.poll(async () => (await mapEval<number>(page, "return map.renderedPlanes().length;")), { timeout: 15_000, message: "planes drawn" }).toBeGreaterThan(0);
+  // Generous: four browsers sharing four software-WebGL vCPUs is slow, and a
+  // boot that lands late must not fail a scenario about popping.
+  await expect(page.locator('.map-container[data-ready="true"]')).toBeVisible({ timeout: 60_000 });
+  await expect(page.locator(".boot-screen")).toHaveCount(0, { timeout: 60_000 });
+  await expect.poll(async () => (await mapEval<number>(page, "return map.renderedPlanes().length;")), { timeout: 40_000, intervals: [500], message: "planes drawn" }).toBeGreaterThan(0);
 }
 
 // ---- gestures ----

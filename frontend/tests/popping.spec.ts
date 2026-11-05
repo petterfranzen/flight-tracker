@@ -26,7 +26,8 @@ import {
 // recorded ticks each and seven to nine measured steps. The fixture holds
 // minutes of ticks if a scenario ever needs more.
 
-test.describe.configure({ mode: "serial" });
+// Every scenario is independent: one over budget must not hide the others'
+// numbers, so a run always reports a full baseline table.
 // No video or trace: the evidence this test produces is the per-step table and
 // screenshot, attached to the report — video/trace only add minutes to a slow
 // software-WebGL run.
@@ -60,7 +61,7 @@ function report(scenario: string, h: Replay): void {
 
 test.describe("popping @scenario", () => {
   test("pan across dense traffic", async ({ page }, testInfo) => {
-    test.setTimeout(120_000);
+    test.setTimeout(180_000);
     const h = await startReplay(page, testInfo);
     await boot(page);
     await jumpTo(page, CENTRE.lat, CENTRE.lon, 8);
@@ -80,7 +81,7 @@ test.describe("popping @scenario", () => {
   });
 
   test("zoom 7 to 9 and back", async ({ page }, testInfo) => {
-    test.setTimeout(120_000);
+    test.setTimeout(180_000);
     const h = await startReplay(page, testInfo);
     await boot(page);
     await jumpTo(page, CENTRE.lat, CENTRE.lon, 7); // the thinned-out overview
@@ -102,7 +103,7 @@ test.describe("popping @scenario", () => {
   });
 
   test("pinch in and out over the traffic", async ({ page }, testInfo) => {
-    test.setTimeout(120_000);
+    test.setTimeout(180_000);
     await page.setViewportSize({ width: 390, height: 844 }); // a phone, where pinching is the way to zoom
     const h = await startReplay(page, testInfo);
     await boot(page);
@@ -126,7 +127,7 @@ test.describe("popping @scenario", () => {
   });
 
   test("select a plane, then pan and zoom away from it", async ({ page }, testInfo) => {
-    test.setTimeout(120_000);
+    test.setTimeout(180_000);
     const h = await startReplay(page, testInfo);
     await boot(page);
     await jumpTo(page, CENTRE.lat, CENTRE.lon, 9);
