@@ -131,6 +131,24 @@ CI's opening overview at z7 drew 64 planes where the sandbox drew 102, so the
 absolute counts are environment-dependent even when the popping is not; the
 budgets are set from the worse of the two.
 
+### A server that dead-reckons
+
+`startReplay(page, testInfo, { deadReckonMs })` makes the mocked server behave
+like the real one: an aircraft's `observedAt` only advances when a *report*
+lands (every `deadReckonMs`) while the position it returns keeps advancing with
+the tick. Two snapshots of the same report therefore share `observedAt` with
+different positions, the older one behind — the case #53/#97 is about, and one
+the tick-per-report shape cannot reproduce (every snapshot gets a new
+`observedAt`, so the older position loses on its own). Two scenarios use it:
+"a plane never moves backwards when a cached view is redrawn during a pan" and
+"the selected plane's estimate survives a cached view of the same report".
+
+Reading those: `h.advance()` moves to the next tick without waiting for the app
+to settle, and `h.step(name, false)` reads what is drawn without waiting for it
+to match the tick's recorded truth — both for a frame that is deliberately not
+the tick's own (a cached view just redrawn during a pan, held still by pausing
+the clock before it).
+
 ## Adding a scenario
 
 Copy a block from `popping.spec.ts`, drive the map with `drag` / `wheelZoom` /

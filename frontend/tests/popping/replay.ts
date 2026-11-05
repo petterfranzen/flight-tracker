@@ -165,8 +165,15 @@ export interface Replay {
   tickIndex: number;
   /** Advances one recorded tick, pushes its WebSocket frames, waits for the app to settle. */
   tick(): Promise<void>;
-  /** Reads what was drawn now and returns the popping numbers for this step. */
-  step(name: string): Promise<StepMetrics>;
+  /** Advances one recorded tick and pushes its frames, without waiting for the app to settle. */
+  advance(): void;
+  /**
+   * Reads what was drawn now and returns the popping numbers for this step.
+   * `waitForTick` (default true) first waits for the app to apply the current
+   * tick; pass false to read a frame that is deliberately not the tick's own
+   * (e.g. a cached view just redrawn during a pan).
+   */
+  step(name: string, waitForTick?: boolean): Promise<StepMetrics>;
   /** Every step taken, in order. */
   steps: StepMetrics[];
   /** A short, fixed-width table of every step so far. */
@@ -223,8 +230,27 @@ async function waitApplied(
   }
 }
 
-export async function startReplay(page: Page, testInfo: TestInfo): Promise<Replay> {
+/**
+ * Scenario options.
+ *
+ * `deadReckonMs` makes the mocked server behave like the real one: it dead
+ * reckons, so an aircraft's `observedAt` only advances when a *report* lands
+ * (every `deadReckonMs`) while the position it returns keeps advancing with
+ * the tick. Two snapshots of the same report therefore share `observedAt`
+ * with different positions — the case #53/#97 is about. Unset, each tick is
+ * its own report (the shape the other scenarios were baselined on).
+ */
+export interface ReplayOptions {
+  deadReckonMs?: number;
+}
+
+export async function startReplay(page: Page, testInfo: TestInfo, opts: ReplayOptions = {}): Promise<Replay> {
   const pageErrors: string[] = [];
+  // Ticks between reports: 1 unless a scenario asks the server to dead-reckon.
+  const reportWindow = Math.max(1, Math.round((opts.deadReckonMs ?? 0) / REC.meta.tickMs));
+  const reportIndex = (i: number): number => Math.floor(i / reportWindow) * reportWindow;
+  /** The observedAt the server would send for tick `i`: its last report's time, dead-reckoned forward. */
+  const observedAtOf = (i: number): string => new Date(tickTime(reportIndex(i))).toISOString();
   let lastBbox: Bbox | null = null;
   let tickIndex = 0;
   const steps: StepMetrics[] = [];
@@ -249,7 +275,7 @@ export async function startReplay(page: Page, testInfo: TestInfo): Promise<Repla
   const markerAt = (f: RecFleet, i: number) => ({
     icao24: f.icao24,
     callsign: f.callsign,
-    observedAt: new Date(now()).toISOString(),
+    observedAt: observedAtOf(i),
     latitude: REC.ticks[i].lat[REC.fleet.indexOf(f)],
     longitude: REC.ticks[i].lon[REC.fleet.indexOf(f)],
     headingDeg: f.headingDeg,
@@ -261,7 +287,7 @@ export async function startReplay(page: Page, testInfo: TestInfo): Promise<Repla
     return REC.fleet
       .map((f, i) => ({ f, i }))
       .filter(({ i }) => !b || inBbox(t.lat[i], t.lon[i], b))
-      .map(({ f, i }) => ({ icao24: f.icao24, callsign: f.callsign, observedAt: new Date(now()).toISOString(), latitude: t.lat[i], longitude: t.lon[i], headingDeg: f.headingDeg, onGround: f.onGround }));
+      .map(({ f, i }) => ({ icao24: f.icao24, callsign: f.callsign, observedAt: observedAtOf(Math.min(tickIndex, REC.ticks.length - 1)), latitude: t.lat[i], longitude: t.lon[i], headingDeg: f.headingDeg, onGround: f.onGround }));
   };
   const bboxOf = (u: URL): Bbox | null =>
     u.searchParams.has("latMin")
@@ -372,6 +398,10 @@ export async function startReplay(page: Page, testInfo: TestInfo): Promise<Repla
     pageErrors,
     truth: async () => (await projection()).pts,
     drawn,
+    advance() {
+      tickIndex++;
+      pushTick();
+    },
     async tick() {
       await settle(page);
       tickIndex++;
@@ -379,8 +409,8 @@ export async function startReplay(page: Page, testInfo: TestInfo): Promise<Repla
       await settle(page);
       await waitApplied(page, projection, drawn);
     },
-    async step(name) {
-      await waitApplied(page, projection, drawn);
+    async step(name, waitForTick = true) {
+      if (waitForTick) await waitApplied(page, projection, drawn);
       const truth = (await projection()).pts;
       const d = await drawn();
       const v = await view();

@@ -22,9 +22,9 @@ import type { LiveMarker } from "../types/flight";
 export const OVERVIEW_HOLD_MS = 10 * 60_000;
 
 /** Planes carried between overview frames, with when each was last live. */
-export type OverviewHold = Map<string, { plane: LiveMarker; lastLiveAt: number }>;
+export type OverviewHold<T extends LiveMarker = LiveMarker> = Map<string, { plane: T; lastLiveAt: number }>;
 
-export function newOverviewHold(): OverviewHold {
+export function newOverviewHold<T extends LiveMarker>(): OverviewHold<T> {
   return new Map();
 }
 
@@ -43,13 +43,13 @@ export function newOverviewHold(): OverviewHold {
  * inside the window. The returned list keeps the response's own planes in the
  * server's order, so a client's discovery order still follows it.
  */
-export function holdOverviewFrame(
-  hold: OverviewHold,
-  response: LiveMarker[],
-  drawn: LiveMarker[],
-  inView: (p: LiveMarker) => boolean,
+export function holdOverviewFrame<T extends LiveMarker>(
+  hold: OverviewHold<T>,
+  response: T[],
+  drawn: T[],
+  inView: (p: T) => boolean,
   now: number,
-): LiveMarker[] {
+): T[] {
   for (const p of response) hold.set(p.icao24, { plane: p, lastLiveAt: now });
   for (const p of drawn) if (!hold.has(p.icao24)) hold.set(p.icao24, { plane: p, lastLiveAt: now });
 

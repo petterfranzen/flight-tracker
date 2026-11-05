@@ -2,6 +2,9 @@ import { expect, test } from "@playwright/test";
 import {
   BUDGET,
   CENTRE,
+  REC,
+  TRAIL_TOL_DEG,
+  tickTime,
   type Replay,
   type StepMetrics,
   boot,
@@ -151,5 +154,167 @@ test.describe("popping @scenario", () => {
     await hold(h, 2, "zoomed out");
 
     report(`select a plane (${callsign}) then pan and zoom`, h);
+  });
+
+  // The stale-cache pop (#53 / #97). The server dead-reckons, so an
+  // aircraft's observedAt only advances when a report lands (here every 10 s)
+  // while the position it returns keeps advancing with the tick. A view drawn
+  // for the same report but fetched earlier is therefore *behind* the frame on
+  // screen with the *same* observedAt, and merging by observedAt let that
+  // older position overwrite the planes already drawn — they popped backwards
+  // during a pan and snapped forward again when the fresh response landed.
+  //
+  // The clock is paused just before the pan back, so the viewport debounce (and
+  // the refetch behind it) never fires and the cached frame stays on screen long
+  // enough to be read — the same cache path a real pan takes, held still.
+  test("a plane never moves backwards when a cached view is redrawn during a pan", async ({ page }, testInfo) => {
+    test.setTimeout(240_000);
+    const h = await startReplay(page, testInfo, { deadReckonMs: 10_000 });
+    await boot(page);
+    await jumpTo(page, CENTRE.lat, CENTRE.lon, 9);
+    await page.clock.runFor(300);
+    await h.step("opened at z9 over Stockholm");
+
+    const callsign = await pickCandidate(page);
+    await clickPlane(page, callsign);
+    await page.clock.runFor(300);
+    await h.step(`selected ${callsign}`);
+
+    // Pan east to a second view that overlaps the first, a tick later but the
+    // same dead-reckoned report.
+    await jumpTo(page, CENTRE.lat, CENTRE.lon + 0.15, 9);
+    h.advance();
+    await page.clock.runFor(300);
+    await h.step("panned east");
+
+    // Pan back west: the first view is redrawn from its cache at once, behind
+    // the frame on screen and with the same observedAt. Pause the clock first
+    // so the debounced refetch cannot replace it before the step is read.
+    await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 2_000);
+    await jumpTo(page, CENTRE.lat, CENTRE.lon, 9);
+    await page.clock.runFor(150);
+    await h.step("panned back west", false);
+
+    // eslint-disable-next-line no-console
+    console.log(`\n[popping] dead-reckoned cache\n${h.table()}\n[popping] ${h.summary()}\n`);
+
+    const backwards = h.steps.reduce((a, s) => a + s.backwards.length, 0);
+    const worstBackDeg = Math.max(0, ...h.steps.flatMap((s) => s.backwards.map((b) => b.backDeg)));
+    const offTrailMaxDeg = Math.max(0, ...h.steps.map((s) => s.selectedOffTrail?.offDeg ?? 0));
+    expect(backwards, `${backwards} plane(s) moved backwards along their track (worst ${worstBackDeg.toFixed(4)} deg)`).toBe(0);
+    expect(offTrailMaxDeg, `the selected plane left its trail by up to ${offTrailMaxDeg.toFixed(4)} deg`).toBeLessThanOrEqual(TRAIL_TOL_DEG);
+    expect(h.pageErrors, "page errors").toEqual([]);
+  });
+
+  // The selected plane's estimate (#97, second half of #53's diagnosis).
+  // moveSelectedToEstimate puts the marker on the status's dead-reckoned
+  // position while keeping the report's observedAt, so a cached /live list of
+  // that same report — drawn at once during a pan — compares equal and used to
+  // overwrite the estimate: the marker snapped back while the trail stayed
+  // ahead. The estimate's as-of (now) is newer than the cached list's, so it
+  // survives.
+  test("the selected plane's estimate survives a cached view of the same report", async ({ page }, testInfo) => {
+    test.setTimeout(240_000);
+    const h = await startReplay(page, testInfo, { deadReckonMs: 10_000 });
+    await boot(page);
+    await jumpTo(page, CENTRE.lat, CENTRE.lon, 9);
+    await page.clock.runFor(300);
+    await h.step("opened at z9 over Stockholm");
+
+    const callsign = await pickCandidate(page);
+    const plane0 = REC.fleet.find((f) => f.callsign === callsign)!;
+    const idx = REC.fleet.indexOf(plane0);
+    /** The estimate: a tick ahead of the report /live carries, report's own observedAt. */
+    const estimateAt = (): { observedAt: string; lat: number; lon: number } => {
+      const report = Math.min(h.tickIndex, REC.ticks.length - 1);
+      const ahead = Math.min(report + 1, REC.ticks.length - 1);
+      return { observedAt: new Date(tickTime(report)).toISOString(), lat: REC.ticks[ahead].lat[idx], lon: REC.ticks[ahead].lon[idx] };
+    };
+    // Serve the estimate from the selected plane's status and its own poll, so
+    // the marker sits on it whichever of the two lands last.
+    await page.route(new RegExp(`/api/flights/${plane0.icao24}/status`), (route) => {
+      const e = estimateAt();
+      return route.fulfill({
+        json: {
+          icao24: plane0.icao24,
+          state: "LIVE",
+          confidence: null,
+          source: "adsb",
+          sourceKind: "observed",
+          lastSeenAt: e.observedAt,
+          lastSeenLat: e.lat,
+          lastSeenLon: e.lon,
+          estimate: { lat: e.lat, lon: e.lon, radiusM: 500, at: e.observedAt, landingProbability: 0 },
+          landing: null,
+          gate: null,
+          terminal: null,
+          confirmedAt: null,
+        },
+      });
+    });
+    await page.route(new RegExp(`/api/flights/${plane0.icao24}/live`), (route) => {
+      const e = estimateAt();
+      return route.fulfill({
+        json: {
+          id: 0,
+          icao24: plane0.icao24,
+          callsign: plane0.callsign,
+          observedAt: e.observedAt,
+          latitude: e.lat,
+          longitude: e.lon,
+          altitudeM: plane0.altitudeM,
+          velocityMs: plane0.velocityMs,
+          headingDeg: plane0.headingDeg,
+          verticalRateMs: 0,
+          onGround: false,
+          agentSource: "opensky",
+        },
+      });
+    });
+
+    await clickPlane(page, callsign);
+    await page.clock.runFor(300);
+    const est = estimateAt();
+    await h.step(`selected ${callsign}`);
+    await expect
+      .poll(
+        async () => {
+          const p = (await h.drawn()).find((x) => x.icao24 === plane0.icao24);
+          return p ? Math.hypot(p.lat - est.lat, p.lon - est.lon) : 1;
+        },
+        { timeout: 5_000, message: "the marker sits on its estimate" },
+      )
+      .toBeLessThan(0.0005);
+    const onEstimate = (await h.drawn()).find((p) => p.icao24 === plane0.icao24)!;
+
+    // Pan east and let it land, then pan back west so the first view is redrawn
+    // from its (older) cache while the marker is on the estimate.
+    await jumpTo(page, CENTRE.lat, CENTRE.lon + 0.15, 9);
+    h.advance();
+    await page.clock.runFor(300);
+    await h.step("panned east");
+
+    await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 2_000);
+    await jumpTo(page, CENTRE.lat, CENTRE.lon, 9);
+    await page.clock.runFor(150);
+    await h.step("panned back west", false);
+
+    // eslint-disable-next-line no-console
+    console.log(`\n[popping] selected estimate\n${h.table()}\n[popping] ${h.summary()}\n`);
+
+    const selectedBackwards = h.steps.flatMap((s) => s.backwards).filter((b) => b.icao24 === plane0.icao24);
+    expect(selectedBackwards, "the selected plane moved backwards along its track").toEqual([]);
+    // The selected marker sits one tick of flight behind the end of its trail
+    // on the selection step — the harness's own budget for that benign lag
+    // (popping/replay.ts) — so this only rules out a real jump. The position
+    // check below is the sharp one.
+    const offTrailMaxDeg = Math.max(0, ...h.steps.map((s) => s.selectedOffTrail?.offDeg ?? 0));
+    expect(offTrailMaxDeg, "the selected plane left its trail").toBeLessThanOrEqual(BUDGET.selectedOffTrailDeg);
+    const drawn = (await h.drawn()).find((p) => p.icao24 === plane0.icao24)!;
+    // Still on the estimate, not pulled back to the cached report's position
+    // (a tick behind it).
+    expect(drawn.lat, "the marker is still on its estimate").toBeCloseTo(onEstimate.lat, 5);
+    expect(drawn.lon, "the marker is still on its estimate").toBeCloseTo(onEstimate.lon, 5);
+    expect(h.pageErrors, "page errors").toEqual([]);
   });
 });
