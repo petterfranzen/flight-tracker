@@ -2,7 +2,20 @@
 <html lang="en" data-theme="cyberpunk">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- viewport-fit=cover lets the app paint under the notch and the home
+         indicator; the chrome that must not be clipped adds
+         env(safe-area-inset-*) padding in the CSS. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <!-- PWA colours are the cyberpunk tokens in src/components/FlightMap.css
+         (:root[data-theme="cyberpunk"]): --color-bg #050608. Keep them in step. -->
+    <meta name="theme-color" content="#050608" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Skygrid" />
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-180.png" />
+    <link rel="icon" type="image/png" href="/icons/icon-192.png" />
     <title>Netwatch Skygrid</title>
   </head>
   <body>
