@@ -82,7 +82,11 @@ BASE_URL=http://127.0.0.1:8080 node --test 'blackbox-tests/**/*.test.js'
 installs the toolchain. Playwright's browser CDN is unreachable from the
 cloud, so the hook exports `PW_CHROMIUM_PATH=/opt/pw-browsers/chromium`,
 and `playwright.config.ts` launches that browser. If Playwright says
-Chromium is missing, run `export PW_CHROMIUM_PATH=/opt/pw-browsers/chromium`.
+Chromium is missing, run `export PW_CHROMIUM_PATH=/opt/pw-browsers/chromium`;
+on a VPS agent sandbox that has only Playwright's headless shell, point it at
+that instead —
+`export PW_CHROMIUM_PATH=$(ls -d ${PLAYWRIGHT_BROWSERS_PATH:-/opt/ms-playwright}/chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell | head -1)`
+(see docs/cloud-agents.md).
 `tests/production-build.spec.ts` fetches from `tiles.openfreemap.org`,
 which is blocked in the cloud, so expect that one failure there. Don't run
 `playwright install`.
