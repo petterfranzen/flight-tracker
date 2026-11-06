@@ -62,7 +62,8 @@ public class HealthController {
         String gitSha = build == null ? null : build.get("git.sha");
         String version = (gitSha == null || gitSha.isBlank()) ? "dev" : gitSha;
         Instant lastSweepAt = sweepHealthTracker.lastSweepAt().orElse(null);
-        HealthStatus status = new HealthStatus(dbUp ? "UP" : "DOWN", version, dbUp ? "UP" : "DOWN", lastSweepAt);
+        HealthStatus status = new HealthStatus(dbUp ? "UP" : "DOWN", version, dbUp ? "UP" : "DOWN", lastSweepAt,
+                sweepHealthTracker.lastSweepRows(), sweepHealthTracker.consecutiveSkips());
         return dbUp ? ResponseEntity.ok(status) : ResponseEntity.status(503).body(status);
     }
 
