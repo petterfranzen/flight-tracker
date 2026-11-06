@@ -21,7 +21,7 @@ import {
 } from "./api/flightApi";
 import { boundsFromMap, createFollowSelected, createMap, DEFAULT_VIEW, GPUInitializationError } from "./map/map";
 import { createPlaneLayer, planeBoxSize } from "./map/planes";
-import { declutterCellDeg, newDeclutterMemory, pickNonOverlapping, type Candidate } from "./map/declutter";
+import { declutterCellDeg, newDeclutterMemory, pickNonOverlapping, spacingKey, spacingLevel, type Candidate } from "./map/declutter";
 import { isSmallScreen } from "./map/screen";
 import { pickInitialView } from "./map/initialView";
 import { getMockPlaneCount } from "./api/mockFleet";
@@ -314,9 +314,20 @@ function boot(): void {
     const fixed = selectedPos ? [map.project(selectedPos.latitude, selectedPos.longitude)] : [];
     // The spacing belongs to the zoom level and the cap: a pan that keeps both
     // keeps it too, so the planes already drawn stay where they are and only
-    // the newcomers are spaced further apart when the cap is passed.
+    // the newcomers are spaced further apart when the cap is passed. The box it
+    // is measured in and the key it is stored under come from the same whole
+    // level (spacingLevel), so a pinch inside one level leaves neither stale
+    // against the other, and the source is part of the key so the 7.5-8.0
+    // overview band does not hand its spacing to the live source above it.
     const maxDrawn = isSmallScreen() ? MAX_DRAWN_MARKERS_SMALL_SCREEN : MAX_DRAWN_MARKERS;
-    const keep = pickNonOverlapping(points, fixed, planeBoxSize(zoom), maxDrawn, declutterMemory, `${Math.round(zoom)}:${maxDrawn}`);
+    const keep = pickNonOverlapping(
+      points,
+      fixed,
+      planeBoxSize(spacingLevel(zoom)),
+      maxDrawn,
+      declutterMemory,
+      spacingKey(useOverview ? "overview" : "live", zoom, maxDrawn),
+    );
     const drawn = candidates.filter((p) => keep.has(p.icao24));
 
     planeLayer.update({
