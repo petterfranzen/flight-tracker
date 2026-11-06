@@ -68,6 +68,27 @@ function hitArea(sel: string): { width: number; height: number; centre: { x: num
   return { width: left + right + 1, height: up + down + 1, centre: { x: cx, y: cy } };
 }
 
+/**
+ * Resolves once MapLibre's attribution has stopped moving. The map runs a
+ * short zoom on start-up; each frame resizes the scale bar and reflows the
+ * attribution beside it, so a trial click issued too early never finds a
+ * stable box. Two consecutive 100ms polls with the same rect is enough.
+ */
+async function waitForAttributionStable(page: Page): Promise<void> {
+  await page.waitForFunction(
+    () => {
+      const a = document.querySelector(".maplibregl-ctrl-attrib-inner a");
+      if (!a) return false;
+      const b = a.getBoundingClientRect();
+      const prev = (window as unknown as { __attribRect?: { x: number; y: number; w: number } }).__attribRect;
+      (window as unknown as { __attribRect?: { x: number; y: number; w: number } }).__attribRect = { x: b.x, y: b.y, w: b.width };
+      return !!prev && prev.x === b.x && prev.y === b.y && prev.w === b.width;
+    },
+    null,
+    { timeout: 15_000, polling: 100 },
+  );
+}
+
 test.describe("install pill polish (#123)", () => {
   test("each control owns at least a 44x44 tap area", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
@@ -118,14 +139,7 @@ test.describe("install pill polish (#123)", () => {
         };
         const links = Array.from(document.querySelectorAll(".maplibregl-ctrl-attrib-inner a")).map((a) => {
           const b = a.getBoundingClientRect();
-          const hit = document.elementFromPoint(b.x + b.width / 2, b.y + b.height / 2);
-          return {
-            href: (a as HTMLAnchorElement).href,
-            width: b.width,
-            height: b.height,
-            // True only when the link itself is the topmost element at its centre.
-            clickable: !!hit && (hit === a || a.contains(hit)),
-          };
+          return { href: (a as HTMLAnchorElement).href, width: b.width, height: b.height, top: b.top, right: b.right, bottom: b.bottom, left: b.left };
         });
         return { pill: r(".install-banner"), bl: r(".maplibregl-ctrl-bottom-left"), br: r(".maplibregl-ctrl-bottom-right"), links };
       });
@@ -140,7 +154,22 @@ test.describe("install pill polish (#123)", () => {
       for (const link of geo.links) {
         expect(link.width, `${c.name}: ${link.href} width`).toBeGreaterThan(0);
         expect(link.height, `${c.name}: ${link.href} height`).toBeGreaterThan(0);
-        expect(link.clickable, `${c.name}: ${link.href} is covered`).toBe(true);
+        // The pill must not cover the link's box either.
+        expect(intersection(geo.pill!, link), `${c.name}: pill covers ${link.href}`).toBe(0);
+      }
+      // "Clickable" is the browser's own hit test, not elementFromPoint:
+      // a trial click throws and names the element on top if anything
+      // opaque covers the link. That is what a tap would actually hit.
+      // Wait for the map's start-up zoom to stop first: while the scale bar
+      // is still resizing, the attribution reflows every frame and Playwright
+      // never sees the link as stable.
+      await waitForAttributionStable(page);
+      const anchors = page.locator(".maplibregl-ctrl-attrib-inner a");
+      const anchorCount = await anchors.count();
+      expect(anchorCount, `${c.name}: attribution anchors`).toBeGreaterThan(0);
+      for (let i = 0; i < anchorCount; i += 1) {
+        await expect(anchors.nth(i), `${c.name}: attribution link ${i} visible`).toBeVisible();
+        await anchors.nth(i).click({ trial: true, timeout: 5_000 });
       }
     }
   });
