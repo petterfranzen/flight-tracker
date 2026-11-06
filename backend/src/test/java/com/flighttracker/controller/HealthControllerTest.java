@@ -66,7 +66,7 @@ class HealthControllerTest {
 
     @Test
     void sweepHealth_recentSweep_returns200() {
-        sweepHealthTracker.recordSweepCompleted();
+        sweepHealthTracker.recordSweepCompleted(5);
 
         assertThat(controller(360).sweepHealth().getStatusCode().value()).isEqualTo(200);
     }
@@ -74,9 +74,9 @@ class HealthControllerTest {
     @Test
     void sweepHealth_staleSweep_beyondThreeIntervals_returns503() throws InterruptedException {
         // A 0-second interval means "3x the interval" is already elapsed
-        // the instant recordSweepCompleted() returns — the simplest way to
+        // the instant recordSweepCompleted(5) returns — the simplest way to
         // exercise the "gone stale" branch without sleeping for real time.
-        sweepHealthTracker.recordSweepCompleted();
+        sweepHealthTracker.recordSweepCompleted(5);
         Thread.sleep(5);
 
         assertThat(controller(0).sweepHealth().getStatusCode().value()).isEqualTo(503);

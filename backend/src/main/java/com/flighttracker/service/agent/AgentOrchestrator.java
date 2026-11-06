@@ -188,6 +188,7 @@ public class AgentOrchestrator {
 
     private void runGlobalSweep() {
         phases.populating("global sweep");
+        int rowsWritten = 0;
         for (FlightDataAgent agent : agents) {
             try {
                 List<RawPositionReport> reports = agent.pollGlobal();
@@ -197,7 +198,10 @@ public class AgentOrchestrator {
                     // reports worldwide, where persist()'s one-row-at-a-time
                     // approach measured taking ~14 minutes in production —
                     // see PositionPersistenceService.persistBatch's javadoc.
-                    persistenceService.persistBatch(agent.sourceName(), reports);
+                    // Its return is the count of rows that genuinely landed:
+                    // one source answering with data is enough for the whole
+                    // cycle to count as productive.
+                    rowsWritten += persistenceService.persistBatch(agent.sourceName(), reports);
                     coverageTracker.recordPoll(polledAt, null); // after the batch, as in pollAll
                 }
             } catch (Exception e) {
@@ -207,8 +211,10 @@ public class AgentOrchestrator {
         // Recorded for the whole cycle, not per-agent — see
         // SweepHealthTracker's own javadoc for why a single agent's
         // exception above (already caught and logged) doesn't stop this
-        // from counting as "the sweep ran".
-        sweepHealthTracker.recordSweepCompleted();
+        // from counting as "the sweep ran". But it only counts as *fresh*
+        // if rows were actually written: a cycle where every source backed
+        // off or answered empty must not advance lastSweepAt.
+        sweepHealthTracker.recordSweepCompleted(rowsWritten);
         phases.idle("global sweep complete");
     }
 }
