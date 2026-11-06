@@ -8,6 +8,10 @@ over SSH through Cloudflare Access whenever `main` is green
 For operating the box — logs, restart, rollback, `sqlite3` shell, disk
 usage — see [`hetzner/README.md`](hetzner/README.md).
 
+Once it is live, `scripts/smoke-prod.sh` proves the site is serving from the
+outside — version, live traffic, the WebSocket feed and the front page. See
+[`docs/smoke-test.md`](../docs/smoke-test.md).
+
 The previous NAS deployment (Docker Compose, four containers, Postgres,
 images published to GHCR) is retired as of the cloud migration's merge to
 `main`. `docker-compose.yml`, `deploy/docker-compose.yml`,
