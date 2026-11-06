@@ -1,12 +1,15 @@
 /**
- * Client-side-only favorites (routes and aircraft) — localStorage, no
- * backend involved. Deliberate: the app has no user-account model today
- * (Authentik at the Cloudflare Tunnel layer gates network access, not
- * per-user identity inside the app itself), so there's no meaningful
- * "whose favorite is this" to store server-side yet. Browser-private for
- * now; promoting this to a shared/server-side list once real users exist
+ * Client-side-only favorites (routes and aircraft) — localStorage, backed by
+ * a same-origin cookie as a second copy, no backend involved (see persist.ts
+ * for how the two stores are kept in sync). Deliberate: the app has no
+ * user-account model today (Authentik at the Cloudflare Tunnel layer gates
+ * network access, not per-user identity inside the app itself), so there's no
+ * meaningful "whose favorite is this" to store server-side yet. Browser-private
+ * for now; promoting this to a shared/server-side list once real users exist
  * is future work, not this pass.
  */
+
+import { loadList, saveList } from "./persist";
 
 export interface FavoriteRoute {
   origin: string; // ICAO code
@@ -37,29 +40,9 @@ export function routeKey(origin: string, destination: string): string {
   return [origin, destination].sort().join("|");
 }
 
-// Every localStorage access is wrapped — it can throw (private browsing,
-// disabled site data, a storage quota) or simply not persist, and a
-// favorites list failing silently (empty list) is a much better failure
-// mode here than the map itself breaking.
-function loadList<T>(key: string): T[] {
-  try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveList<T>(key: string, list: T[]): void {
-  try {
-    localStorage.setItem(key, JSON.stringify(list));
-  } catch {
-    // best-effort — see module comment
-  }
-}
-
+// Both stores are best-effort and never throw (see persist.ts): a favorites
+// list failing silently (empty list) is a much better failure mode here than
+// the map itself breaking.
 export function loadFavoriteRoutes(): FavoriteRoute[] {
   return loadList<FavoriteRoute>(ROUTES_KEY);
 }
