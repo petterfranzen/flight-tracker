@@ -78,8 +78,8 @@ legStartAt                string (ISO-8601) | null
 
 ## `GET /api/flights/{icao24}/history?from=<Instant>&to=<Instant>` → `history-<icao24>.json`
 **Note:** `from`/`to` are required `Instant` query params (ISO-8601, e.g.
-`2026-09-29T00:00:00Z`); omitting either → `400` with the standard Spring
-error body (`timestamp`, `status`, `error`, `path`).
+`2026-09-29T00:00:00Z`); omitting either → `400` with the generic error body
+below (`error` only).
 
 **Corrected 2026-09-30** (Gate A1 verification caught this doc being wrong
 from the original Phase 0 capture — the endpoint's actual shape was never
@@ -118,10 +118,13 @@ averageGroundSpeedKmh     number
   nothing. Additive fields on an additive-only endpoint.
 - `GET /api/health/sweep` → 200/503, monitoring only
 
-## Standard Spring error body (400/404 style responses)
+## Error responses (400/404/405/500)
+The app's own errors — a route that does not exist, a method a route does not
+allow, a rejected parameter, an unhandled failure — answer with one generic
+field, and name no framework and no version:
 ```
-timestamp   string (ISO-8601 instant)
-status      integer
-error       string
-path        string
+error       string   (HTTP reason phrase, e.g. "Not Found")
 ```
+A request the container itself rejects before any of the app's code runs (a
+malformed URI or header) answers with that status and an empty body, not the
+container's own error page.
