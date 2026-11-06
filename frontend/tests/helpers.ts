@@ -1,4 +1,5 @@
 import { expect, type Locator, type Page, type Route } from "@playwright/test";
+import { OPENFREEMAP_TILEJSON } from "./fixtures/basemap";
 import type { FlightMap, RenderedAirport, RenderedPlane } from "../src/map/map";
 import liveFixture from "./fixtures/live.json" with { type: "json" };
 import history4aad15 from "./fixtures/history-4aad15.json" with { type: "json" };
@@ -434,7 +435,7 @@ export async function getRoutePathScreenPoints(page: Page): Promise<{ x: number;
 /** Serves OpenFreeMap's tileset as empty: the basemap draws its background colour and nothing else. */
 export async function stubBasemapTiles(page: Page) {
   await page.route("https://tiles.openfreemap.org/planet", (r) =>
-    r.fulfill({ json: { tilejson: "3.0.0", tiles: ["https://tiles.openfreemap.org/t/{z}/{x}/{y}.pbf"], minzoom: 0, maxzoom: 14, vector_layers: [] } }),
+    r.fulfill({ json: OPENFREEMAP_TILEJSON }),
   );
   await page.route(/tiles\.openfreemap\.org\/(t|fonts)\//, (r) => r.fulfill({ body: Buffer.alloc(0), contentType: "application/x-protobuf" }));
 }
