@@ -10,6 +10,7 @@
     "test:e2e": "playwright test --grep-invert \"@perf|@scenario\"",
     "test:perf": "playwright test --grep @perf --workers=1",
     "test:scenarios": "playwright test --grep @scenario --workers=1",
+    "record:popping": "node --experimental-strip-types scripts/record-popping-fixtures.ts",
     "icons": "node scripts/generate-pwa-icons.mjs"
   },
   "dependencies": {

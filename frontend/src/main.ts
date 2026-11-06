@@ -125,8 +125,37 @@ function inBounds(b: Bounds, lat: number, lon: number): boolean {
   return lat >= b.latMin && lat <= b.latMax && lon >= b.lonMin && lon <= b.lonMax;
 }
 
-function isNewer(a: { observedAt: string }, b: { observedAt: string }): boolean {
-  return a.observedAt > b.observedAt;
+/**
+ * A drawn position carries the time its information was produced, `asOf`: a
+ * viewport snapshot's fetch time, a WebSocket push's arrival, or — for the
+ * selected plane — its estimate's own time.
+ *
+ * `observedAt` alone cannot order positions. The server serves each plane's
+ * dead-reckoned position, so two snapshots of the same last report share
+ * `observedAt` with *different* positions, the older snapshot's several
+ * seconds behind. Comparing `observedAt` strictly therefore let a cached view
+ * drawn during a pan/zoom overwrite the fresher position already on screen:
+ * the marker popped backwards along its track and forward again when the
+ * response landed (#53 / #97). `asOf` orders them, so a position older than
+ * the one drawn never replaces it.
+ */
+interface AsOfMarker extends LiveMarker {
+  asOf: number;
+}
+
+/** The overview payload as its view cache holds it: every plane stamped. */
+interface AsOfOverview extends Omit<LiveOverview, "planes"> {
+  planes: AsOfMarker[];
+}
+
+/** A snapshot's markers, stamped with the time it was fetched. */
+function stamp(list: LiveMarker[], asOf: number): AsOfMarker[] {
+  return list.map((p) => ({ ...p, asOf }));
+}
+
+/** The newer of two positions by `asOf`; on a tie the one already drawn is kept. */
+function newerOf(existing: AsOfMarker | undefined, incoming: AsOfMarker): AsOfMarker {
+  return existing && existing.asOf >= incoming.asOf ? existing : incoming;
 }
 
 function boot(): void {
@@ -216,11 +245,11 @@ function boot(): void {
   // (zoom >= CLUSTER_FETCH_MAX_ZOOM) plus the selected one — never "every
   // aircraft we've heard about". Mutated in place: copying it per update
   // was O(n) per WebSocket frame.
-  const positions = new Map<string, LiveMarker>();
+  const positions = new Map<string, AsOfMarker>();
   // Zoomed out: the thinned-out set of active aircraft the server sent (see fetchLiveOverview).
-  let overviewPlanes: LiveMarker[] = [];
+  let overviewPlanes: AsOfMarker[] = [];
   const overviewIndex = new Map<string, number>(); // icao24 -> index in overviewPlanes
-  function setOverviewPlanes(list: LiveMarker[]): void {
+  function setOverviewPlanes(list: AsOfMarker[]): void {
     overviewPlanes = list;
     overviewIndex.clear();
     list.forEach((p, i) => overviewIndex.set(p.icao24, i));
@@ -239,13 +268,13 @@ function boot(): void {
   // Per zoom for the overview (its cell size depends on it); for individual aircraft
   // any z>=CLUSTER_FETCH_MAX_ZOOM entry whose bbox covers the view will do,
   // so zooming in is served entirely from the parent view's data.
-  const clusterCache = new ViewCache<LiveOverview>(VIEW_CACHE_MAX_ENTRIES, VIEW_CACHE_MAX_AGE_MS);
-  const liveCache = new ViewCache<LiveMarker[]>(VIEW_CACHE_MAX_ENTRIES, VIEW_CACHE_MAX_AGE_MS);
+  const clusterCache = new ViewCache<AsOfOverview>(VIEW_CACHE_MAX_ENTRIES, VIEW_CACHE_MAX_AGE_MS);
+  const liveCache = new ViewCache<AsOfMarker[]>(VIEW_CACHE_MAX_ENTRIES, VIEW_CACHE_MAX_AGE_MS);
   let lastAppliedView: CachedView<unknown> | null = null;
   // The overview's frame is held across refreshes and across the zoom-8
   // threshold, so a plane that lands or drops out of the cell thinning stays
   // on screen (see map/overviewHold.ts).
-  const overviewHold = newOverviewHold();
+  const overviewHold = newOverviewHold<AsOfMarker>();
   // Which source the map is drawing from right now. A cached view from the
   // other side is not this frame: drawing it would swap the whole set before
   // the response for the new zoom arrives.
@@ -357,7 +386,7 @@ function boot(): void {
   }
 
   // ---- fetch lifecycle ----
-  function applyLiveSnapshot(list: LiveMarker[]): void {
+  function applyLiveSnapshot(list: AsOfMarker[]): void {
     if (overviewPlanes.length > 0) setOverviewPlanes([]); // the snapshot is the source from here on
     drawnSource = "live";
     const selectedId = store.get("selectedId");
@@ -366,7 +395,7 @@ function boot(): void {
     positions.clear();
     for (const p of list) {
       const existing = previous.get(p.icao24);
-      positions.set(p.icao24, existing && isNewer(existing, p) ? existing : p);
+      positions.set(p.icao24, newerOf(existing, p));
     }
     // The selected aircraft stays even if it just left the viewport — its
     // own priority poll keeps it current.
@@ -380,7 +409,7 @@ function boot(): void {
     }
   }
 
-  function findCachedView(now: number): CachedView<LiveOverview> | CachedView<LiveMarker[]> | null {
+  function findCachedView(now: number): CachedView<AsOfOverview> | CachedView<AsOfMarker[]> | null {
     if (!bounds) return null;
     return zoom < CLUSTER_FETCH_MAX_ZOOM
       ? clusterCache.find(bounds, (z) => z === overviewZoom(zoom), now)
@@ -392,7 +421,7 @@ function boot(): void {
   // the response does not return but the map was drawing is held instead of
   // vanishing (see map/overviewHold.ts), which is also what keeps the frame
   // whole when the map crosses back down from CLUSTER_FETCH_MAX_ZOOM.
-  function applyOverview(planes: LiveMarker[]): void {
+  function applyOverview(planes: AsOfMarker[]): void {
     const selectedId = store.get("selectedId");
     const drawn = overviewPlanes.concat(Array.from(positions.values()).filter((p) => p.icao24 !== selectedId));
     const view = bounds ? padBounds(bounds, RENDER_MARGIN) : null;
@@ -403,7 +432,7 @@ function boot(): void {
   }
 
   /** Draws the best cached data for the current view, if any and not already on screen. */
-  function applyCachedView(now: number): CachedView<unknown> | null {
+  function applyCachedView(now: number): CachedView<AsOfOverview> | CachedView<AsOfMarker[]> | null {
     const hit = findCachedView(now);
     if (!hit || hit === lastAppliedView) return hit;
     // A cached view of the *other* source, right after the map crossed the
@@ -413,9 +442,9 @@ function boot(): void {
     if (drawnSource && drawnSource !== sourceAt()) return null;
     lastAppliedView = hit;
     if (zoom < CLUSTER_FETCH_MAX_ZOOM) {
-      applyOverview((hit.data as LiveOverview).planes);
+      applyOverview((hit.data as AsOfOverview).planes);
     } else {
-      applyLiveSnapshot(hit.data as LiveMarker[]);
+      applyLiveSnapshot(hit.data as AsOfMarker[]);
     }
     return hit;
   }
@@ -459,8 +488,12 @@ function boot(): void {
       const previous = clusterCache.find(requestBounds, (z) => z === requestZoom, now)?.data.planes ?? [];
       fetchLiveOverview(requestBounds, grid, controller.signal)
         .then((overview) => {
-          const planes = keepCellWinners(previous, overview.planes, grid, Date.now());
-          const entry = { zoom: requestZoom, bbox: requestBounds, data: { ...overview, planes }, fetchedAt: Date.now() };
+          const fetchedAt = Date.now();
+          // Only the response's planes are stamped with this fetch time: a cell
+          // winner kept from `previous` stays where it was drawn, with the older
+          // as-of it was drawn at.
+          const planes: AsOfMarker[] = keepCellWinners(previous, stamp(overview.planes, fetchedAt), grid, fetchedAt);
+          const entry = { zoom: requestZoom, bbox: requestBounds, data: { ...overview, planes }, fetchedAt };
           clusterCache.put(entry);
           if (controller.signal.aborted || zoom >= CLUSTER_FETCH_MAX_ZOOM || overviewZoom(zoom) !== requestZoom) return;
           lastAppliedView = entry;
@@ -474,11 +507,12 @@ function boot(): void {
     const requestBounds = bounds;
     fetchLivePositions(requestBounds, controller.signal)
       .then((list) => {
-        const entry = { zoom: requestZoom, bbox: requestBounds, data: list, fetchedAt: Date.now() };
+        const fetchedAt = Date.now();
+        const entry = { zoom: requestZoom, bbox: requestBounds, data: stamp(list, fetchedAt), fetchedAt };
         liveCache.put(entry);
         if (controller.signal.aborted || zoom < CLUSTER_FETCH_MAX_ZOOM) return;
         lastAppliedView = entry;
-        applyLiveSnapshot(list);
+        applyLiveSnapshot(entry.data);
         prefetchNeighbourOverviews();
       })
       .catch(() => {})
@@ -514,9 +548,11 @@ function boot(): void {
         const requestBounds = snapBounds(view, grid * 2);
         const previous = clusterCache.find(requestBounds, (cz) => cz === z, Date.now())?.data.planes ?? [];
         fetchLiveOverview(requestBounds, grid, controller.signal)
-          .then((overview) =>
-            clusterCache.put({ zoom: z, bbox: requestBounds, data: { ...overview, planes: keepCellWinners(previous, overview.planes, grid, Date.now()) }, fetchedAt: Date.now() }),
-          )
+          .then((overview) => {
+            const fetchedAt = Date.now();
+            const planes: AsOfMarker[] = keepCellWinners(previous, stamp(overview.planes, fetchedAt), grid, fetchedAt);
+            clusterCache.put({ zoom: z, bbox: requestBounds, data: { ...overview, planes }, fetchedAt });
+          })
           .catch(() => {});
       }
     }, PREFETCH_DELAY_MS);
@@ -571,8 +607,9 @@ function boot(): void {
     // as individual markers, plus the selected aircraft.
     const isSelected = p.icao24 === store.get("selectedId");
     if (!isSelected && !inDrawnArea(p) && !overviewIndex.has(p.icao24)) return;
-    const queued = pendingWs.get(p.icao24);
-    if (queued && !isNewer(p, queued)) return;
+    // Latest arrival wins: a LiveFrame is pushed the moment its report is
+    // persisted, so the newest one is the truth, and two frames of the same
+    // dead-reckoned report share observedAt (#53 / #97).
     pendingWs.set(p.icao24, p);
     if (!wsFlushTimer) wsFlushTimer = setTimeout(flushLivePushes, WS_FLUSH_MS);
   }
@@ -580,23 +617,24 @@ function boot(): void {
   function flushLivePushes(): void {
     wsFlushTimer = null;
     if (pendingWs.size === 0) return;
+    const arrival = Date.now();
     const selectedId = store.get("selectedId");
     let selectedUpdate: FlightPosition | null = null;
     let changed = false;
     // The overview's aircraft (zoomed out) move with the feed too, on a copy:
     // the array is shared with the view cache.
-    let overviewNext: LiveMarker[] | null = null;
+    let overviewNext: AsOfMarker[] | null = null;
     for (const p of pendingWs.values()) {
       const overviewAt = overviewIndex.get(p.icao24);
-      if (overviewAt !== undefined && zoom < CLUSTER_FETCH_MAX_ZOOM && isNewer(p, overviewPlanes[overviewAt])) {
+      if (overviewAt !== undefined && zoom < CLUSTER_FETCH_MAX_ZOOM && arrival > overviewPlanes[overviewAt].asOf) {
         overviewNext ??= overviewPlanes.slice();
-        overviewNext[overviewAt] = p;
+        overviewNext[overviewAt] = { ...p, asOf: arrival };
         changed = true;
       }
       const existing = positions.get(p.icao24);
-      if (existing && !isNewer(p, existing)) continue; // superseded by a /live reconcile already
+      if (existing && existing.asOf >= arrival) continue; // superseded by a /live reconcile already
       if (p.icao24 !== selectedId && !inDrawnArea(p)) continue;
-      positions.set(p.icao24, p);
+      positions.set(p.icao24, { ...p, asOf: arrival });
       changed = true;
       if (p.icao24 === selectedId) selectedUpdate = p;
     }
@@ -699,9 +737,12 @@ function boot(): void {
     // A real report newer than this status is already on screen: the status is the stale one.
     if (Date.parse(prev.observedAt) > Date.parse(status.lastSeenAt)) return;
     if (prev.latitude === est.lat && prev.longitude === est.lon) return;
-    const moved = { ...prev, latitude: est.lat, longitude: est.lon };
+    const moved = { ...prev, latitude: est.lat, longitude: est.lon, asOf: Date.now() };
     const known = positions.get(icao24);
-    if (known && !isNewer(known, moved)) positions.set(icao24, { ...known, latitude: est.lat, longitude: est.lon });
+    // The estimate is the freshest position there is (dead-reckoned to now), so
+    // its as-of is now: a snapshot of the same report that lands later must not
+    // pull the marker back to the raw position.
+    if (known && moved.asOf >= known.asOf) positions.set(icao24, { ...known, latitude: est.lat, longitude: est.lon, asOf: moved.asOf });
     store.set("selectedPos", moved);
     if (lastRouteObservedAt != null) appendRoutePoint(moved);
     renderAircraftLayer();
@@ -738,7 +779,7 @@ function boot(): void {
           const existing = positions.get(p.icao24);
           // A newer live push may have beaten this response; either way the
           // selection now has a server position from after it was made.
-          const best = existing && isNewer(existing, p) ? existing : p;
+          const best = newerOf(existing, { ...p, asOf: Date.now() });
           positions.set(best.icao24, best);
           const prev = store.get("selectedPos");
           store.set("selectedPos", prev && prev.icao24 === best.icao24 ? { ...prev, ...best } : { ...best, altitudeM: null, velocityMs: null, verticalRateMs: null });
@@ -831,7 +872,7 @@ function boot(): void {
     // fresh one arrives (the priority poll starts on selection, or a live
     // push lands first) — or after FRESH_POSITION_WAIT_MS regardless.
     const known = positions.get(selected.icao24);
-    const p = known && isNewer(known, selected) ? known : selected;
+    const p: LiveMarker = known ?? selected;
     if (p.icao24 !== store.get("selectedId")) {
       store.set("selectedPosFresh", false);
       if (freshWaitTimer) clearTimeout(freshWaitTimer);

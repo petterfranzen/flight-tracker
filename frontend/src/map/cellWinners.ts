@@ -37,8 +37,8 @@ export function cellOf(p: Pick<LiveMarker, "latitude" | "longitude">, cellDeg: n
  * The response's plane objects and order are kept wherever they win, so a
  * client's "first discovered" ordering still follows the server's list.
  */
-export function keepCellWinners(previous: LiveMarker[], response: LiveMarker[], cellDeg: number, nowMs: number): LiveMarker[] {
-  const winners = new Map<string, LiveMarker>();
+export function keepCellWinners<T extends LiveMarker>(previous: T[], response: T[], cellDeg: number, nowMs: number): T[] {
+  const winners = new Map<string, T>();
   for (const p of previous) {
     const cell = cellOf(p, cellDeg);
     const held = winners.get(cell);
@@ -49,7 +49,7 @@ export function keepCellWinners(previous: LiveMarker[], response: LiveMarker[], 
   // has moved on and must not be kept at the cell it left.
   const returned = new Set(response.map((p) => p.icao24));
 
-  const out: LiveMarker[] = [];
+  const out: T[] = [];
   const seen = new Set<string>();
   for (const p of response) {
     const cell = cellOf(p, cellDeg);

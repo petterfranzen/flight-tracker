@@ -100,7 +100,7 @@ export function filterByBounds(positions: FlightPosition[], bounds?: Bounds): Fl
 }
 
 /** Mirrors LiveStateStore.clustered (bucket, then mean position) — the world summary the opening view reads (/live/clusters). */
-export function clusterMockFleet(positions: FlightPosition[], gridDeg: number): ClusterPoint[] {
+export function clusterMockFleet(positions: { latitude: number; longitude: number }[], gridDeg: number): ClusterPoint[] {
   const cells = new Map<string, { lat: number; lon: number; count: number }>();
   for (const p of positions) {
     const key = `${Math.floor(p.latitude / gridDeg)},${Math.floor(p.longitude / gridDeg)}`;
