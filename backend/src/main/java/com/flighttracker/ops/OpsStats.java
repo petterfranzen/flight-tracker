@@ -34,6 +34,12 @@ public record OpsStats(Instant at, Long uptimeSeconds, Memory memory, Io io, Cpu
     /** storeBytes: the on-disk size of the app's data, including its write log. */
     public record Data(Long storeBytes) {}
 
-    /** lastSweepAt: last completed worldwide refresh. aircraftSeenLast10m: airborne aircraft reported in the last 10 minutes. */
-    public record Freshness(Instant lastSweepAt, Long aircraftSeenLast10m) {}
+    /**
+     * lastSweepAt: last worldwide refresh that wrote rows (a skipped or empty
+     * sweep doesn't move it). lastSweepRows: rows that sweep wrote.
+     * skippedSweeps: consecutive completed sweeps since then that wrote
+     * nothing. aircraftSeenLast10m: airborne aircraft reported in the last
+     * 10 minutes.
+     */
+    public record Freshness(Instant lastSweepAt, int lastSweepRows, int skippedSweeps, Long aircraftSeenLast10m) {}
 }
