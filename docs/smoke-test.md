@@ -66,8 +66,10 @@ hex chars, a malformed `SMOKE_BBOX`). A healthy run takes roughly 25–50 s.
 resolvable; the script tries `frontend/node_modules`, `node_modules`,
 `NODE_PATH`/`SMOKE_NODE_PATH` and the global npm root, in that order. Chromium
 comes from Playwright's own download unless `PW_CHROMIUM_PATH` points at one
-(the sandbox sets `PW_CHROMIUM_PATH=/opt/pw-browsers/chromium`; on a box without
-that path the variable is ignored and Playwright's browser is used).
+(the cloud image sets `PW_CHROMIUM_PATH=/opt/pw-browsers/chromium`; a VPS agent
+sandbox without it has only Playwright's headless shell under
+`PLAYWRIGHT_BROWSERS_PATH`, and pointing `PW_CHROMIUM_PATH` at that binary works
+the same way — see docs/cloud-agents.md).
 
 ## Why the front page is checked before the WebSocket
 

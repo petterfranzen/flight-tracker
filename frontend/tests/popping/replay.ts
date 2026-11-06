@@ -28,6 +28,7 @@
  *
  * See docs/popping-harness.md.
  */
+import { OPENFREEMAP_TILEJSON } from "../fixtures/basemap";
 import { expect, type Page, type TestInfo } from "@playwright/test";
 import { clusterMockFleet, onePerCell } from "../../src/api/mockFleet";
 import recording from "../fixtures/popping/recording.json" with { type: "json" };
@@ -264,7 +265,7 @@ export async function startReplay(page: Page, testInfo: TestInfo, opts: ReplayOp
 
   // ---- basemap ----
   await page.route("https://tiles.openfreemap.org/planet", (r) =>
-    r.fulfill({ json: { tilejson: "3.0.0", tiles: ["https://tiles.openfreemap.org/t/{z}/{x}/{y}.pbf"], minzoom: 0, maxzoom: 14, vector_layers: [] } }),
+    r.fulfill({ json: OPENFREEMAP_TILEJSON }),
   );
   await page.route(/tiles\.openfreemap\.org\/(t|fonts)\//, (r) => r.fulfill({ body: "", contentType: "application/x-protobuf" }));
   await page.route(/tile\.openstreetmap\.org/, (r) => r.abort());
