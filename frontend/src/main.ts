@@ -37,6 +37,7 @@ import * as flightSearch from "./ui/flightSearch";
 import * as favoritesPanel from "./ui/favoritesPanel";
 import * as watchPanel from "./ui/watchPanel";
 import * as legend from "./ui/legend";
+import * as installPrompt from "./ui/installPrompt";
 import * as dossierPanel from "./ui/dossierPanel";
 import * as bootScreen from "./ui/bootScreen";
 import * as resumeDialog from "./ui/resumeDialog";
@@ -145,6 +146,23 @@ function boot(): void {
   const dossierRoot = h("div");
   appShell.append(bootScreenRoot, dockRoot, leftOverlayStack, trackedChipRoot, resumeDialogRoot, mapRoot, dossierRoot);
   rootEl.appendChild(appShell);
+
+  // PWA install control (#85): shown only when the browser offers an
+  // install prompt (Chrome/Edge/Android), or as a one-line Share > Add to
+  // Home Screen hint on iOS. It hides itself when already standalone and
+  // remembers a dismissal. See ui/installPrompt.ts.
+  installPrompt.mount(appShell);
+
+  // Minimal worker (#85 reuses #82's decision; one worker, not two). It
+  // caches nothing — its header says why — so a deploy can never be kept
+  // off a phone by a stale shell. Registering it is what lets Chrome show
+  // "Install app" and gives #82 registration.showNotification() on Android
+  // and installed iOS.
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("/sw.js").catch(() => {
+      // Private mode / storage disabled: the app works without it.
+    });
+  }
 
   leftOverlayStack.appendChild(
     h("header", { className: "app-header" }, h("h1", null, "Netwatch Skygrid"), h("p", { className: "app-header-subtitle" }, "Live aircraft positions")),

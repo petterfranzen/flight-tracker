@@ -4,14 +4,14 @@
    in this app. */
 .dock-wrap {
   position: absolute;
-  left: 16px;
+  left: max(16px, env(safe-area-inset-left, 0px));
   /* Clears the scale-bar control (ui/scaleBar.ts, "bottom-left") — its
      content is ~33px tall plus the map's own ~10px control margin,
      so 16px here would sit directly on top of it. Stacked above rather
      than moved beside it because the scale bar's width varies with
      whatever round distance is currently showing (see scaleBar.ts's
      BREAKPOINTS_KM) — a fixed height clearance is the stable dimension. */
-  bottom: 56px;
+  bottom: calc(56px + env(safe-area-inset-bottom, 0px));
   z-index: 500;
 }
 
