@@ -21,7 +21,7 @@ import {
 } from "./api/flightApi";
 import { boundsFromMap, createFollowSelected, createMap, DEFAULT_VIEW, GPUInitializationError } from "./map/map";
 import { createPlaneLayer, planeBoxSize } from "./map/planes";
-import { declutterCellDeg, newDeclutterMemory, pickNonOverlapping, type Candidate } from "./map/declutter";
+import { declutterCellDeg, newDeclutterMemory, pickNonOverlapping, spacingKey, spacingLevel, type Candidate } from "./map/declutter";
 import { isSmallScreen } from "./map/screen";
 import { pickInitialView } from "./map/initialView";
 import { getMockPlaneCount } from "./api/mockFleet";
@@ -37,6 +37,7 @@ import * as flightSearch from "./ui/flightSearch";
 import * as favoritesPanel from "./ui/favoritesPanel";
 import * as watchPanel from "./ui/watchPanel";
 import * as legend from "./ui/legend";
+import * as installPrompt from "./ui/installPrompt";
 import * as dossierPanel from "./ui/dossierPanel";
 import * as bootScreen from "./ui/bootScreen";
 import * as resumeDialog from "./ui/resumeDialog";
@@ -174,6 +175,23 @@ function boot(): void {
   const dossierRoot = h("div");
   appShell.append(bootScreenRoot, dockRoot, leftOverlayStack, trackedChipRoot, resumeDialogRoot, mapRoot, dossierRoot);
   rootEl.appendChild(appShell);
+
+  // PWA install control (#85): shown only when the browser offers an
+  // install prompt (Chrome/Edge/Android), or as a one-line Share > Add to
+  // Home Screen hint on iOS. It hides itself when already standalone and
+  // remembers a dismissal. See ui/installPrompt.ts.
+  installPrompt.mount(appShell);
+
+  // Minimal worker (#85 reuses #82's decision; one worker, not two). It
+  // caches nothing — its header says why — so a deploy can never be kept
+  // off a phone by a stale shell. Registering it is what lets Chrome show
+  // "Install app" and gives #82 registration.showNotification() on Android
+  // and installed iOS.
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("/sw.js").catch(() => {
+      // Private mode / storage disabled: the app works without it.
+    });
+  }
 
   leftOverlayStack.appendChild(
     h("header", { className: "app-header" }, h("h1", null, "Netwatch Skygrid"), h("p", { className: "app-header-subtitle" }, "Live aircraft positions")),
@@ -343,9 +361,20 @@ function boot(): void {
     const fixed = selectedPos ? [map.project(selectedPos.latitude, selectedPos.longitude)] : [];
     // The spacing belongs to the zoom level and the cap: a pan that keeps both
     // keeps it too, so the planes already drawn stay where they are and only
-    // the newcomers are spaced further apart when the cap is passed.
+    // the newcomers are spaced further apart when the cap is passed. The box it
+    // is measured in and the key it is stored under come from the same whole
+    // level (spacingLevel), so a pinch inside one level leaves neither stale
+    // against the other, and the source is part of the key so the 7.5-8.0
+    // overview band does not hand its spacing to the live source above it.
     const maxDrawn = isSmallScreen() ? MAX_DRAWN_MARKERS_SMALL_SCREEN : MAX_DRAWN_MARKERS;
-    const keep = pickNonOverlapping(points, fixed, planeBoxSize(zoom), maxDrawn, declutterMemory, `${Math.round(zoom)}:${maxDrawn}`);
+    const keep = pickNonOverlapping(
+      points,
+      fixed,
+      planeBoxSize(spacingLevel(zoom)),
+      maxDrawn,
+      declutterMemory,
+      spacingKey(useOverview ? "overview" : "live", zoom, maxDrawn),
+    );
     const drawn = candidates.filter((p) => keep.has(p.icao24));
 
     planeLayer.update({

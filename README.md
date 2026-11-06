@@ -60,6 +60,28 @@ frontend fetches it alongside the world traffic summary under the same short
 boot timeout, so it never delays the boot screen (`applyInitialView` in
 `main.ts`, `map/initialView.ts`). A VPN shows its exit location.
 
+## Favorites and watched flights
+
+Favorites (routes and aircraft) and the Watch list are stored in the browser
+only — nothing about them reaches the server. Each list is written to
+`localStorage` *and* to a same-origin cookie (`ft_…`), from JavaScript, never
+by the backend. `localStorage` is the primary copy; the cookie is the second
+one, and it is what brings the list back when `localStorage` is cleared —
+Safari's tracking prevention wipes `localStorage` after seven days without a
+visit (a JS-set cookie lasts at most seven days there too; on Chrome and
+Firefox both last 400 days). On load the list is read from `localStorage`
+first, and from the cookie when `localStorage` is empty, re-seeding whichever
+store was missing. The cookie is compact JSON, kept under ~3.5 KB encoded: a
+list longer than that is trimmed oldest-first in the cookie only (the
+`localStorage` copy keeps everything), so a big list never breaks the app.
+The cookie carries only this JSON and is ignored by the server — no filter
+reads, logs or strips it (see `frontend/src/persist.ts`).
+
+To clear them: remove the site's cookies and site data in the browser
+(a "clear browsing data" for the origin, or DevTools > Application > Storage
+> Clear site data). Favorites have their own ✕ controls in the Favorites
+panel; watched flights, in the Watch panel.
+
 ## Deploying
 
 GitHub Actions builds a single jar (backend + the built frontend bundled
