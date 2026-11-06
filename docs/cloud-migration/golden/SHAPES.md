@@ -112,7 +112,10 @@ averageGroundSpeedKmh     number
 ```
 
 ## Additive-only endpoints (not yet present, A1 adds them)
-- `GET /api/health` → `{"status":"UP","version":"<40-char git sha>","db":"UP","lastSweepAt":...}`
+- `GET /api/health` → `{"status":"UP","version":"<40-char git sha>","db":"UP","lastSweepAt":...,`
+  `"lastSweepRows":<int>,"skippedSweeps":<int>}` — `lastSweepAt` is the last sweep that wrote rows;
+  `lastSweepRows` is how many; `skippedSweeps` counts the consecutive completed sweeps since then that wrote
+  nothing. Additive fields on an additive-only endpoint.
 - `GET /api/health/sweep` → 200/503, monitoring only
 
 ## Error responses (400/404/405/500)
