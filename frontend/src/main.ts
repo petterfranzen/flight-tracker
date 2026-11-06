@@ -21,13 +21,14 @@ import {
 } from "./api/flightApi";
 import { boundsFromMap, createFollowSelected, createMap, DEFAULT_VIEW, GPUInitializationError } from "./map/map";
 import { createPlaneLayer, planeBoxSize } from "./map/planes";
-import { declutterCellDeg, newDeclutterMemory, pickNonOverlapping, type Candidate } from "./map/declutter";
+import { declutterCellDeg, newDeclutterMemory, pickNonOverlapping, spacingKey, spacingLevel, type Candidate } from "./map/declutter";
 import { isSmallScreen } from "./map/screen";
 import { pickInitialView } from "./map/initialView";
 import { getMockPlaneCount } from "./api/mockFleet";
 import { agedIds, findShadowedIds, isActiveTraffic, OVERLAP_MIN_ZOOM } from "./map/staleness";
 import { createRouteLayer } from "./map/route";
 import { createUncertaintyLayer } from "./map/uncertainty";
+import { keepCellWinners } from "./map/cellWinners";
 import { snapBounds, ViewCache, type CachedView } from "./map/viewCache";
 import { holdOverviewFrame, newOverviewHold } from "./map/overviewHold";
 import * as scaleBar from "./ui/scaleBar";
@@ -331,9 +332,20 @@ function boot(): void {
     const fixed = selectedPos ? [map.project(selectedPos.latitude, selectedPos.longitude)] : [];
     // The spacing belongs to the zoom level and the cap: a pan that keeps both
     // keeps it too, so the planes already drawn stay where they are and only
-    // the newcomers are spaced further apart when the cap is passed.
+    // the newcomers are spaced further apart when the cap is passed. The box it
+    // is measured in and the key it is stored under come from the same whole
+    // level (spacingLevel), so a pinch inside one level leaves neither stale
+    // against the other, and the source is part of the key so the 7.5-8.0
+    // overview band does not hand its spacing to the live source above it.
     const maxDrawn = isSmallScreen() ? MAX_DRAWN_MARKERS_SMALL_SCREEN : MAX_DRAWN_MARKERS;
-    const keep = pickNonOverlapping(points, fixed, planeBoxSize(zoom), maxDrawn, declutterMemory, `${Math.round(zoom)}:${maxDrawn}`);
+    const keep = pickNonOverlapping(
+      points,
+      fixed,
+      planeBoxSize(spacingLevel(zoom)),
+      maxDrawn,
+      declutterMemory,
+      spacingKey(useOverview ? "overview" : "live", zoom, maxDrawn),
+    );
     const drawn = candidates.filter((p) => keep.has(p.icao24));
 
     planeLayer.update({
@@ -442,13 +454,17 @@ function boot(): void {
     if (zoom < CLUSTER_FETCH_MAX_ZOOM) {
       const grid = declutterCellDeg(requestZoom, planeBoxSize(requestZoom));
       const requestBounds = snapBounds(bounds, grid * 2);
+      // The frame drawn for this zoom and bbox last time (see ViewCache): its
+      // cells keep their winners until they are no longer live and in-cell.
+      const previous = clusterCache.find(requestBounds, (z) => z === requestZoom, now)?.data.planes ?? [];
       fetchLiveOverview(requestBounds, grid, controller.signal)
         .then((overview) => {
-          const entry = { zoom: requestZoom, bbox: requestBounds, data: overview, fetchedAt: Date.now() };
+          const planes = keepCellWinners(previous, overview.planes, grid, Date.now());
+          const entry = { zoom: requestZoom, bbox: requestBounds, data: { ...overview, planes }, fetchedAt: Date.now() };
           clusterCache.put(entry);
           if (controller.signal.aborted || zoom >= CLUSTER_FETCH_MAX_ZOOM || overviewZoom(zoom) !== requestZoom) return;
           lastAppliedView = entry;
-          applyOverview(overview.planes);
+          applyOverview(planes);
           prefetchNeighbourOverviews();
         })
         .catch(() => {})
@@ -496,8 +512,11 @@ function boot(): void {
         if (cached && Date.now() - cached.fetchedAt < VIEW_CACHE_FRESH_MS) continue;
         const grid = declutterCellDeg(z, planeBoxSize(z));
         const requestBounds = snapBounds(view, grid * 2);
+        const previous = clusterCache.find(requestBounds, (cz) => cz === z, Date.now())?.data.planes ?? [];
         fetchLiveOverview(requestBounds, grid, controller.signal)
-          .then((overview) => clusterCache.put({ zoom: z, bbox: requestBounds, data: overview, fetchedAt: Date.now() }))
+          .then((overview) =>
+            clusterCache.put({ zoom: z, bbox: requestBounds, data: { ...overview, planes: keepCellWinners(previous, overview.planes, grid, Date.now()) }, fetchedAt: Date.now() }),
+          )
           .catch(() => {});
       }
     }, PREFETCH_DELAY_MS);

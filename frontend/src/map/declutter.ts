@@ -34,11 +34,11 @@ export const DISPLACE_FRACTION = 0.5;
 
 /**
  * What a map remembers between renders so that panning doesn't reshuffle
- * which planes are drawn: which zoom level and cap the spacing was worked out
- * for, that spacing, and the set drawn last time.
+ * which planes are drawn: which source, zoom level and cap the spacing was
+ * worked out for, that spacing, and the set drawn last time.
  */
 export interface DeclutterMemory {
-  /** The zoom level and cap `spacing` was worked out for: `<rounded zoom>:<maxCount>`. */
+  /** The source, zoom level and cap `spacing` was worked out for: `<source>:<rounded zoom>:<maxCount>`. */
   key: string;
   /** Multiplies the zoom's spacing; above 1 only while the cap needs it. */
   spacing: number;
@@ -50,13 +50,35 @@ export function newDeclutterMemory(): DeclutterMemory {
 }
 
 /**
+ * The whole zoom level a spacing is worked out for. The map zooms
+ * fractionally, and the box the spacing is measured in (`boxPx`) comes from a
+ * whole level too, so the two can never disagree: a pinch inside one level
+ * changes neither the box nor the key, and the stored widening is not left
+ * stale against a box that moved under it.
+ */
+export function spacingLevel(zoom: number): number {
+  return Math.round(zoom);
+}
+
+/**
+ * What `memory.spacing` is stored under: which source, the whole zoom level
+ * and the cap. The source is in it because the 7.5-8.0 band draws the overview
+ * but rounds to level 8 — the same level the live source at 8.0 and up uses —
+ * so without it, crossing the source switch there would keep the spacing the
+ * other source worked out.
+ */
+export function spacingKey(source: string, zoom: number, maxCount: number): string {
+  return `${source}:${spacingLevel(zoom)}:${maxCount}`;
+}
+
+/**
  * The icao24s to draw: candidates in priority order (active before inactive,
  * then discovery order), each kept only if its box doesn't overlap one
  * already kept or one of `fixed` (the selected plane, which is always
  * drawn). A grid with cells of the overlap distance means each candidate only
  * looks at nine cells, so this is linear in the number of candidates.
  *
- * With `memory` (one per map; `key` is the zoom level and the cap) a pan
+ * With `memory` (one per map; `key` is the source, the zoom level and the cap) a pan
  * doesn't reshuffle the screen:
  * - The spacing belongs to the zoom level and cap: worked out afresh when
  *   `key` changes, then kept. More or fewer candidates at the edges no longer
@@ -100,6 +122,18 @@ export function pickNonOverlapping(
   // they had, and the newcomers (which have no place to keep yet) fill the room
   // between them, spaced further apart only as far as the cap needs. This is
   // what stops a pan into denser traffic from dropping planes all over the map.
+  //
+  // Few of them are still on screen — a pan out of a dense area, or most of the
+  // drawn planes leaving the view - so the widening was for a density that is
+  // gone: relax it back to the zoom's own spacing. Nothing already drawn drops,
+  // because the held planes were laid out at least the wide spacing apart and
+  // so are still clear of each other at the narrower one; only the room the
+  // widening held open fills in. (Relaxed only, never re-widened, so it cannot
+  // start changing the spacing on every frame again.)
+  let heldCount = 0;
+  for (const o of order) if (o.held) heldCount++;
+  if (memory.spacing > 1 && heldCount * 2 < maxCount) memory.spacing = 1;
+
   const heldMin = base * memory.spacing;
   let newMin = heldMin;
   const spacing = (held: boolean): number => (held ? heldMin : newMin);
