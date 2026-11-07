@@ -2,6 +2,8 @@ import { expect, type Page, type TestInfo } from "@playwright/test";
 import { clusterMockFleet, onePerCell } from "../../src/api/mockFleet";
 import type { LiveMarker } from "../../src/types/flight";
 import { SPEED_DEG_PER_S, World, type SimAircraft } from "./world";
+import { OPENFREEMAP_TILEJSON } from "../fixtures/basemap";
+import { waitForMapReady } from "../helpers";
 
 /**
  * The scenarios' fake backend, basemap and checks.
@@ -67,7 +69,7 @@ export async function startHarness(page: Page, testInfo: TestInfo): Promise<Harn
 
   // ---- basemap ----
   await page.route("https://tiles.openfreemap.org/planet", (r) =>
-    r.fulfill({ json: { tilejson: "3.0.0", tiles: ["https://tiles.openfreemap.org/t/{z}/{x}/{y}.pbf"], minzoom: 0, maxzoom: 14, vector_layers: [] } }),
+    r.fulfill({ json: OPENFREEMAP_TILEJSON }),
   );
   await page.route(/tiles\.openfreemap\.org\/(t|fonts)\//, (r) => r.fulfill({ body: Buffer.alloc(0), contentType: "application/x-protobuf" }));
   await page.route(/tile\.openstreetmap\.org/, (r) => r.abort());
@@ -171,8 +173,16 @@ export async function settle(page: Page): Promise<void> {
   await page.waitForTimeout(1_200);
 }
 
-/** Zooms `levels` whole levels with the mouse wheel: two 100 px notches a level (see WHEEL_ZOOM_RATE in map/map.ts). */
+/**
+ * Zooms `levels` whole levels with the mouse wheel: two 100 px notches a
+ * level (see WHEEL_ZOOM_RATE in map/map.ts).
+ *
+ * Waits for the map first: before data-ready (main.ts) the container can
+ * still be un-sized, and `boundingBox()` then returns null — the #106 run's
+ * failure was `Cannot read properties of null` right here.
+ */
 export async function wheelZoom(page: Page, levels: number, at?: { x: number; y: number }): Promise<void> {
+  await waitForMapReady(page);
   const box = (await page.locator(".map-container").boundingBox())!;
   await page.mouse.move(at?.x ?? box.x + box.width / 2, at?.y ?? box.y + box.height / 2);
   for (let i = 0; i < Math.abs(levels) * 2; i++) {
@@ -182,6 +192,7 @@ export async function wheelZoom(page: Page, levels: number, at?: { x: number; y:
 }
 
 export async function drag(page: Page, dx: number, dy: number): Promise<void> {
+  await waitForMapReady(page);
   const box = (await page.locator(".map-container").boundingBox())!;
   const x = box.x + box.width * 0.6;
   const y = box.y + box.height / 2;
@@ -284,6 +295,7 @@ export async function clickAirport(page: Page, code: string): Promise<void> {
 // ---- health ----
 
 async function landFraction(page: Page): Promise<number> {
+  await waitForMapReady(page);
   const box = (await page.locator(".map-container").boundingBox())!;
   const png = await page.screenshot({ clip: { x: box.x + box.width * 0.55, y: box.y + box.height * 0.15, width: box.width * 0.3, height: box.height * 0.7 } });
   return page.evaluate(

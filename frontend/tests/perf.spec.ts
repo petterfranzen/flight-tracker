@@ -1,7 +1,7 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 import { clusterMockFleet, onePerCell } from "../src/api/mockFleet";
 import { fleet10k, FLEET_SIZE, type FleetAircraft } from "./fixtures/fleet10k";
-import { renderedPlanes, stubBasemapTiles, waitForPlanes, withMap } from "./helpers";
+import { renderedPlanes, stubBasemapTiles, waitForMapReady, waitForPlanes, withMap } from "./helpers";
 
 // Main-thread budget for any single task while zooming and selecting with a
 // realistic worldwide fleet. 200ms is "the UI visibly froze"; before this
@@ -272,6 +272,12 @@ test.describe("performance with 10,000 live aircraft @perf", () => {
     await startLongTaskObserver(page);
     const api = await mockTenThousand(page, { liveFeed: true });
     await page.goto("/");
+    // The map first: until data-ready, the opening view can still move it and
+    // its request/render would land inside the measured window (main.ts).
+    // Not a perf budget: CI readies in a second or two. The cap is high so a
+    // software-WebGL runner (or one under load) that takes tens of seconds to
+    // boot reports "the map never became ready" only when it truly did not.
+    await waitForMapReady(page, 60_000);
     await waitForPlanes(page, 1, 15_000);
     await page.waitForTimeout(500);
 
@@ -348,6 +354,9 @@ test.describe("performance with 10,000 live aircraft @perf", () => {
       if (/\/api\/flights\/live\?/.test(r.url())) aborted.push(r.url());
     });
     await page.goto("/");
+    // Before data-ready the opening view applies its own /live request, which
+    // would count as a second request in a test that asserts exactly one.
+    await waitForMapReady(page, 60_000);
     await waitForPlanes(page, 1, 15_000);
 
     // Five moveends in a single task, so they are inside the debounce window

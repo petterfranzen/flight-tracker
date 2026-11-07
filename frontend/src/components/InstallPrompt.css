@@ -5,7 +5,15 @@
 .install-banner {
   position: fixed;
   left: 50%;
-  bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  /* Clear the map's bottom control strip: the scale bar sits in
+     .maplibregl-ctrl-bottom-left and the attribution in
+     .maplibregl-ctrl-bottom-right, both anchored to the map's bottom edge.
+     Its height differs by orientation (a phone in landscape is wider than
+     the 768px breakpoint, so it gets the longer two-line attribution), so
+     this is a base rule, not a mobile-only one. The Dock clears the same
+     strip with 56px (Dock.css); 60px leaves a few px above the tallest
+     control. */
+  bottom: calc(60px + env(safe-area-inset-bottom, 0px));
   transform: translateX(-50%);
   z-index: 1200;
   display: flex;
@@ -20,7 +28,9 @@
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
   color: var(--color-text);
   font-family: var(--font-ui);
-  font-size: 13px;
+  /* House minimum for legible UI text; 13px read too small at arm's length
+     next to the map's own 15px base. */
+  font-size: 14px;
   line-height: 1.35;
 }
 
@@ -29,6 +39,7 @@
 }
 
 .install-banner-action {
+  position: relative;
   flex: none;
   padding: 7px 12px;
   border: 1px solid var(--color-accent);
@@ -40,11 +51,26 @@
   cursor: pointer;
 }
 
+/* The painted button stays as tall as its text and padding make it (~35px
+   at 14px); the invisible ::after stretches the tappable area to the 44px
+   house minimum without changing the pill's look (its width is already
+   well past 44px). */
+.install-banner-action::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 45px;
+  transform: translateY(-50%);
+}
+
 .install-banner-action:hover {
   filter: brightness(1.1);
 }
 
 .install-banner-dismiss {
+  position: relative;
   flex: none;
   width: 28px;
   height: 28px;
@@ -62,6 +88,18 @@
   cursor: pointer;
 }
 
+/* Same trick as the action button: the glyph stays 28px, the hit area is a
+   centred 44x44 square. */
+.install-banner-dismiss::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 44px;
+  height: 44px;
+  transform: translate(-50%, -50%);
+}
+
 .install-banner-dismiss:hover {
   background: var(--color-panel-border);
   color: var(--color-text);
@@ -76,12 +114,11 @@
   display: none;
 }
 
-/* Phone: a little tighter, and full-width-ish so the text does not wrap to
-   three lines on a 390 px screen. */
+/* Phone: full-width-ish so the longer copy still fits in two lines at
+   14px on a 390 px screen. */
 @media (max-width: 768px) {
   .install-banner {
     width: calc(100vw - 32px);
     max-width: calc(100vw - 32px);
-    font-size: 12.5px;
   }
 }

@@ -30,6 +30,28 @@ pre-installed `/opt/pw-browsers/chromium` (`PW_CHROMIUM_PATH`). After that the s
 (cd backend && mvn -B verify)
 ```
 
+### Where Chromium lives on a VPS agent sandbox
+
+The cloud image and the VPS agent sandboxes do not lay the browser out the
+same way, and Playwright's CDN is blocked from both (never run
+`playwright install`). `playwright.config.ts` passes whatever `PW_CHROMIUM_PATH`
+names to `launchOptions.executablePath`, and every suite runs headless, so on a
+box that has only Playwright's *headless shell* that is the binary to point at:
+
+| Box | `PW_CHROMIUM_PATH` |
+|---|---|
+| Cloud session image, `scripts/cloud-setup.sh` | `/opt/pw-browsers/chromium` |
+| VPS agent sandbox (`PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright`) | `/opt/ms-playwright/chromium_headless_shell-<rev>/chrome-headless-shell-linux64/chrome-headless-shell` |
+
+```bash
+export PW_CHROMIUM_PATH="$(ls -d "${PLAYWRIGHT_BROWSERS_PATH:-/opt/ms-playwright}"/chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell | head -1)"
+```
+
+`Executable doesn't exist at /opt/ms-playwright/chromium_headless_shell-<rev>/...`
+from a spec means the variable is not set (or names the wrong revision); it is a
+session-local export — don't commit either variable or symlink a revision into
+the repo.
+
 The blackbox suite needs the jar running locally; see the `blackbox` job in
 `build-deploy.yml` for the exact steps.
 
