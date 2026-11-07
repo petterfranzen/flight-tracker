@@ -1,9 +1,15 @@
 package com.flighttracker.service;
 
 import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Component;
 
 import java.net.InetAddress;
 import java.net.UnknownHostException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.function.UnaryOperator;
+import java.util.regex.Pattern;
 
 /**
  * Determines the real client IP for a request.
@@ -21,22 +27,136 @@ import java.net.UnknownHostException;
  * a different reverse proxy, or bare), in the same priority order a
  * typical proxy chain would set them, most-specific first. Bare
  * getRemoteAddr() is the last resort, for no proxy at all.
+ *
+ * <p>Security review #143 M4 / section9-hq#168: those headers are plain
+ * client input unless a proxy we run wrote them. They are therefore read
+ * only when the socket peer is a trusted proxy
+ * ({@code flighttracker.proxy.trusted-proxies}, default loopback, i.e. the
+ * cloudflared tunnel; exact IPs or CIDRs). From any other peer the headers
+ * are ignored and the peer address is the identity, so a spoofed
+ * {@code X-Forwarded-For} or {@code CF-Connecting-IP} from outside changes
+ * nothing. When trusted, {@code X-Forwarded-For} is read right to left (the
+ * entry the last trusted hop appended), never the client-controlled
+ * leftmost one. Header values that are not IP literals are ignored.
+ * HTTP and WebSocket callers share this, so one visitor has one identity.
  */
-public final class ClientIpResolver {
+@Component
+public class ClientIpResolver {
 
-    private ClientIpResolver() {
+    private static final Pattern IPV4 = Pattern.compile("\\d{1,3}(\\.\\d{1,3}){3}");
+    private static final Pattern IPV6_CHARS = Pattern.compile("[0-9A-Fa-f:.]{2,45}");
+
+    private final List<Cidr> trustedProxies;
+
+    public ClientIpResolver(@Value("${flighttracker.proxy.trusted-proxies:127.0.0.1,::1}") String trustedProxies) {
+        this.trustedProxies = parseTrusted(trustedProxies);
     }
 
-    public static String resolve(HttpServletRequest request) {
-        String cfConnectingIp = request.getHeader("CF-Connecting-IP");
-        if (cfConnectingIp != null && !cfConnectingIp.isBlank()) return cfConnectingIp.trim();
-        String xRealIp = request.getHeader("X-Real-IP");
-        if (xRealIp != null && !xRealIp.isBlank()) return xRealIp.trim();
-        String xForwardedFor = request.getHeader("X-Forwarded-For");
-        if (xForwardedFor != null && !xForwardedFor.isBlank()) {
-            return xForwardedFor.split(",")[0].trim();
+    /** The client IP of an HTTP request. */
+    public String resolve(HttpServletRequest request) {
+        return resolve(request.getRemoteAddr(), request::getHeader);
+    }
+
+    /**
+     * @param peer   the socket peer address (never a header value)
+     * @param header looks up a request header by name, null if absent
+     */
+    public String resolve(String peer, UnaryOperator<String> header) {
+        String peerIp = canonical(peer);
+        if (peerIp == null) return peer == null || peer.isBlank() ? "unknown" : peer.trim();
+        if (!isTrustedProxy(peerIp)) return peerIp;
+
+        String cf = canonical(header.apply("CF-Connecting-IP"));
+        if (cf != null) return cf;
+        String xRealIp = canonical(header.apply("X-Real-IP"));
+        if (xRealIp != null) return xRealIp;
+        String xForwardedFor = header.apply("X-Forwarded-For");
+        if (xForwardedFor != null) {
+            String[] hops = xForwardedFor.split(",");
+            for (int i = hops.length - 1; i >= 0; i--) {
+                String hop = canonical(hops[i]);
+                if (hop == null) break; // garbage hop: stop trusting anything left of it
+                if (!isTrustedProxy(hop)) return hop;
+            }
         }
-        return request.getRemoteAddr();
+        return peerIp;
+    }
+
+    public boolean isTrustedProxy(String ip) {
+        InetAddress addr = literal(ip);
+        if (addr == null) return false;
+        byte[] bytes = addr.getAddress();
+        for (Cidr cidr : trustedProxies) {
+            if (cidr.matches(bytes)) return true;
+        }
+        return false;
+    }
+
+    /** Canonical text of an IP literal, or null when the value is not one (never does a DNS lookup). */
+    static String canonical(String value) {
+        InetAddress addr = literal(value);
+        return addr == null ? null : addr.getHostAddress();
+    }
+
+    private static InetAddress literal(String value) {
+        if (value == null) return null;
+        String v = value.trim();
+        int scope = v.indexOf('%');
+        if (scope >= 0) v = v.substring(0, scope);
+        boolean v6 = v.indexOf(':') >= 0;
+        // Only literal-shaped text reaches getByName, so it can't resolve a hostname.
+        if (v6 ? !IPV6_CHARS.matcher(v).matches() : !IPV4.matcher(v).matches()) return null;
+        if (!v6) {
+            for (String octet : v.split("\\.")) {
+                if (Integer.parseInt(octet) > 255) return null; // else getByName would try DNS
+            }
+        }
+        try {
+            return InetAddress.getByName(v);
+        } catch (UnknownHostException e) {
+            return null;
+        }
+    }
+
+    private static List<Cidr> parseTrusted(String csv) {
+        List<Cidr> out = new ArrayList<>();
+        for (String entry : csv.split(",")) {
+            String e = entry.trim();
+            if (e.isEmpty()) continue;
+            int slash = e.indexOf('/');
+            InetAddress addr = literal(slash < 0 ? e : e.substring(0, slash));
+            if (addr == null) {
+                throw new IllegalArgumentException("flighttracker.proxy.trusted-proxies: not an IP or CIDR: " + e);
+            }
+            int max = addr.getAddress().length * 8;
+            int bits = max;
+            if (slash >= 0) {
+                try {
+                    bits = Integer.parseInt(e.substring(slash + 1).trim());
+                } catch (NumberFormatException ex) {
+                    bits = -1;
+                }
+                if (bits < 0 || bits > max) {
+                    throw new IllegalArgumentException("flighttracker.proxy.trusted-proxies: bad prefix length: " + e);
+                }
+            }
+            out.add(new Cidr(addr.getAddress(), bits));
+        }
+        return List.copyOf(out);
+    }
+
+    private record Cidr(byte[] network, int bits) {
+        boolean matches(byte[] addr) {
+            if (addr.length != network.length) return false;
+            int full = bits / 8;
+            for (int i = 0; i < full; i++) {
+                if (addr[i] != network[i]) return false;
+            }
+            int rest = bits % 8;
+            if (rest == 0) return true;
+            int mask = 0xFF << (8 - rest) & 0xFF;
+            return (addr[full] & mask) == (network[full] & mask);
+        }
     }
 
     /**

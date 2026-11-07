@@ -58,6 +58,7 @@ html, body {
   --color-warn: #ff6b6b;
   --color-marker: #ffb020;
   --color-marker-selected: #4db2ff;
+  --color-marker-watched: #22d3a6;
   --color-focus: #4db2ff;
   /* The coverage-gap cone on the map and the status line in the dossier: where an aircraft out of coverage may be. */
   --color-uncertainty: #ff9f43;
@@ -110,6 +111,7 @@ html, body {
   --color-warn: #ff4d5e;
   --color-marker: #3ce0ff;
   --color-marker-selected: #ffb63c;
+  --color-marker-watched: #5cff9d;
   --color-focus: #3ce0ff;
   --color-uncertainty: #ff5ed8;
   --color-inferred: #ff5ed8;

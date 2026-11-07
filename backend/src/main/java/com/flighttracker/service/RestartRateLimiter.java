@@ -1,8 +1,11 @@
 package com.flighttracker.service;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayDeque;
@@ -34,18 +37,45 @@ public class RestartRateLimiter {
     private final int perDayMax;
 
     // One deque of recent request timestamps per IP, oldest first. Pruned
-    // to the last 24h on every check for that IP, which also bounds each
-    // IP's own memory use over time; the outer map's key set (distinct
-    // IPs ever seen) isn't itself pruned — acceptable at this app's scale
-    // (a personal/small-deployment project, not a high-traffic public
-    // service), but worth revisiting with a scheduled sweep if that
-    // changes.
+    // to the last 24h on every check for that IP, and sweep() drops IPs
+    // whose history has emptied, so the key set can't grow without bound
+    // (security review #143 L8). Every read-modify-write of an entry runs
+    // inside compute*(), which is atomic per key, so a sweep can't discard
+    // a request being recorded.
     private final ConcurrentHashMap<String, Deque<Instant>> requestsByIp = new ConcurrentHashMap<>();
 
+    private final Clock clock;
+
+    @Autowired
     public RestartRateLimiter(@Value("${flighttracker.rate-limit.restart-per-ip-per-minute}") int perMinuteMax,
-                               @Value("${flighttracker.rate-limit.restart-per-ip-per-day}") int perDayMax) {
+                               @Value("${flighttracker.rate-limit.restart-per-ip-per-day}") int perDayMax,
+                               Clock clock) {
         this.perMinuteMax = perMinuteMax;
         this.perDayMax = perDayMax;
+        this.clock = clock;
+    }
+
+    public RestartRateLimiter(int perMinuteMax, int perDayMax) {
+        this(perMinuteMax, perDayMax, Clock.systemUTC());
+    }
+
+    /** Number of IPs currently tracked (for tests and diagnostics). */
+    int trackedIps() {
+        return requestsByIp.size();
+    }
+
+    /** Drops history older than 24h and forgets IPs with none left. */
+    @Scheduled(fixedDelayString = "${flighttracker.rate-limit.sweep-interval-ms:600000}")
+    void sweep() {
+        Instant dayAgo = clock.instant().minus(Duration.ofDays(1));
+        for (String ip : requestsByIp.keySet()) {
+            requestsByIp.computeIfPresent(ip, (k, history) -> {
+                while (!history.isEmpty() && history.peekFirst().isBefore(dayAgo)) {
+                    history.pollFirst();
+                }
+                return history.isEmpty() ? null : history;
+            });
+        }
     }
 
     /**
@@ -55,26 +85,30 @@ public class RestartRateLimiter {
     public Optional<String> checkAndRecord(String ip, boolean isLocal) {
         if (isLocal) return Optional.empty();
 
-        Instant now = Instant.now();
-        Deque<Instant> history = requestsByIp.computeIfAbsent(ip, k -> new ArrayDeque<>());
-        synchronized (history) {
+        Instant now = clock.instant();
+        String[] rejected = {null};
+        requestsByIp.compute(ip, (k, existing) -> {
+            Deque<Instant> history = existing != null ? existing : new ArrayDeque<>();
             Instant dayAgo = now.minus(Duration.ofDays(1));
             while (!history.isEmpty() && history.peekFirst().isBefore(dayAgo)) {
                 history.pollFirst();
             }
 
             if (history.size() >= perDayMax) {
-                return Optional.of("too many requests today");
+                rejected[0] = ("too many requests today");
+                return history.isEmpty() ? null : history;
             }
 
             Instant minuteAgo = now.minus(Duration.ofMinutes(1));
             long lastMinuteCount = history.stream().filter(t -> !t.isBefore(minuteAgo)).count();
             if (lastMinuteCount >= perMinuteMax) {
-                return Optional.of("too many requests this minute");
+                rejected[0] = ("too many requests this minute");
+                return history;
             }
 
             history.addLast(now);
-        }
-        return Optional.empty();
+            return history;
+        });
+        return Optional.ofNullable(rejected[0]);
     }
 }

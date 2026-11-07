@@ -80,6 +80,8 @@ export interface RenderedPlane {
   size: number;
   selected: boolean;
   dimmed: boolean;
+  /** A watched flight's plane: drawn distinct from ordinary traffic and exempt from declutter and the cap. */
+  watched: boolean;
   /** The callsign chip shown next to it (the selected plane only), else null. */
   label: string | null;
   /** It faded in when it arrived (a small batch), rather than just appearing. */
@@ -91,6 +93,17 @@ export interface RenderedPlane {
 /** An airport the airport layer drew (ui/defaultAirports.ts), for tests. */
 export interface RenderedAirport {
   code: string;
+  lat: number;
+  lon: number;
+  x: number;
+  y: number;
+}
+
+/** A watched, not-yet-airborne flight's origin airport, drawn by ui/watchedAirports.ts: its departure point with the scheduled/estimated time. */
+export interface RenderedWatchedAirport {
+  /** Origin IATA code. */
+  code: string;
+  flightNumber: string;
   lat: number;
   lon: number;
   x: number;
@@ -112,6 +125,8 @@ export class FlightMap {
   renderedPlanes: () => RenderedPlane[] = () => [];
   /** Test hook: every airport drawn in view. Set by ui/defaultAirports.ts. */
   renderedAirports: () => RenderedAirport[] = () => [];
+  /** Test hook: every watched origin airport drawn in view. Set by ui/watchedAirports.ts. */
+  renderedWatchedAirports: () => RenderedWatchedAirport[] = () => [];
 
   constructor(gl: MaplibreMap) {
     this.gl = gl;
