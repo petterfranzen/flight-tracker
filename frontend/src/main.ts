@@ -19,9 +19,13 @@ import {
   fetchPollingStatus,
   restartPolling,
   searchSchedule,
+  searchScheduleWithStatus,
   subscribeLiveFeed,
   type ScheduledFlight,
 } from "./api/flightApi";
+import { NOTIFY_ENABLED, notificationPermission, showOsNotification } from "./notify/notifier";
+import { loadNotifyState, saveNotifyState, pruneNotifyState, emptyState, forgetFlight } from "./notify/state";
+import { chooseChannel, observeFlight } from "./notify/detect";
 import { boundsFromMap, createFollowSelected, createMap, DEFAULT_VIEW, GPUInitializationError } from "./map/map";
 import { createPlaneLayer, planeBoxSize } from "./map/planes";
 import { declutterCellDeg, newDeclutterMemory, pickNonOverlapping, spacingKey, spacingLevel, type Candidate } from "./map/declutter";
@@ -230,6 +234,7 @@ function boot(): void {
     watchedFlights: loadWatched(),
     watchedStatus: {},
     departureToast: null,
+    watchNotice: null,
 
     // Placeholders — replaced with real closures below once every module
     // they need (map, layers) exists. Never called before that happens:
@@ -251,6 +256,7 @@ function boot(): void {
     unwatchFlight: () => {},
     goToWatched: () => {},
     dismissDepartureToast: () => {},
+    dismissWatchNotice: () => {},
   };
   const store = new Store<AppState>(state);
 
@@ -970,46 +976,75 @@ function boot(): void {
     const entries = await Promise.all(
       list.map(async (w) => {
         try {
-          const rows = await searchSchedule({ flight: w.flightNumber, date: w.date, airport: w.airport });
-          return [watchKey(w), rows.find((r) => r.airport === w.airport) ?? null] as const;
+          const { rows, status } = await searchScheduleWithStatus({ flight: w.flightNumber, date: w.date, airport: w.airport });
+          return [watchKey(w), rows.find((r) => r.airport === w.airport) ?? null, status] as const;
         } catch {
-          return [watchKey(w), prev[watchKey(w)] ?? null] as const;
+          return [watchKey(w), prev[watchKey(w)] ?? null, "incomplete"] as const;
         }
       }),
     );
     if (gen !== watchGen) return;
     const status: Record<string, ScheduledFlight | null> = {};
     const airborneNow = new Set<string>();
+    const positionsNow = new Map<string, FlightPosition | null>();
     const fetches: Promise<void>[] = [];
     const departed: WatchedFlight[] = [];
-    for (const [key, row] of entries) {
+    const notifySamples: { key: string; row: ScheduledFlight; boardStatus: "ok" | "stale" | "incomplete" }[] = [];
+    for (const [key, row, boardStatus] of entries) {
       status[key] = row;
       const air = !!(row && row.airborne && row.icao24);
       const was = watchedAirborne.get(key);
       watchedAirborne.set(key, air);
-      if (air && row!.icao24) {
-        const icao24 = row!.icao24;
-        airborneNow.add(icao24);
+      const icao24 = row?.icao24 ?? null;
+      if (icao24) {
+        if (air) airborneNow.add(icao24);
+        // Fetch the live position even when the row says not airborne: the
+        // on-ground ticks that prove a landing come from this same poll.
         fetches.push(
           fetchFlightLive(icao24)
             .then((p) => {
-              if (p) watchedLive.set(icao24, { ...p, asOf: Date.now() });
+              positionsNow.set(icao24, p);
+              if (p && air) watchedLive.set(icao24, { ...p, asOf: Date.now() });
             })
-            .catch(() => {}),
+            .catch(() => {
+              positionsNow.set(icao24, null);
+            }),
         );
       }
       if (air && was === false) {
         const w = list.find((x) => watchKey(x) === key);
         if (w) departed.push(w);
       }
+      if (NOTIFY_ENABLED && row) notifySamples.push({ key, row, boardStatus });
     }
-    // A flight no longer airborne: drop the position we kept for it.
-    for (const icao24 of Array.from(watchedLive.keys())) if (!airborneNow.has(icao24)) watchedLive.delete(icao24);
     await Promise.all(fetches);
     if (gen !== watchGen) return;
+    // A flight no longer airborne: drop the position we kept for it.
+    for (const icao24 of Array.from(watchedLive.keys())) if (!airborneNow.has(icao24)) watchedLive.delete(icao24);
     store.set("watchedStatus", status);
     renderAircraftLayer();
-    if (departed.length > 0) store.set("departureToast", departed[0]);
+
+    if (NOTIFY_ENABLED) {
+      const notifyMap = loadNotifyState();
+      for (const sample of notifySamples) {
+        const position = sample.row.icao24 ? positionsNow.get(sample.row.icao24) ?? null : null;
+        const prior = notifyMap[sample.key] ?? emptyState();
+        const { state: next, event } = observeFlight(prior, { ...sample, position, nowMs: Date.now() });
+        notifyMap[sample.key] = next;
+        if (!event) continue;
+        const flight = list.find((x) => watchKey(x) === sample.key);
+        if (!flight) continue;
+        const channel = chooseChannel({ hidden: document.hidden, enabled: next.enabled, permission: notificationPermission() });
+        if (channel === "os") {
+          void showOsNotification(event.title, event.text, { key: event.key, kind: event.kind });
+        } else {
+          store.set("watchNotice", { flight, text: event.text, kind: event.kind });
+        }
+      }
+      saveNotifyState(pruneNotifyState(notifyMap));
+    } else if (departed.length > 0) {
+      store.set("departureToast", departed[0]);
+    }
   }
 
   function startWatchPoll(): void {
@@ -1061,11 +1096,16 @@ function boot(): void {
     delete status[key];
     store.set("watchedStatus", status);
     watchedAirborne.delete(key);
+    if (NOTIFY_ENABLED) forgetFlight(key);
     store.set("watchedFlights", next);
   }
 
   function dismissDepartureToast(): void {
     store.set("departureToast", null);
+  }
+
+  function dismissWatchNotice(): void {
+    store.set("watchNotice", null);
   }
 
   // ---- favorites ----
@@ -1132,6 +1172,7 @@ function boot(): void {
   store.set("unwatchFlight", unwatchFlight);
   store.set("goToWatched", goToWatched);
   store.set("dismissDepartureToast", dismissDepartureToast);
+  store.set("dismissWatchNotice", dismissWatchNotice);
 
   // ---- UI modules ----
   scaleBar.mount(map);
@@ -1233,6 +1274,11 @@ function boot(): void {
 
   restartFetchCycleTimers(); // generation 0
   startWatchPoll(); // watched flights, independently of the Watch panel
+  if (NOTIFY_ENABLED) {
+    // #82 design §2: prune expired notification state on load and once an hour.
+    saveNotifyState(pruneNotifyState(loadNotifyState()));
+    setInterval(() => saveNotifyState(pruneNotifyState(loadNotifyState())), 60 * 60 * 1000);
+  }
 
   // Opening view: move the map to where the traffic is, at a zoom that draws
   // individual aircraft, before the first viewport report (see
