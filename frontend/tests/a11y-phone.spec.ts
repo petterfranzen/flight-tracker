@@ -78,6 +78,17 @@ async function undersizedTargets(page: Page, selector: string, need = 44): Promi
   );
 }
 
+/**
+ * The boot screen is a full-viewport overlay at z-index 1000, above the chrome
+ * (z-index 500), so anything measured or clicked before it clears is measured
+ * behind it. `waitForMapReady` only says the opening view request went out; the
+ * boot screen stays until the basemap reports ready, a different (and on a fast
+ * runner later) moment. Same wait helpers.clickAt() already uses.
+ */
+async function waitForChrome(page: Page): Promise<void> {
+  await page.locator(".boot-screen:not(.boot-screen--hidden)").waitFor({ state: "detached", timeout: 20_000 });
+}
+
 async function seedFavorites(page: Page): Promise<void> {
   await page.addInitScript(() => {
     localStorage.setItem(
@@ -114,6 +125,7 @@ test.describe("phone accessibility", () => {
     await mockFlightApi(page);
     await page.goto("/");
     await waitForMapReady(page, 60_000);
+    await waitForChrome(page);
 
     // Icon-only controls carry an explicit accessible name.
     for (const name of ["Search flights", "Favorites", "Legend", "Watch flights"]) {
@@ -143,6 +155,7 @@ test.describe("phone accessibility", () => {
     await mockFlightApi(page);
     await page.goto("/");
     await waitForMapReady(page, 60_000);
+    await waitForChrome(page);
 
     const inside = (sel: string) =>
       page.evaluate((s) => !!document.querySelector(s)?.contains(document.activeElement), sel);
@@ -191,6 +204,7 @@ test.describe("phone accessibility", () => {
     await page.route("**/api/schedule/search*", (route) => route.fulfill({ json: [SCHEDULE_ROW] }));
     await page.goto("/");
     await waitForMapReady(page, 60_000);
+    await waitForChrome(page);
 
     // Collapsed chrome. (The bottom dock is deliberately display:none on a
     // phone — see Dock.css — so it is not on the phone's hit map at all.)
@@ -242,7 +256,12 @@ test.describe("phone accessibility", () => {
     await waitForPlanes(page, 1, 60_000);
     await (await findMarkerNear(page, target.latitude, target.longitude)).click();
     await expect(page.locator(".details-panel")).toBeVisible();
-    await page.locator(".details-panel-expand-toggle").click();
+    // The sheet is re-rendered as the selection's dossier arrives; wait for the
+    // dossier line to exist (the same gate the repo's own mobile-layout spec
+    // uses) before clicking into it, or the click races a rebuild and never
+    // lands.
+    await page.getByText(`ICAO24 ${target.icao24.toUpperCase()}`).waitFor({ state: "attached", timeout: 10_000 });
+    await page.locator(".details-panel-expand-toggle").click({ timeout: 15_000 });
     await expect(page.locator(".details-panel-favorite-toggles")).toBeVisible();
     await expectTargets(page, [".details-panel-close-x", ".details-panel-expand-toggle", ".details-panel-favorite-toggle"]);
 
@@ -270,6 +289,7 @@ test.describe("phone accessibility", () => {
     await mockFlightApi(page);
     await page.goto("/");
     await waitForMapReady(page, 60_000);
+    await waitForChrome(page);
 
     await page.locator(".watch-panel-toggle").click();
     await expect(page.locator(".watch-panel-remove")).toBeVisible();
@@ -320,6 +340,7 @@ test.describe("prefers-reduced-motion: the preference is on", () => {
     await mockFlightApi(page);
     await page.goto("/");
     await waitForMapReady(page, 60_000);
+    await waitForChrome(page);
 
     // Every camera move an animation normally runs is instant: the adapter
     // reports the map as not moving straight after the call.
@@ -361,6 +382,7 @@ test.describe("prefers-reduced-motion: the preference is off", () => {
     await mockFlightApi(page);
     await page.goto("/");
     await waitForMapReady(page, 60_000);
+    await waitForChrome(page);
     const moving = await withMap(page, (map) => {
       map.flyTo([59.33, 18.06], 9, 800);
       return map.isMoving();
