@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { findShadowedIds } from "../src/map/staleness";
 import { newerReport, notOlderReport, observedAtMs, sameReport } from "../src/map/reportOrder";
 
 // `observedAt` is ordered by the instant it names, not by its text. The server
@@ -12,7 +13,7 @@ import { newerReport, notOlderReport, observedAtMs, sameReport } from "../src/ma
 // Pure and map-free: no page, no fixtures — the ordering is the whole subject.
 
 test.describe("observedAt ordering", () => {
-  test("orders by instant, not text, when the same moment is spelled with an offset", () => {
+  test("orders by instant, not text, when one report carries a UTC offset (+02:00 vs Z)", () => {
     const withOffset = "2026-01-01T10:00:00+02:00"; // 08:00Z
     const utc = "2026-01-01T09:00:00Z"; // 09:00Z
     // The text order and the instant order disagree...
@@ -41,5 +42,35 @@ test.describe("observedAt ordering", () => {
     // Same report, so neither is strictly newer.
     expect(newerReport("2026-01-01T09:00:00Z", "2026-01-01T10:00:00+01:00")).toBe(false);
     expect(newerReport("2026-01-01T09:00:00Z", "2026-01-01T09:00:00.000Z")).toBe(false);
+  });
+});
+
+// staleness.findShadowedIds keeps the newest of a group of overlapping reports,
+// so it must pick "newest" by instant too (#175).
+test.describe("staleness: newest by instant", () => {
+  const at = (icao24: string, observedAt: string) => ({
+    icao24,
+    callsign: null,
+    observedAt,
+    latitude: 59.65,
+    longitude: 17.92,
+    headingDeg: null,
+  });
+
+  test("Z vs +00:00 spelling of one report does not hide the genuinely newer one", () => {
+    // As text "10:00:00.250+00:00" < "10:00:00Z" ('.' sorts before 'Z'), so the newer report read as older.
+    const shadowed = findShadowedIds([at("old", "2026-01-01T10:00:00Z"), at("new", "2026-01-01T10:00:00.250+00:00")]);
+    expect([...shadowed]).toEqual(["old"]);
+  });
+
+  test("an offset spelling is ordered by its instant", () => {
+    // 10:00+02:00 is 08:00Z, older than 09:00Z although its text is greater.
+    const shadowed = findShadowedIds([at("offset", "2026-01-01T10:00:00+02:00"), at("utc", "2026-01-01T09:00:00Z")]);
+    expect([...shadowed]).toEqual(["offset"]);
+  });
+
+  test("fractional seconds: 10:00:00.500Z is newer than 10:00:00Z", () => {
+    const shadowed = findShadowedIds([at("whole", "2026-01-01T10:00:00Z"), at("frac", "2026-01-01T10:00:00.500Z")]);
+    expect([...shadowed]).toEqual(["whole"]);
   });
 });
