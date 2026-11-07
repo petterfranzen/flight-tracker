@@ -2,6 +2,7 @@ import { LngLat, Map as MaplibreMap, MercatorCoordinate, type MapEventType } fro
 import type { Bounds } from "../types/flight";
 import { basemapOptions, whenBasemapReady } from "./maplibreBasemap";
 import { minZoomFor, WORLD_BOUNDS } from "./zoomLimits";
+import { distanceM, geometryPoint } from "./gatePlacement";
 
 // Zoom a selection's flyTo treats as "close enough" to stop zooming
 // further in.
@@ -79,6 +80,8 @@ export interface RenderedPlane {
   size: number;
   selected: boolean;
   dimmed: boolean;
+  /** A watched flight's plane: drawn distinct from ordinary traffic and exempt from declutter and the cap. */
+  watched: boolean;
   /** The callsign chip shown next to it (the selected plane only), else null. */
   label: string | null;
   /** It faded in when it arrived (a small batch), rather than just appearing. */
@@ -90,6 +93,17 @@ export interface RenderedPlane {
 /** An airport the airport layer drew (ui/defaultAirports.ts), for tests. */
 export interface RenderedAirport {
   code: string;
+  lat: number;
+  lon: number;
+  x: number;
+  y: number;
+}
+
+/** A watched, not-yet-airborne flight's origin airport, drawn by ui/watchedAirports.ts: its departure point with the scheduled/estimated time. */
+export interface RenderedWatchedAirport {
+  /** Origin IATA code. */
+  code: string;
+  flightNumber: string;
   lat: number;
   lon: number;
   x: number;
@@ -111,6 +125,8 @@ export class FlightMap {
   renderedPlanes: () => RenderedPlane[] = () => [];
   /** Test hook: every airport drawn in view. Set by ui/defaultAirports.ts. */
   renderedAirports: () => RenderedAirport[] = () => [];
+  /** Test hook: every watched origin airport drawn in view. Set by ui/watchedAirports.ts. */
+  renderedWatchedAirports: () => RenderedWatchedAirport[] = () => [];
 
   constructor(gl: MaplibreMap) {
     this.gl = gl;
@@ -261,6 +277,33 @@ export class FlightMap {
 
   isMoving(): boolean {
     return this.gl.isMoving();
+  }
+
+  /**
+   * The coordinate of the gate `ref` (OpenMapTiles `aeroway` class `gate`, from
+   * the basemap's own vector tiles) nearest `near`, or null. Only tiles the map
+   * has loaded are searched, and gates are in the zoom-14 tiles: so this finds
+   * one only while the view is at an airport (app zoom 15+); callers retry on
+   * `sourcedata`.
+   */
+  findGate(ref: string, near: LatLon): LatLon | null {
+    const want = ref.trim().toUpperCase();
+    let best: { p: LatLon; d: number } | null = null;
+    let features: ReturnType<MaplibreMap["querySourceFeatures"]> = [];
+    try {
+      if (!this.gl.getSource("openmaptiles")) return null;
+      features = this.gl.querySourceFeatures("openmaptiles", { sourceLayer: "aeroway", filter: ["==", ["get", "class"], "gate"] });
+    } catch {
+      return null; // the source is mid-update; the next sourcedata asks again
+    }
+    for (const f of features) {
+      if (String(f.properties?.ref ?? "").trim().toUpperCase() !== want) continue;
+      const p = geometryPoint(f.geometry);
+      if (!p) continue;
+      const d = distanceM(near, p);
+      if (!best || d < best.d) best = { p, d };
+    }
+    return best ? best.p : null;
   }
 
   /** Re-reads the container's size, if it changed since the map last measured it. */

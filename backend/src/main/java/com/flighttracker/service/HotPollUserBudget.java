@@ -2,9 +2,12 @@ package com.flighttracker.service;
 
 import com.flighttracker.repository.AppStateRepository;
 import jakarta.annotation.PostConstruct;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayDeque;
@@ -41,8 +44,10 @@ public class HotPollUserBudget {
 
     // One deque of (grant instant, seconds granted) per IP, oldest first —
     // pruned to the last 24h on every check, which also bounds each IP's
-    // own memory use over time. See RestartRateLimiter's javadoc for why
-    // the outer map's key set isn't itself pruned.
+    // own memory use over time; sweep() also forgets IPs with nothing left
+    // in the window (and their app_state row), so the key set stays bounded
+    // (security review #143 L8). Entries change only inside compute*(),
+    // atomic per key, so a sweep can't discard a grant being recorded.
     private final ConcurrentHashMap<String, Deque<Grant>> grantsByIp = new ConcurrentHashMap<>();
 
     private record Grant(Instant at, long seconds) {
@@ -56,10 +61,45 @@ public class HotPollUserBudget {
         }
     }
 
+    private final Clock clock;
+
+    @Autowired
     public HotPollUserBudget(AppStateRepository appState,
-                              @Value("${flighttracker.rate-limit.hot-poll-seconds-per-ip-per-day}") long dailyCapSeconds) {
+                              @Value("${flighttracker.rate-limit.hot-poll-seconds-per-ip-per-day}") long dailyCapSeconds,
+                              Clock clock) {
         this.appState = appState;
         this.dailyCapSeconds = dailyCapSeconds;
+        this.clock = clock;
+    }
+
+    public HotPollUserBudget(AppStateRepository appState, long dailyCapSeconds) {
+        this(appState, dailyCapSeconds, Clock.systemUTC());
+    }
+
+    /** Number of IPs currently tracked (for tests and diagnostics). */
+    int trackedIps() {
+        return grantsByIp.size();
+    }
+
+    /** Drops grants older than 24h and forgets IPs with none left, including their persisted row. */
+    @Scheduled(fixedDelayString = "${flighttracker.rate-limit.sweep-interval-ms:600000}")
+    void sweep() {
+        Instant dayAgo = clock.instant().minus(Duration.ofDays(1));
+        for (String ip : grantsByIp.keySet()) {
+            grantsByIp.computeIfPresent(ip, (k, history) -> {
+                boolean changed = false;
+                while (!history.isEmpty() && history.peekFirst().at().isBefore(dayAgo)) {
+                    history.pollFirst();
+                    changed = true;
+                }
+                if (history.isEmpty()) {
+                    appState.delete(KEY_PREFIX + ip);
+                    return null;
+                }
+                if (changed) persist(ip, history);
+                return history;
+            });
+        }
     }
 
     @PostConstruct
@@ -85,27 +125,24 @@ public class HotPollUserBudget {
     public boolean tryGrant(String ip, boolean isLocal, long grantSeconds) {
         if (isLocal) return true;
 
-        Instant now = Instant.now();
-        Deque<Grant> history = grantsByIp.computeIfAbsent(ip, k -> new ArrayDeque<>());
-        boolean granted;
-        synchronized (history) {
+        Instant now = clock.instant();
+        boolean[] granted = {false};
+        grantsByIp.compute(ip, (k, existing) -> {
+            Deque<Grant> history = existing != null ? existing : new ArrayDeque<>();
             Instant dayAgo = now.minus(Duration.ofDays(1));
             while (!history.isEmpty() && history.peekFirst().at().isBefore(dayAgo)) {
                 history.pollFirst();
             }
 
             long usedToday = history.stream().mapToLong(Grant::seconds).sum();
-            if (usedToday + grantSeconds > dailyCapSeconds) {
-                granted = false;
-            } else {
+            if (usedToday + grantSeconds <= dailyCapSeconds) {
                 history.addLast(new Grant(now, grantSeconds));
-                granted = true;
-            }
-            if (granted) {
+                granted[0] = true;
                 persist(ip, history);
             }
-        }
-        return granted;
+            return history.isEmpty() ? null : history;
+        });
+        return granted[0];
     }
 
     private void persist(String ip, Deque<Grant> history) {

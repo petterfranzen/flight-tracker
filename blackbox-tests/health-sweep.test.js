@@ -42,9 +42,16 @@ test("GET /api/health carries status/version/db and the sweep-freshness fields",
   assert.equal(health.status, health.db, "status must mirror db reachability");
 
   // version is the git SHA deploy.sh waits for before calling a deploy healthy.
-  // A build with no -Dgit.sha reports "dev"; it is always a non-empty string.
+  // CI builds the jar with -Dgit.sha=$GITHUB_SHA, so the two must be equal. Anywhere
+  // else (a local jar) EXPECTED_VERSION may name it; with neither, the jar was built
+  // without a SHA ("dev") or with a local one (a hex commit id).
   assert.equal(typeof health.version, "string", "version must be a string");
-  assert.ok(health.version.length > 0, "version must be present");
+  const expectedVersion = process.env.EXPECTED_VERSION?.trim() || process.env.GITHUB_SHA?.trim();
+  if (expectedVersion) {
+    assert.equal(health.version, expectedVersion, "version must equal the SHA the jar was built with");
+  } else {
+    assert.match(health.version, /^(dev|[0-9a-f]{7,40})$/, "version must be \"dev\" or a commit SHA");
+  }
 
   // lastSweepAt: ISO-8601 string once a productive sweep has run, null before.
   assert.ok(
@@ -93,18 +100,39 @@ test("GET /api/health/sweep answers 200 or 503, never an HTML error page", async
   }
 });
 
-test("the sweep check agrees with the freshness fields on /api/health", async () => {
-  const health = JSON.parse((await get("/api/health")).body);
-  const sweep = await get("/api/health/sweep");
-  assert.ok([200, 503].includes(sweep.status), `unexpected sweep status ${sweep.status}`);
+// Must match flighttracker.agents.global-sweep-interval-seconds (360 in application.yml).
+const SWEEP_INTERVAL_SECONDS = Number(process.env.SWEEP_INTERVAL_SECONDS || 360);
+const STALE_AFTER_MS = SWEEP_INTERVAL_SECONDS * 3 * 1000;
+// Within this of the 3x boundary the two clocks and the two requests can disagree: no assertion.
+const BOUNDARY_SLACK_MS = 10_000;
 
-  // With no productive sweep ever (OpenSky unreachable since boot is the usual
-  // case for a fresh blackbox jar), the check cannot report healthy: it is 503.
-  if (health.lastSweepAt === null) {
+test("the sweep check agrees with the freshness fields on /api/health", async () => {
+  // lastSweepAt only moves forward, so read /api/health before and after the sweep
+  // check and assert only when it did not change in between (a sweep landing
+  // mid-test would make the pair inconsistent for a legitimate reason).
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const before = JSON.parse((await get("/api/health")).body);
+    const sweep = await get("/api/health/sweep");
+    const after = JSON.parse((await get("/api/health")).body);
+    assert.ok([200, 503].includes(sweep.status), `unexpected sweep status ${sweep.status}`);
+    if (before.lastSweepAt !== after.lastSweepAt) continue;
+
+    if (before.lastSweepAt === null) {
+      // No productive sweep ever (OpenSky unreachable since boot is the usual case for a
+      // fresh blackbox jar): the check cannot report healthy.
+      assert.equal(sweep.status, 503, "lastSweepAt null (no productive sweep yet) must be 503");
+      return;
+    }
+    // A productive sweep exists: 200 within 3x the interval, 503 once it is staler than that.
+    const ageMs = Date.now() - Date.parse(before.lastSweepAt);
+    if (Math.abs(ageMs - STALE_AFTER_MS) < BOUNDARY_SLACK_MS) return;
     assert.equal(
       sweep.status,
-      503,
-      "with lastSweepAt null (no productive sweep yet) /api/health/sweep must be 503"
+      ageMs < STALE_AFTER_MS ? 200 : 503,
+      `lastSweepAt is ${Math.round(ageMs / 1000)}s old (stale after ${STALE_AFTER_MS / 1000}s), ` +
+        `so /api/health/sweep must be ${ageMs < STALE_AFTER_MS ? 200 : 503}, got ${sweep.status}`
     );
+    return;
   }
+  assert.fail("lastSweepAt kept changing across five reads; cannot compare it with /api/health/sweep");
 });

@@ -56,6 +56,11 @@ public class AppStateRepository {
             """, key, value, clock.millis());
     }
 
+    /** Removes a key; a no-op when it is absent. */
+    public void delete(String key) {
+        jdbcTemplate.update("DELETE FROM app_state WHERE key = ?", key);
+    }
+
     /** Every row whose key starts with prefix — for loading a whole family of keys (e.g. one per client IP) back into memory at startup. */
     public Map<String, String> getAllWithPrefix(String prefix) {
         return jdbcTemplate.query(
