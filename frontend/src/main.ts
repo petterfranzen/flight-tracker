@@ -64,6 +64,10 @@ const COVERAGE_LOST_REFETCH_MS = 15_000;
 const LANDED_REFETCH_MS = 60_000;
 const FETCH_STOP_MS = 5 * 60_000;
 // Gates are in the basemap's zoom-14 tiles, which load from this app zoom (map.findGate).
+// From here a view that shows the plane has those tiles loaded or loading, so a gate that
+// is still missing is not in the map and moving the camera would not find it.
+const GATE_TILE_ZOOM = 15;
+// Where the one-time fly-to to a confirmed gate goes.
 const GATE_LOOKUP_ZOOM = 16;
 const DIALOG_STOP_MS = 5 * 60_000;
 
@@ -400,18 +404,37 @@ function boot(): void {
     const point = gate && gatePoint && gatePoint.icao24 === pos?.icao24 && gatePoint.gate === gate ? gatePoint : null;
     return gateDisplay(pos, status, Date.now(), point);
   }
-  // Once per selection, if the gate's tile is not loaded: go where it is.
+  // Once per selection, if the gate's tile is not loaded: go where it is. Never against
+  // the user: not after they moved the map since selecting, nor while it is moving.
   let gateZoomDone = false;
+  let userMovedMap = false; // set by the map's user-move listener (below, once `map` exists)
   function onGateStatus(status: TrackStatus | null): void {
     resolveGate();
     const pos = store.get("selectedPos");
     const gate = confirmedGate(pos, status);
     if (gate && status && !gateZoomDone && !(gatePoint && gatePoint.gate === gate && gatePoint.icao24 === pos?.icao24)) {
       gateZoomDone = true;
-      if (map.getZoom() < GATE_LOOKUP_ZOOM) map.flyTo([status.lastSeenLat, status.lastSeenLon], GATE_LOOKUP_ZOOM, 800);
+      flyToGate(store.get("selectedId"), status.lastSeenLat, status.lastSeenLon);
     }
     renderAircraftLayer(); // the status can also stop qualifying (a gate that changed)
     drawRoute();
+  }
+  // The selection's own camera move is usually still running when the status arrives: wait
+  // for it to end, then decide. Whatever the user did meanwhile (or the gate resolving) wins.
+  function flyToGate(selectedId: string | null, lat: number, lon: number): void {
+    if (map.isMoving()) {
+      const retry = () => {
+        map.off("moveend", retry);
+        flyToGate(selectedId, lat, lon);
+      };
+      map.on("moveend", retry);
+      return;
+    }
+    if (store.get("selectedId") !== selectedId || userMovedMap || gatePoint) return;
+    // The gate tiles are already in reach (zoom, and the plane in view): the gate is not in
+    // the basemap, and no camera move can change that.
+    if (map.getZoom() >= GATE_TILE_ZOOM && map.contains(lat, lon)) return;
+    map.flyTo([lat, lon], GATE_LOOKUP_ZOOM, 800);
   }
   function resolveGate(): void {
     const pos = store.get("selectedPos");
@@ -942,6 +965,7 @@ function boot(): void {
     // never passes through "selected = null".
     gatePoint = null;
     gateZoomDone = false;
+    userMovedMap = false;
     route = [];
     lastRouteObservedAt = null;
     routePoints = [];
@@ -1212,6 +1236,9 @@ function boot(): void {
   // planes, the selected plane (each module adds its layers below the next).
   const mapController = createMap(mapRoot, handleViewportChange, (ready) => store.set("basemapReady", ready));
   const map = mapController.map;
+  map.onUserMoveStart(() => {
+    userMovedMap = true;
+  });
   // ?debug: a read-only diagnostics panel for a misbehaving device (ui/debugOverlay.ts).
   if (new URLSearchParams(location.search).has("debug")) import("./ui/debugOverlay").then((m) => m.mountDebugOverlay(map)).catch(() => {});
   const planeLayer = createPlaneLayer(map, handleSelectAircraft);

@@ -280,6 +280,17 @@ export class FlightMap {
   }
 
   /**
+   * Calls `fn` when the user starts moving the map (drag, wheel, pinch, keys, buttons):
+   * MapLibre marks those moves with the DOM event that caused them. Camera moves the app
+   * makes itself (flyTo, jumpTo) carry none and do not count.
+   */
+  onUserMoveStart(fn: () => void): void {
+    this.gl.on("movestart", (e) => {
+      if ((e as { originalEvent?: unknown }).originalEvent) fn();
+    });
+  }
+
+  /**
    * The coordinate of the gate `ref` (OpenMapTiles `aeroway` class `gate`, from
    * the basemap's own vector tiles) nearest `near`, or null. Only tiles the map
    * has loaded are searched, and gates are in the zoom-14 tiles: so this finds
