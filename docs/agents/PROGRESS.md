@@ -8,9 +8,9 @@ continue from **Next task**.
 
 ## Status
 
-- **Current phase:** done, apart from the human's checkpoints. All PRs are open and wait for human review and merge, in order: #120, #121, #122, #124, #125. #123 (CLAUDE.md rules) is independent.
-- **Next task:** keep #120–#125 green. Once the human adds `SWEDAVIA_API_KEY` / `AERODATABOX_API_KEY`, check the open items in `docs/agents/swedavia-api.md` and `aerodatabox-api.md` live and replace the reconstructed fixtures. The backlog has route search. Phase 4 is training the model once labels accumulate.
-- **Blocked on the human:** the Phase 3 provider choice (see `provider-research.md`). Phases 1 and 2 continue meanwhile.
+- **Current phase:** done and merged. Coverage-gap PRs #120, #121, #122, #124, #125 (and the independent #123 and #126) all merged into `main` on 2026-10-22. What remains is the human's checkpoints.
+- **Next task:** honest freshness (#155) and generic error bodies (#156) are done and merged. Still open on the board: the Watch feature (flight-tracker PR #149), the WebSocket soak/load test, and the idle-cost profile. Once the human adds `SWEDAVIA_API_KEY` / `AERODATABOX_API_KEY`, check the open items in `docs/agents/swedavia-api.md` and `aerodatabox-api.md` live and replace the reconstructed fixtures. The backlog has route search; Phase 4 is training the model once labels accumulate.
+- **Blocked on the human:** the live API keys (`SWEDAVIA_API_KEY`, `AERODATABOX_API_KEY`); until they exist the providers stay disabled and the API contract notes stay unverified. The Phase 3 provider choice was made (Swedavia first, AeroDataBox second; see `provider-research.md`).
 
 ## Working agreements (from the human, 2026-10-12)
 
@@ -38,7 +38,7 @@ The most important rule: **the code is always safe on origin.**
 
 The brief asks for one PR per phase. The later phases build on the earlier
 ones, so the branches are stacked, and each PR targets the previous phase's
-branch. Never merge to `main`; the human merges.
+branch. Never merge to `main`; the human merges. All five phase PRs are merged into `main` (2026-10-22).
 
 ## Tasks
 
@@ -61,14 +61,14 @@ branch. Never merge to `main`; the human merges.
 | P3b-R | Swedavia FlightInfo v2 contract: endpoints, auth, schema, status codes, ActualUtc semantics, limits | explorer | none | done: `docs/agents/swedavia-api.md` |
 | P3b-1 | Framework: `AirportArrivalsProvider` (board per airport and date), board cache, callsign/registration matching, per-provider daily/monthly budgets in units persisted in `app_state` | implementer | none | done (06eff75): 323 tests |
 | P3b-F | Fix the P3b review findings (budget fail-closed, key lockout, recheck memo, skipped fetch, DST tests, docs) | implementer | P3b-Rev | done: 367 tests, pushed to #124 |
-| P3b-2 | `SwedaviaArrivalsProvider` + fixtures + config (`SWEDAVIA_API_KEY` env var, `deploy/hetzner/env.example`, README) | implementer | P3b-R, P3b-1 | done (65feb87, f99edf1): 354 tests; **PR #124** |
+| P3b-2 | `SwedaviaArrivalsProvider` + fixtures + config (`SWEDAVIA_API_KEY` env var, `deploy/hetzner/env.example`, README) | implementer | P3b-R, P3b-1 | done (65feb87, f99edf1): 354 tests; **PR #124** merged 2026-10-22 |
 | P3b-Rev | Review Phase 3b | reviewer | P3b-2 | done: no blockers (`reviews/phase3b.md`) |
 | P3c-R | AeroDataBox contract | explorer | none | done: `docs/agents/aerodatabox-api.md` |
 | P3c-1 | `AeroDataBoxArrivalProvider` (nearest-flight lookup, 2 units/call, 380/month, 14/day, precedence after board providers, no training labels by default) | implementer | P3c-R | done |
 | P3c-2 | Provider credit link in the dossier status line (AeroDataBox terms ¶5.4) | implementer | P3c-R | done |
 | P3c-Rev | Review Phase 3c | reviewer | P3c-1, P3c-2 | done: budget-waste findings (`reviews/phase3c.md`) |
-| P3c-F | Fix the P3c findings: per-provider recheck (30 min/3 h), no gate wait, `accepts()` pre-check, 4xx → NOT_FOUND, refunds, selection, display names | implementer | P3c-Rev | done: 437 tests; **PR #125** |
-| R | `CLAUDE.md` pushing, CI and merging rules (from the working agreements) | orchestrator | none | PR #123 |
+| P3c-F | Fix the P3c findings: per-provider recheck (30 min/3 h), no gate wait, `accepts()` pre-check, 4xx → NOT_FOUND, refunds, selection, display names | implementer | P3c-Rev | done: 437 tests; **PR #125** merged 2026-10-22 |
+| R | `CLAUDE.md` pushing, CI and merging rules (from the working agreements) | orchestrator | none | merged (#123, 2026-10-22) |
 
 ## Phase 0 findings (summary)
 
@@ -349,3 +349,7 @@ stateDiagram-v2
     - 400/404/422 map to NOT_FOUND;
     - refunds for throttled and never-connected calls.
   - 437 backend tests. PR #125 is stacked on #124.
+
+- 2026-11-07: Docs refresh. Coverage-gap PRs #120–#126 are all merged (`main`, 2026-10-22); the
+  Status block, the PR tables and this log are brought in line with what is merged and open today.
+  HUMAN-TODO's finished rows moved into its **Done** section. No code or behaviour change.
