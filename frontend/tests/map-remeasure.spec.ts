@@ -1,5 +1,5 @@
-import { OPENFREEMAP_TILEJSON } from "./fixtures/basemap";
 import { expect, test } from "@playwright/test";
+import { OPENFREEMAP_TILEJSON } from "./fixtures/basemap";
 import { mockFlightApi, waitForMapReady } from "./helpers";
 
 // A map that caches its container size and only re-reads it on a window
