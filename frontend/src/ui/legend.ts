@@ -40,6 +40,7 @@ export function mount(root: HTMLElement): () => void {
     "ul",
     { className: "map-legend-list", id: "map-legend-content" },
     h("li", { className: "map-legend-row" }, h("span", { className: "map-legend-swatch map-legend-swatch--aircraft" }), "Live aircraft"),
+    h("li", { className: "map-legend-row" }, h("span", { className: "map-legend-swatch map-legend-swatch--watched" }), "Watched"),
     h("li", { className: "map-legend-row" }, h("span", { className: "map-legend-swatch map-legend-swatch--selected" }), "Tracked / selected"),
     h("li", { className: "map-legend-row" }, h("span", { className: "map-legend-swatch map-legend-swatch--airport" }), "Airport"),
   );

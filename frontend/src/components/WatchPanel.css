@@ -86,7 +86,7 @@
 .watch-panel-result, .watch-panel-item { display: flex; flex-direction: column; gap: 2px; padding-top: 6px; border-top: 1px solid var(--color-panel-border); }
 .watch-panel-name { font-weight: 600; }
 
-.watch-panel-search, .watch-panel-watch, .watch-panel-show, .watch-panel-remove {
+.watch-panel-search, .watch-panel-watch, .watch-panel-goto, .watch-panel-remove {
   align-self: flex-start;
   background: none;
   color: var(--color-text);
@@ -96,6 +96,13 @@
   font: inherit;
   cursor: pointer;
 }
-.watch-panel-search:hover, .watch-panel-watch:hover:not(:disabled), .watch-panel-show:hover, .watch-panel-remove:hover { background: var(--color-panel-border); }
+.watch-panel-search:hover, .watch-panel-watch:hover:not(:disabled), .watch-panel-goto:hover, .watch-panel-remove:hover { background: var(--color-panel-border); }
+.watch-panel-goto { border-color: var(--color-marker-watched); color: var(--color-marker-watched); font-weight: 600; }
+
+@media (max-width: 768px) {
+  /* The house tap-target minimum on a phone, both axes: the stop-watching
+     button is otherwise a glyph-sized target, under the minimum in width. */
+  .watch-panel-search, .watch-panel-watch, .watch-panel-goto, .watch-panel-remove { min-height: 44px; min-width: 44px; }
+}
 .watch-panel-watch:disabled { opacity: 0.6; cursor: default; }
 .watch-panel-ground { color: var(--color-text-muted); }

@@ -1,0 +1,40 @@
+/* The departure toast: bottom-centre over the map, theme tokens only. */
+.watch-toast {
+  position: absolute;
+  left: 50%;
+  bottom: 84px;
+  transform: translateX(-50%);
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(100vw - 24px);
+  box-sizing: border-box;
+  padding: 10px 12px;
+  background: var(--color-panel);
+  color: var(--color-text);
+  border: 1px solid var(--color-marker-watched);
+  border-radius: 8px;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.5);
+  font-size: 13px;
+}
+.watch-toast[hidden] { display: none; }
+.watch-toast-text { font-weight: 600; white-space: nowrap; }
+.watch-toast-go, .watch-toast-close {
+  background: none;
+  color: var(--color-text);
+  border: 1px solid var(--color-panel-border);
+  border-radius: 6px;
+  font: inherit;
+  cursor: pointer;
+  /* 44x44 tappable area (see the house UI rules), the glyph can stay small. */
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0 10px;
+}
+.watch-toast-go { border-color: var(--color-marker-watched); color: var(--color-marker-watched); font-weight: 600; white-space: nowrap; }
+.watch-toast-go:hover, .watch-toast-close:hover { background: var(--color-panel-border); }
+
+@media (max-width: 768px) {
+  .watch-toast { bottom: 16px; }
+}
