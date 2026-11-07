@@ -119,11 +119,16 @@ test("the search box lists a matching watched flight before it is airborne, and 
   await expect(page.locator(".flight-search-option--watched")).toContainText("SK2112");
 });
 
-test("a watched flight going airborne raises a toast and is drawn on the map", async ({ page }) => {
+test("a watched flight going airborne raises a toast once, and is drawn on the map", async ({ page }) => {
   await page.clock.install();
   await mockFlightApi(page);
   let airborne = false;
-  await page.route("**/api/schedule/search*", (route) => route.fulfill({ json: [row(airborne)] }));
+  // Recorded so the second poll below is proven to have run, not merely waited for.
+  const searches: string[] = [];
+  await page.route("**/api/schedule/search*", (route) => {
+    searches.push(route.request().url());
+    return route.fulfill({ json: [row(airborne)] });
+  });
   await seedWatched(page, WATCHED);
   await page.goto("/");
   await waitForMapReady(page);
@@ -141,4 +146,14 @@ test("a watched flight going airborne raises a toast and is drawn on the map", a
 
   // The plane is drawn (a source-level read: the clock holds the frames).
   await expect.poll(async () => (await planeLayerIds(page)).includes(plane.icao24), { timeout: 10_000 }).toBe(true);
+
+  // It fires once, not once per poll: dismiss it, then let another poll see the
+  // same flight still airborne. The poll runs (a fresh schedule request) and
+  // raises no second toast.
+  await toast.locator(".watch-toast-close").click();
+  await expect(toast).toBeHidden();
+  const pollsBefore = searches.length;
+  await page.clock.runFor(61_000);
+  await expect.poll(() => searches.length, { timeout: 10_000 }).toBeGreaterThan(pollsBefore);
+  await expect.poll(() => toast.isVisible(), { timeout: 10_000 }).toBe(false);
 });

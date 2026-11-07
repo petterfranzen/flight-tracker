@@ -28,6 +28,9 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
   let message = "";
   let watched: WatchedFlight[] = store.get("watchedFlights");
   let status: Record<string, ScheduledFlight | null> = store.get("watchedStatus");
+  // Set when a watch is added, so the next render brings its row into the
+  // panel's own scroll box (the list is chronological: newest is last).
+  let pendingScrollKey: string | null = null;
 
   const today = new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Stockholm" });
   const flightInput = h("input", { type: "text", className: "watch-panel-flight", placeholder: "Flight, e.g. BA778", "aria-label": "Flight number" });
@@ -67,21 +70,28 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     if (watched.length) {
       dyn.appendChild(h("div", { className: "watch-panel-heading" }, "Watched flights"));
       const list = h("ul", { className: "watch-panel-watched" });
+      let scrollTarget: HTMLElement | null = null;
       for (const w of watched) {
         const f = status[watchKey(w)] ?? null;
         const airborne = !!(f && f.airborne && f.icao24);
-        list.appendChild(
-          h("li", { className: "watch-panel-item" },
-            h("span", { className: "watch-panel-name" }, `${w.flightNumber} ${w.label} - ${w.date}`),
-            h("span", { className: "watch-panel-detail" }, f ? describe(f) : "no data yet"),
-            airborne
-              ? h("button", { type: "button", className: "watch-panel-goto", onClick: () => goto(w) }, "Go to")
-              : h("span", { className: "watch-panel-ground" }, "not airborne yet"),
-            h("button", { type: "button", className: "watch-panel-remove", "aria-label": `Stop watching ${w.flightNumber}`, onClick: () => store.get("unwatchFlight")(w) }, "\u2715"),
-          ),
+        const item = h("li", { className: "watch-panel-item" },
+          h("span", { className: "watch-panel-name" }, `${w.flightNumber} ${w.label} - ${w.date}`),
+          h("span", { className: "watch-panel-detail" }, f ? describe(f) : "no data yet"),
+          airborne
+            ? h("button", { type: "button", className: "watch-panel-goto", onClick: () => goto(w) }, "Go to")
+            : h("span", { className: "watch-panel-ground" }, "not airborne yet"),
+          h("button", { type: "button", className: "watch-panel-remove", "aria-label": `Stop watching ${w.flightNumber}`, onClick: () => store.get("unwatchFlight")(w) }, "\u2715"),
         );
+        if (pendingScrollKey && watchKey(w) === pendingScrollKey) scrollTarget = item;
+        list.appendChild(item);
       }
       dyn.appendChild(list);
+      if (scrollTarget) {
+        pendingScrollKey = null;
+        // "nearest": scrolls the panel's own box, not the page, and does
+        // nothing on desktop where the list already fits.
+        scrollTarget.scrollIntoView({ block: "nearest" });
+      }
     }
   }
 
@@ -106,7 +116,11 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
   }
 
   function watch(f: ScheduledFlight): void {
-    store.get("watchFlight")({ flightNumber: f.flightNumber, date: dateInput.value, airport: f.airport, label: routeOf(f) });
+    const w: WatchedFlight = { flightNumber: f.flightNumber, date: dateInput.value, airport: f.airport, label: routeOf(f) };
+    // The watched list is chronological (newest last), so the new entry can
+    // land below the panel's scroll box; bring it into view once rendered.
+    pendingScrollKey = watchKey(w);
+    store.get("watchFlight")(w);
   }
 
   // On mobile the open panel covers the map: moving the map to the plane should
