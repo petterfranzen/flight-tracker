@@ -1,6 +1,7 @@
 package com.flighttracker.service.agent;
 
 import com.flighttracker.repository.AircraftRepository;
+import com.flighttracker.repository.WatchedFlightRepository;
 import com.flighttracker.service.LiveVisibilityWindows;
 import com.flighttracker.service.live.LiveStateStore;
 import com.flighttracker.service.training.TrainingDataRepository;
@@ -17,6 +18,8 @@ import org.springframework.transaction.support.TransactionTemplate;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
 
 /**
  * Rolling retention for flight_position, the one table in this schema that
@@ -86,6 +89,7 @@ public class PositionRetentionService {
     private final Clock clock;
     private final LiveStateStore liveStateStore;
     private final TrainingDataRepository trainingData;
+    private final WatchedFlightRepository watchedFlights;
     // Each batch commits on its own. Deliberately a TransactionTemplate
     // rather than a @Transactional method on this class: Spring's
     // @Transactional works through a proxy, so a self-invoked call from the
@@ -128,18 +132,31 @@ public class PositionRetentionService {
     // whose positions simply aged out of the 72h window while it keeps flying.
     private static final Duration AIRCRAFT_STALE_AFTER = Duration.ofDays(7);
 
+    /**
+     * A watched_flight row whose board date is more than this many days old is
+     * useless — the flight is long gone (design §2). Unlike profiles and
+     * favourites, which are kept until their owner deletes them, watched rows
+     * are cheap to recreate and have no value once the board date has passed.
+     */
+    private static final int WATCHED_FLIGHT_RETENTION_DAYS = 7;
+
+    /** The board date is Swedish local, matching how the frontend keys a watch (watchKey). */
+    private static final ZoneId BOARD_ZONE = ZoneId.of("Europe/Stockholm");
+
     public PositionRetentionService(JdbcTemplate jdbcTemplate,
                                      AircraftRepository aircraftRepository,
                                      TransactionTemplate transactionTemplate,
                                      Clock clock,
                                      LiveStateStore liveStateStore,
-                                     TrainingDataRepository trainingData) {
+                                     TrainingDataRepository trainingData,
+                                     WatchedFlightRepository watchedFlights) {
         this.jdbcTemplate = jdbcTemplate;
         this.aircraftRepository = aircraftRepository;
         this.transactionTemplate = transactionTemplate;
         this.clock = clock;
         this.liveStateStore = liveStateStore;
         this.trainingData = trainingData;
+        this.watchedFlights = watchedFlights;
     }
 
     /**
@@ -171,6 +188,7 @@ public class PositionRetentionService {
         }
 
         pruneTrainingData(now);
+        pruneWatchedFlights(now);
 
         // The in-memory live set is pruned on the same cadence: an aircraft
         // silent past every visibility window can't be live again without a
@@ -210,6 +228,23 @@ public class PositionRetentionService {
             }
         } catch (RuntimeException e) {
             log.warn("retention: pruning the training tables failed", e);
+        }
+    }
+
+    /**
+     * Watched flights whose board date has passed: folded into the same 10-minute
+     * prune as flight_position's own retention. Separate and small enough not to
+     * need its own tick. flight_position's retention is untouched by this.
+     */
+    private void pruneWatchedFlights(Instant now) {
+        try {
+            LocalDate cutoff = LocalDate.ofInstant(now, BOARD_ZONE).minusDays(WATCHED_FLIGHT_RETENTION_DAYS);
+            int deleted = watchedFlights.deleteBefore(cutoff);
+            if (deleted > 0) {
+                log.info("retention: deleted {} watched_flight rows with board date before {}", deleted, cutoff);
+            }
+        } catch (RuntimeException e) {
+            log.warn("retention: pruning watched_flight failed", e);
         }
     }
 
