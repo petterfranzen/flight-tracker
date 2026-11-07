@@ -2,6 +2,7 @@ import type { AppStore } from "../state/appState";
 import { searchSchedule, type ScheduledFlight } from "../api/flightApi";
 import { watchKey, type WatchedFlight } from "../watchlist";
 import { h, clear } from "./h";
+import { closeOnEscape, modalOpen } from "./a11y";
 import "../components/WatchPanel.css";
 
 const timeOf = (iso: string | null): string =>
@@ -50,7 +51,8 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     content.hidden = !open;
     if (!open) return;
     clear(dyn);
-    if (message) dyn.appendChild(h("p", { className: "watch-panel-message" }, message));
+    // role=status => polite announcement of "Searching…", "No matching flights…", a search error.
+    if (message) dyn.appendChild(h("p", { className: "watch-panel-message", role: "status" }, message));
 
     if (results.length) {
       const list = h("ul", { className: "watch-panel-results" });
@@ -170,9 +172,17 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     render();
   });
 
+  // Escape closes the open panel (not a modal — Tab is not trapped). Skips
+  // while a modal overlay is open, so one keypress does not close both.
+  const detachEscape = closeOnEscape(() => {
+    if (modalOpen()) return;
+    if (open) setOpen(false);
+  });
+
   render();
   return () => {
     unsubscribe();
+    detachEscape();
     container.remove();
   };
 }
