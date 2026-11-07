@@ -388,18 +388,25 @@ test.describe("popping @scenario", () => {
     test.setTimeout(240_000);
     const h = await startReplay(page, testInfo, { ramp: { startFrac: 0.5, perTick: 0.2 } });
     await boot(page);
+    // The app's clock only moves when the test moves it (no real sleeps): each
+    // sample is 250 ms of app time, and a tick's frames are pushed before its first.
+    const pauseClock = async () => page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1_000);
     const countsAfter = async (rounds: number): Promise<number[]> => {
       const counts: number[] = [];
       for (let r = 0; r < rounds; r++) {
         h.advance(); // one recorded tick: its frames are pushed
         for (let i = 0; i < 8; i++) {
           await page.clock.runFor(250);
-          await page.waitForTimeout(40); // let a response land
           counts.push((await h.drawn()).length);
         }
       }
       return counts;
     };
+    /** Lets the view's /live response land and be drawn (the first sample is its set, not a fill step). */
+    const landed = async (min: number) =>
+      expect
+        .poll(async () => { await page.clock.runFor(250); return (await h.drawn()).length; }, { timeout: 20_000, intervals: [50] })
+        .toBeGreaterThanOrEqual(min);
     // A fill is a step of several planes at once; a plane or two drifting in or
     // out of the declutter between ticks is the popping budget's business above.
     const FILL_STEP = 3;
@@ -407,15 +414,18 @@ test.describe("popping @scenario", () => {
     const drops = (c: number[]): number => c.filter((n, i) => i > 0 && c[i - 1] - n >= FILL_STEP).length;
 
     await jumpTo(page, CENTRE.lat, CENTRE.lon, 7);
+    await pauseClock();
     await page.clock.runFor(1500);
     h.restartRamp();
     await jumpTo(page, CENTRE.lat, CENTRE.lon, 8); // 7 -> 8: the individual-marker view of an area not watched yet
+    await landed(30);
     const zoomIn = await countsAfter(9);
 
     await drag(page, -500, 0); // away, so the first view is only in the cache
     await page.clock.runFor(1500);
     h.restartRamp();
     await drag(page, 500, 0); // and back: the cached set first, then the refresh
+    await landed(30);
     const back = await countsAfter(9);
 
     // eslint-disable-next-line no-console
@@ -423,6 +433,28 @@ test.describe("popping @scenario", () => {
     expect(updates(zoomIn), `zoom in: the set changed in ${updates(zoomIn)} updates after settling`).toBeLessThanOrEqual(2);
     expect(updates(back), `back: the set changed in ${updates(back)} updates after settling`).toBeLessThanOrEqual(2);
     expect(drops(zoomIn) + drops(back), "the set shrank while the view was still").toBe(0);
+    expect(h.pageErrors, "page errors").toEqual([]);
+  });
+
+  // The opening view is never held (#151 review). The server knows nothing at
+  // first (an empty /live), then everything: the planes the frames bring must
+  // be drawn at once, not after the fill window a view change opens.
+  test("an empty snapshot at boot does not hold the planes that follow", async ({ page }, testInfo) => {
+    test.setTimeout(120_000);
+    const h = await startReplay(page, testInfo, { ramp: { startFrac: 0, perTick: 1 } });
+    await page.goto("/");
+    await expect(page.locator('.map-container[data-ready="true"]')).toBeVisible({ timeout: 60_000 });
+    await jumpTo(page, CENTRE.lat, CENTRE.lon, 8); // the individual-marker view, empty for now
+    await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1_000);
+    await page.clock.runFor(1_000);
+    expect((await h.drawn()).length, "nothing is known yet").toBe(0);
+    const t0 = await page.evaluate(() => Date.now());
+    h.advance(); // the server now knows everything: frames for the whole view
+    await expect
+      .poll(async () => { await page.clock.runFor(250); return (await h.drawn()).length; }, { timeout: 20_000, intervals: [50], message: "the frames' planes are drawn" })
+      .toBeGreaterThanOrEqual(30);
+    // ... within a couple of seconds of app time, far under the hold's 4 to 12 s.
+    expect((await page.evaluate(() => Date.now())) - t0, "drawn without waiting out a hold").toBeLessThan(3_000);
     expect(h.pageErrors, "page errors").toEqual([]);
   });
 });

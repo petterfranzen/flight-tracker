@@ -119,6 +119,7 @@ const PREFETCH_DELAY_MS = 600;
 // after the first. Later arrivals, in a view that has settled, are drawn as
 // they land.
 const FILL_SETTLE_MS = 8_000;
+const FILL_MIN_SNAPSHOT = 5;
 const FILL_QUIET_MS = 4_000;
 const FILL_MAX_MS = 12_000;
 
@@ -334,6 +335,13 @@ function boot(): void {
   // threshold, so a plane that lands or drops out of the cell thinning stays
   // on screen (see map/overviewHold.ts).
   const overviewHold = newOverviewHold<AsOfMarker>();
+  // Frames of aircraft the drawn set does not have yet, held while a changed
+  // view fills in (FILL_SETTLE_MS) and released together (see flushLivePushes).
+  const arrivals = new Map<string, { p: FlightPosition; asOf: number }>();
+  let fillUntil = 0;
+  let viewChanged = false; // a view change whose snapshot has not landed yet
+  let liveSnapshotSeen = false; // the opening view is never held
+  let arrivalTimer: ReturnType<typeof setTimeout> | null = null;
   // Which source the map is drawing from right now. A cached view from the
   // other side is not this frame: drawing it would swap the whole set before
   // the response for the new zoom arrives.
@@ -446,6 +454,16 @@ function boot(): void {
 
   // ---- fetch lifecycle ----
   function applyLiveSnapshot(list: AsOfMarker[]): void {
+    // The snapshot is the whole truth for this view: frames held for it are
+    // superseded. It opens the fill window only for a view change that lands a
+    // real set; the opening view, and an empty or sparse snapshot, never hold
+    // anything back.
+    arrivals.clear();
+    if (arrivalTimer) clearTimeout(arrivalTimer);
+    arrivalTimer = null;
+    fillUntil = liveSnapshotSeen && viewChanged && list.length >= FILL_MIN_SNAPSHOT ? Date.now() + FILL_SETTLE_MS : 0;
+    liveSnapshotSeen = true;
+    viewChanged = false;
     if (overviewPlanes.length > 0) setOverviewPlanes([]); // the snapshot is the source from here on
     drawnSource = "live";
     const selectedId = store.get("selectedId");
@@ -636,7 +654,7 @@ function boot(): void {
     zoom = nextZoom;
     store.set("zoom", nextZoom);
     if ((nextZoom < CLUSTER_FETCH_MAX_ZOOM) !== wasZoomedOut) lastAppliedView = null;
-    fillUntil = Date.now() + FILL_SETTLE_MS;
+    viewChanged = true;
     renderAircraftLayer(); // icon sizes and what overlaps change with the zoom: redraw now, independent of the fetch below
     // A view we've seen recently is drawn right away, before the debounce.
     applyCachedView(Date.now());
@@ -676,24 +694,20 @@ function boot(): void {
 
   // Frames of aircraft the drawn set does not have yet, held while a changed
   // view fills in (FILL_SETTLE_MS) and released together.
-  const arrivals = new Map<string, FlightPosition>();
-  let fillUntil = 0;
-  let arrivalTimer: ReturnType<typeof setTimeout> | null = null;
   let firstArrivalAt = 0;
   function holdArrival(p: FlightPosition, at: number): void {
     if (arrivals.size === 0) firstArrivalAt = at;
-    arrivals.set(p.icao24, p);
+    arrivals.set(p.icao24, { p, asOf: at });
     if (arrivalTimer) clearTimeout(arrivalTimer);
     arrivalTimer = setTimeout(releaseArrivals, Math.max(0, Math.min(at + FILL_QUIET_MS, firstArrivalAt + FILL_MAX_MS) - at));
   }
   function releaseArrivals(): void {
     arrivalTimer = null;
     if (arrivals.size === 0) return;
-    const at = Date.now();
     let added = false;
-    for (const p of arrivals.values()) {
+    for (const { p, asOf } of arrivals.values()) {
       if (positions.has(p.icao24) || !inDrawnArea(p)) continue; // a snapshot has them, or the view moved on
-      positions.set(p.icao24, { ...p, asOf: at });
+      positions.set(p.icao24, { ...p, asOf });
       added = true;
     }
     arrivals.clear();
@@ -727,7 +741,6 @@ function boot(): void {
       if (!existing && p.icao24 !== selectedId && (arrival < fillUntil || arrivals.size > 0)) {
         // New to the drawn set while the view is still filling in: held, so the
         // fill is one update.
-        if (arrivals.size === 0) console.log('[dbg] hold start', arrival, fillUntil);
         holdArrival(p, arrival);
         continue;
       }
