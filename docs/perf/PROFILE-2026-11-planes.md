@@ -95,11 +95,13 @@ worldwide), `waitForMapReady`, z10, then the same pan/zoom/idle drive. It assert
 - **zero** additional `setData` during an idle window with the socket stubbed,
 - milliseconds per `renderAircraftLayer` under `120 ms x cpuSlowdown`.
 
-Measured here: 10 render calls, **164 ms/call**, max 390 ms, declutter 75 ms/call,
-`setData` 3, idle `setData` 0, slowdown 4 -> budget 480 ms. The margin is
-deliberately generous: software WebGL on a shared CI runner is much slower than
-hardware, and a local `test:perf` run in a busy container can fail this for load
-reasons alone. CI's run on the pushed head is the authority.
+On this sandbox: 10 render calls, **164 ms/call**, max 390 ms, declutter
+75 ms/call, `setData` 3, idle `setData` 0, slowdown 4 -> budget 480 ms.
+On CI (green on the pushed head, 2026-11-07): **3.95 ms/call**, max 8.2 ms,
+declutter 2.23 ms/call, `setData` 4, idle `setData` 0, slowdown 3.73 -> budget
+447 ms. The margin is deliberately generous because hardware and software-WebGL
+runners differ by two orders of magnitude here; a local `test:perf` run in a busy
+container can fail for load reasons alone. CI is the authority.
 
 ## Uncertain
 
@@ -109,5 +111,7 @@ reasons alone. CI's run on the pushed head is the authority.
   before/after A/B of the pure function are trustworthy.
 - **The projection cost is named, not fixed.** It is MapLibre's own per-candidate
   transform; there is no batch API to call instead.
-- **CI numbers for the 2,000-plane case are not measured yet**, which is why the
-  budget is loose rather than tight.
+- **Why the budget is loose.** CI measured 3.95 ms/call against a 447 ms budget;
+  the sandbox measured 164 ms/call. The budget has to clear the sandbox's load
+  noise and CI's own variance without letting the ~1 s regression this suite was
+  written for pass.
