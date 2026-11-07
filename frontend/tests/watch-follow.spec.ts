@@ -138,8 +138,14 @@ test("a watched flight going airborne raises a toast once, and is drawn on the m
   expect(await page.locator(".watch-toast").isVisible()).toBe(false);
 
   // It departs; the two-tick take-off rule needs two 60 s polls to confirm it.
+  // Wait for each poll to land (its request, then the drawn plane) before the
+  // next tick, so the second tick is the second poll and not a skipped one.
+  await expect.poll(() => searches.length, { timeout: 10_000 }).toBeGreaterThan(0);
   airborne = true;
+  const firstTick = searches.length;
   await page.clock.runFor(61_000);
+  await expect.poll(() => searches.length, { timeout: 10_000 }).toBeGreaterThan(firstTick);
+  await expect.poll(async () => (await planeLayerIds(page)).includes(plane.icao24), { timeout: 10_000 }).toBe(true);
   await expect(page.locator(".watch-toast")).toBeHidden();
   await page.clock.runFor(61_000);
 
