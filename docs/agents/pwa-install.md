@@ -11,21 +11,49 @@ real phone, and the production settings that matter.
 | Web app manifest | `frontend/public/manifest.json` | name **Netwatch Skygrid**, short name **Skygrid**, `start_url` and `scope` `/`, `display: standalone`. Colours are the cyberpunk tokens: `#050608` = `--color-bg` in `frontend/src/components/FlightMap.css`. |
 | Icons | `frontend/public/icons/` | 192, 512, maskable 512, apple-touch-icon 180. Generated from the map's own plane dart (`PLANE_PATH` in `src/map/planes.ts`) by `npm run icons` (`scripts/generate-pwa-icons.mjs`). Re-run it if the mark or the cyberpunk tokens change. |
 | iOS meta tags | `frontend/index.html` | `viewport-fit=cover`, `apple-mobile-web-app-capable`, `black-translucent` status bar, apple-touch-icon, `theme-color`. |
-| Service worker | `frontend/public/sw.js` | Minimal: **no cache and no precache**. It exists to satisfy Chrome's install-prompt requirement (a worker with a fetch handler must control the page) and to give #82's notifications `registration.showNotification()` on Android / installed iOS. Its fetch listener never calls `respondWith()`, so every request goes to the network exactly as before. |
+| Service worker | `frontend/public/sw.js` | An offline **app shell** cache, and a pass-through for everything live (#181). It precaches the build's shell (index.html, the hashed assets index.html imports — lazy chunks, worker bundle and webfonts included — the manifest and the icons) and serves it cache-first, so a cold open with no network paints the real UI. `/api/*`, `/ws*` and all cross-origin traffic (basemap tiles) are never intercepted or cached; keys are versioned by the shell's content, so a deploy lands in a new cache and the old one is deleted on activation. It also gives #82's notifications `registration.showNotification()` on Android / installed iOS. |
 | Install UI | `frontend/src/ui/installPrompt.ts` + `src/components/InstallPrompt.css` | Bottom-centre pill: "Install app" after `beforeinstallprompt` (Android/desktop Chrome), or the one-line Share > Add to Home Screen hint on iOS Safari. Dismissable and remembered in `localStorage`; hidden when already standalone and while a drawer/dossier is open. |
 | Tests | `frontend/tests/pwa.spec.ts` | Manifest fields + every icon resolves as PNG; document links and iOS meta tags; worker registers and caches nothing; install pill appears only after the event and remembers a dismissal; iOS hint; hidden in standalone. |
 
-### Why the worker caches nothing
+### What the worker caches, and what it must never cache
 
-The brief's warning is the design: a stale cached shell must never keep a fix
-from reaching a phone. A worker that precaches `index.html` has to be
-invalidated on every deploy and, if that goes wrong, serves yesterday's code.
-This app's `index.html` and hashed assets are already served no-cache /
-immutable by `SpaWebConfig`, so a deploy reaches the next load without help.
-Caching nothing removes the failure mode entirely; the cost is no offline
-shell. If offline support is ever wanted, add a cache with the `/api/health`
-`version` (the git SHA) as the cache name and show a "new version, reload"
-prompt on `controllerchange` — do not make the worker cache silently.
+The rule the worker is built around (#181): **live data is never served from a
+cache.** A stale plane position is worse than no plane, so `/api/*` and `/ws*`
+are not intercepted, not stored, and have no fallback response — the fetch
+listener returns before `respondWith()`, and the request goes to the network
+exactly as if no worker existed. Basemap tiles (`tiles.openfreemap.org`) are
+cross-origin and are left to the network too: they are not ours to cache and
+the CSP keeps them out of our origin.
+
+Everything else is the **app shell**, and it is cached:
+
+- what is precached: `index.html`, every built file reachable from it by
+  following imports (the content-hashed JS/CSS, the lazy route chunks, the
+  MapLibre worker bundle, the bundled webfonts), `manifest.json` and the icons;
+- how it is served: cache-first. A navigation is answered from the cache at
+  once and then revalidated in the background (stale-while-revalidate), so the
+  shell never blocks on a slow network; `/assets/*`, `/icons/*` and the
+  manifest come from the cache when present and are cached on first use.
+
+**Cache versioning.** The cache name is `skygrid-shell-<hash of the shell's
+asset list>`, so a deploy that changes the bundle lands under a new name. The
+old caches are deleted when the new worker activates, and again whenever a
+revalidation finds a changed `index.html` — so a deploy replaces the old shell
+rather than sitting beside it. Bump `SHELL_RULES_VERSION` in `sw.js` when the
+worker's own rules change.
+
+**The update path.** `install` calls `skipWaiting()` (after the shell is
+built) and `activate` calls `clients.claim()`, so a new worker takes over
+immediately instead of waiting for every tab to close, and the install prompt
+can fire on the same visit. That is safe here precisely because the cached
+shell is content-addressed and only ever served for a navigation, which is then
+revalidated: claiming at once can at worst leave one already-open tab on the
+shell it loaded, and the *next* navigation gets the new one. Nothing is
+trapped, so there is no "new version, reload?" prompt to build.
+
+The cost of caching the shell at all is the one this design does not pay: a
+cached `index.html` that is never revalidated. Stale-while-revalidate plus the
+content-derived cache name is what keeps that from happening.
 
 ## Manual check list for Petter
 
@@ -42,6 +70,12 @@ prompt on `controllerchange` — do not make the worker cache silently.
 5. Dismissal: tap **Not now**, reload the page. The pill stays hidden (the
    browser's own ⋮ > Install app is still there if you change your mind).
 6. Already installed: open the home-screen app. No install pill appears.
+7. **Offline (#181).** With the app loaded once (so the shell is cached), turn
+   the phone's network off and open the app again. **What should happen:** the
+   UI still paints (no browser error page), a red-bordered *"Offline — live
+   data unavailable"* banner sits at the top, and any aircraft already drawn are
+   **dimmed** — never left looking live. Turn the network back on: the banner
+   disappears and the map picks the live feed up again; no reload needed.
 
 ### iPhone (Safari only)
 
@@ -84,13 +118,19 @@ dossier panel, full-screen drawers, dock, and MapLibre's bottom controls).
    "Everything", add a bypass for `/sw.js` and `/manifest.json` so worker
    updates are not delayed at the edge. The default "Respect Existing Headers"
    already leaves them uncached because the origin sends no-cache.
-4. **CSP.** No Content-Security-Policy is set today. If one is added later, it
-   must allow `worker-src 'self'` (or `child-src`) and `manifest-src 'self'`,
-   or the worker and manifest will be blocked.
-5. **Subpath deployments.** If the app is ever served under a path prefix
+4. **CSP.** The app now ships one (`SecurityHeadersFilter`): it already allows
+   `worker-src 'self' blob:`, `manifest-src 'self'` and `connect-src 'self'`,
+   which is everything this worker needs. If the policy is ever tightened, those
+   three directives must keep the worker, the manifest and the same-origin
+   fetches working.
+5. **The shell cache and `Vary`.** The built assets are served with `Vary:
+   Origin`, so the worker matches its cache by URL rather than by the request
+   object (a request object carrying an `Origin` header would miss an entry
+   stored without one). Keep that in mind if the fetch handler is reworked.
+6. **Subpath deployments.** If the app is ever served under a path prefix
    instead of the tunnel root, update `start_url`, `scope`, the manifest
    `id`, and the worker registration path together.
-6. **Theme changes.** `manifest.json` and the `theme-color` meta carry the
+7. **Theme changes.** `manifest.json` and the `theme-color` meta carry the
    literal `#050608` (`--color-bg`). If the cyberpunk token changes, update
    both by hand; JSON and meta tags cannot read CSS variables. The icon
    generator's `BG`/`MARK` constants also mirror the tokens.

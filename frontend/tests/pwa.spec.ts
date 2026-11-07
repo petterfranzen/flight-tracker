@@ -58,19 +58,43 @@ test.describe("PWA installability", () => {
     expect(viewport).not.toMatch(/user-scalable\s*=\s*(no|0)/i);
   });
 
-  test("the worker registers and caches nothing", async ({ page }) => {
+  test("the worker caches the app shell and never a /api or /ws request", async ({ page }) => {
     await mockFlightApi(page);
+    const apiRequests: string[] = [];
+    page.on("request", (r) => {
+      const path = new URL(r.url()).pathname;
+      if (path.startsWith("/api/")) apiRequests.push(path);
+    });
     await page.goto("/");
 
     const state = await page.evaluate(async () => {
       const registration = await navigator.serviceWorker.ready;
-      return { scope: registration.scope, active: registration.active?.state ?? null };
+      return { scope: registration.scope, active: registration.active?.state ?? null, controlled: !!navigator.serviceWorker.controller };
     });
     expect(state.scope).toBe("http://localhost:5174/");
     expect(state.active).toBe("activated");
+    expect(state.controlled).toBe(true);
 
-    // The worker's contract: no cache, so no stale shell can survive a deploy.
-    expect(await page.evaluate(() => caches.keys())).toEqual([]);
+    // The shell is cached, under the versioned name only: a deploy's new shell
+    // lands in a new cache and the old one is dropped.
+    const names = await page.evaluate(() => caches.keys());
+    expect(names.filter((name) => name.startsWith("skygrid-shell-")).length).toBeGreaterThan(0);
+    expect(names.filter((name) => !name.startsWith("skygrid-shell-"))).toEqual([]);
+
+    // The rule: no cache entry for live data, ever.
+    const cachedPaths = await page.evaluate(async () => {
+      const paths: string[] = [];
+      for (const name of await caches.keys()) {
+        const cache = await caches.open(name);
+        for (const request of await cache.keys()) paths.push(new URL(request.url).pathname);
+      }
+      return paths;
+    });
+    expect(cachedPaths.some((path) => path.startsWith("/api") || path.startsWith("/ws"))).toBe(false);
+
+    // ...and the app's live-data requests still go to the network (the mocked
+    // responses are what the map draws) rather than being answered by the worker.
+    expect(apiRequests.length).toBeGreaterThan(0);
   });
 
   test("the install control appears only when the browser offers a prompt, and a dismissal is remembered", async ({ page }) => {
