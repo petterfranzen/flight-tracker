@@ -183,3 +183,44 @@
    this element's display:none above) — default theme's plain
    placeholder text already says what the field is for, so this only
    ever shows up for cyberpunk theme's own labeled-field look. */
+
+/* Compact watched list, under the search box: one chip per watched flight. */
+.flight-search-watched {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+.flight-search-watched[hidden] { display: none; }
+
+.flight-search-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 2px 8px;
+  background: none;
+  color: var(--color-text);
+  border: 1px solid var(--color-panel-border);
+  border-radius: 999px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.flight-search-chip:hover { background: var(--color-panel-border); }
+.flight-search-chip-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--color-text-muted); }
+.flight-search-chip--airborne { border-color: var(--color-marker-watched); color: var(--color-marker-watched); }
+.flight-search-chip--airborne .flight-search-chip-dot { background: var(--color-marker-watched); }
+
+/* Watched flights listed first in the results, including ones not airborne yet. */
+.flight-search-results[hidden] { display: none; }
+.flight-search-results--watched { margin-bottom: 4px; }
+.flight-search-option--watched { cursor: default; }
+.flight-search-option--watched .flight-search-callsign { color: var(--color-marker-watched); }
+.flight-search-option--airborne { cursor: pointer; }
+.flight-search-watched-status { color: var(--color-text-muted); font-size: 11px; text-align: right; }
+
+@media (max-width: 768px) {
+  /* 44px tap targets for the chips, the house minimum (glyph stays small). */
+  .flight-search-chip { min-height: 44px; }
+}
