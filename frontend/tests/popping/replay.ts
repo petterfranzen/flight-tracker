@@ -28,9 +28,9 @@
  *
  * See docs/popping-harness.md.
  */
-import { OPENFREEMAP_TILEJSON } from "../fixtures/basemap";
 import { expect, type Page, type TestInfo } from "@playwright/test";
 import { clusterMockFleet, onePerCell } from "../../src/api/mockFleet";
+import { OPENFREEMAP_TILEJSON } from "../fixtures/basemap";
 import recording from "../fixtures/popping/recording.json" with { type: "json" };
 
 // ---- the recording's shape (mirrors scripts/record-popping-fixtures.ts) ----
