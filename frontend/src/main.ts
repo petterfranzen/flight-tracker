@@ -31,6 +31,7 @@ import { getMockPlaneCount } from "./api/mockFleet";
 import { agedIds, findShadowedIds, isActiveTraffic, OVERLAP_MIN_ZOOM } from "./map/staleness";
 import { newerReport, notOlderReport, sameReport } from "./map/reportOrder";
 import { createRouteLayer } from "./map/route";
+import { confirmedGate, displayedPosition, gateDisplay, trailFor, type GateDisplay } from "./map/gatePlacement";
 import { createUncertaintyLayer } from "./map/uncertainty";
 import { keepCellWinners } from "./map/cellWinners";
 import { snapBounds, ViewCache, type CachedView } from "./map/viewCache";
@@ -62,6 +63,8 @@ const COVERAGE_LOST_REFETCH_MS = 15_000;
 // (LANDED_CONFIRMED) the gate may follow, at any time.
 const LANDED_REFETCH_MS = 60_000;
 const FETCH_STOP_MS = 5 * 60_000;
+// Gates are in the basemap's zoom-14 tiles, which load from this app zoom (map.findGate).
+const GATE_LOOKUP_ZOOM = 16;
 const DIALOG_STOP_MS = 5 * 60_000;
 
 // Below this zoom the map asks the server for a thinned-out set (one plane per
@@ -379,11 +382,48 @@ function boot(): void {
   function drawRoute(): void {
     const pos = store.get("selectedPos");
     const tip = pos && pos.icao24 === store.get("selectedId") ? pos : null;
-    const until = tip ? Date.parse(tip.observedAt) : Infinity;
-    route = routePoints.filter((pt) => Date.parse(pt.observedAt) <= until).map((pt): [number, number] => [pt.lat, pt.lon]);
-    const end = route[route.length - 1];
-    if (tip && !(end && end[0] === tip.latitude && end[1] === tip.longitude)) route.push([tip.latitude, tip.longitude]);
+    route = trailFor(routePoints, tip, currentGateDisplay(), Date.now());
     routeLayer.update(route);
+  }
+
+  // ---- confirmed gate ----
+  // A plane whose gate a provider confirmed is drawn at the gate once its last
+  // report is old (map/gatePlacement.ts). The gate's coordinate is the gate's
+  // own point in the basemap's vector tiles (aeroway class "gate", by ref),
+  // which are loaded only while the view is at the airport: it is looked up
+  // when the status arrives and again whenever tiles load, until found.
+  let gatePoint: { icao24: string; gate: string; lat: number; lon: number } | null = null;
+  function currentGateDisplay(): GateDisplay | null {
+    const pos = store.get("selectedPos");
+    const status = store.get("trackStatus");
+    const gate = confirmedGate(pos, status);
+    const point = gate && gatePoint && gatePoint.icao24 === pos?.icao24 && gatePoint.gate === gate ? gatePoint : null;
+    return gateDisplay(pos, status, Date.now(), point);
+  }
+  // Once per selection, if the gate's tile is not loaded: go where it is.
+  let gateZoomDone = false;
+  function onGateStatus(status: TrackStatus | null): void {
+    resolveGate();
+    const pos = store.get("selectedPos");
+    const gate = confirmedGate(pos, status);
+    if (gate && status && !gateZoomDone && !(gatePoint && gatePoint.gate === gate && gatePoint.icao24 === pos?.icao24)) {
+      gateZoomDone = true;
+      if (map.getZoom() < GATE_LOOKUP_ZOOM) map.flyTo([status.lastSeenLat, status.lastSeenLon], GATE_LOOKUP_ZOOM, 800);
+    }
+    renderAircraftLayer(); // the status can also stop qualifying (a gate that changed)
+    drawRoute();
+  }
+  function resolveGate(): void {
+    const pos = store.get("selectedPos");
+    const status = store.get("trackStatus");
+    const gate = confirmedGate(pos, status);
+    if (!pos || !status || !gate) return;
+    if (gatePoint && gatePoint.icao24 === pos.icao24 && gatePoint.gate === gate) return;
+    const found = map.findGate(gate, { lat: status.lastSeenLat, lon: status.lastSeenLon });
+    if (!found) return;
+    gatePoint = { icao24: pos.icao24, gate, lat: found.lat, lon: found.lon };
+    renderAircraftLayer();
+    drawRoute();
   }
   function appendRoutePoint(p: LiveMarker): void {
     if (lastRouteObservedAt == null || newerReport(p.observedAt, lastRouteObservedAt)) {
@@ -402,7 +442,9 @@ function boot(): void {
   const declutterMemory = newDeclutterMemory();
   function renderAircraftLayer(): void {
     const selectedId = store.get("selectedId");
-    const selectedPos = store.get("selectedPos");
+    const reportedPos = store.get("selectedPos");
+    // At its confirmed gate, not at its last (old) report: a display state only.
+    const selectedPos = reportedPos ? displayedPosition(reportedPos, currentGateDisplay()) : null;
     const nowMs = Date.now();
     // Only what's on screen (plus a margin, so a short drag doesn't reveal
     // empty edges before moveend re-renders). `positions` can hold a wider
@@ -838,6 +880,7 @@ function boot(): void {
       store.set("trackStatus", status);
       uncertaintyLayer.update(status);
       if (status?.estimate) moveSelectedToEstimate(icao24, status);
+      onGateStatus(status);
       const landed = status?.state === "LANDED_INFERRED" || status?.state === "LANDED_CONFIRMED";
       const wantedMs = status?.state === "COVERAGE_LOST" ? COVERAGE_LOST_REFETCH_MS : landed ? LANDED_REFETCH_MS : 0;
       if (statusTimer && statusTimerMs !== wantedMs) {
@@ -897,6 +940,8 @@ function boot(): void {
 
     // Cleared unconditionally: switching directly from aircraft A to B
     // never passes through "selected = null".
+    gatePoint = null;
+    gateZoomDone = false;
     route = [];
     lastRouteObservedAt = null;
     routePoints = [];
@@ -1270,6 +1315,7 @@ function boot(): void {
   // ---- per-selection effect wiring ----
   store.subscribe("selectedId", onSelectedIdChanged);
   store.subscribe("selectedPos", drawRoute); // the trail ends at the marker, wherever it moves
+  map.on("sourcedata", resolveGate); // the gate's tile may arrive after the status
   onSelectedIdChanged(); // selectedId starts null — harmless initial reset
 
   // ---- mount-only effects ----
