@@ -1,5 +1,7 @@
 import type { AircraftDossier, AirportInfo, AirportSelection, LiveMarker, SelectedPosition, TrackStatus } from "../types/flight";
 import type { FavoriteAircraft, FavoriteRoute } from "../favorites";
+import type { WatchedFlight } from "../watchlist";
+import type { ScheduledFlight } from "../api/flightApi";
 import type { Store } from "./store";
 
 /**
@@ -44,6 +46,12 @@ export interface AppState extends Record<string, unknown> {
   favoriteRoutes: FavoriteRoute[];
   favoriteAircraft: FavoriteAircraft[];
 
+  /** Watched flights (localStorage, like favorites) and the last schedule row seen for each, keyed by watchKey. */
+  watchedFlights: WatchedFlight[];
+  watchedStatus: Record<string, ScheduledFlight | null>;
+  /** Set while a watched flight has just gone airborne; the toast offers to go to it. */
+  departureToast: WatchedFlight | null;
+
   selectAircraft: (p: LiveMarker) => void;
   selectAirport: (ap: AirportSelection) => void;
   closeAircraftPanel: () => void;
@@ -55,6 +63,13 @@ export interface AppState extends Record<string, unknown> {
   removeFavoriteAircraft: (entry: FavoriteAircraft) => void;
   removeFavoriteRoute: (route: FavoriteRoute) => void;
   resumeTracking: () => void;
+
+  /** Watched-flight actions, set once at boot like the others. */
+  watchFlight: (w: WatchedFlight) => void;
+  unwatchFlight: (w: WatchedFlight) => void;
+  /** Select the watched flight's plane and fly to it (no-op until it is airborne). */
+  goToWatched: (w: WatchedFlight) => void;
+  dismissDepartureToast: () => void;
 }
 
 export type AppStore = Store<AppState>;

@@ -163,6 +163,10 @@
   background: transparent;
 }
 
+.map-legend-swatch--watched {
+  border-color: var(--color-marker-watched);
+}
+
 .map-legend-swatch--selected {
   border-color: var(--color-marker-selected);
 }
