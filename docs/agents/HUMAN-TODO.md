@@ -41,8 +41,10 @@ Steps:
 - [ ] Tell Claude what you find. If the config block works, it goes into `deploy/hetzner/README.md`.
 
 ## 1. Swedavia (recommended): free, 10 Swedish airports
-#120–#124 are merged and deployed, so the provider is live and only waits for
-the key, which is already in `/etc/flight-tracker/env` (see **Done**).
+#120–#124 are merged and deployed: the provider ships enabled in config but
+stays **off until a key exists** (`SwedaviaArrivalsProvider.enabled()` needs the
+`enabled` flag *and* a non-empty `SWEDAVIA_API_KEY`). No key is set yet, so the
+steps below are still yours.
 - [ ] Create an account at https://apideveloper.swedavia.se
 - [ ] Subscribe to the **FlightInfo** product, free tier (10,000 calls/month), and copy the subscription key.
 - [ ] Read their terms (licence, caching, attribution). They weren't published publicly.
@@ -76,4 +78,3 @@ notes in `README.md`, stand until a key exists.
 - [x] Patch cloudflared on the VM: done 2026-10-22 from the Hetzner web console.
 - [x] Merge #126 (VM auto-updates and Dependabot config): merged 2026-10-22.
 - [x] Review and merge the coverage-gap PRs: #120 (phase 1), #121 (phase 2), #122 (phase 3), #124 (Swedavia), #125 (AeroDataBox), #123 (CLAUDE.md rules) and #126 — all merged into `main` on 2026-10-22.
-- [x] Add `SWEDAVIA_API_KEY` to `/etc/flight-tracker/env` on the VM (done 2026-10-22), with `SWEDAVIA_API_KEY_SECONDARY=…` if you get a second key (keys rotate every 6 months). The first deploy after #124 merged picks it up.

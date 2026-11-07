@@ -9,8 +9,8 @@ continue from **Next task**.
 ## Status
 
 - **Current phase:** done and merged. Coverage-gap PRs #120, #121, #122, #124, #125 (and the independent #123 and #126) all merged into `main` on 2026-10-22. What remains is the human's checkpoints.
-- **Next task:** honest freshness (#155) and generic error bodies (#156) are done and merged. Still open on the board: the Watch feature (flight-tracker PR #149), the WebSocket soak/load test, and the idle-cost profile. Once the human adds `SWEDAVIA_API_KEY` / `AERODATABOX_API_KEY`, check the open items in `docs/agents/swedavia-api.md` and `aerodatabox-api.md` live and replace the reconstructed fixtures. The backlog has route search; Phase 4 is training the model once labels accumulate.
-- **Blocked on the human:** the live API keys (`SWEDAVIA_API_KEY`, `AERODATABOX_API_KEY`); until they exist the providers stay disabled and the API contract notes stay unverified. The Phase 3 provider choice was made (Swedavia first, AeroDataBox second; see `provider-research.md`).
+- **Next task:** the coverage-gap work is done and everything tracked against it has merged. Honest freshness (#155) and generic error bodies (#156) merged on 2026-11-06; the WebSocket soak/load test (#158), the idle-cost profile (#157) and the Watch feature (#149) all merged on 2026-11-07. The only work left is the human's live API keys: once `SWEDAVIA_API_KEY` / `AERODATABOX_API_KEY` are in `/etc/flight-tracker/env`, check the open items in `docs/agents/swedavia-api.md` and `aerodatabox-api.md` live and replace the reconstructed fixtures. The backlog has route search; Phase 4 is training the model once labels accumulate.
+- **Blocked on the human:** the live API keys (`SWEDAVIA_API_KEY`, `AERODATABOX_API_KEY`) are not set, so the API contract notes stay unverified. The providers stay disabled without a key by construction: `SwedaviaArrivalsProvider.enabled()` and `AeroDataBoxArrivalProvider.enabled()` each require both the `enabled` flag and a non-empty `api-key` (`application.yml`; keys come from the environment). The Phase 3 provider choice was made (Swedavia first, AeroDataBox second; see `provider-research.md`).
 
 ## Working agreements (from the human, 2026-10-12)
 
@@ -353,3 +353,6 @@ stateDiagram-v2
 - 2026-11-07: Docs refresh. Coverage-gap PRs #120–#126 are all merged (`main`, 2026-10-22); the
   Status block, the PR tables and this log are brought in line with what is merged and open today.
   HUMAN-TODO's finished rows moved into its **Done** section. No code or behaviour change.
+  QA follow-up: the Next-task line now reflects #149, #157 and #158 merged 2026-11-07; the
+  Swedavia-key contradiction is resolved (no key is set, so the provider stays off until one is)
+  and the disabled-without-a-key claim cites `enabled()`.
