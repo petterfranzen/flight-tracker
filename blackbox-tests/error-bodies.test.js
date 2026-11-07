@@ -68,8 +68,11 @@ async function assertGenericJson(res) {
   return JSON.parse(body);
 }
 
-// A controller's own 404 (ResponseEntity.notFound()) has no body; allow that,
-// but nothing that names the stack.
+// A controller's own 404 (ResponseEntity.notFound()) has no body. Decision
+// (section9-hq #141): that stays the case — an empty body is a deliberate
+// negative, not an error-dispatch response, and names nothing. This helper
+// still scans the response for a fingerprint, and the 404 test below pins the
+// empty body so a framework error page cannot reappear here.
 async function assertGenericOrEmpty(res) {
   const body = await res.text();
   assertNeutral(res.status, Object.fromEntries(res.headers), body);
@@ -99,12 +102,15 @@ function rawGet(path) {
   });
 }
 
-test("404 for an unknown aircraft is generic", async () => {
+test("404 for an unknown aircraft is generic and stays bodyless", async () => {
   // A controller-raised 404 (unknown aircraft), which is the 404 a real client
   // can reach — see the note at the top about the SPA fallback.
   const res = await fetch(apiUrl("/api/flights/000000/status"));
   assert.equal(res.status, 404);
-  await assertGenericOrEmpty(res);
+  const body = await assertGenericOrEmpty(res);
+  // Decision (#141): keep it empty — see GenericErrorController. A body here
+  // would be a client-visible behaviour change for no fingerprinting gain.
+  assert.equal(body, "", "a controller 404 must stay bodyless");
 });
 
 test("500 for an unhandled failure is generic", async () => {

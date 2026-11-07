@@ -273,3 +273,49 @@ CREATE TABLE IF NOT EXISTS track_end_label (
     PRIMARY KEY (icao24, last_observed_at)
 );
 CREATE INDEX IF NOT EXISTS idx_track_end_label_labelled_at ON track_end_label (labelled_at);
+
+-- Optional social login, server-side profiles (design: section9-hq #84, step 1).
+-- Login is optional: anonymous use keeps the browser store, and none of these
+-- tables are touched unless someone signs in. The app moves from accountless to
+-- having accounts, so the columns here are deliberately the minimum: a provider
+-- and a *hashed* subject id, never an email, name or avatar — scope=openid alone
+-- means the provider never even sends the rest (see the design, §1.3).
+--
+-- One row per person who chose to sign in. `id` is opaque and random (128 bits
+-- from SecureRandom, base64url), never derived from the subject; it is the key a
+-- future push subscription or watch-notification row would hang off, so it is
+-- shaped to accept one without changing this table.
+CREATE TABLE IF NOT EXISTS profile (
+    id           TEXT PRIMARY KEY,   -- 128 bits from SecureRandom, base64url; server-side only
+    provider     TEXT NOT NULL,      -- 'google' | 'github'
+    subject_hash TEXT NOT NULL,      -- hex SHA-256 of provider || ':' || sub; the raw sub is never stored
+    created_at   INTEGER NOT NULL,
+    last_seen_at INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_profile_identity ON profile (provider, subject_hash);
+
+-- Favourites, keyed the way the frontend already keys them. `data` keeps the
+-- server dumb: it stores the FavoriteRoute / FavoriteAircraft JSON the frontend
+-- already speaks (frontend/src/favorites.ts) verbatim, so a new favourite field
+-- later needs no schema change.
+CREATE TABLE IF NOT EXISTS favorite (
+    profile_id TEXT NOT NULL,
+    kind       TEXT NOT NULL,        -- 'route' | 'aircraft'
+    item_key   TEXT NOT NULL,        -- routeKey(origin,destination) or icao24 — the same keys favorites.ts uses
+    data       TEXT NOT NULL,        -- the FavoriteRoute / FavoriteAircraft JSON the frontend already speaks
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (profile_id, kind, item_key)
+);
+
+-- Watched flights, mirroring watchKey(w). Kept until the user deletes them,
+-- except that a row whose flight_date is more than 7 days old is useless (the
+-- flight is long gone) — PositionRetentionService.prune folds that in.
+CREATE TABLE IF NOT EXISTS watched_flight (
+    profile_id    TEXT NOT NULL,
+    flight_number TEXT NOT NULL,
+    flight_date   TEXT NOT NULL,     -- yyyy-MM-dd, Swedish local date of the board
+    airport       TEXT NOT NULL,
+    label         TEXT,
+    updated_at    INTEGER NOT NULL,
+    PRIMARY KEY (profile_id, flight_number, flight_date, airport)
+);

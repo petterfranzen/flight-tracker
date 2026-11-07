@@ -2,6 +2,7 @@ package com.flighttracker.service.training;
 
 import com.flighttracker.config.SqliteDataSourceConfig;
 import com.flighttracker.repository.AircraftRepository;
+import com.flighttracker.repository.WatchedFlightRepository;
 import com.flighttracker.service.agent.PositionRetentionService;
 import com.flighttracker.service.coverage.ApproachGeometry;
 import com.flighttracker.service.coverage.GapEstimate;
@@ -581,7 +582,8 @@ class TrainingDataIntegrationTest {
 
         PositionRetentionService retention = new PositionRetentionService(jdbc,
                 new AircraftRepository(jdbcClient, Clock.fixed(NOW, ZoneOffset.UTC)), tx,
-                Clock.fixed(NOW, ZoneOffset.UTC), new LiveStateStore(jdbc, Clock.fixed(NOW, ZoneOffset.UTC)), repository);
+                Clock.fixed(NOW, ZoneOffset.UTC), new LiveStateStore(jdbc, Clock.fixed(NOW, ZoneOffset.UTC)), repository,
+                new WatchedFlightRepository(jdbcClient, Clock.fixed(NOW, ZoneOffset.UTC)));
         ReflectionTestUtils.setField(retention, "retentionHours", 72.0);
         ReflectionTestUtils.setField(retention, "batchSize", 5000);
         ReflectionTestUtils.setField(retention, "maxBatchesPerRun", 200);
