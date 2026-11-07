@@ -375,4 +375,54 @@ test.describe("popping @scenario", () => {
     expect(backwards, `${backwards} plane(s) moved backwards while the view was idle (worst ${worstBackDeg.toFixed(4)} deg)`).toBe(0);
     expect(h.pageErrors, "page errors").toEqual([]);
   });
+
+  // #151: a settled view shows its full plane set in one update. The server
+  // learns a newly watched area over time (`ramp`): /live answers with part of
+  // it and the rest follows, report by report, as WebSocket frames. Drawing each
+  // frame's new aircraft the moment it lands made the set grow plane by plane
+  // for seconds with nobody touching the map (14 -> 22 at z8, 39 -> 54 back on a
+  // cached view). The drawn count is sampled every 250 ms of app time after the
+  // view settles: it may step up by whole groups of planes at most twice (the snapshot,
+  // then one batch of everything that followed) and never down by a group.
+  test("a settled view fills in one update, not plane by plane", async ({ page }, testInfo) => {
+    test.setTimeout(240_000);
+    const h = await startReplay(page, testInfo, { ramp: { startFrac: 0.5, perTick: 0.2 } });
+    await boot(page);
+    const countsAfter = async (rounds: number): Promise<number[]> => {
+      const counts: number[] = [];
+      for (let r = 0; r < rounds; r++) {
+        h.advance(); // one recorded tick: its frames are pushed
+        for (let i = 0; i < 8; i++) {
+          await page.clock.runFor(250);
+          await page.waitForTimeout(40); // let a response land
+          counts.push((await h.drawn()).length);
+        }
+      }
+      return counts;
+    };
+    // A fill is a step of several planes at once; a plane or two drifting in or
+    // out of the declutter between ticks is the popping budget's business above.
+    const FILL_STEP = 3;
+    const updates = (c: number[]): number => c.filter((n, i) => i > 0 && n - c[i - 1] >= FILL_STEP).length;
+    const drops = (c: number[]): number => c.filter((n, i) => i > 0 && c[i - 1] - n >= FILL_STEP).length;
+
+    await jumpTo(page, CENTRE.lat, CENTRE.lon, 7);
+    await page.clock.runFor(1500);
+    h.restartRamp();
+    await jumpTo(page, CENTRE.lat, CENTRE.lon, 8); // 7 -> 8: the individual-marker view of an area not watched yet
+    const zoomIn = await countsAfter(9);
+
+    await drag(page, -500, 0); // away, so the first view is only in the cache
+    await page.clock.runFor(1500);
+    h.restartRamp();
+    await drag(page, 500, 0); // and back: the cached set first, then the refresh
+    const back = await countsAfter(9);
+
+    // eslint-disable-next-line no-console
+    console.log(`\n[popping] settled fill\n  zoom in : ${zoomIn.join(",")}\n  back    : ${back.join(",")}\n  updates ${updates(zoomIn)} / ${updates(back)}, drops ${drops(zoomIn)} / ${drops(back)}\n`);
+    expect(updates(zoomIn), `zoom in: the set changed in ${updates(zoomIn)} updates after settling`).toBeLessThanOrEqual(2);
+    expect(updates(back), `back: the set changed in ${updates(back)} updates after settling`).toBeLessThanOrEqual(2);
+    expect(drops(zoomIn) + drops(back), "the set shrank while the view was still").toBe(0);
+    expect(h.pageErrors, "page errors").toEqual([]);
+  });
 });
