@@ -2,10 +2,11 @@
 # Post-deploy smoke test for the flight-tracker production deployment.
 #
 # Run it after a deploy (and as part of the daily check-in) to prove the box is
-# actually serving: the running version, the two live-traffic endpoints, the
-# WebSocket feed, and the front page. Read-only and fast — every request is a
-# GET, nothing is restarted, nothing is written, and a healthy run finishes in
-# well under 90 seconds.
+# actually serving: the running version, the security headers, the two
+# live-traffic endpoints, the front page, and the WebSocket feed opened with the
+# browser's own Origin (a foreign Origin must be refused). Read-only and fast —
+# every request is a GET, nothing is restarted, nothing is written, and a healthy
+# run finishes in well under 90 seconds.
 #
 #   scripts/smoke-prod.sh                          # daily check-in
 #   scripts/smoke-prod.sh <sha>                    # after a deploy: expect that SHA
