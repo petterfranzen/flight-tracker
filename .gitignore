@@ -38,3 +38,7 @@ scripts/.cache/
 
 # Basemap reference screenshots (see frontend/tests/basemap-reference-shots.spec.ts)
 frontend/spike-shots/
+
+# soak test artifacts
+blackbox-tests/soak/soak-report.json
+blackbox-tests/soak/soak-app.log
