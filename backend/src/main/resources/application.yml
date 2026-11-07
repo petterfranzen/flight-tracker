@@ -75,6 +75,12 @@ flighttracker:
   # default — deploy.sh/the systemd unit set FLIGHTTRACKER_DB_PATH to a
   # path under the service's real StateDirectory in production.
   db-path: ${FLIGHTTRACKER_DB_PATH:./data/flighttracker.db}
+  # Optional social login and server-side profiles (design: section9-hq #84).
+  # Default OFF: with the flag off no profile endpoint is wired and the app is
+  # byte-identical to today — an anonymous visitor sees no sign-in control.
+  # Turn it on only after the OAuth client secrets live on the VM (§4, §7).
+  profile:
+    enabled: ${FLIGHTTRACKER_PROFILE_ENABLED:false}
   # Training data for a learned landing model (TrainingDataService): one row per
   # coverage gap near the ground or near a landing candidate, captured once the
   # gap has lasted capture-delay-seconds and labelled when the aircraft reports
