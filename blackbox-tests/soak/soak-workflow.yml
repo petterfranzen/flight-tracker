@@ -1,0 +1,98 @@
+# Nightly live-feed soak and load test.
+#
+# This is NOT part of the PR gate. It is long and CPU-hungry by design: the
+# point is to put production-size traffic through the WebSocket fan-out and
+# report latency/memory, not to block a merge. Run it nightly or by hand.
+#
+# The sandbox token used to author the soak harness cannot push files under
+# .github/workflows/ (no `workflow` scope), so this body ships next to the
+# harness and the coordinator copies it to .github/workflows/soak.yml.
+name: Live-feed soak
+
+on:
+  schedule:
+    - cron: "17 3 * * *"   # 03:17 UTC nightly, off the hour to avoid the cron thundering herd
+  workflow_dispatch:
+    inputs:
+      duration_seconds:
+        description: "Steady-state seconds"
+        default: "900"
+      clients:
+        description: "Concurrent WebSocket clients"
+        default: "100"
+      aircraft:
+        description: "Synthetic worldwide aircraft"
+        default: "12000"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: soak-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      # The soak exercises the API and WebSocket only; the frontend bundle is
+      # not needed, so this skips the Vite build and keeps the run short.
+      - name: Build the jar
+        run: mvn -B package -DskipTests
+        working-directory: backend
+
+      - name: Run the soak
+        env:
+          SOAK_DURATION_SECONDS: ${{ github.event.inputs.duration_seconds || '900' }}
+          SOAK_CLIENTS: ${{ github.event.inputs.clients || '100' }}
+          SOAK_AIRCRAFT: ${{ github.event.inputs.aircraft || '12000' }}
+          SOAK_POLL_SECONDS: "18"
+          SOAK_OUT: soak-report.json
+          # Optional budgets — leave unset until a baseline exists on this runner.
+          # SOAK_MAX_P95_MS: "10000"
+          # SOAK_MAX_RSS_MB: "2500"
+        run: node blackbox-tests/soak/soak.mjs
+
+      - name: Upload soak report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: soak-report
+          path: |
+            soak-report.json
+            soak-app.log
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Summary
+        if: always()
+        run: |
+          if [ -f soak-report.json ]; then
+            node -e '
+              const r = require("./soak-report.json");
+              const s = r.latency || {};
+              console.log("### Live-feed soak: " + (r.ok ? "PASS" : "FAIL"));
+              console.log("- clients: " + r.clients.configured + ", steady frames: " + r.frames.steady + " (" + r.frames.perSecondSteady + "/s)");
+              console.log("- frame age p50/p95/p99/max: " + [s.p50Ms, s.p95Ms, s.p99Ms, s.maxMs].join(" / ") + " ms");
+              console.log("- server RSS start/end/peak: " + [r.server.rssMb.atSteadyStart, r.server.rssMb.atSteadyEnd, r.server.rssMb.peak].join(" / ") + " MB");
+              console.log("- delivery ratio: " + r.delivery.ratio);
+              if (r.failures.length) console.log("- failures: " + r.failures.join("; "));
+              console.log("");
+              console.log("Full JSON is in the soak-report artifact.");
+            ' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### Live-feed soak: no report produced" >> "$GITHUB_STEP_SUMMARY"
+          fi
