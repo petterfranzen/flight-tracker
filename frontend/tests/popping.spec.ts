@@ -3,7 +3,6 @@ import {
   BUDGET,
   CENTRE,
   REC,
-  TRAIL_TOL_DEG,
   tickTime,
   type Replay,
   type StepMetrics,
@@ -202,7 +201,7 @@ test.describe("popping @scenario", () => {
     const worstBackDeg = Math.max(0, ...h.steps.flatMap((s) => s.backwards.map((b) => b.backDeg)));
     const offTrailMaxDeg = Math.max(0, ...h.steps.map((s) => s.selectedOffTrail?.offDeg ?? 0));
     expect(backwards, `${backwards} plane(s) moved backwards along their track (worst ${worstBackDeg.toFixed(4)} deg)`).toBe(0);
-    expect(offTrailMaxDeg, `the selected plane left its trail by up to ${offTrailMaxDeg.toFixed(4)} deg`).toBeLessThanOrEqual(TRAIL_TOL_DEG);
+    expect(offTrailMaxDeg, `the selected plane left its trail by up to ${offTrailMaxDeg.toFixed(4)} deg`).toBeLessThanOrEqual(BUDGET.selectedOffTrailDeg);
     expect(h.pageErrors, "page errors").toEqual([]);
   });
 
@@ -213,6 +212,14 @@ test.describe("popping @scenario", () => {
   // overwrite the estimate: the marker snapped back while the trail stayed
   // ahead. The estimate's as-of (now) is newer than the cached list's, so it
   // survives.
+  //
+  // Timing-sensitive, and named honestly: a single run can pass even without
+  // the fix, because the report's /live reconcile has to land while the
+  // estimate is on screen. When it does bite, it is on the **panned east**
+  // step — the reconcile of the same report overwriting the estimate, about
+  // one tick (~0.0045 deg) of flight — not on the cached redraw at 'panned back
+  // west' that the mechanism above describes. Run it repeated to see it; CI
+  // retries a failure once (CLAUDE.md, "Writing tests that don't flake").
   test("the selected plane's estimate survives a cached view of the same report", async ({ page }, testInfo) => {
     test.setTimeout(240_000);
     const h = await startReplay(page, testInfo, { deadReckonMs: 10_000 });

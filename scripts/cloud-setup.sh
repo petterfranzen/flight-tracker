@@ -13,6 +13,19 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 log() { echo "[cloud-setup] $*" >&2; }
+# The Chromium a VPS agent sandbox ships, if any: a full browser if one is
+# there, otherwise Playwright's headless shell (all suites run headless).
+find_pw_chromium() {
+  local base="${PLAYWRIGHT_BROWSERS_PATH:-/opt/ms-playwright}" p
+  for p in "$base"/chromium-*/chrome-linux/chrome \
+           "$base"/chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell; do
+    if [[ -x "$p" ]]; then
+      echo "$p"
+      return 0
+    fi
+  done
+  return 1
+}
 SUDO=""; [[ $EUID -ne 0 ]] && command -v sudo >/dev/null && SUDO="sudo"
 
 java_major() { java -version 2>&1 | sed -n 's/.*version "\([0-9]*\).*/\1/p' | head -1; }
@@ -56,6 +69,12 @@ if (cd "$ROOT/frontend" && npx playwright install --with-deps chromium >/dev/nul
 elif [[ -x /opt/pw-browsers/chromium ]]; then
   log "playwright CDN unreachable; using pre-installed /opt/pw-browsers/chromium"
   [[ -n "${CLAUDE_ENV_FILE:-}" ]] && echo "export PW_CHROMIUM_PATH=/opt/pw-browsers/chromium" >> "$CLAUDE_ENV_FILE"
+elif pw_chromium="$(find_pw_chromium)"; then
+  # VPS agent sandboxes ship Playwright's browsers under
+  # PLAYWRIGHT_BROWSERS_PATH and often only the headless shell (every suite
+  # runs headless, so that is the right binary there).
+  log "playwright CDN unreachable; using pre-installed $pw_chromium"
+  [[ -n "${CLAUDE_ENV_FILE:-}" ]] && echo "export PW_CHROMIUM_PATH=$pw_chromium" >> "$CLAUDE_ENV_FILE"
 else
   log "no Chromium available; Playwright tests won't run in this session"
 fi

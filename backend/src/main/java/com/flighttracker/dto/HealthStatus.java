@@ -10,6 +10,15 @@ import java.time.Instant;
  * considering a deploy healthy, so it must be the full SHA, not a short
  * one. "dev" when no build-info was generated (a local/backend-only build
  * with no -Dgit.sha, e.g. this repo's own `mvn verify`).
+ *
+ * lastSweepAt is the last sweep that actually wrote rows — a skipped or
+ * empty cycle no longer advances it (see SweepHealthTracker). lastSweepRows
+ * is how many rows that sweep wrote; skippedSweeps counts the consecutive
+ * completed cycles since then that wrote nothing. Together they make "the
+ * data is N minutes old" answerable instead of a lone timestamp that used
+ * to move whether or not anything arrived. Additive fields on an
+ * additive-only endpoint.
  */
-public record HealthStatus(String status, String version, String db, Instant lastSweepAt) {
+public record HealthStatus(String status, String version, String db, Instant lastSweepAt,
+                            int lastSweepRows, int skippedSweeps) {
 }

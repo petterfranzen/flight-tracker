@@ -31,7 +31,7 @@ class OpsStatsFilterTest {
         return new OpsStats(Instant.parse("2026-10-26T08:00:00Z"), 3600L,
                 new OpsStats.Memory(1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L, 9L, 0L, 0.1, 0.2, 0.3, 0.4, 10L, 11L, 12L, 13L),
                 new OpsStats.Io(14L, 15L), new OpsStats.Cpu(16.5, 0.7), new OpsStats.Data(17L),
-                new OpsStats.Freshness(Instant.parse("2026-10-26T07:58:00Z"), 18L));
+                new OpsStats.Freshness(Instant.parse("2026-10-26T07:58:00Z"), 12, 0, 18L));
     }
 
     private MockHttpServletRequest get(String path, String token) {
