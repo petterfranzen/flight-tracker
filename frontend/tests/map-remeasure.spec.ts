@@ -1,3 +1,4 @@
+import { OPENFREEMAP_TILEJSON } from "./fixtures/basemap";
 import { expect, test } from "@playwright/test";
 import { mockFlightApi, waitForMapReady } from "./helpers";
 
@@ -37,7 +38,7 @@ test.describe("map re-measures its container", () => {
   test("the GL basemap follows: a container that was small at first and then grows is fully covered", async ({ page }) => {
     // The cold-load case on a phone: the map is created while its container is still short.
     await page.route("https://tiles.openfreemap.org/planet", (r) =>
-      r.fulfill({ json: { tilejson: "3.0.0", tiles: ["https://tiles.openfreemap.org/t/{z}/{x}/{y}.pbf"], minzoom: 0, maxzoom: 14, vector_layers: [] } }),
+      r.fulfill({ json: OPENFREEMAP_TILEJSON }),
     );
     await page.route(/tiles\.openfreemap\.org\/(t|fonts)\//, (r) => r.fulfill({ body: Buffer.alloc(0), contentType: "application/x-protobuf" }));
     await mockFlightApi(page, { realTiles: true });

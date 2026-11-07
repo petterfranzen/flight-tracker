@@ -157,9 +157,57 @@ function stamp(list: LiveMarker[], asOf: number): AsOfMarker[] {
   return list.map((p) => ({ ...p, asOf }));
 }
 
-/** The newer of two positions by `asOf`; on a tie the one already drawn is kept. */
+/**
+ * Whether `incoming` sits further along the aircraft's own track than `existing`
+ * (the sign of the displacement along `existing`'s heading).
+ */
+function aheadOf(existing: LiveMarker, incoming: LiveMarker): boolean {
+  const heading = ((existing.headingDeg ?? incoming.headingDeg ?? 0) * Math.PI) / 180;
+  const dx = incoming.longitude - existing.longitude;
+  const dy = incoming.latitude - existing.latitude;
+  return dx * Math.sin(heading) + dy * Math.cos(heading) > 0;
+}
+
+/**
+ * The position to draw, given what is already drawn and what a payload says.
+ *
+ * `asOf` (the time the information was produced) orders payloads of the same
+ * report taken at different times, and on a tie the drawn one is kept. But two
+ * payloads of the *same report* (equal `observedAt`) sit at different points
+ * along the track: a snapshot is the report dead-reckoned forward, a raw report
+ * is the report itself. For the same report the further-along position is the
+ * later information, so it wins and the marker never moves backwards (#150).
+ */
 function newerOf(existing: AsOfMarker | undefined, incoming: AsOfMarker): AsOfMarker {
-  return existing && existing.asOf >= incoming.asOf ? existing : incoming;
+  if (!existing) return incoming;
+  if (existing.observedAt === incoming.observedAt) return aheadOf(existing, incoming) ? incoming : existing;
+  return existing.asOf >= incoming.asOf ? existing : incoming;
+}
+
+/**
+ * Whether a WebSocket frame should move a marker that is already drawn.
+ *
+ * A LiveFrame carries the aircraft's **raw** last report (LiveFrame.of in the
+ * backend, straight off the persisted position), while `/live` and
+ * `/live/overview` serve the server's **dead-reckoned** display position: the
+ * same report projected forward along its own track by
+ * EstimatedPositionService (up to `speed x report age`, and the estimate is
+ * refreshed on its own cycle). The two payloads of the *same* report therefore
+ * share `observedAt` with positions several km apart.
+ *
+ * So a frame only moves a marker when it carries a report **strictly newer**
+ * than the one already drawn. For the same report the drawn position - a
+ * snapshot's dead-reckoned estimate - stands: it is the more current answer to
+ * "where is the aircraft now". Applying the frame instead pulled the marker
+ * back to the raw report, and the next refresh snapped it forward again: the
+ * idle reversion of #150, where frame and refresh disagreed about the same
+ * report and each redraw took the other's side.
+ *
+ * A genuinely new report has a newer `observedAt`, so it still moves the marker
+ * immediately.
+ */
+function frameAdvances(existing: LiveMarker | undefined, p: FlightPosition): boolean {
+  return existing === undefined || p.observedAt > existing.observedAt;
 }
 
 function boot(): void {
@@ -652,13 +700,17 @@ function boot(): void {
     let overviewNext: AsOfMarker[] | null = null;
     for (const p of pendingWs.values()) {
       const overviewAt = overviewIndex.get(p.icao24);
-      if (overviewAt !== undefined && zoom < CLUSTER_FETCH_MAX_ZOOM && arrival > overviewPlanes[overviewAt].asOf) {
+      const drawnOverview = overviewAt !== undefined ? overviewPlanes[overviewAt] : undefined;
+      if (drawnOverview !== undefined && zoom < CLUSTER_FETCH_MAX_ZOOM && frameAdvances(drawnOverview, p) && arrival > drawnOverview.asOf) {
         overviewNext ??= overviewPlanes.slice();
-        overviewNext[overviewAt] = { ...p, asOf: arrival };
+        overviewNext[overviewAt as number] = { ...p, asOf: arrival };
         changed = true;
       }
       const existing = positions.get(p.icao24);
-      if (existing && existing.asOf >= arrival) continue; // superseded by a /live reconcile already
+      // Superseded by a /live reconcile already, or by a snapshot that already
+      // carries a position from this same report: the frame is the raw report,
+      // the snapshot its dead-reckoned display (see frameAdvances).
+      if (existing && (existing.asOf >= arrival || !frameAdvances(existing, p))) continue;
       if (p.icao24 !== selectedId && !inDrawnArea(p)) continue;
       positions.set(p.icao24, { ...p, asOf: arrival });
       changed = true;

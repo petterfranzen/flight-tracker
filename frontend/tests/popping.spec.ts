@@ -3,7 +3,6 @@ import {
   BUDGET,
   CENTRE,
   REC,
-  TRAIL_TOL_DEG,
   tickTime,
   type Replay,
   type StepMetrics,
@@ -202,7 +201,7 @@ test.describe("popping @scenario", () => {
     const worstBackDeg = Math.max(0, ...h.steps.flatMap((s) => s.backwards.map((b) => b.backDeg)));
     const offTrailMaxDeg = Math.max(0, ...h.steps.map((s) => s.selectedOffTrail?.offDeg ?? 0));
     expect(backwards, `${backwards} plane(s) moved backwards along their track (worst ${worstBackDeg.toFixed(4)} deg)`).toBe(0);
-    expect(offTrailMaxDeg, `the selected plane left its trail by up to ${offTrailMaxDeg.toFixed(4)} deg`).toBeLessThanOrEqual(TRAIL_TOL_DEG);
+    expect(offTrailMaxDeg, `the selected plane left its trail by up to ${offTrailMaxDeg.toFixed(4)} deg`).toBeLessThanOrEqual(BUDGET.selectedOffTrailDeg);
     expect(h.pageErrors, "page errors").toEqual([]);
   });
 
@@ -213,6 +212,14 @@ test.describe("popping @scenario", () => {
   // overwrite the estimate: the marker snapped back while the trail stayed
   // ahead. The estimate's as-of (now) is newer than the cached list's, so it
   // survives.
+  //
+  // Timing-sensitive, and named honestly: a single run can pass even without
+  // the fix, because the report's /live reconcile has to land while the
+  // estimate is on screen. When it does bite, it is on the **panned east**
+  // step — the reconcile of the same report overwriting the estimate, about
+  // one tick (~0.0045 deg) of flight — not on the cached redraw at 'panned back
+  // west' that the mechanism above describes. Run it repeated to see it; CI
+  // retries a failure once (CLAUDE.md, "Writing tests that don't flake").
   test("the selected plane's estimate survives a cached view of the same report", async ({ page }, testInfo) => {
     test.setTimeout(240_000);
     const h = await startReplay(page, testInfo, { deadReckonMs: 10_000 });
@@ -315,6 +322,57 @@ test.describe("popping @scenario", () => {
     // (a tick behind it).
     expect(drawn.lat, "the marker is still on its estimate").toBeCloseTo(onEstimate.lat, 5);
     expect(drawn.lon, "the marker is still on its estimate").toBeCloseTo(onEstimate.lon, 5);
+    expect(h.pageErrors, "page errors").toEqual([]);
+  });
+
+  // The idle reversion (#150). Below CLUSTER_FETCH_MAX_ZOOM the map draws the
+  // server's **dead-reckoned** position: /live/overview serves the last report
+  // projected forward along its own track (EstimatedPositionService). The
+  // WebSocket feed, though, pushes the **raw** report (LiveFrame.of, straight
+  // off the persisted position). With the server dead-reckoning — a report every
+  // 10 s, the position returned advancing with the tick, and `rawFrames` so the
+  // frames carry the raw report the way the backend really does — the two
+  // payloads of one report disagree by several km. A frame landing after a
+  // refresh therefore used to pull the marker back to the raw report and the
+  // next refresh snapped it forward: the aircraft alternated between two
+  // positions with no new report and no interaction, measured on production as
+  // planes reverting to a coordinate from two samples earlier.
+  //
+  // The view never moves after the opening jump, so this is the idle case; the
+  // steps are read without waiting for the app to settle, because the whole
+  // point is the frame that lands between two refreshes.
+  test("a plane never moves backwards while the view is idle", async ({ page }, testInfo) => {
+    test.setTimeout(240_000);
+    const h = await startReplay(page, testInfo, { deadReckonMs: 10_000, rawFrames: true });
+    await boot(page);
+    await jumpTo(page, CENTRE.lat, CENTRE.lon, 6);
+    // Walk into the middle of a report window: the server now answers with a
+    // position several ticks ahead of the raw report the frames carry.
+    for (let i = 0; i < 3; i++) {
+      h.advance();
+      await page.waitForTimeout(400);
+    }
+    await h.step("opened at z6, mid-window", false);
+
+    // The overview refetch (OVERVIEW_REFRESH_MS = 10 s) draws the dead-reckoned
+    // position for the report open right now.
+    await page.waitForTimeout(11_000);
+    await h.step("after the overview refresh", false);
+
+    // The frames for that same report arrive: raw positions, the observedAt the
+    // drawn marker already carries.
+    for (let i = 0; i < 3; i++) {
+      h.advance();
+      await page.waitForTimeout(600);
+      await h.step(`raw frames ${i + 1}`, false);
+    }
+
+    // eslint-disable-next-line no-console
+    console.log(`\n[popping] idle dead-reckoned\n${h.table()}\n[popping] ${h.summary()}\n`);
+
+    const backwards = h.steps.reduce((a, s) => a + s.backwards.length, 0);
+    const worstBackDeg = Math.max(0, ...h.steps.flatMap((s) => s.backwards.map((b) => b.backDeg)));
+    expect(backwards, `${backwards} plane(s) moved backwards while the view was idle (worst ${worstBackDeg.toFixed(4)} deg)`).toBe(0);
     expect(h.pageErrors, "page errors").toEqual([]);
   });
 });

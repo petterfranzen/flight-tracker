@@ -81,6 +81,8 @@ public class OpsStatsReader {
                 new OpsStats.Cpu(cpuSeconds, loadAverage()),
                 new OpsStats.Data(storeBytes()),
                 new OpsStats.Freshness(sweepHealthTracker.lastSweepAt().orElse(null),
+                        sweepHealthTracker.lastSweepRows(),
+                        sweepHealthTracker.consecutiveSkips(),
                         liveStateStore.countActive(now.minus(Duration.ofMinutes(10)))));
     }
 

@@ -28,6 +28,7 @@
  *
  * See docs/popping-harness.md.
  */
+import { OPENFREEMAP_TILEJSON } from "../fixtures/basemap";
 import { expect, type Page, type TestInfo } from "@playwright/test";
 import { clusterMockFleet, onePerCell } from "../../src/api/mockFleet";
 import recording from "../fixtures/popping/recording.json" with { type: "json" };
@@ -242,6 +243,18 @@ async function waitApplied(
  */
 export interface ReplayOptions {
   deadReckonMs?: number;
+  /**
+   * Make the WebSocket frames carry the aircraft's **raw** last report, the
+   * way the real backend does: LiveFrame.of(position) is built from the
+   * persisted report, while /live and /live/overview serve the server's
+   * dead-reckoned *display* position (EstimatedPositionService). With
+   * `deadReckonMs` set, a frame and a snapshot of the same report therefore
+   * share `observedAt` with positions several ticks apart — the disagreement
+   * #150 is made of. Unset, a frame carries the same dead-reckoned position
+   * the REST endpoints do (the shape the #53/#97 baselines were recorded on),
+   * so the two never disagree and the idle reversion cannot show.
+   */
+  rawFrames?: boolean;
 }
 
 export async function startReplay(page: Page, testInfo: TestInfo, opts: ReplayOptions = {}): Promise<Replay> {
@@ -264,7 +277,7 @@ export async function startReplay(page: Page, testInfo: TestInfo, opts: ReplayOp
 
   // ---- basemap ----
   await page.route("https://tiles.openfreemap.org/planet", (r) =>
-    r.fulfill({ json: { tilejson: "3.0.0", tiles: ["https://tiles.openfreemap.org/t/{z}/{x}/{y}.pbf"], minzoom: 0, maxzoom: 14, vector_layers: [] } }),
+    r.fulfill({ json: OPENFREEMAP_TILEJSON }),
   );
   await page.route(/tiles\.openfreemap\.org\/(t|fonts)\//, (r) => r.fulfill({ body: "", contentType: "application/x-protobuf" }));
   await page.route(/tile\.openstreetmap\.org/, (r) => r.abort());
@@ -288,6 +301,20 @@ export async function startReplay(page: Page, testInfo: TestInfo, opts: ReplayOp
       .map((f, i) => ({ f, i }))
       .filter(({ i }) => !b || inBbox(t.lat[i], t.lon[i], b))
       .map(({ f, i }) => ({ icao24: f.icao24, callsign: f.callsign, observedAt: observedAtOf(Math.min(tickIndex, REC.ticks.length - 1)), latitude: t.lat[i], longitude: t.lon[i], headingDeg: f.headingDeg, onGround: f.onGround }));
+  };
+  const rawFrames = opts.rawFrames ?? false;
+  /**
+   * The frame payload for one aircraft: the last *report*'s position (raw),
+   * or — the harness's default — the dead-reckoned display the REST endpoints
+   * serve. See ReplayOptions.rawFrames.
+   */
+  const frameIn = (b: Bbox | null) => {
+    const i = Math.min(tickIndex, REC.ticks.length - 1);
+    const t = REC.ticks[reportIndex(i)];
+    return REC.fleet
+      .map((f, j) => ({ f, j }))
+      .filter(({ j }) => !b || inBbox(t.lat[j], t.lon[j], b))
+      .map(({ f, j }) => ({ icao24: f.icao24, callsign: f.callsign, observedAt: observedAtOf(i), latitude: t.lat[j], longitude: t.lon[j], headingDeg: f.headingDeg, onGround: f.onGround }));
   };
   const bboxOf = (u: URL): Bbox | null =>
     u.searchParams.has("latMin")
@@ -352,7 +379,7 @@ export async function startReplay(page: Page, testInfo: TestInfo, opts: ReplayOp
   });
   function pushTick(): void {
     if (!socket) return;
-    for (const m of markersIn(lastBbox)) socket.send(JSON.stringify(m));
+    for (const m of rawFrames ? frameIn(lastBbox) : markersIn(lastBbox)) socket.send(JSON.stringify(m));
     socket.send(JSON.stringify({ type: "ping" }));
   }
 
