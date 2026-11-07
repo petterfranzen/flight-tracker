@@ -1,6 +1,8 @@
 package com.flighttracker.repository;
 
 import com.flighttracker.model.Favorite;
+import com.flighttracker.profile.ProfileLimitException;
+import com.flighttracker.profile.ProfileLimits;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
@@ -55,11 +57,21 @@ public class FavoriteRepository {
                 .optional();
     }
 
-    /** Adds or replaces one favourite, stamping updated_at. */
+    /**
+     * Adds or replaces one favourite, stamping updated_at. Rejects over-cap or
+     * malformed input with {@link ProfileLimitException} before writing. The
+     * per-profile row cap is checked inside the same INSERT statement, so it
+     * is atomic: a new key past the cap writes nothing, while replacing an
+     * existing key at the cap still works.
+     */
     public void upsert(String profileId, String kind, String itemKey, String data) {
-        jdbcClient.sql("""
+        ProfileLimits.checkFavorite(kind, itemKey, data);
+        int written = jdbcClient.sql("""
                 INSERT INTO favorite (profile_id, kind, item_key, data, updated_at)
-                VALUES (:profileId, :kind, :itemKey, :data, :now)
+                SELECT :profileId, :kind, :itemKey, :data, :now
+                WHERE (SELECT COUNT(*) FROM favorite WHERE profile_id = :profileId) < :max
+                   OR EXISTS (SELECT 1 FROM favorite
+                              WHERE profile_id = :profileId AND kind = :kind AND item_key = :itemKey)
                 ON CONFLICT (profile_id, kind, item_key) DO UPDATE SET
                     data = excluded.data,
                     updated_at = excluded.updated_at
@@ -69,7 +81,12 @@ public class FavoriteRepository {
                 .param("itemKey", itemKey)
                 .param("data", data)
                 .param("now", clock.millis())
+                .param("max", ProfileLimits.MAX_FAVORITES_PER_PROFILE)
                 .update();
+        if (written == 0) {
+            throw new ProfileLimitException(ProfileLimitException.Reason.TOO_MANY_ROWS, "favorites",
+                    "a profile may hold at most " + ProfileLimits.MAX_FAVORITES_PER_PROFILE + " favorites");
+        }
     }
 
     public int delete(String profileId, String kind, String itemKey) {
