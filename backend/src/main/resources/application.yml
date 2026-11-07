@@ -42,9 +42,10 @@ spring:
         # AirportSeedService.sync(), RunwaySeedService.sync(),
         # LiveFeedBroadcaster.sendKeepalive() (the WebSocket ping),
         # CallsignRouteService.resolveNext() (the paced callsign->route
-        # lookups) and ArrivalConfirmationService.tick() — ten — plus one
-        # spare so a single slow/stuck task never leaves the pool fully
-        # saturated. Bump this again if an eleventh @Scheduled method is
+        # lookups), ArrivalConfirmationService.tick() and the two per-IP
+        # rate-limit map sweeps (RestartRateLimiter, HotPollUserBudget) —
+        # twelve — plus one spare so a single slow/stuck task never leaves
+        # the pool fully saturated. Bump this again if another @Scheduled method is
         # ever added (grep -rn "@Scheduled(" backend/src/main). Retention and
         # the estimator refresh in particular must not have to wait on a
         # sweep for a thread: retention's first run after a long outage
@@ -56,7 +57,7 @@ spring:
         # would otherwise silently die under Cloudflare's ~100s idle
         # timeout during exactly the kind of long sweep that used to
         # starve everything else.
-        size: 11
+        size: 13
 
 server:
   port: 8080
@@ -81,6 +82,16 @@ flighttracker:
     # listed; browsers send Origin for localhost pages too, so the dev origins
     # (the app itself and the Vite dev server) are listed as well.
     allowed-origins: ${FLIGHTTRACKER_WS_ALLOWED_ORIGINS:https://flight.pastabake.cloud,http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://127.0.0.1:5173}
+    # Concurrent /ws/live sockets per client IP; the next one is closed with
+    # 1013. The frontend opens one per tab. 0 disables the cap.
+    max-connections-per-ip: ${FLIGHTTRACKER_WS_MAX_CONNECTIONS_PER_IP:8}
+  proxy:
+    # Socket peers (exact IPs or CIDRs, comma-separated) whose CF-Connecting-IP /
+    # X-Real-IP / X-Forwarded-For are believed as the client IP. Default is
+    # loopback: the cloudflared tunnel. From any other peer those headers are
+    # ignored and the peer address is the client. Never list a range that
+    # untrusted hosts can connect from.
+    trusted-proxies: ${FLIGHTTRACKER_TRUSTED_PROXIES:127.0.0.1,::1}
   # SQLite database file (cloud migration A2 — see config/SqliteDataSourceConfig).
   # Parent directory is created if missing. ./data/flighttracker.db by
   # default — deploy.sh/the systemd unit set FLIGHTTRACKER_DB_PATH to a
