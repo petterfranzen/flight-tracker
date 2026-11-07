@@ -4,6 +4,7 @@ import com.flighttracker.config.SqliteDataSourceConfig;
 import com.flighttracker.model.FlightPosition;
 import com.flighttracker.repository.AircraftRepository;
 import com.flighttracker.repository.FlightPositionRepository;
+import com.flighttracker.repository.WatchedFlightRepository;
 import com.flighttracker.service.agent.PositionRetentionService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -121,7 +122,8 @@ class SqlitePersistenceIntegrationTest {
         TransactionTemplate transactionTemplate = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
         PositionRetentionService retentionService = new PositionRetentionService(
                 jdbcTemplate, aircraftRepository, transactionTemplate, clock, liveStateStore,
-                new com.flighttracker.service.training.TrainingDataRepository(jdbcClient));
+                new com.flighttracker.service.training.TrainingDataRepository(jdbcClient),
+                new WatchedFlightRepository(jdbcClient, clock));
         setField(retentionService, "retentionHours", 0.5);
         setField(retentionService, "batchSize", 5000);
         setField(retentionService, "maxBatchesPerRun", 200);
