@@ -3,6 +3,7 @@ import type { AppState } from "./state/appState";
 import { h, clear } from "./ui/h";
 import type { FavoriteAircraft, FavoriteRoute } from "./favorites";
 import { loadFavoriteAircraft, loadFavoriteRoutes, toggleFavoriteAircraft, toggleFavoriteRoute } from "./favorites";
+import { loadWatched, saveWatched, watchKey, type WatchedFlight } from "./watchlist";
 import type { AirportSelection, Bounds, FlightPosition, LiveMarker, LiveOverview, SelectedPosition, TrackStatus } from "./types/flight";
 import {
   fetchAircraftDossier,
@@ -17,8 +18,14 @@ import {
   fetchLivePositions,
   fetchPollingStatus,
   restartPolling,
+  searchSchedule,
+  searchScheduleWithStatus,
   subscribeLiveFeed,
+  type ScheduledFlight,
 } from "./api/flightApi";
+import { NOTIFY_ENABLED, notificationPermission, showOsNotification } from "./notify/notifier";
+import { loadNotifyState, saveNotifyState, pruneNotifyState, emptyState, forgetFlight } from "./notify/state";
+import { chooseChannel, observeFlight } from "./notify/detect";
 import { boundsFromMap, createFollowSelected, createMap, DEFAULT_VIEW, GPUInitializationError } from "./map/map";
 import { createPlaneLayer, planeBoxSize } from "./map/planes";
 import { declutterCellDeg, newDeclutterMemory, pickNonOverlapping, spacingKey, spacingLevel, type Candidate } from "./map/declutter";
@@ -26,7 +33,9 @@ import { isSmallScreen } from "./map/screen";
 import { pickInitialView } from "./map/initialView";
 import { getMockPlaneCount } from "./api/mockFleet";
 import { agedIds, findShadowedIds, isActiveTraffic, OVERLAP_MIN_ZOOM } from "./map/staleness";
+import { newerReport, notOlderReport, sameReport } from "./map/reportOrder";
 import { createRouteLayer } from "./map/route";
+import { confirmedGate, displayedPosition, gateDisplay, trailFor, type GateDisplay } from "./map/gatePlacement";
 import { createUncertaintyLayer } from "./map/uncertainty";
 import { keepCellWinners } from "./map/cellWinners";
 import { snapBounds, ViewCache, type CachedView } from "./map/viewCache";
@@ -36,6 +45,7 @@ import * as dock from "./ui/dock";
 import * as flightSearch from "./ui/flightSearch";
 import * as favoritesPanel from "./ui/favoritesPanel";
 import * as watchPanel from "./ui/watchPanel";
+import * as watchToast from "./ui/watchToast";
 import * as legend from "./ui/legend";
 import * as installPrompt from "./ui/installPrompt";
 import * as dossierPanel from "./ui/dossierPanel";
@@ -57,6 +67,8 @@ const COVERAGE_LOST_REFETCH_MS = 15_000;
 // (LANDED_CONFIRMED) the gate may follow, at any time.
 const LANDED_REFETCH_MS = 60_000;
 const FETCH_STOP_MS = 5 * 60_000;
+// Gates are in the basemap's zoom-14 tiles, which load from this app zoom (map.findGate).
+const GATE_LOOKUP_ZOOM = 16;
 const DIALOG_STOP_MS = 5 * 60_000;
 
 // Below this zoom the map asks the server for a thinned-out set (one plane per
@@ -181,14 +193,15 @@ function aheadOf(existing: LiveMarker, incoming: LiveMarker): boolean {
  *
  * `asOf` (the time the information was produced) orders payloads of the same
  * report taken at different times, and on a tie the drawn one is kept. But two
- * payloads of the *same report* (equal `observedAt`) sit at different points
- * along the track: a snapshot is the report dead-reckoned forward, a raw report
- * is the report itself. For the same report the further-along position is the
- * later information, so it wins and the marker never moves backwards (#150).
+ * payloads of the *same report* (`observedAt` naming the same instant, however
+ * it is spelled) sit at different points along the track: a snapshot is the
+ * report dead-reckoned forward, a raw report is the report itself. For the same
+ * report the further-along position is the later information, so it wins and
+ * the marker never moves backwards (#150).
  */
 function newerOf(existing: AsOfMarker | undefined, incoming: AsOfMarker): AsOfMarker {
   if (!existing) return incoming;
-  if (existing.observedAt === incoming.observedAt) return aheadOf(existing, incoming) ? incoming : existing;
+  if (sameReport(existing.observedAt, incoming.observedAt)) return aheadOf(existing, incoming) ? incoming : existing;
   return existing.asOf >= incoming.asOf ? existing : incoming;
 }
 
@@ -211,11 +224,15 @@ function newerOf(existing: AsOfMarker | undefined, incoming: AsOfMarker): AsOfMa
  * idle reversion of #150, where frame and refresh disagreed about the same
  * report and each redraw took the other's side.
  *
+ * Both comparisons go through `Date.parse` (map/reportOrder.ts): `observedAt`
+ * can arrive spelled with an offset, or with or without fractional seconds, and
+ * ordering the strings would put two reports in the wrong order.
+ *
  * A genuinely new report has a newer `observedAt`, so it still moves the marker
  * immediately.
  */
 function frameAdvances(existing: LiveMarker | undefined, p: FlightPosition): boolean {
-  return existing === undefined || p.observedAt > existing.observedAt;
+  return existing === undefined || newerReport(p.observedAt, existing.observedAt);
 }
 
 function boot(): void {
@@ -231,9 +248,10 @@ function boot(): void {
   const leftOverlayStack = h("div", { className: "left-overlay-stack" });
   const trackedChipRoot = h("div");
   const resumeDialogRoot = h("div");
+  const watchToastRoot = h("div");
   const mapRoot = h("div");
   const dossierRoot = h("div");
-  appShell.append(bootScreenRoot, dockRoot, leftOverlayStack, trackedChipRoot, resumeDialogRoot, mapRoot, dossierRoot);
+  appShell.append(bootScreenRoot, dockRoot, leftOverlayStack, trackedChipRoot, resumeDialogRoot, watchToastRoot, mapRoot, dossierRoot);
   rootEl.appendChild(appShell);
 
   // PWA install control (#85): shown only when the browser offers an
@@ -282,6 +300,11 @@ function boot(): void {
     favoriteRoutes: loadFavoriteRoutes(),
     favoriteAircraft: loadFavoriteAircraft(),
 
+    watchedFlights: loadWatched(),
+    watchedStatus: {},
+    departureToast: null,
+    watchNotice: null,
+
     // Placeholders — replaced with real closures below once every module
     // they need (map, layers) exists. Never called before that happens:
     // nothing synchronous between here and the store.set() calls below
@@ -297,6 +320,12 @@ function boot(): void {
     removeFavoriteAircraft: () => {},
     removeFavoriteRoute: () => {},
     resumeTracking: () => {},
+
+    watchFlight: () => {},
+    unwatchFlight: () => {},
+    goToWatched: () => {},
+    dismissDepartureToast: () => {},
+    dismissWatchNotice: () => {},
   };
   const store = new Store<AppState>(state);
 
@@ -378,14 +407,51 @@ function boot(): void {
   function drawRoute(): void {
     const pos = store.get("selectedPos");
     const tip = pos && pos.icao24 === store.get("selectedId") ? pos : null;
-    const until = tip ? Date.parse(tip.observedAt) : Infinity;
-    route = routePoints.filter((pt) => Date.parse(pt.observedAt) <= until).map((pt): [number, number] => [pt.lat, pt.lon]);
-    const end = route[route.length - 1];
-    if (tip && !(end && end[0] === tip.latitude && end[1] === tip.longitude)) route.push([tip.latitude, tip.longitude]);
+    route = trailFor(routePoints, tip, currentGateDisplay(), Date.now());
     routeLayer.update(route);
   }
+
+  // ---- confirmed gate ----
+  // A plane whose gate a provider confirmed is drawn at the gate once its last
+  // report is old (map/gatePlacement.ts). The gate's coordinate is the gate's
+  // own point in the basemap's vector tiles (aeroway class "gate", by ref),
+  // which are loaded only while the view is at the airport: it is looked up
+  // when the status arrives and again whenever tiles load, until found.
+  let gatePoint: { icao24: string; gate: string; lat: number; lon: number } | null = null;
+  function currentGateDisplay(): GateDisplay | null {
+    const pos = store.get("selectedPos");
+    const status = store.get("trackStatus");
+    const gate = confirmedGate(pos, status);
+    const point = gate && gatePoint && gatePoint.icao24 === pos?.icao24 && gatePoint.gate === gate ? gatePoint : null;
+    return gateDisplay(pos, status, Date.now(), point);
+  }
+  // Once per selection, if the gate's tile is not loaded: go where it is.
+  let gateZoomDone = false;
+  function onGateStatus(status: TrackStatus | null): void {
+    resolveGate();
+    const pos = store.get("selectedPos");
+    const gate = confirmedGate(pos, status);
+    if (gate && status && !gateZoomDone && !(gatePoint && gatePoint.gate === gate && gatePoint.icao24 === pos?.icao24)) {
+      gateZoomDone = true;
+      if (map.getZoom() < GATE_LOOKUP_ZOOM) map.flyTo([status.lastSeenLat, status.lastSeenLon], GATE_LOOKUP_ZOOM, 800);
+    }
+    renderAircraftLayer(); // the status can also stop qualifying (a gate that changed)
+    drawRoute();
+  }
+  function resolveGate(): void {
+    const pos = store.get("selectedPos");
+    const status = store.get("trackStatus");
+    const gate = confirmedGate(pos, status);
+    if (!pos || !status || !gate) return;
+    if (gatePoint && gatePoint.icao24 === pos.icao24 && gatePoint.gate === gate) return;
+    const found = map.findGate(gate, { lat: status.lastSeenLat, lon: status.lastSeenLon });
+    if (!found) return;
+    gatePoint = { icao24: pos.icao24, gate, lat: found.lat, lon: found.lon };
+    renderAircraftLayer();
+    drawRoute();
+  }
   function appendRoutePoint(p: LiveMarker): void {
-    if (lastRouteObservedAt == null || p.observedAt > lastRouteObservedAt) {
+    if (lastRouteObservedAt == null || newerReport(p.observedAt, lastRouteObservedAt)) {
       // A new real report: it joins the trail.
       lastRouteObservedAt = p.observedAt;
       const last = routePoints[routePoints.length - 1];
@@ -401,7 +467,9 @@ function boot(): void {
   const declutterMemory = newDeclutterMemory();
   function renderAircraftLayer(): void {
     const selectedId = store.get("selectedId");
-    const selectedPos = store.get("selectedPos");
+    const reportedPos = store.get("selectedPos");
+    // At its confirmed gate, not at its last (old) report: a display state only.
+    const selectedPos = reportedPos ? displayedPosition(reportedPos, currentGateDisplay()) : null;
     const nowMs = Date.now();
     // Only what's on screen (plus a margin, so a short drag doesn't reveal
     // empty edges before moveend re-renders). `positions` can hold a wider
@@ -413,11 +481,18 @@ function boot(): void {
     const zoomedOut = zoom < CLUSTER_FETCH_MAX_ZOOM;
     const useOverview = overviewPlanes.length > 0 && (zoomedOut || positions.size === 0);
     const source = useOverview ? overviewPlanes : Array.from(positions.values());
-    const inView = source.filter((p) => p.icao24 !== selectedId && (!view || inBounds(view, p.latitude, p.longitude)));
+    // Watched flights' own live positions (see pollWatched): a watched plane may
+    // sit outside the current viewport's data, and it is drawn either way.
+    const watchedIds = watchedIcao24s();
+    const knownIds = new Set(source.map((p) => p.icao24));
+    const watchedExtra = Array.from(watchedLive.values()).filter((p) => p.icao24 !== selectedId && !knownIds.has(p.icao24));
+    const all = watchedExtra.length > 0 ? source.concat(watchedExtra) : source;
+    const inView = all.filter((p) => p.icao24 !== selectedId && (!view || inBounds(view, p.latitude, p.longitude)));
     // An aircraft with a newer one on top of it is a ghost: not drawn at all
-    // (see map/staleness.ts). Only where 20 m is visible.
+    // (see map/staleness.ts). Only where 20 m is visible. A watched plane is
+    // never a ghost.
     const shadowed = zoom >= OVERLAP_MIN_ZOOM ? findShadowedIds(inView) : null;
-    const candidates = shadowed && shadowed.size > 0 ? inView.filter((p) => !shadowed.has(p.icao24)) : inView;
+    const candidates = shadowed && shadowed.size > 0 ? inView.filter((p) => !shadowed.has(p.icao24) || watchedIds.has(p.icao24)) : inView;
 
     // Where two planes' icons would overlap, only the first discovered is
     // drawn; the selected one is always drawn and hides whatever is under it.
@@ -426,6 +501,9 @@ function boot(): void {
       return { icao24: p.icao24, x: pt.x, y: pt.y, active: isActiveTraffic(p, nowMs) };
     });
     const fixed = selectedPos ? [map.project(selectedPos.latitude, selectedPos.longitude)] : [];
+    // Watched planes are placed like the selected one: nothing is drawn over
+    // them, and they are kept whatever the spacing does.
+    for (const p of candidates) if (watchedIds.has(p.icao24)) fixed.push(map.project(p.latitude, p.longitude));
     // The spacing belongs to the zoom level and the cap: a pan that keeps both
     // keeps it too, so the planes already drawn stay where they are and only
     // the newcomers are spaced further apart when the cap is passed. The box it
@@ -442,13 +520,15 @@ function boot(): void {
       declutterMemory,
       spacingKey(useOverview ? "overview" : "live", zoom, maxDrawn),
     );
-    const drawn = candidates.filter((p) => keep.has(p.icao24));
+    // A watched plane is always drawn: exempt from the marker cap and declutter.
+    const drawn = candidates.filter((p) => keep.has(p.icao24) || watchedIds.has(p.icao24));
 
     planeLayer.update({
       unselected: drawn,
       selectedPos,
       // Reports older than 2 h are drawn dimmed (see map/staleness.ts).
       dimmed: agedIds(drawn, nowMs),
+      watched: watchedIds,
     });
   }
 
@@ -864,6 +944,7 @@ function boot(): void {
       store.set("trackStatus", status);
       uncertaintyLayer.update(status);
       if (status?.estimate) moveSelectedToEstimate(icao24, status);
+      onGateStatus(status);
       const landed = status?.state === "LANDED_INFERRED" || status?.state === "LANDED_CONFIRMED";
       const wantedMs = status?.state === "COVERAGE_LOST" ? COVERAGE_LOST_REFETCH_MS : landed ? LANDED_REFETCH_MS : 0;
       if (statusTimer && statusTimerMs !== wantedMs) {
@@ -923,6 +1004,8 @@ function boot(): void {
 
     // Cleared unconditionally: switching directly from aircraft A to B
     // never passes through "selected = null".
+    gatePoint = null;
+    gateZoomDone = false;
     route = [];
     lastRouteObservedAt = null;
     routePoints = [];
@@ -943,7 +1026,7 @@ function boot(): void {
     const from = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString(); // last 6h of history
     fetchHistory(selectedId, from, to).then((track) => {
       if (seq !== selectionEffectSeq) return; // superseded by a newer selection
-      const filtered = legStartAt ? track.filter((p) => p.observedAt >= legStartAt!) : track;
+      const filtered = legStartAt ? track.filter((p) => notOlderReport(p.observedAt, legStartAt!)) : track;
       if (filtered.length > 0) lastRouteObservedAt = filtered[filtered.length - 1].observedAt;
       routePoints = filtered.map((p) => ({ lat: p.latitude, lon: p.longitude, observedAt: p.observedAt }));
       drawRoute();
@@ -958,7 +1041,7 @@ function boot(): void {
         store.set("dossier", d);
         legStartAt = d?.legStartAt ?? null;
         if (legStartAt) {
-          const trimmed = routePoints.filter((pt) => pt.observedAt >= legStartAt!);
+          const trimmed = routePoints.filter((pt) => notOlderReport(pt.observedAt, legStartAt!));
           if (trimmed.length !== routePoints.length) {
             routePoints = trimmed;
             drawRoute();
@@ -1016,6 +1099,178 @@ function boot(): void {
   }
   function requestFocusPlane(): void {
     store.update("focusRequest", (n) => n + 1);
+  }
+
+  // ---- watched flights: the background follow ----
+  // The latest live position of each watched flight that is airborne, kept
+  // apart from `positions` (a viewport snapshot) so the map highlight survives
+  // a refetch and can sit outside the viewport's own data.
+  const watchedLive = new Map<string, AsOfMarker>();
+  // The airborne state seen last poll, per watchKey, so a departure is a
+  // transition (false -> true), not merely "airborne".
+  const watchedAirborne = new Map<string, boolean>();
+  let watchTimer: ReturnType<typeof setInterval> | null = null;
+  let watchGen = 0;
+  const WATCH_POLL_MS = 60_000;
+
+  /** icao24s of watched flights the last poll found airborne (the map draws them distinct). */
+  function watchedIcao24s(): Set<string> {
+    const out = new Set<string>();
+    const status = store.get("watchedStatus");
+    for (const key of Object.keys(status)) {
+      const row = status[key];
+      if (row?.airborne && row.icao24) out.add(row.icao24);
+    }
+    return out;
+  }
+
+  /**
+   * Polls every watched flight on the same cheap Swedavia endpoint the Watch
+   * panel used to poll (but only while it was open), follows each one that is
+   * airborne, and raises the departure toast on the tick it leaves the ground.
+   * Runs for the whole session, paused while the tab is hidden.
+   */
+  async function pollWatched(): Promise<void> {
+    const gen = ++watchGen;
+    const list = store.get("watchedFlights");
+    const prev = store.get("watchedStatus");
+    const entries = await Promise.all(
+      list.map(async (w) => {
+        try {
+          const { rows, status } = await searchScheduleWithStatus({ flight: w.flightNumber, date: w.date, airport: w.airport });
+          return [watchKey(w), rows.find((r) => r.airport === w.airport) ?? null, status] as const;
+        } catch {
+          return [watchKey(w), prev[watchKey(w)] ?? null, "incomplete"] as const;
+        }
+      }),
+    );
+    if (gen !== watchGen) return;
+    const status: Record<string, ScheduledFlight | null> = {};
+    const airborneNow = new Set<string>();
+    const positionsNow = new Map<string, FlightPosition | null>();
+    const fetches: Promise<void>[] = [];
+    const departed: WatchedFlight[] = [];
+    const notifySamples: { key: string; row: ScheduledFlight; boardStatus: "ok" | "stale" | "incomplete" }[] = [];
+    for (const [key, row, boardStatus] of entries) {
+      status[key] = row;
+      const air = !!(row && row.airborne && row.icao24);
+      const was = watchedAirborne.get(key);
+      watchedAirborne.set(key, air);
+      const icao24 = row?.icao24 ?? null;
+      // With the notify flag off, keep the request pattern exactly as it was
+      // before this slice: fetch a flight's live position only while it is
+      // airborne. The extra fetch for a not-yet-airborne flight exists only to
+      // feed the notification detector (the on-ground ticks that prove a
+      // landing), so it is gated on the flag instead of being paid for by every
+      // default build.
+      if (icao24 && (air || NOTIFY_ENABLED)) {
+        if (air) airborneNow.add(icao24);
+        fetches.push(
+          fetchFlightLive(icao24)
+            .then((p) => {
+              positionsNow.set(icao24, p);
+              if (p && air) watchedLive.set(icao24, { ...p, asOf: Date.now() });
+            })
+            .catch(() => {
+              positionsNow.set(icao24, null);
+            }),
+        );
+      }
+      if (air && was === false) {
+        const w = list.find((x) => watchKey(x) === key);
+        if (w) departed.push(w);
+      }
+      if (NOTIFY_ENABLED && row) notifySamples.push({ key, row, boardStatus });
+    }
+    await Promise.all(fetches);
+    if (gen !== watchGen) return;
+    // A flight no longer airborne: drop the position we kept for it.
+    for (const icao24 of Array.from(watchedLive.keys())) if (!airborneNow.has(icao24)) watchedLive.delete(icao24);
+    store.set("watchedStatus", status);
+    renderAircraftLayer();
+
+    if (NOTIFY_ENABLED) {
+      const notifyMap = loadNotifyState();
+      for (const sample of notifySamples) {
+        const position = sample.row.icao24 ? positionsNow.get(sample.row.icao24) ?? null : null;
+        const prior = notifyMap[sample.key] ?? emptyState();
+        const { state: next, event } = observeFlight(prior, { ...sample, position, nowMs: Date.now() });
+        notifyMap[sample.key] = next;
+        if (!event) continue;
+        const flight = list.find((x) => watchKey(x) === sample.key);
+        if (!flight) continue;
+        const channel = chooseChannel({ hidden: document.hidden, enabled: next.enabled, permission: notificationPermission() });
+        if (channel === "os") {
+          void showOsNotification(event.title, event.text, { key: event.key, kind: event.kind });
+        } else {
+          store.set("watchNotice", { flight, text: event.text, kind: event.kind });
+        }
+      }
+      saveNotifyState(pruneNotifyState(notifyMap));
+    } else if (departed.length > 0) {
+      store.set("departureToast", departed[0]);
+    }
+  }
+
+  function startWatchPoll(): void {
+    if (watchTimer) clearInterval(watchTimer);
+    watchTimer = setInterval(() => {
+      if (!document.hidden) void pollWatched();
+    }, WATCH_POLL_MS);
+    document.addEventListener("visibilitychange", onVisibility);
+    void pollWatched();
+  }
+  function onVisibility(): void {
+    if (!document.hidden) void pollWatched();
+  }
+
+  /** Select the watched flight's plane and fly the map to it. No-op until it is airborne. */
+  function goToWatched(w: WatchedFlight): void {
+    const row = store.get("watchedStatus")[watchKey(w)] ?? null;
+    if (!row?.airborne || !row.icao24) return;
+    const icao24 = row.icao24;
+    const known = watchedLive.get(icao24) ?? positions.get(icao24);
+    if (known) {
+      handleSelectAircraft(known);
+      return;
+    }
+    fetchFlightLive(icao24)
+      .then((p) => {
+        if (!p) return;
+        watchedLive.set(icao24, { ...p, asOf: Date.now() });
+        handleSelectAircraft(p);
+        renderAircraftLayer();
+      })
+      .catch(() => {});
+  }
+
+  function watchFlight(w: WatchedFlight): void {
+    const list = store.get("watchedFlights");
+    if (list.some((x) => watchKey(x) === watchKey(w))) return;
+    const next = [...list, w];
+    saveWatched(next);
+    store.set("watchedFlights", next);
+    void pollWatched(); // resolve its schedule row now, not on the next tick
+  }
+
+  function unwatchFlight(w: WatchedFlight): void {
+    const key = watchKey(w);
+    const next = store.get("watchedFlights").filter((x) => watchKey(x) !== key);
+    saveWatched(next);
+    const status = { ...store.get("watchedStatus") };
+    delete status[key];
+    store.set("watchedStatus", status);
+    watchedAirborne.delete(key);
+    if (NOTIFY_ENABLED) forgetFlight(key);
+    store.set("watchedFlights", next);
+  }
+
+  function dismissDepartureToast(): void {
+    store.set("departureToast", null);
+  }
+
+  function dismissWatchNotice(): void {
+    store.set("watchNotice", null);
   }
 
   // ---- favorites ----
@@ -1078,10 +1333,17 @@ function boot(): void {
   store.set("removeFavoriteAircraft", removeFavoriteAircraft);
   store.set("removeFavoriteRoute", removeFavoriteRoute);
   store.set("resumeTracking", startCycle);
+  store.set("watchFlight", watchFlight);
+  store.set("unwatchFlight", unwatchFlight);
+  store.set("goToWatched", goToWatched);
+  store.set("dismissDepartureToast", dismissDepartureToast);
+  store.set("dismissWatchNotice", dismissWatchNotice);
 
   // ---- UI modules ----
   scaleBar.mount(map);
   import("./ui/defaultAirports").then((mod) => mod.mount(map, handleSelectAirport));
+  // Watched, not-yet-airborne flights: their origin airport ringed and labelled.
+  import("./ui/watchedAirports").then((mod) => mod.mount(map, store));
 
   flightSearch.mount(leftOverlayStack, store);
   favoritesPanel.mount(leftOverlayStack, store);
@@ -1090,6 +1352,7 @@ function boot(): void {
   bootScreen.mount(bootScreenRoot, store);
   resumeDialog.mount(resumeDialogRoot, store);
   dossierPanel.mount(dossierRoot, store);
+  watchToast.mount(watchToastRoot, store);
 
   // Dock: hidden whenever either details panel is open — a real
   // mount/unmount (not a CSS hide) to match the original's conditional JSX.
@@ -1155,6 +1418,7 @@ function boot(): void {
   // ---- per-selection effect wiring ----
   store.subscribe("selectedId", onSelectedIdChanged);
   store.subscribe("selectedPos", drawRoute); // the trail ends at the marker, wherever it moves
+  map.on("sourcedata", resolveGate); // the gate's tile may arrive after the status
   onSelectedIdChanged(); // selectedId starts null — harmless initial reset
 
   // ---- mount-only effects ----
@@ -1175,6 +1439,12 @@ function boot(): void {
   subscribeLiveFeed(onLivePush);
 
   restartFetchCycleTimers(); // generation 0
+  startWatchPoll(); // watched flights, independently of the Watch panel
+  if (NOTIFY_ENABLED) {
+    // #82 design §2: prune expired notification state on load and once an hour.
+    saveNotifyState(pruneNotifyState(loadNotifyState()));
+    setInterval(() => saveNotifyState(pruneNotifyState(loadNotifyState())), 60 * 60 * 1000);
+  }
 
   // Opening view: move the map to where the traffic is, at a zoom that draws
   // individual aircraft, before the first viewport report (see

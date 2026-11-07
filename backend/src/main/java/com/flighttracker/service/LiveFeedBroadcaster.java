@@ -13,6 +13,7 @@ import com.flighttracker.dto.LiveFrame;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.web.server.context.WebServerGracefulShutdownLifecycle;
 import org.springframework.context.SmartLifecycle;
 import org.springframework.web.socket.CloseStatus;
@@ -92,8 +93,18 @@ public class LiveFeedBroadcaster extends TextWebSocketHandler implements SmartLi
     // behind a stalled client's blocked write, so it can't be open-ended.
     static final long CLOSE_TIMEOUT_MS = 2_000;
 
-    // Decorated sessions, keyed by the raw session's id.
-    private final Map<String, WebSocketSession> sessions = new ConcurrentHashMap<>();
+    // A registered session and the client IP it was counted under.
+    private record Registered(WebSocketSession session, String ip) { }
+
+    // Registered sessions, keyed by the raw session's id. Whoever removes an
+    // entry (release) is the one that gives its slot back, so each session
+    // is counted out exactly once however many close paths fire.
+    private final Map<String, Registered> sessions = new ConcurrentHashMap<>();
+    // Open sessions per client IP, never above maxConnectionsPerIp. Entries
+    // are removed at zero, so the map only holds IPs with a live socket.
+    private final Map<String, Integer> connectionsByIp = new ConcurrentHashMap<>();
+    private final int maxConnectionsPerIp;
+    private final ClientIpResolver clientIpResolver;
     private final ExecutorService sendExecutor = Executors.newVirtualThreadPerTaskExecutor();
     private final ViewportService viewportService;
     private volatile boolean running;
@@ -106,9 +117,13 @@ public class LiveFeedBroadcaster extends TextWebSocketHandler implements SmartLi
     // bean makes WS and REST serialize identically by construction instead.
     private final ObjectMapper mapper;
 
-    public LiveFeedBroadcaster(ObjectMapper mapper, ViewportService viewportService) {
+    public LiveFeedBroadcaster(ObjectMapper mapper, ViewportService viewportService,
+                               ClientIpResolver clientIpResolver,
+                               @Value("${flighttracker.ws.max-connections-per-ip:8}") int maxConnectionsPerIp) {
         this.mapper = mapper;
         this.viewportService = viewportService;
+        this.clientIpResolver = clientIpResolver;
+        this.maxConnectionsPerIp = maxConnectionsPerIp;
     }
 
     @Override
@@ -117,14 +132,85 @@ public class LiveFeedBroadcaster extends TextWebSocketHandler implements SmartLi
             closeQuietly(session, CloseStatus.GOING_AWAY);
             return;
         }
-        sessions.put(session.getId(), new ConcurrentWebSocketSessionDecorator(
+        String ip = clientIp(session);
+        if (!acquire(ip)) {
+            log.debug("Refusing WebSocket client {}: {} connections already open from {}",
+                    session.getId(), maxConnectionsPerIp, ip);
+            closeQuietly(session, CloseStatus.SERVICE_OVERLOAD); // 1013, "try again later"; not registered, nothing to release
+            return;
+        }
+        sessions.put(session.getId(), new Registered(new ConcurrentWebSocketSessionDecorator(
                 session, SEND_TIME_LIMIT_MS, BUFFER_SIZE_LIMIT_BYTES,
-                ConcurrentWebSocketSessionDecorator.OverflowStrategy.DROP));
+                ConcurrentWebSocketSessionDecorator.OverflowStrategy.DROP), ip));
+        // A client that hung up between the slot being taken and the entry
+        // being stored has already had its close callback find nothing to
+        // release; give the slot back here instead of leaking it.
+        if (!session.isOpen()) {
+            release(session);
+        }
     }
 
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
-        sessions.remove(session.getId());
+        release(session);
+    }
+
+    @Override
+    public void handleTransportError(WebSocketSession session, Throwable exception) {
+        // The container normally follows with afterConnectionClosed, but a
+        // slot must not depend on that; release() is idempotent.
+        log.debug("WebSocket transport error on {}: {}", session.getId(), exception.toString());
+        release(session);
+    }
+
+    /** Takes a slot for ip unless it already has the maximum (0 or less = no cap). */
+    private boolean acquire(String ip) {
+        if (maxConnectionsPerIp <= 0) {
+            connectionsByIp.merge(ip, 1, Integer::sum);
+            return true;
+        }
+        boolean[] taken = {false};
+        connectionsByIp.compute(ip, (k, n) -> {
+            int open = n == null ? 0 : n;
+            if (open >= maxConnectionsPerIp) return n;
+            taken[0] = true;
+            return open + 1;
+        });
+        return taken[0];
+    }
+
+    /**
+     * Forgets the session and gives its IP slot back, once: only the caller
+     * whose remove() finds the entry decrements, so afterConnectionClosed,
+     * a transport error, closeQuietly and stop() can all call this for the
+     * same session. A session that was never registered (refused over the
+     * cap, or turned away while stopping) holds no slot and is a no-op.
+     */
+    private void release(WebSocketSession session) {
+        Registered removed = sessions.remove(session.getId());
+        if (removed != null) {
+            connectionsByIp.computeIfPresent(removed.ip(), (k, n) -> n <= 1 ? null : n - 1);
+        }
+    }
+
+    /** Open sessions currently counted against ip (for tests and diagnostics). */
+    int connectionsFor(String ip) {
+        return connectionsByIp.getOrDefault(ip, 0);
+    }
+
+    int openSessions() {
+        return sessions.size();
+    }
+
+    // The socket peer decides whether CF-Connecting-IP / X-Forwarded-For are
+    // believed (ClientIpResolver); behind cloudflared the peer is loopback
+    // for every visitor and the header is the only per-visitor signal.
+    private String clientIp(WebSocketSession session) {
+        java.net.InetSocketAddress remote = session.getRemoteAddress();
+        String peer = remote == null ? null
+                : remote.getAddress() != null ? remote.getAddress().getHostAddress() : remote.getHostString();
+        org.springframework.http.HttpHeaders headers = session.getHandshakeHeaders();
+        return clientIpResolver.resolve(peer, name -> headers == null ? null : headers.getFirst(name));
     }
 
     /**
@@ -152,7 +238,7 @@ public class LiveFeedBroadcaster extends TextWebSocketHandler implements SmartLi
             }
         }
         if (messages.isEmpty()) return;
-        sessions.values().forEach(s -> sendExecutor.execute(() -> sendAll(s, messages)));
+        sessions.values().forEach(r -> sendExecutor.execute(() -> sendAll(r.session(), messages)));
     }
 
     // Cloudflare Tunnel's own idle-close window (~100s) is what this
@@ -172,7 +258,7 @@ public class LiveFeedBroadcaster extends TextWebSocketHandler implements SmartLi
     void sendKeepalive() {
         if (sessions.isEmpty()) return;
         List<WebSocketMessage<?>> ping = List.of(new PingMessage());
-        sessions.values().forEach(s -> sendExecutor.execute(() -> sendAll(s, ping)));
+        sessions.values().forEach(r -> sendExecutor.execute(() -> sendAll(r.session(), ping)));
     }
 
     /**
@@ -198,7 +284,7 @@ public class LiveFeedBroadcaster extends TextWebSocketHandler implements SmartLi
     }
 
     private void closeQuietly(WebSocketSession session, CloseStatus status) {
-        sessions.remove(session.getId());
+        release(session);
         try {
             session.close(status);
         } catch (IOException | RuntimeException ignored) {
@@ -230,8 +316,7 @@ public class LiveFeedBroadcaster extends TextWebSocketHandler implements SmartLi
     public void stop() {
         stopping = true;
         running = false;
-        List<WebSocketSession> open = new ArrayList<>(sessions.values());
-        sessions.clear();
+        List<WebSocketSession> open = sessions.values().stream().map(Registered::session).toList();
         if (open.isEmpty()) return;
         CompletableFuture<?>[] closes = open.stream()
                 .map(s -> CompletableFuture.runAsync(() -> closeQuietly(s, CloseStatus.GOING_AWAY), sendExecutor))

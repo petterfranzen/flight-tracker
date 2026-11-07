@@ -1,6 +1,7 @@
 import type { AppStore } from "../state/appState";
 import type { FlightPosition } from "../types/flight";
-import { searchFlights, searchFlightsByAirport } from "../api/flightApi";
+import { searchFlights, searchFlightsByAirport, type ScheduledFlight } from "../api/flightApi";
+import { watchKey, watchedMatchesQuery, type WatchedFlight } from "../watchlist";
 import { h, clear } from "./h";
 import "../components/FlightSearch.css";
 
@@ -63,6 +64,14 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
   let routeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   let mobilePanelOpen = false;
+
+  // --- watched flights: chips under the box, and listed first in the results ---
+  let watched: WatchedFlight[] = store.get("watchedFlights");
+  let watchedStatus: Record<string, ScheduledFlight | null> = store.get("watchedStatus");
+
+  function goToWatched(w: WatchedFlight): void {
+    store.get("goToWatched")(w);
+  }
 
   function runQuery(): void {
     if (debounceTimer) clearTimeout(debounceTimer);
@@ -218,6 +227,11 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
 
   const airportPanel = h("div", { className: "flight-search-airport" }, airportInput);
 
+  // A compact watched list, reachable without opening the whole Watch panel:
+  // one chip per watched flight, under the search box.
+  const chips = h("div", { className: "flight-search-watched" });
+  const watchedList = h("ul", { className: "flight-search-results flight-search-results--watched", role: "listbox", id: "flight-search-watched-listbox" });
+
   const fab = h(
     "button",
     {
@@ -237,7 +251,7 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     "Close search ✕",
   );
   const eyebrow = h("span", { className: "flight-search-eyebrow" }, "Query // Flight No.");
-  const panel = h("div", { id: "flight-search-panel", className: "flight-search-panel" }, panelClose, eyebrow, input, airportPanel);
+  const panel = h("div", { id: "flight-search-panel", className: "flight-search-panel" }, panelClose, eyebrow, input, chips, watchedList, airportPanel);
   const container = h("div", { className: "flight-search" }, fab, panel);
 
   function setActiveRow(listEl: HTMLElement, activeIdx: number): void {
@@ -284,13 +298,70 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     return li;
   }
 
+  /** Watched flights matching the typed query, by IATA number (SK528) or ICAO callsign (SAS528). */
+  function watchedMatches(q: string): { w: WatchedFlight; row: ScheduledFlight | null }[] {
+    return watched
+      .map((w) => ({ w, row: watchedStatus[watchKey(w)] ?? null }))
+      .filter(({ w, row }) => watchedMatchesQuery(w, row, q));
+  }
+
+  function renderWatchedChips(): void {
+    clear(chips);
+    for (const w of watched) {
+      const row = watchedStatus[watchKey(w)] ?? null;
+      const airborne = !!(row?.airborne && row.icao24);
+      chips.appendChild(
+        h(
+          "button",
+          {
+            type: "button",
+            className: `flight-search-chip${airborne ? " flight-search-chip--airborne" : ""}`,
+            title: airborne ? `Go to ${w.flightNumber}` : `${w.flightNumber} · not airborne yet`,
+            onClick: () => goToWatched(w),
+          },
+          h("span", { className: "flight-search-chip-dot", "aria-hidden": "true" }),
+          w.flightNumber,
+        ),
+      );
+    }
+    chips.hidden = watched.length === 0;
+  }
+
+  function renderWatchedRows(): void {
+    clear(watchedList);
+    const q = query.trim();
+    const matches = open && q ? watchedMatches(q) : [];
+    for (const { w, row } of matches) {
+      const airborne = !!(row?.airborne && row.icao24);
+      watchedList.appendChild(
+        h(
+          "li",
+          {
+            className: `flight-search-option flight-search-option--watched${airborne ? " flight-search-option--airborne" : ""}`,
+            role: "option",
+            "aria-selected": "false",
+            onMousedown: (e: MouseEvent) => e.preventDefault(),
+            onClick: () => {
+              if (airborne) goToWatched(w);
+            },
+          },
+          h("span", { className: "flight-search-callsign" }, w.flightNumber),
+          h("span", { className: "flight-search-watched-status" }, airborne ? `${w.label} · airborne` : `${w.label} · not airborne yet`),
+        ),
+      );
+    }
+    watchedList.hidden = matches.length === 0;
+  }
+
   function renderResults(): void {
     const showDropdown = open && query.trim().length > 0;
+    renderWatchedRows();
     clear(resultsList);
     if (showDropdown) {
       if (!resultsList.parentElement) panel.insertBefore(resultsList, airportPanel);
+      // A watched match is a result too: don't say "none" when one is listed.
       if (loading && results.length === 0) resultsList.append(h("li", { className: "flight-search-status" }, "Searching…"));
-      else if (!loading && results.length === 0) resultsList.append(h("li", { className: "flight-search-status" }, "No matching flights"));
+      else if (!loading && results.length === 0 && watchedList.hidden) resultsList.append(h("li", { className: "flight-search-status" }, "No matching flights"));
       results.forEach((p, i) => resultsList.append(resultRow(p, i, i === activeIndex, "flight-search-option", choose)));
     } else if (resultsList.parentElement) {
       resultsList.remove();
@@ -322,6 +393,7 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     fab.setAttribute("aria-label", mobilePanelOpen ? "Close search" : "Search flights");
     if (input.value !== query) input.value = query;
     if (airportInput.value !== airportQuery) airportInput.value = airportQuery;
+    renderWatchedChips();
     renderResults();
     renderRouteResults();
   }
@@ -337,8 +409,17 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
   }
   document.addEventListener("pointerdown", handlePointerDown);
 
+  // A watch added/removed, or a status refresh from the background poll:
+  // re-render the chips and the matching rows.
+  const unsubscribeWatched = store.subscribeMany(["watchedFlights", "watchedStatus"], () => {
+    watched = store.get("watchedFlights");
+    watchedStatus = store.get("watchedStatus");
+    renderAll();
+  });
+
   root.appendChild(container);
   return () => {
+    unsubscribeWatched();
     document.removeEventListener("pointerdown", handlePointerDown);
     if (debounceTimer) clearTimeout(debounceTimer);
     if (routeDebounceTimer) clearTimeout(routeDebounceTimer);

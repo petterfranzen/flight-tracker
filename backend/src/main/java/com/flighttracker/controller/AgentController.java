@@ -21,6 +21,7 @@ public class AgentController {
     private final PollWindowService pollWindowService;
     private final RestartRateLimiter rateLimiter;
     private final HotPollUserBudget hotPollUserBudget;
+    private final ClientIpResolver clientIpResolver;
     // Cloud migration security fix (PLAN.md §6 item 7): in production every
     // request arrives from cloudflared on 127.0.0.1, so ClientIpResolver.
     // isLocal(ip) alone would call *every* visitor local (see that method's
@@ -30,11 +31,12 @@ public class AgentController {
     private final boolean trustLocal;
 
     public AgentController(PollWindowService pollWindowService, RestartRateLimiter rateLimiter,
-                            HotPollUserBudget hotPollUserBudget,
+                            HotPollUserBudget hotPollUserBudget, ClientIpResolver clientIpResolver,
                             @Value("${flighttracker.rate-limit.trust-local:false}") boolean trustLocal) {
         this.pollWindowService = pollWindowService;
         this.rateLimiter = rateLimiter;
         this.hotPollUserBudget = hotPollUserBudget;
+        this.clientIpResolver = clientIpResolver;
         this.trustLocal = trustLocal;
     }
 
@@ -66,7 +68,7 @@ public class AgentController {
      */
     @PostMapping("/restart")
     public ResponseEntity<PollingStatus> restart(HttpServletRequest request) {
-        String ip = ClientIpResolver.resolve(request);
+        String ip = clientIpResolver.resolve(request);
         boolean local = trustLocal && ClientIpResolver.isLocal(ip);
         Optional<String> rejected = rateLimiter.checkAndRecord(ip, local);
         if (rejected.isPresent()) {
