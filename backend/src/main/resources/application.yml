@@ -70,11 +70,28 @@ server:
   address: ${SERVER_ADDRESS:127.0.0.1}
 
 flighttracker:
+  security:
+    # Roll-back switch for the CSP: true sends Content-Security-Policy-Report-Only
+    # instead of the enforcing header (see config/SecurityHeadersFilter).
+    csp-report-only: ${FLIGHTTRACKER_CSP_REPORT_ONLY:false}
+  ws:
+    # Origins allowed to open /ws/live (comma-separated, scheme://host[:port]).
+    # A request with no Origin, or one same-origin with the request, is always
+    # allowed. Behind Cloudflare the app sees http, so the public https host is
+    # listed; browsers send Origin for localhost pages too, so the dev origins
+    # (the app itself and the Vite dev server) are listed as well.
+    allowed-origins: ${FLIGHTTRACKER_WS_ALLOWED_ORIGINS:https://flight.pastabake.cloud,http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://127.0.0.1:5173}
   # SQLite database file (cloud migration A2 — see config/SqliteDataSourceConfig).
   # Parent directory is created if missing. ./data/flighttracker.db by
   # default — deploy.sh/the systemd unit set FLIGHTTRACKER_DB_PATH to a
   # path under the service's real StateDirectory in production.
   db-path: ${FLIGHTTRACKER_DB_PATH:./data/flighttracker.db}
+  # Optional social login and server-side profiles (design: section9-hq #84).
+  # Default OFF: with the flag off no profile endpoint is wired and the app is
+  # byte-identical to today — an anonymous visitor sees no sign-in control.
+  # Turn it on only after the OAuth client secrets live on the VM (§4, §7).
+  profile:
+    enabled: ${FLIGHTTRACKER_PROFILE_ENABLED:false}
   # Training data for a learned landing model (TrainingDataService): one row per
   # coverage gap near the ground or near a landing candidate, captured once the
   # gap has lasted capture-delay-seconds and labelled when the aircraft reports

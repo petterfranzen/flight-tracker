@@ -70,6 +70,17 @@ API, WebSocket and SPA on the same port either way.
   shape, required `from`/`to` params, unknown aircraft, invalid time range.
 - `usage.test.js` — `GET /api/usage`: response shape, required `from`/`to`
   params, derived-field sanity (non-negative distance/hours/speed).
+- `error-bodies.test.js` — the app's error responses (404/405/400/500):
+  each carries a single generic `error` field and no framework name, container
+  name or version in the body or headers, and a request the container itself
+  rejects (a malformed URI) answers with an empty body, not Tomcat's own error
+  page.
+- `health-sweep.test.js` — the health contract: `GET /api/health`'s
+  `status`/`version`/`db` and its sweep-freshness trio
+  (`lastSweepAt`, `lastSweepRows`, `skippedSweeps`), and
+  `GET /api/health/sweep`'s 200-or-503 shape (never an HTML error page).
+  Reaches no external source: an unreachable OpenSky is a legal state and
+  is asserted as-is (`lastSweepAt: null`, the sweep check 503).
 - `live-feed.test.js` — `GET /ws/live`: WebSocket upgrade succeeds, the
   connection stays open, and any frames received parse as JSON matching the
   `FlightPosition` shape. Traffic is real and external (OpenSky), so this

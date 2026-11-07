@@ -2,6 +2,8 @@ import { expect, type Page, type TestInfo } from "@playwright/test";
 import { clusterMockFleet, onePerCell } from "../../src/api/mockFleet";
 import type { LiveMarker } from "../../src/types/flight";
 import { SPEED_DEG_PER_S, World, type SimAircraft } from "./world";
+import { OPENFREEMAP_TILEJSON } from "../fixtures/basemap";
+import { waitForMapReady } from "../helpers";
 
 /**
  * The scenarios' fake backend, basemap and checks.
@@ -55,11 +57,14 @@ export async function startHarness(page: Page, testInfo: TestInfo): Promise<Harn
     async step(name, fn) {
       stepNo++;
       if (fn) await fn();
+      // The health check waits for the state it asserts (expect.poll), so no
+      // fixed sleep precedes the assertion any more; the settle below only
+      // paces the screenshot, which is taken after the check.
+      await checkHealth(page, h, name);
       await settle(page);
       const file = testInfo.outputPath(`${String(stepNo).padStart(2, "0")}-${name.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}.png`);
       await page.screenshot({ path: file });
       await testInfo.attach(`step ${stepNo}: ${name}`, { path: file, contentType: "image/png" });
-      await checkHealth(page, h, name);
     },
   };
 
@@ -67,7 +72,7 @@ export async function startHarness(page: Page, testInfo: TestInfo): Promise<Harn
 
   // ---- basemap ----
   await page.route("https://tiles.openfreemap.org/planet", (r) =>
-    r.fulfill({ json: { tilejson: "3.0.0", tiles: ["https://tiles.openfreemap.org/t/{z}/{x}/{y}.pbf"], minzoom: 0, maxzoom: 14, vector_layers: [] } }),
+    r.fulfill({ json: OPENFREEMAP_TILEJSON }),
   );
   await page.route(/tiles\.openfreemap\.org\/(t|fonts)\//, (r) => r.fulfill({ body: Buffer.alloc(0), contentType: "application/x-protobuf" }));
   await page.route(/tile\.openstreetmap\.org/, (r) => r.abort());
@@ -171,8 +176,16 @@ export async function settle(page: Page): Promise<void> {
   await page.waitForTimeout(1_200);
 }
 
-/** Zooms `levels` whole levels with the mouse wheel: two 100 px notches a level (see WHEEL_ZOOM_RATE in map/map.ts). */
+/**
+ * Zooms `levels` whole levels with the mouse wheel: two 100 px notches a
+ * level (see WHEEL_ZOOM_RATE in map/map.ts).
+ *
+ * Waits for the map first: before data-ready (main.ts) the container can
+ * still be un-sized, and `boundingBox()` then returns null — the #106 run's
+ * failure was `Cannot read properties of null` right here.
+ */
 export async function wheelZoom(page: Page, levels: number, at?: { x: number; y: number }): Promise<void> {
+  await waitForMapReady(page);
   const box = (await page.locator(".map-container").boundingBox())!;
   await page.mouse.move(at?.x ?? box.x + box.width / 2, at?.y ?? box.y + box.height / 2);
   for (let i = 0; i < Math.abs(levels) * 2; i++) {
@@ -182,6 +195,7 @@ export async function wheelZoom(page: Page, levels: number, at?: { x: number; y:
 }
 
 export async function drag(page: Page, dx: number, dy: number): Promise<void> {
+  await waitForMapReady(page);
   const box = (await page.locator(".map-container").boundingBox())!;
   const x = box.x + box.width * 0.6;
   const y = box.y + box.height / 2;
@@ -284,6 +298,7 @@ export async function clickAirport(page: Page, code: string): Promise<void> {
 // ---- health ----
 
 async function landFraction(page: Page): Promise<number> {
+  await waitForMapReady(page);
   const box = (await page.locator(".map-container").boundingBox())!;
   const png = await page.screenshot({ clip: { x: box.x + box.width * 0.55, y: box.y + box.height * 0.15, width: box.width * 0.3, height: box.height * 0.7 } });
   return page.evaluate(
@@ -331,21 +346,33 @@ export async function checkHealth(page: Page, h: Harness, step: string): Promise
       .toBe("ok");
   }
 
-  const now = Date.now();
-  const wrong: string[] = [];
-  const zoomedOut = (await mapEval<number>(page, "return map.getZoom();")) < OVERVIEW_ZOOM_BELOW;
-  for (const m of await planeMarkers(page)) {
-    const a = h.world.byCallsign(m.callsign);
-    if (!a) {
-      wrong.push(`${m.callsign}: not an aircraft in the world`);
-      continue;
-    }
-    const truth = h.world.positionAt(a, now);
-    const off = Math.hypot(m.lat - truth.lat, m.lon - truth.lon);
-    const tolerance = zoomedOut ? SPEED_DEG_PER_S * OVERVIEW_MAX_LAG_S : POSITION_TOLERANCE_DEG;
-    if (off > tolerance) wrong.push(`${m.callsign} drawn ${off.toFixed(4)}° from its true position (${(off / SPEED_DEG_PER_S).toFixed(0)}s stale)`);
-  }
-  expect(wrong, `[${step}] plane markers not at their true positions`).toEqual([]);
+  // Wait for the state this asserts instead of sampling once after a fixed
+  // sleep: the world moves in real time, so on a busy runner a marker can
+  // still be showing its previous push when the step is read. The poll
+  // retries until every drawn marker is back inside tolerance (it reads
+  // renderedPlanes() each time) and reports what it last saw if it expires.
+  await expect
+    .poll(
+      async () => {
+        const zoomedOut = (await mapEval<number>(page, "return map.getZoom();")) < OVERVIEW_ZOOM_BELOW;
+        const tolerance = zoomedOut ? SPEED_DEG_PER_S * OVERVIEW_MAX_LAG_S : POSITION_TOLERANCE_DEG;
+        const now = Date.now();
+        const wrong: string[] = [];
+        for (const m of await planeMarkers(page)) {
+          const a = h.world.byCallsign(m.callsign);
+          if (!a) {
+            wrong.push(`${m.callsign}: not an aircraft in the world`);
+            continue;
+          }
+          const truth = h.world.positionAt(a, now);
+          const off = Math.hypot(m.lat - truth.lat, m.lon - truth.lon);
+          if (off > tolerance) wrong.push(`${m.callsign} drawn ${off.toFixed(4)}° from its true position (${(off / SPEED_DEG_PER_S).toFixed(0)}s stale)`);
+        }
+        return wrong;
+      },
+      { message: `[${step}] plane markers not at their true positions`, timeout: 10_000, intervals: [250] },
+    )
+    .toEqual([]);
   expect(h.pageErrors, `[${step}] page errors`).toEqual([]);
 }
 

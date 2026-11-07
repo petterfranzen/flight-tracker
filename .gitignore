@@ -38,3 +38,12 @@ scripts/.cache/
 
 # Basemap reference screenshots (see frontend/tests/basemap-reference-shots.spec.ts)
 frontend/spike-shots/
+
+# soak test artifacts. soak.mjs writes both paths to its working directory,
+# which is the repo root for the documented `node blackbox-tests/soak/soak.mjs`
+# invocation (and for the nightly workflow), or the soak directory when it is
+# run from inside it. Ignore both so neither can be committed.
+/soak-report.json
+/soak-app.log
+blackbox-tests/soak/soak-report.json
+blackbox-tests/soak/soak-app.log

@@ -84,3 +84,56 @@ test("the panel offers Go to once the background poll finds it airborne", async 
     .poll(async () => (await renderedPlanes(page)).some((p) => p.icao24 === plane.icao24 && p.selected), { timeout: 10_000 })
     .toBe(true);
 });
+
+test("on a phone the new watch entry is visible without scrolling the panel, and its stop-watching button clears the tap-target minimum", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mockFlightApi(page);
+  await page.route("**/api/schedule/search*", (route) => route.fulfill({ json: [row(false)] }));
+  await page.goto("/");
+  await waitForMapReady(page);
+
+  await page.locator(".watch-panel-toggle").click();
+  await page.locator(".watch-panel-flight").fill("sk2112");
+  await page.locator(".watch-panel-date").fill("2026-11-02");
+  await page.locator(".watch-panel-search").click();
+
+  const result = page.locator(".watch-panel-result");
+  await expect(result).toContainText("SK2112 LHR → ARN");
+  await result.getByRole("button", { name: "Watch", exact: true }).click();
+
+  const content = page.locator(".watch-panel-content");
+  const item = page.locator(".watch-panel-item").last();
+  await expect(item).toContainText("SK2112");
+
+  // The panel keeps its own scroll box (the 320 px cap is not removed to make
+  // the entry fit) ...
+  const box = await content.evaluate((el) => ({
+    clientHeight: el.clientHeight,
+    scrollHeight: el.scrollHeight,
+    overflowY: getComputedStyle(el).overflowY,
+  }));
+  expect(box.overflowY).toBe("auto");
+  expect(box.scrollHeight).toBeGreaterThan(box.clientHeight); // it still scrolls
+  expect(box.clientHeight).toBeLessThanOrEqual(340); // the 320 px cap (+ 8 px padding a side) holds
+
+  // ... and the new entry is inside that box without the user scrolling it.
+  await expect
+    .poll(
+      async () => {
+        const c = await content.boundingBox();
+        const i = await item.boundingBox();
+        if (!c || !i) return "no box";
+        if (i.y < c.y - 1) return `above the box (item ${i.y} < ${c.y})`;
+        if (i.y + i.height > c.y + c.height + 1) return `below the box (${i.y + i.height} > ${c.y + c.height})`;
+        return "visible";
+      },
+      { timeout: 5_000 },
+    )
+    .toBe("visible");
+
+  // The one control that removes a watch clears 44x44 on a phone.
+  const remove = await page.locator(".watch-panel-remove").boundingBox();
+  expect(remove).not.toBeNull();
+  expect(remove!.width).toBeGreaterThanOrEqual(44);
+  expect(remove!.height).toBeGreaterThanOrEqual(44);
+});

@@ -238,7 +238,10 @@ public class PositionPersistenceService {
      *    enrichment is similarly skipped here.
      *  - Tracking which icao24s are newly-seen: pollGlobalSweep's caller
      *    never triggers enrichment from this method's result the way
-     *    pollAll() does with persist()'s, so there's nothing to return.
+     *    pollAll() does with persist()'s. This returns only the number of
+     *    rows actually written, so the sweep can report its freshness
+     *    (SweepHealthTracker) and a zero means "the source told us nothing
+     *    new", not "the sweep never ran".
      *
      * LiveStateStore.upsert's own observed_at guard is what makes it safe
      * to call unconditionally for every report here, rather than needing
@@ -248,8 +251,8 @@ public class PositionPersistenceService {
      * guard simply no-ops for it.
      */
     @Transactional
-    public void persistBatch(String sourceName, List<RawPositionReport> reports) {
-        if (reports.isEmpty()) return;
+    public int persistBatch(String sourceName, List<RawPositionReport> reports) {
+        if (reports.isEmpty()) return 0;
 
         // Write reduction (PLAN.md §6 item 7) applied before batching: a
         // parked aircraft's identical on_ground report is dropped here so
@@ -304,6 +307,10 @@ public class PositionPersistenceService {
 
         log.info("{}: wrote {} of {} position reports (batched, {} skipped as unchanged-ground)",
                 sourceName, written, reports.size(), reports.size() - toInsert.size());
+        // The rows that genuinely landed — the sweep's only honest freshness
+        // signal (see SweepHealthTracker). Distinct from reports.size():
+        // write-reduction drops a parked aircraft's unchanged ground report.
+        return written;
     }
 
     private static void bindPositionInsert(PreparedStatement ps, RawPositionReport r, String sourceName, long insertedAt) throws SQLException {

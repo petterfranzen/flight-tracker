@@ -131,6 +131,29 @@ CI's opening overview at z7 drew 64 planes where the sandbox drew 102, so the
 absolute counts are environment-dependent even when the popping is not; the
 budgets are set from the worse of the two.
 
+The three dead-reckoned scenarios below (#150) assert "0 planes moved backwards"
+directly rather than going through a `BUDGET`: a single backwards move *is* the
+bug, so there is no headroom to leave. Their baseline, sandbox, one worker,
+measured on the merged #150 fix with
+`npx playwright test tests/popping.spec.ts --workers=1 --timeout=300000`
+(7 tests, 7.2 min):
+
+| scenario | steps | vanished | appeared | backwards | worst back° |
+| --- | --- | --- | --- | --- | --- |
+| a plane never moves backwards when a cached view is redrawn during a pan | 4 | 0 | 0 | 0 | 0.0000 |
+| the selected plane's estimate survives a cached view of the same report | 4 | 0 | 0 | 0 | 0.0000 |
+| a plane never moves backwards while the view is idle | 5 | 9 | 20 | 0 | 0.0000 |
+
+The idle scenario is expected to churn its drawn set on the overview refresh
+(9 vanished, 20 appeared on the recorded run, as the dead-reckoned snapshot
+replaces the frame positions; the counts move a little run to run) — that churn
+is not the pop; the pop is a plane moving *against its own track*, and the
+count for it is 0. The same run also reproduced the four `BUDGET` baselines
+within their headroom (vanished 4/3/0/1, appeared 1/1/1/1, backwards 0
+throughout, the selected plane 2 steps at 0.0045°): the counts move a little
+with timing, the no-backwards claim does not. CI is the authority for the
+repeated run.
+
 ### A server that dead-reckons
 
 `startReplay(page, testInfo, { deadReckonMs })` makes the mocked server behave
@@ -139,9 +162,21 @@ lands (every `deadReckonMs`) while the position it returns keeps advancing with
 the tick. Two snapshots of the same report therefore share `observedAt` with
 different positions, the older one behind — the case #53/#97 is about, and one
 the tick-per-report shape cannot reproduce (every snapshot gets a new
-`observedAt`, so the older position loses on its own). Two scenarios use it:
+`observedAt`, so the older position loses on its own). Three scenarios use it:
 "a plane never moves backwards when a cached view is redrawn during a pan" and
-"the selected plane's estimate survives a cached view of the same report".
+"the selected plane's estimate survives a cached view of the same report" (both
+read below with `h.advance()` / `h.step(name, false)`), and "a plane never moves
+backwards while the view is idle" — the #150 case, where the reports land
+unprompted and the view never moves at all.
+
+`startReplay(page, testInfo, { deadReckonMs, rawFrames: true })` additionally
+makes the WebSocket frames carry the aircraft's **raw** last report, the way the
+backend really pushes it (`LiveFrame.of`), while `/live` and `/live/overview`
+keep serving the dead-reckoned display — so the two payloads of one report
+disagree by several km, which is what the idle scenario measures. Unset, a frame
+carries the same dead-reckoned position the REST endpoints do, the two never
+disagree, and the idle reversion cannot show (the shape #53/#97's baselines
+were recorded on).
 
 Reading those: `h.advance()` moves to the next tick without waiting for the app
 to settle, and `h.step(name, false)` reads what is drawn without waiting for it

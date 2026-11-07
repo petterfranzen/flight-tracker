@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { OPENFREEMAP_TILEJSON } from "./fixtures/basemap";
 import { mockFlightApi } from "./helpers";
 
 // The boot screen waits for the basemap's first full render (the map's first
@@ -19,7 +20,7 @@ async function stubTiles(page: Page, opts: { dead?: boolean; hold?: boolean } = 
     return { requested: () => count, release };
   }
   await page.route("https://tiles.openfreemap.org/planet", (r) =>
-    r.fulfill({ json: { tilejson: "3.0.0", tiles: ["https://tiles.openfreemap.org/t/{z}/{x}/{y}.pbf"], minzoom: 0, maxzoom: 14, vector_layers: [] } }),
+    r.fulfill({ json: OPENFREEMAP_TILEJSON }),
   );
   await page.route(TILE, async (r) => {
     count++;

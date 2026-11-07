@@ -100,8 +100,9 @@
 .watch-panel-goto { border-color: var(--color-marker-watched); color: var(--color-marker-watched); font-weight: 600; }
 
 @media (max-width: 768px) {
-  /* The house tap-target minimum on a phone. */
-  .watch-panel-search, .watch-panel-watch, .watch-panel-goto, .watch-panel-remove { min-height: 44px; }
+  /* The house tap-target minimum on a phone, both axes: the stop-watching
+     button is otherwise a glyph-sized target, under the minimum in width. */
+  .watch-panel-search, .watch-panel-watch, .watch-panel-goto, .watch-panel-remove { min-height: 44px; min-width: 44px; }
 }
 .watch-panel-watch:disabled { opacity: 0.6; cursor: default; }
 .watch-panel-ground { color: var(--color-text-muted); }

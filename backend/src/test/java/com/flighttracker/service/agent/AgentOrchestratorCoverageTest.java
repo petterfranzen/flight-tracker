@@ -134,7 +134,7 @@ class AgentOrchestratorCoverageTest {
         org.mockito.Mockito.doAnswer(inv -> {
             assertThat(tracker.lastCoveringPollAt(-30, 150)).isEmpty();
             clockNow.set(NOW.plusSeconds(90));
-            return null;
+            return 1; // one row genuinely landed
         }).when(persistenceService).persistBatch(any(), any());
 
         orchestrator().pollGlobalSweep();

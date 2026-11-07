@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { AIRPORTS } from "./world";
+import { waitForMapReady } from "../helpers";
 import {
   POSITION_TOLERANCE_DEG,
   centre,
@@ -31,10 +32,20 @@ test.use({ viewport: { width: 1440, height: 900 }, video: "on", trace: "on" });
 const ARN = AIRPORTS.find((a) => a.iata === "ARN")!;
 const AMS = AIRPORTS.find((a) => a.iata === "AMS")!;
 
+// Wait for what the steps need, not for a transient element to be visible:
+// the screen can be gone before a selector is ever evaluated, and
+// `.boot-screen--hidden` lands at the start of a 450 ms fade while the map
+// underneath is still re-measuring. main.ts sets data-ready only once the
+// opening view has been applied — measuring the container before that is what
+// gave the #106 run its null bounding box. The boot screen is waited out
+// (removed, or never shown) so step 1's screenshot is not of the overlay.
 async function boot(page: import("@playwright/test").Page) {
   await page.goto("/");
-  await page.waitForSelector(".boot-screen");
-  await page.waitForSelector(".boot-screen--hidden, body:not(:has(.boot-screen))", { timeout: 20_000 });
+  // Waited out, not swallowed: a boot screen that never goes away must fail
+  // the step loudly rather than let the position check run against a map
+  // that never drew.
+  await page.locator(".boot-screen").waitFor({ state: "hidden", timeout: 45_000 });
+  await waitForMapReady(page, 45_000);
   await waitForPlanes(page);
 }
 
