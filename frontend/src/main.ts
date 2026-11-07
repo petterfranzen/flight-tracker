@@ -996,10 +996,14 @@ function boot(): void {
       const was = watchedAirborne.get(key);
       watchedAirborne.set(key, air);
       const icao24 = row?.icao24 ?? null;
-      if (icao24) {
+      // With the notify flag off, keep the request pattern exactly as it was
+      // before this slice: fetch a flight's live position only while it is
+      // airborne. The extra fetch for a not-yet-airborne flight exists only to
+      // feed the notification detector (the on-ground ticks that prove a
+      // landing), so it is gated on the flag instead of being paid for by every
+      // default build.
+      if (icao24 && (air || NOTIFY_ENABLED)) {
         if (air) airborneNow.add(icao24);
-        // Fetch the live position even when the row says not airborne: the
-        // on-ground ticks that prove a landing come from this same poll.
         fetches.push(
           fetchFlightLive(icao24)
             .then((p) => {
