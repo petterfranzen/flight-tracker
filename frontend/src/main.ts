@@ -123,6 +123,18 @@ const MAX_DRAWN_MARKERS_SMALL_SCREEN = 150;
 // fetched in the background, so the next zoom step is drawn from cache.
 const PREFETCH_DELAY_MS = 600;
 
+// A view that has just changed is still being learnt: /live carries part of it
+// and the rest follows as WebSocket frames, report by report, over several
+// seconds. Aircraft those frames bring that the snapshot did not have are held
+// for this long after the view changes and drawn together in one update, not
+// one by one (#151): until none has arrived for FILL_QUIET_MS, or FILL_MAX_MS
+// after the first. Later arrivals, in a view that has settled, are drawn as
+// they land.
+const FILL_SETTLE_MS = 8_000;
+const FILL_MIN_SNAPSHOT = 5;
+const FILL_QUIET_MS = 4_000;
+const FILL_MAX_MS = 12_000;
+
 // Fraction of the view's size drawn beyond each edge.
 // Wide enough that a pan or a one-level zoom-out lands on planes that are already there.
 const RENDER_MARGIN = 0.4;
@@ -352,6 +364,13 @@ function boot(): void {
   // threshold, so a plane that lands or drops out of the cell thinning stays
   // on screen (see map/overviewHold.ts).
   const overviewHold = newOverviewHold<AsOfMarker>();
+  // Frames of aircraft the drawn set does not have yet, held while a changed
+  // view fills in (FILL_SETTLE_MS) and released together (see flushLivePushes).
+  const arrivals = new Map<string, { p: FlightPosition; asOf: number }>();
+  let fillUntil = 0;
+  let viewChanged = false; // a view change whose snapshot has not landed yet
+  let liveSnapshotSeen = false; // the opening view is never held
+  let arrivalTimer: ReturnType<typeof setTimeout> | null = null;
   // Which source the map is drawing from right now. A cached view from the
   // other side is not this frame: drawing it would swap the whole set before
   // the response for the new zoom arrives.
@@ -515,6 +534,16 @@ function boot(): void {
 
   // ---- fetch lifecycle ----
   function applyLiveSnapshot(list: AsOfMarker[]): void {
+    // The snapshot is the whole truth for this view: frames held for it are
+    // superseded. It opens the fill window only for a view change that lands a
+    // real set; the opening view, and an empty or sparse snapshot, never hold
+    // anything back.
+    arrivals.clear();
+    if (arrivalTimer) clearTimeout(arrivalTimer);
+    arrivalTimer = null;
+    fillUntil = liveSnapshotSeen && viewChanged && list.length >= FILL_MIN_SNAPSHOT ? Date.now() + FILL_SETTLE_MS : 0;
+    liveSnapshotSeen = true;
+    viewChanged = false;
     if (overviewPlanes.length > 0) setOverviewPlanes([]); // the snapshot is the source from here on
     drawnSource = "live";
     const selectedId = store.get("selectedId");
@@ -705,6 +734,7 @@ function boot(): void {
     zoom = nextZoom;
     store.set("zoom", nextZoom);
     if ((nextZoom < CLUSTER_FETCH_MAX_ZOOM) !== wasZoomedOut) lastAppliedView = null;
+    viewChanged = true;
     renderAircraftLayer(); // icon sizes and what overlaps change with the zoom: redraw now, independent of the fetch below
     // A view we've seen recently is drawn right away, before the debounce.
     applyCachedView(Date.now());
@@ -742,6 +772,28 @@ function boot(): void {
     if (!wsFlushTimer) wsFlushTimer = setTimeout(flushLivePushes, WS_FLUSH_MS);
   }
 
+  // Frames of aircraft the drawn set does not have yet, held while a changed
+  // view fills in (FILL_SETTLE_MS) and released together.
+  let firstArrivalAt = 0;
+  function holdArrival(p: FlightPosition, at: number): void {
+    if (arrivals.size === 0) firstArrivalAt = at;
+    arrivals.set(p.icao24, { p, asOf: at });
+    if (arrivalTimer) clearTimeout(arrivalTimer);
+    arrivalTimer = setTimeout(releaseArrivals, Math.max(0, Math.min(at + FILL_QUIET_MS, firstArrivalAt + FILL_MAX_MS) - at));
+  }
+  function releaseArrivals(): void {
+    arrivalTimer = null;
+    if (arrivals.size === 0) return;
+    let added = false;
+    for (const { p, asOf } of arrivals.values()) {
+      if (positions.has(p.icao24) || !inDrawnArea(p)) continue; // a snapshot has them, or the view moved on
+      positions.set(p.icao24, { ...p, asOf });
+      added = true;
+    }
+    arrivals.clear();
+    if (added) renderAircraftLayer();
+  }
+
   function flushLivePushes(): void {
     wsFlushTimer = null;
     if (pendingWs.size === 0) return;
@@ -766,6 +818,12 @@ function boot(): void {
       // the snapshot its dead-reckoned display (see frameAdvances).
       if (existing && (existing.asOf >= arrival || !frameAdvances(existing, p))) continue;
       if (p.icao24 !== selectedId && !inDrawnArea(p)) continue;
+      if (!existing && p.icao24 !== selectedId && (arrival < fillUntil || arrivals.size > 0)) {
+        // New to the drawn set while the view is still filling in: held, so the
+        // fill is one update.
+        holdArrival(p, arrival);
+        continue;
+      }
       positions.set(p.icao24, { ...p, asOf: arrival });
       changed = true;
       if (p.icao24 === selectedId) selectedUpdate = p;
