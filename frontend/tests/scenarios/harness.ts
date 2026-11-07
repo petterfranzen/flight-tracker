@@ -380,8 +380,20 @@ export async function checkHealth(page: Page, h: Harness, step: string): Promise
 export async function expectCentredOn(page: Page, h: Harness, callsign: string, step: string): Promise<void> {
   const a = h.world.byCallsign(callsign)!;
   await expect(page.locator(".details-panel-meta")).toContainText(`ICAO24 ${a.icao24.toUpperCase()}`);
-  const truth = h.world.positionAt(a);
-  const c = await centre(page);
-  const off = Math.hypot(c.lat - truth.lat, c.lon - truth.lon);
-  expect(off, `[${step}] map centred ${off.toFixed(4)}° (${(off / SPEED_DEG_PER_S).toFixed(0)}s of flight) from ${callsign}'s true position`).toBeLessThan(POSITION_TOLERANCE_DEG);
+  // The map eases to the plane and the plane keeps flying: poll until the
+  // centre is within tolerance of the plane's *current* true position.
+  await expect
+    .poll(
+      async () => {
+        const truth = h.world.positionAt(a);
+        const c = await centre(page);
+        return Math.hypot(c.lat - truth.lat, c.lon - truth.lon);
+      },
+      {
+        message: `[${step}] map not centred on ${callsign}'s true position (tolerance ${POSITION_TOLERANCE_DEG}°)`,
+        timeout: 10_000,
+        intervals: [250],
+      },
+    )
+    .toBeLessThan(POSITION_TOLERANCE_DEG);
 }

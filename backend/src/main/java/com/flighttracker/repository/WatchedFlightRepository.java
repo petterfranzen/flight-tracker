@@ -1,6 +1,8 @@
 package com.flighttracker.repository;
 
 import com.flighttracker.model.WatchedFlight;
+import com.flighttracker.profile.ProfileLimitException;
+import com.flighttracker.profile.ProfileLimits;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
@@ -64,13 +66,24 @@ public class WatchedFlightRepository {
                 .optional();
     }
 
-    /** Adds or replaces one watched flight, stamping updated_at. */
+    /**
+     * Adds or replaces one watched flight, stamping updated_at. Rejects
+     * over-cap or malformed input (including a flight_date that is not a real
+     * yyyy-MM-dd date) with {@link ProfileLimitException} before writing. The
+     * per-profile row cap is checked inside the same INSERT statement, so it
+     * is atomic: a new key past the cap writes nothing, while replacing an
+     * existing key at the cap still works.
+     */
     public void upsert(String profileId, String flightNumber, String flightDate, String airport, String label) {
-        jdbcClient.sql("""
+        ProfileLimits.checkWatchedFlight(flightNumber, flightDate, airport, label);
+        int written = jdbcClient.sql("""
                 INSERT INTO watched_flight
                     (profile_id, flight_number, flight_date, airport, label, updated_at)
-                VALUES
-                    (:profileId, :flightNumber, :flightDate, :airport, :label, :now)
+                SELECT :profileId, :flightNumber, :flightDate, :airport, :label, :now
+                WHERE (SELECT COUNT(*) FROM watched_flight WHERE profile_id = :profileId) < :max
+                   OR EXISTS (SELECT 1 FROM watched_flight
+                              WHERE profile_id = :profileId AND flight_number = :flightNumber
+                                AND flight_date = :flightDate AND airport = :airport)
                 ON CONFLICT (profile_id, flight_number, flight_date, airport) DO UPDATE SET
                     label = excluded.label,
                     updated_at = excluded.updated_at
@@ -81,7 +94,13 @@ public class WatchedFlightRepository {
                 .param("airport", airport)
                 .param("label", label)
                 .param("now", clock.millis())
+                .param("max", ProfileLimits.MAX_WATCHED_FLIGHTS_PER_PROFILE)
                 .update();
+        if (written == 0) {
+            throw new ProfileLimitException(ProfileLimitException.Reason.TOO_MANY_ROWS, "watchedFlights",
+                    "a profile may hold at most " + ProfileLimits.MAX_WATCHED_FLIGHTS_PER_PROFILE
+                            + " watched flights");
+        }
     }
 
     public int delete(String profileId, String flightNumber, String flightDate, String airport) {
