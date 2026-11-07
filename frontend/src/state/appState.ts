@@ -19,6 +19,8 @@ export interface AppState extends Record<string, unknown> {
   /** Every aircraft the server still holds, parked or silent included (the chip's "Seen"). */
   seenCount: number;
   firstLoadDone: boolean;
+  /** The browser reports no network (#181): the offline banner is shown and every plane is dimmed. */
+  offline: boolean;
   /** The basemap has drawn its first view . The boot screen waits on it. */
   basemapReady: boolean;
   showResumeDialog: boolean;

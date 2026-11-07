@@ -1,0 +1,30 @@
+/* #181: the offline banner. Cyberpunk tokens only; sits above the boot screen
+   and the other overlay chrome, below nothing. */
+.offline-notice {
+  position: fixed;
+  top: max(12px, env(safe-area-inset-top, 0px));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100vw - 24px);
+  box-sizing: border-box;
+  padding: 8px 12px;
+  background: var(--color-panel);
+  color: var(--color-text);
+  border: 1px solid var(--color-warn);
+  border-radius: 8px;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.5);
+  font-size: 14px;
+}
+.offline-notice[hidden] { display: none; }
+.offline-notice-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-warn);
+  flex: none;
+}
+.offline-notice-text { font-weight: 600; white-space: nowrap; }

@@ -43,6 +43,7 @@ import * as watchPanel from "./ui/watchPanel";
 import * as watchToast from "./ui/watchToast";
 import * as legend from "./ui/legend";
 import * as installPrompt from "./ui/installPrompt";
+import * as offlineNotice from "./ui/offlineNotice";
 import * as dossierPanel from "./ui/dossierPanel";
 import * as bootScreen from "./ui/bootScreen";
 import * as resumeDialog from "./ui/resumeDialog";
@@ -262,6 +263,7 @@ function boot(): void {
     trackedCount: 0,
     seenCount: 0,
     firstLoadDone: false,
+    offline: typeof navigator !== "undefined" ? !navigator.onLine : false,
     basemapReady: false,
     showResumeDialog: false,
 
@@ -307,6 +309,11 @@ function boot(): void {
     dismissDepartureToast: () => {},
   };
   const store = new Store<AppState>(state);
+
+  // #181: the offline state. Mounted as soon as the store exists (not with
+  // the other UI modules below), so a cold offline open shows the banner over
+  // the boot screen rather than only after it lifts.
+  offlineNotice.mount(appShell, store);
 
   // ---- local mutable state (the original's useRef/useState-outside-store) ----
   // Only ever holds the aircraft in the current individual-marker viewport
@@ -459,8 +466,10 @@ function boot(): void {
     planeLayer.update({
       unselected: drawn,
       selectedPos,
-      // Reports older than 2 h are drawn dimmed (see map/staleness.ts).
-      dimmed: agedIds(drawn, nowMs),
+      // Offline (#181) there is no live feed, so every plane is drawn
+      // dimmed and nothing can read as live traffic. Otherwise a report
+      // older than 2 h is dimmed (see map/staleness.ts).
+      dimmed: store.get("offline") ? new Set(drawn.map((p) => p.icao24)) : agedIds(drawn, nowMs),
       watched: watchedIds,
     });
   }
@@ -1288,6 +1297,18 @@ function boot(): void {
     .catch(() => {});
 
   subscribeLiveFeed(onLivePush);
+
+  // #181: connectivity. Going offline dims every plane (renderAircraftLayer
+  // reads the store slot) and raises the offline banner; coming back clears
+  // the flag, and the next poll refreshes the drawn set.
+  function syncOnline(): void {
+    const offline = !navigator.onLine;
+    if (store.get("offline") === offline) return;
+    store.set("offline", offline);
+    renderAircraftLayer();
+  }
+  window.addEventListener("online", syncOnline);
+  window.addEventListener("offline", syncOnline);
 
   restartFetchCycleTimers(); // generation 0
   startWatchPoll(); // watched flights, independently of the Watch panel
