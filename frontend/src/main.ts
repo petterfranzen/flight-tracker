@@ -25,6 +25,7 @@ import {
 import { boundsFromMap, createFollowSelected, createMap, DEFAULT_VIEW, GPUInitializationError } from "./map/map";
 import { createPlaneLayer, planeBoxSize } from "./map/planes";
 import { declutterCellDeg, newDeclutterMemory, pickNonOverlapping, spacingKey, spacingLevel, type Candidate } from "./map/declutter";
+import { perf, resetPerf } from "./map/perf";
 import { isSmallScreen } from "./map/screen";
 import { pickInitialView } from "./map/initialView";
 import { getMockPlaneCount } from "./api/mockFleet";
@@ -307,6 +308,9 @@ function boot(): void {
     dismissDepartureToast: () => {},
   };
   const store = new Store<AppState>(state);
+  // Test seam for the performance profile (src/map/perf.ts).
+  window.__flightPerf = perf;
+  window.__flightPerfReset = resetPerf;
 
   // ---- local mutable state (the original's useRef/useState-outside-store) ----
   // Only ever holds the aircraft in the current individual-marker viewport
@@ -401,6 +405,7 @@ function boot(): void {
   // Which planes were drawn last time, so a pan keeps them (see pickNonOverlapping).
   const declutterMemory = newDeclutterMemory();
   function renderAircraftLayer(): void {
+    const t0 = performance.now();
     const selectedId = store.get("selectedId");
     const selectedPos = store.get("selectedPos");
     const nowMs = Date.now();
@@ -424,16 +429,20 @@ function boot(): void {
     // An aircraft with a newer one on top of it is a ghost: not drawn at all
     // (see map/staleness.ts). Only where 20 m is visible. A watched plane is
     // never a ghost.
+    const shadowStart = performance.now();
     const shadowed = zoom >= OVERLAP_MIN_ZOOM ? findShadowedIds(inView) : null;
     const candidates = shadowed && shadowed.size > 0 ? inView.filter((p) => !shadowed.has(p.icao24) || watchedIds.has(p.icao24)) : inView;
+    perf.parts.shadowed += performance.now() - shadowStart;
 
     // Where two planes' icons would overlap, only the first discovered is
     // drawn; the selected one is always drawn and hides whatever is under it.
+    const projectStart = performance.now();
     const points: Candidate[] = candidates.map((p) => {
       const pt = map.project(p.latitude, p.longitude);
       return { icao24: p.icao24, x: pt.x, y: pt.y, active: isActiveTraffic(p, nowMs) };
     });
     const fixed = selectedPos ? [map.project(selectedPos.latitude, selectedPos.longitude)] : [];
+    perf.parts.project += performance.now() - projectStart;
     // Watched planes are placed like the selected one: nothing is drawn over
     // them, and they are kept whatever the spacing does.
     for (const p of candidates) if (watchedIds.has(p.icao24)) fixed.push(map.project(p.latitude, p.longitude));
@@ -445,6 +454,7 @@ function boot(): void {
     // against the other, and the source is part of the key so the 7.5-8.0
     // overview band does not hand its spacing to the live source above it.
     const maxDrawn = isSmallScreen() ? MAX_DRAWN_MARKERS_SMALL_SCREEN : MAX_DRAWN_MARKERS;
+    const declutterStart = performance.now();
     const keep = pickNonOverlapping(
       points,
       fixed,
@@ -453,9 +463,18 @@ function boot(): void {
       declutterMemory,
       spacingKey(useOverview ? "overview" : "live", zoom, maxDrawn),
     );
+    const declutterMs = performance.now() - declutterStart;
+    perf.parts.declutter += declutterMs;
+    perf.declutter.calls++;
+    perf.declutter.totalMs += declutterMs;
+    perf.declutter.lastMs = declutterMs;
+    if (declutterMs > perf.declutter.maxMs) perf.declutter.maxMs = declutterMs;
     // A watched plane is always drawn: exempt from the marker cap and declutter.
+    const filterStart = performance.now();
     const drawn = candidates.filter((p) => keep.has(p.icao24) || watchedIds.has(p.icao24));
+    perf.parts.filter += performance.now() - filterStart;
 
+    const updateStart = performance.now();
     planeLayer.update({
       unselected: drawn,
       selectedPos,
@@ -463,6 +482,13 @@ function boot(): void {
       dimmed: agedIds(drawn, nowMs),
       watched: watchedIds,
     });
+    perf.parts.update += performance.now() - updateStart;
+
+    const renderMs = performance.now() - t0;
+    perf.render.calls++;
+    perf.render.totalMs += renderMs;
+    perf.render.lastMs = renderMs;
+    if (renderMs > perf.render.maxMs) perf.render.maxMs = renderMs;
   }
 
   // ---- fetch lifecycle ----

@@ -460,3 +460,56 @@ export async function stubBasemapTiles(page: Page) {
   );
   await page.route(/tiles\.openfreemap\.org\/(t|fonts)\//, (r) => r.fulfill({ body: Buffer.alloc(0), contentType: "application/x-protobuf" }));
 }
+
+/**
+ * Serves a dense synthetic fleet of `n` planes in a 0.5 deg box around
+ * `centre`, all of them inside a z10 viewport, so one render pass sees the
+ * whole set — what the 2000-plane perf case measures. The app's own
+ * `?mockPlanes=N` spreads its fleet world-wide, so only a fraction of it
+ * lands in a zoomed-in view and it cannot stand in for this.
+ */
+export async function mockDenseFleet(page: Page, n: number, centre = { lat: 51.5074, lon: -0.1278 }): Promise<void> {
+  const now = new Date().toISOString();
+  const side = Math.ceil(Math.sqrt(n));
+  const planes = Array.from({ length: n }, (_, i) => ({
+    id: i,
+    icao24: i.toString(16).padStart(6, "0"),
+    callsign: `PRF${String(i).padStart(4, "0")}`,
+    observedAt: now,
+    // A grid rather than random: every size is a superset of the smaller ones,
+    // so two runs compare like with like.
+    latitude: centre.lat - 0.25 + (0.5 * Math.floor(i / side)) / Math.max(1, side - 1),
+    longitude: centre.lon - 0.25 + (0.5 * (i % side)) / Math.max(1, side - 1),
+    altitudeM: 10_000,
+    velocityMs: 230,
+    headingDeg: (i * 37) % 360,
+    verticalRateMs: 0,
+    onGround: false,
+    agentSource: "perf",
+  }));
+  await page.route("**/api/flights/live/count*", (r) => r.fulfill({ json: n }));
+  await page.route("**/api/flights/live/overview*", (r) => r.fulfill({ json: { planes, clusters: [] } }));
+  await page.route("**/api/flights/live/clusters*", (r) => r.fulfill({ json: [] }));
+  await page.route(/\/api\/flights\/live(\?|$)/, (r) => {
+    const q = new URL(r.request().url()).searchParams;
+    if (!q.has("latMin")) return r.fulfill({ json: planes });
+    const latMin = Number(q.get("latMin"));
+    const latMax = Number(q.get("latMax"));
+    const lonMin = Number(q.get("lonMin"));
+    const lonMax = Number(q.get("lonMax"));
+    return r.fulfill({ json: planes.filter((p) => p.latitude >= latMin && p.latitude <= latMax && p.longitude >= lonMin && p.longitude <= lonMax) });
+  });
+  await page.route("**/api/flights/*/live", (r) => {
+    const icao24 = new URL(r.request().url()).pathname.split("/")[3];
+    const p = planes.find((x) => x.icao24 === icao24);
+    return p ? r.fulfill({ json: p }) : r.fulfill({ status: 404, json: null });
+  });
+  await page.route("**/api/flights/*/history*", (r) => r.fulfill({ json: [] }));
+  await page.route("**/api/aircraft/*", (r) => r.fulfill({ status: 404, json: null }));
+  await page.route("**/api/geo", (r) => r.fulfill({ json: null }));
+  await page.route("**/api/agents/status", (r) => r.fulfill({ json: { active: true, secondsRemaining: 300 } }));
+  await page.route("**/api/agents/restart", (r) => r.fulfill({ json: { active: true, secondsRemaining: 300 } }));
+  // Positions never change: every /live response carries the same fleet, so a
+  // render with no viewport change must re-send nothing.
+  await page.routeWebSocket("**/ws/live", () => {});
+}

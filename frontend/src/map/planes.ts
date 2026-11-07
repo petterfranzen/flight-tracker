@@ -3,6 +3,7 @@ import type { FlightMap, MapHit, Point, RenderedPlane } from "./map";
 import type { LiveMarker, SelectedPosition } from "../types/flight";
 import { canvas, cssToken, drawLabel, measureLabel, serveImages, withAlpha, type DrawnImage, type LabelStyle } from "./glImages";
 import { isSmallScreen } from "./screen";
+import { perf } from "./perf";
 
 // Planes are drawn by the map itself: a GeoJSON source and symbol layers,
 // one feature per drawn plane, rotated to its heading on the GPU. Which
@@ -326,7 +327,10 @@ export function createPlaneLayer(map: FlightMap, onSelect: (p: LiveMarker) => vo
 
   function setUnselected(features: GeoJSON.Feature[]): void {
     unselectedData = features;
-    if (added) (gl.getSource(PLANES_SOURCE) as GeoJSONSource).setData({ type: "FeatureCollection", features });
+    if (added) {
+      perf.setData.planes++;
+      (gl.getSource(PLANES_SOURCE) as GeoJSONSource).setData({ type: "FeatureCollection", features });
+    }
   }
 
   // ---- fade-in ----
@@ -409,7 +413,10 @@ export function createPlaneLayer(map: FlightMap, onSelect: (p: LiveMarker) => vo
     if (sKey !== selectedKey) {
       selectedKey = sKey;
       selectedData = selectedPos ? [feature(selectedPos, props(selectedPos, false, false))] : [];
-      if (added) (gl.getSource(SELECTED_SOURCE) as GeoJSONSource).setData({ type: "FeatureCollection", features: selectedData });
+      if (added) {
+        perf.setData.selected++;
+        (gl.getSource(SELECTED_SOURCE) as GeoJSONSource).setData({ type: "FeatureCollection", features: selectedData });
+      }
     }
 
     const drawn = new Map<string, LiveMarker>();
