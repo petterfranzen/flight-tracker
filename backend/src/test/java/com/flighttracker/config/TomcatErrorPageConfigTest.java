@@ -1,6 +1,8 @@
 package com.flighttracker.config;
 
+import org.apache.catalina.connector.Connector;
 import org.apache.catalina.core.StandardHost;
+import org.apache.coyote.http11.AbstractHttp11Protocol;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.SpringBootConfiguration;
@@ -124,5 +126,37 @@ class TomcatErrorPageConfigTest {
                 HttpResponse.BodyHandlers.discarding());
 
         assertThat(response.statusCode()).isEqualTo(500);
+    }
+
+    /**
+     * Response compression. Nothing in this backend sets {@code server.compression.*}
+     * (application.yml and TomcatErrorPageConfig leave it alone), so Boot's default
+     * applies: compression off. This documents that default on the live connector, and
+     * fails if a setting or a customizer ever turns it on without this test being updated
+     * on purpose.
+     */
+    @Test
+    void responseCompressionIsOff_theBootDefault_becauseNothingSetsIt() {
+        ServletWebServerApplicationContext webContext = (ServletWebServerApplicationContext) context;
+        TomcatWebServer server = (TomcatWebServer) webContext.getWebServer();
+        Connector connector = server.getTomcat().getConnector();
+
+        assertThat(connector.getProtocolHandler()).isInstanceOf(AbstractHttp11Protocol.class);
+        AbstractHttp11Protocol<?> protocol = (AbstractHttp11Protocol<?>) connector.getProtocolHandler();
+        assertThat(protocol.getCompression()).isEqualTo("off");
+        assertThat(context.getEnvironment().getProperty("server.compression.enabled"))
+                .as("no server.compression.enabled is configured anywhere").isNull();
+    }
+
+    @Test
+    void anErrorBodyIsNotCompressedEvenWhenTheClientAsksForGzip() throws Exception {
+        HttpResponse<byte[]> response = HttpClient.newHttpClient().send(
+                HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + PORT + ERROR_PATH))
+                        .header("Accept-Encoding", "gzip")
+                        .GET().build(),
+                HttpResponse.BodyHandlers.ofByteArray());
+
+        assertThat(response.statusCode()).isEqualTo(500);
+        assertThat(response.headers().firstValue("Content-Encoding")).isEmpty();
     }
 }
