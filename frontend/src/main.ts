@@ -26,6 +26,7 @@ import { isSmallScreen } from "./map/screen";
 import { pickInitialView } from "./map/initialView";
 import { getMockPlaneCount } from "./api/mockFleet";
 import { agedIds, findShadowedIds, isActiveTraffic, OVERLAP_MIN_ZOOM } from "./map/staleness";
+import { newerReport, notOlderReport, sameReport } from "./map/reportOrder";
 import { createRouteLayer } from "./map/route";
 import { createUncertaintyLayer } from "./map/uncertainty";
 import { keepCellWinners } from "./map/cellWinners";
@@ -169,14 +170,15 @@ function aheadOf(existing: LiveMarker, incoming: LiveMarker): boolean {
  *
  * `asOf` (the time the information was produced) orders payloads of the same
  * report taken at different times, and on a tie the drawn one is kept. But two
- * payloads of the *same report* (equal `observedAt`) sit at different points
- * along the track: a snapshot is the report dead-reckoned forward, a raw report
- * is the report itself. For the same report the further-along position is the
- * later information, so it wins and the marker never moves backwards (#150).
+ * payloads of the *same report* (`observedAt` naming the same instant, however
+ * it is spelled) sit at different points along the track: a snapshot is the
+ * report dead-reckoned forward, a raw report is the report itself. For the same
+ * report the further-along position is the later information, so it wins and
+ * the marker never moves backwards (#150).
  */
 function newerOf(existing: AsOfMarker | undefined, incoming: AsOfMarker): AsOfMarker {
   if (!existing) return incoming;
-  if (existing.observedAt === incoming.observedAt) return aheadOf(existing, incoming) ? incoming : existing;
+  if (sameReport(existing.observedAt, incoming.observedAt)) return aheadOf(existing, incoming) ? incoming : existing;
   return existing.asOf >= incoming.asOf ? existing : incoming;
 }
 
@@ -199,11 +201,15 @@ function newerOf(existing: AsOfMarker | undefined, incoming: AsOfMarker): AsOfMa
  * idle reversion of #150, where frame and refresh disagreed about the same
  * report and each redraw took the other's side.
  *
+ * Both comparisons go through `Date.parse` (map/reportOrder.ts): `observedAt`
+ * can arrive spelled with an offset, or with or without fractional seconds, and
+ * ordering the strings would put two reports in the wrong order.
+ *
  * A genuinely new report has a newer `observedAt`, so it still moves the marker
  * immediately.
  */
 function frameAdvances(existing: LiveMarker | undefined, p: FlightPosition): boolean {
-  return existing === undefined || p.observedAt > existing.observedAt;
+  return existing === undefined || newerReport(p.observedAt, existing.observedAt);
 }
 
 function boot(): void {
@@ -366,7 +372,7 @@ function boot(): void {
     routeLayer.update(route);
   }
   function appendRoutePoint(p: LiveMarker): void {
-    if (lastRouteObservedAt == null || p.observedAt > lastRouteObservedAt) {
+    if (lastRouteObservedAt == null || newerReport(p.observedAt, lastRouteObservedAt)) {
       // A new real report: it joins the trail.
       lastRouteObservedAt = p.observedAt;
       const last = routePoints[routePoints.length - 1];
@@ -885,7 +891,7 @@ function boot(): void {
     const from = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString(); // last 6h of history
     fetchHistory(selectedId, from, to).then((track) => {
       if (seq !== selectionEffectSeq) return; // superseded by a newer selection
-      const filtered = legStartAt ? track.filter((p) => p.observedAt >= legStartAt!) : track;
+      const filtered = legStartAt ? track.filter((p) => notOlderReport(p.observedAt, legStartAt!)) : track;
       if (filtered.length > 0) lastRouteObservedAt = filtered[filtered.length - 1].observedAt;
       routePoints = filtered.map((p) => ({ lat: p.latitude, lon: p.longitude, observedAt: p.observedAt }));
       drawRoute();
@@ -900,7 +906,7 @@ function boot(): void {
         store.set("dossier", d);
         legStartAt = d?.legStartAt ?? null;
         if (legStartAt) {
-          const trimmed = routePoints.filter((pt) => pt.observedAt >= legStartAt!);
+          const trimmed = routePoints.filter((pt) => notOlderReport(pt.observedAt, legStartAt!));
           if (trimmed.length !== routePoints.length) {
             routePoints = trimmed;
             drawRoute();
