@@ -87,10 +87,27 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
       }
       dyn.appendChild(list);
       if (scrollTarget) {
-        pendingScrollKey = null;
         // "nearest": scrolls the panel's own box, not the page, and does
         // nothing on desktop where the list already fits.
         scrollTarget.scrollIntoView({ block: "nearest" });
+        // One scroll is not enough. The row grows a line once the poll fills
+        // its schedule detail (and swaps "not airborne yet" for "Go to"), which
+        // clips the taller row at the panel's edge. Keep the fresh entry pinned
+        // until its status row lands, re-scrolling on that render, then check
+        // once more after the layout settles in case the text wrapped late.
+        if (pendingScrollKey && pendingScrollKey in status) {
+          pendingScrollKey = null;
+          const target = scrollTarget;
+          const box = content;
+          requestAnimationFrame(() => {
+            if (!target.isConnected) return;
+            const itemBox = target.getBoundingClientRect();
+            const panelBox = box.getBoundingClientRect();
+            if (itemBox.bottom > panelBox.bottom + 1 || itemBox.top < panelBox.top - 1) {
+              target.scrollIntoView({ block: "nearest" });
+            }
+          });
+        }
       }
     }
   }
