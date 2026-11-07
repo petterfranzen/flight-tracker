@@ -8,6 +8,7 @@ import com.flighttracker.model.FlightPosition;
 import com.flighttracker.repository.Timestamps;
 import com.flighttracker.service.LiveVisibilityWindows;
 import com.flighttracker.service.coverage.GapEstimate;
+import com.flighttracker.service.coverage.TrackState;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -281,6 +282,18 @@ public class LiveStateStore {
         return out;
     }
 
+    /**
+     * The aircraft's coverage-gap state from the live row alone — the same
+     * mapping TrackStatus.from(LiveAircraft) uses before a provider
+     * confirmation is layered on. Cheap enough to stamp on every marker of
+     * the bulk snapshot (one field read, no lookup).
+     */
+    private static TrackState stateOf(LiveAircraft a) {
+        if (a.onGround()) return TrackState.ON_GROUND;
+        GapEstimate gap = a.gap();
+        return gap == null ? TrackState.LIVE : gap.state();
+    }
+
     private static boolean isLive(LiveAircraft a, Instant staleAirborneCutoff, Instant landedCutoff) {
         return (!a.onGround() && a.observedAt().isAfter(staleAirborneCutoff))
                 || (a.onGround() && a.landedSince() != null && a.landedSince().isAfter(landedCutoff));
@@ -304,7 +317,7 @@ public class LiveStateStore {
             if (!isLive(a, staleAirborneCutoff, landedCutoff)) continue;
             if (bounds != null && !bounds.contains(a.displayLatitude(), a.displayLongitude())) continue;
             out.add(new LiveMarkerView(a.icao24(), a.callsign(), a.observedAt(),
-                    a.displayLatitude(), a.displayLongitude(), a.headingDeg(), a.onGround()));
+                    a.displayLatitude(), a.displayLongitude(), a.headingDeg(), a.onGround(), stateOf(a)));
         }
         return out;
     }
@@ -437,7 +450,7 @@ public class LiveStateStore {
             if (planes.size() < maxPlanes && taken < perCell) {
                 perCellTaken.put(cell, taken + 1);
                 planes.add(new LiveMarkerView(a.icao24(), a.callsign(), a.observedAt(),
-                        a.displayLatitude(), a.displayLongitude(), a.headingDeg(), a.onGround()));
+                        a.displayLatitude(), a.displayLongitude(), a.headingDeg(), a.onGround(), stateOf(a)));
             } else {
                 rest.add(a);
             }
@@ -467,7 +480,7 @@ public class LiveStateStore {
             String cell = Math.floor(a.displayLatitude() / cellDeg) + "," + Math.floor(a.displayLongitude() / cellDeg);
             if (!taken.add(cell)) continue;
             planes.add(new LiveMarkerView(a.icao24(), a.callsign(), a.observedAt(),
-                    a.displayLatitude(), a.displayLongitude(), a.headingDeg(), a.onGround()));
+                    a.displayLatitude(), a.displayLongitude(), a.headingDeg(), a.onGround(), stateOf(a)));
         }
         return new LiveOverview(planes, List.of());
     }

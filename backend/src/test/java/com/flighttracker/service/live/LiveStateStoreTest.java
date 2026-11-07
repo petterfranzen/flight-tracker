@@ -20,6 +20,7 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.tuple;
 import static org.assertj.core.api.Assertions.within;
 
 /**
@@ -530,5 +531,38 @@ class LiveStateStoreTest {
 
         assertThat(store.get("abc123").orElseThrow().gap()).isNull();
         assertThat(store.get("abc123").orElseThrow().displayLatitude()).isEqualTo(59.05);
+    }
+
+    @Test
+    void liveMarkers_carryEachAircraftsCoverageGapState() {
+        LiveStateStore store = store();
+        store.upsert("air001", "A1", T0, 59.0, 18.0, 10_000.0, 200.0, 90.0, 0.0, false, "opensky");
+        store.upsert("gnd002", "G2", T0, 59.0, 18.0, 0.0, 0.0, 90.0, 0.0, true, "opensky");
+        store.upsert("gap003", "C3", T0, 59.0, 18.0, 10_000.0, 200.0, 90.0, 0.0, false, "opensky");
+        store.writeGapEstimate("gap003", T0, gapAt(59.1, 18.1, T0.plusSeconds(120)));
+
+        Instant cutoff = T0.minusSeconds(1); // every report above is inside both windows
+        List<LiveMarker> markers = store.liveMarkers(cutoff, cutoff, null);
+
+        assertThat(markers).extracting(LiveMarker::getIcao24, LiveMarker::getState)
+                .containsExactlyInAnyOrder(
+                        tuple("air001", TrackState.LIVE),
+                        tuple("gnd002", TrackState.ON_GROUND),
+                        tuple("gap003", TrackState.COVERAGE_LOST));
+    }
+
+    @Test
+    void liveMarkers_mapALandedInferenceToLandmarkState() {
+        LiveStateStore store = store();
+        store.upsert("inf001", "I1", T0, 59.0, 18.0, 10_000.0, 200.0, 90.0, 0.0, false, "opensky");
+        GapEstimate landed = new GapEstimate(TrackState.LANDED_INFERRED, 0.9, 0.9, 59.2, 18.2, 500,
+                T0.plusSeconds(200), "ESSA", "19R", T0.plusSeconds(210), null, "physics-v1");
+        store.writeGapEstimate("inf001", T0, landed);
+
+        Instant cutoff = T0.minusSeconds(1);
+        List<LiveMarker> markers = store.liveMarkers(cutoff, cutoff, null);
+
+        assertThat(markers).singleElement()
+                .extracting(LiveMarker::getState).isEqualTo(TrackState.LANDED_INFERRED);
     }
 }
