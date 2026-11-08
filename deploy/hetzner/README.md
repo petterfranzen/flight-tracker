@@ -112,6 +112,28 @@ through `cloudflared access ssh` against Cloudflare Access; there is nothing
 listening on a public port 22 once bootstrap is done (see the comment next
 to the `ufw allow 22/tcp` rule in `cloud-init.yaml`).
 
+### Adding a second trusted proxy
+
+The app believes client-IP headers only from a trusted socket peer
+(`FLIGHTTRACKER_TRUSTED_PROXIES`, comma-separated IPs or CIDRs, default
+`127.0.0.1,::1`: the cloudflared tunnel). Per-IP limits (`/ws/live` cap,
+restart rate limit) use the resulting identity.
+
+- **Configure:** add the proxy's address (or CIDR) to the list in the
+  service environment, keeping loopback if cloudflared stays, then restart.
+  Do not trust a range that holds anything but proxies you run: a trusted
+  peer can name any visitor.
+- **Headers it must send:** the visitor's IP in `CF-Connecting-IP`, else
+  `X-Real-IP`, else `X-Forwarded-For` (read right to left, so the proxy must
+  append the address it saw). Values that are not IP literals are ignored.
+- **If it sends none:** every visitor behind it shares the proxy's own
+  identity, so they share one cap of `FLIGHTTRACKER_WS_MAX_CONNECTIONS_PER_IP`
+  (default 8) and the extra tabs get a 1013 close. The app logs
+  `Trusted proxy <ip> sent no usable client-IP header` once per proxy IP;
+  treat that line as a misconfiguration and fix the proxy, not the cap.
+- **Anyone else:** a peer that is not listed is never believed, whatever
+  headers it sends.
+
 ## Updates
 
 What keeps the live box patched, and what doesn't:
