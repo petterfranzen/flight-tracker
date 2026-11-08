@@ -39,6 +39,14 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-websocket</artifactId>
         </dependency>
+        <!-- Optional social login (design: section9-hq #84, step 2). Adds Spring
+             Security 7's OAuth2 client (authorization-code + PKCE) and the one
+             SecurityFilterChain that leaves every existing path open; the whole
+             chain is gated on flighttracker.profile.enabled, off by default. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security-oauth2-client</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.xerial</groupId>
             <artifactId>sqlite-jdbc</artifactId>
