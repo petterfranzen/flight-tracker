@@ -28,7 +28,8 @@ const row = (airborne: boolean) => ({
   icao24: airborne ? plane.icao24 : null,
   airborne,
 });
-const WATCHED = [{ flightNumber: "SK2112", date: "2026-11-02", airport: "ARN", label: "LHR → ARN" }];
+const TODAY = new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Stockholm" });
+const WATCHED = [{ flightNumber: "SK2112", date: TODAY, airport: "ARN", label: "LHR → ARN" }];
 
 test("a watched, airborne flight is highlighted, drawn among traffic and exempt from declutter", async ({ page }) => {
   await mockFlightApi(page);
@@ -136,13 +137,21 @@ test("a watched flight going airborne raises a toast once, and is drawn on the m
   // Not airborne on the first poll: no toast.
   expect(await page.locator(".watch-toast").isVisible()).toBe(false);
 
-  // It departs; the next 60 s poll learns it.
+  // It departs; the two-tick take-off rule needs two 60 s polls to confirm it.
+  // Wait for each poll to land (its request, then the drawn plane) before the
+  // next tick, so the second tick is the second poll and not a skipped one.
+  await expect.poll(() => searches.length, { timeout: 10_000 }).toBeGreaterThan(0);
   airborne = true;
+  const firstTick = searches.length;
+  await page.clock.runFor(61_000);
+  await expect.poll(() => searches.length, { timeout: 10_000 }).toBeGreaterThan(firstTick);
+  await expect.poll(async () => (await planeLayerIds(page)).includes(plane.icao24), { timeout: 10_000 }).toBe(true);
+  await expect(page.locator(".watch-toast")).toBeHidden();
   await page.clock.runFor(61_000);
 
   const toast = page.locator(".watch-toast");
   await expect(toast).toBeVisible();
-  await expect(toast).toContainText("SK2112 is airborne");
+  await expect(toast).toContainText("SK2112 LHR → ARN is airborne.");
 
   // The plane is drawn (a source-level read: the clock holds the frames).
   await expect.poll(async () => (await planeLayerIds(page)).includes(plane.icao24), { timeout: 10_000 }).toBe(true);
