@@ -70,7 +70,7 @@ class TomcatErrorPageConfigTest {
 
     @SpringBootConfiguration
     @EnableAutoConfiguration(exclude = DataSourceAutoConfiguration.class)
-    @Import(TomcatErrorPageConfig.class)
+    @Import({TomcatErrorPageConfig.class, ProfileSecurityConfig.class})
     static class MinimalApp {
     }
 

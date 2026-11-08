@@ -52,7 +52,7 @@ class SecurityHeadersAndOriginTest {
 
     @SpringBootConfiguration
     @EnableAutoConfiguration(exclude = DataSourceAutoConfiguration.class)
-    @Import({WebSocketConfig.class, SecurityHeadersFilter.class})
+    @Import({WebSocketConfig.class, SecurityHeadersFilter.class, ProfileSecurityConfig.class})
     static class MinimalApp {
         @Bean
         LiveFeedBroadcaster broadcaster() {
