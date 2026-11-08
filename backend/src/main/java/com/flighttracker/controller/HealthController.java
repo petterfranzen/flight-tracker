@@ -11,6 +11,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 
@@ -28,15 +29,18 @@ public class HealthController {
     private final SweepHealthTracker sweepHealthTracker;
     private final ObjectProvider<BuildProperties> buildProperties;
     private final long globalSweepIntervalSeconds;
+    private final Clock clock;
 
     public HealthController(JdbcTemplate jdbcTemplate,
                              SweepHealthTracker sweepHealthTracker,
                              ObjectProvider<BuildProperties> buildProperties,
-                             @Value("${flighttracker.agents.global-sweep-interval-seconds:360}") long globalSweepIntervalSeconds) {
+                             @Value("${flighttracker.agents.global-sweep-interval-seconds:360}") long globalSweepIntervalSeconds,
+                             Clock clock) {
         this.jdbcTemplate = jdbcTemplate;
         this.sweepHealthTracker = sweepHealthTracker;
         this.buildProperties = buildProperties;
         this.globalSweepIntervalSeconds = globalSweepIntervalSeconds;
+        this.clock = clock;
     }
 
     /**
@@ -85,11 +89,17 @@ public class HealthController {
      * backing off, a transient DB hiccup) is normal operation, not an
      * incident; this only fires once the pattern looks like the sweep has
      * actually stopped running, not just run late once.
+     *
+     * <p>"Now" comes from the injected {@link Clock} (production's is
+     * {@code Clock.systemUTC()}, see ClockConfig) rather than a bare
+     * {@code Instant.now()}, so the boundary tests can pin the instant and
+     * hit the 3× edge exactly instead of sleeping and asserting against a
+     * margin.
      */
     @GetMapping("/sweep")
     public ResponseEntity<Void> sweepHealth() {
         boolean healthy = sweepHealthTracker.lastSweepAt()
-                .map(lastSweepAt -> Duration.between(lastSweepAt, Instant.now()).toSeconds() < globalSweepIntervalSeconds * 3)
+                .map(lastSweepAt -> Duration.between(lastSweepAt, clock.instant()).toSeconds() < globalSweepIntervalSeconds * 3)
                 .orElse(false);
         return healthy ? ResponseEntity.ok().build() : ResponseEntity.status(503).build();
     }
