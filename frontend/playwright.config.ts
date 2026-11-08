@@ -31,7 +31,10 @@ export default defineConfig({
   // off the path when a preview is already up.
   webServer: [
     {
-      command: "npm run dev -- --port 5174 --strictPort",
+      // VITE_NOTIFY is a build-time flag, off by default in production. The
+      // e2e dev server turns it on so the notification specs exercise the
+      // shipped code path; the production preview below stays flag-off.
+      command: "VITE_NOTIFY=true npm run dev -- --port 5174 --strictPort",
       url: "http://localhost:5174",
       reuseExistingServer: !process.env.CI,
     },

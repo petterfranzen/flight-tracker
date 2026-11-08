@@ -1,6 +1,8 @@
 import type { AppStore } from "../state/appState";
 import { searchSchedule, type ScheduledFlight } from "../api/flightApi";
 import { watchKey, type WatchedFlight } from "../watchlist";
+import { NOTIFY_ENABLED, notificationPermission, requestNotificationPermission, showOsNotification } from "../notify/notifier";
+import { notifyStateFor, setFlightEnabled } from "../notify/state";
 import { h, clear } from "./h";
 import "../components/WatchPanel.css";
 
@@ -28,6 +30,8 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
   let message = "";
   let watched: WatchedFlight[] = store.get("watchedFlights");
   let status: Record<string, ScheduledFlight | null> = store.get("watchedStatus");
+  // Which row's notification block is expanded; null when none is.
+  let notifyOpen: string | null = null;
   // Set when a watch is added, so the next render brings its row into the
   // panel's own scroll box (the list is chronological: newest is last).
   let pendingScrollKey: string | null = null;
@@ -72,15 +76,37 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
       const list = h("ul", { className: "watch-panel-watched" });
       let scrollTarget: HTMLElement | null = null;
       for (const w of watched) {
-        const f = status[watchKey(w)] ?? null;
+        const key = watchKey(w);
+        const f = status[key] ?? null;
         const airborne = !!(f && f.airborne && f.icao24);
+        const notifyOn = NOTIFY_ENABLED && !!notifyStateFor(key).enabled;
+        const bell = NOTIFY_ENABLED
+          ? h(
+              "button",
+              {
+                type: "button",
+                className: `watch-panel-bell${notifyOn ? " watch-panel-bell--on" : ""}`,
+                "aria-label": `Notifications for ${w.flightNumber}`,
+                "aria-expanded": String(notifyOpen === key),
+                onClick: () => {
+                  notifyOpen = notifyOpen === key ? null : key;
+                  render();
+                },
+              },
+              bellIcon(),
+            )
+          : null;
         const item = h("li", { className: "watch-panel-item" },
           h("span", { className: "watch-panel-name" }, `${w.flightNumber} ${w.label} - ${w.date}`),
           h("span", { className: "watch-panel-detail" }, f ? describe(f) : "no data yet"),
-          airborne
-            ? h("button", { type: "button", className: "watch-panel-goto", onClick: () => goto(w) }, "Go to")
-            : h("span", { className: "watch-panel-ground" }, "not airborne yet"),
-          h("button", { type: "button", className: "watch-panel-remove", "aria-label": `Stop watching ${w.flightNumber}`, onClick: () => store.get("unwatchFlight")(w) }, "\u2715"),
+          h("div", { className: "watch-panel-actions" },
+            airborne
+              ? h("button", { type: "button", className: "watch-panel-goto", onClick: () => goto(w) }, "Go to")
+              : h("span", { className: "watch-panel-ground" }, "not airborne yet"),
+            bell,
+            h("button", { type: "button", className: "watch-panel-remove", "aria-label": `Stop watching ${w.flightNumber}`, onClick: () => store.get("unwatchFlight")(w) }, "\u2715"),
+          ),
+          notifyOpen === key ? notifyBlock(w) : null,
         );
         if (pendingScrollKey && watchKey(w) === pendingScrollKey) scrollTarget = item;
         list.appendChild(item);
@@ -110,6 +136,54 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
         }
       }
     }
+  }
+
+  function bellIcon(): HTMLElement {
+    const span = h("span", { className: "watch-panel-bell-icon", "aria-hidden": "true" });
+    span.innerHTML =
+      '<svg viewBox="0 0 24 24"><path d="M12 22a2.2 2.2 0 0 0 2.2-2.2h-4.4A2.2 2.2 0 0 0 12 22zm7-5.2V11a7 7 0 0 0-5.2-6.8V3.5a1.8 1.8 0 0 0-3.6 0v.7A7 7 0 0 0 5 11v5.8L3.5 18v1h17v-1z"/></svg>';
+    return span;
+  }
+
+  /** The consent copy and the permission states from #82 design §5. */
+  function notifyBlock(w: WatchedFlight): HTMLElement {
+    const key = watchKey(w);
+    const perm = notificationPermission();
+    const enabled = !!notifyStateFor(key).enabled;
+    const ios = /iPad|iPhone|iPod/.test(navigator.userAgent);
+    const line =
+      perm === "unsupported"
+        ? "Notifications: not supported here"
+        : perm === "denied"
+          ? "Notifications: blocked in your browser \u2014 the in-app banner still works."
+          : enabled
+            ? "Notifications: on"
+            : "Notifications: not enabled for this flight";
+    const actions: HTMLElement[] = [];
+    if (enabled) {
+      actions.push(h("button", { type: "button", className: "watch-panel-notify-action", onClick: () => { setFlightEnabled(key, false); render(); } }, "Turn off"));
+      if (perm === "granted") {
+        actions.push(h("button", { type: "button", className: "watch-panel-notify-action", onClick: () => { void showOsNotification("Netwatch Skygrid", `Test notification for ${w.flightNumber}.`, { key }); } }, "Send a test notification"));
+      }
+    } else if (perm === "granted" || perm === "default") {
+      actions.push(h("button", { type: "button", className: "watch-panel-notify-action", onClick: () => { void enableNotifications(w); } }, "Notify me"));
+    }
+    return h(
+      "div",
+      { className: "watch-panel-notify" },
+      h("p", { className: "watch-panel-notify-copy" }, "Notifications appear while this site is open \u2014 a background tab is fine, a closed browser is not."),
+      ios ? h("p", { className: "watch-panel-notify-copy" }, "On iPhone, add this site to your Home Screen first.") : null,
+      h("p", { className: "watch-panel-notify-status" }, line),
+      actions.length ? h("div", { className: "watch-panel-notify-actions" }, ...actions) : null,
+    );
+  }
+
+  /** The bell's "Notify me" click: the only place a permission prompt appears. */
+  async function enableNotifications(w: WatchedFlight): Promise<void> {
+    let perm = notificationPermission();
+    if (perm === "default") perm = await requestNotificationPermission();
+    if (perm === "granted") setFlightEnabled(watchKey(w), true);
+    render();
   }
 
   async function search(): Promise<void> {

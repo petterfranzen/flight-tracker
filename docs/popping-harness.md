@@ -187,6 +187,17 @@ to match the tick's recorded truth — both for a frame that is deliberately not
 the tick's own (a cached view just redrawn during a pan, held still by pausing
 the clock before it).
 
+### A server that learns the area (`ramp`)
+
+`startReplay(page, testInfo, { ramp: { startFrac, perTick } })` makes `/live` and
+the frames carry only part of an area after `h.restartRamp()`, and more with each
+tick, the way the real hot poll covers a newly watched viewport (#151). The
+scenario "a settled view fills in one update, not plane by plane" samples the
+drawn count every 250 ms of app time after a zoom to z8 and after returning to a
+cached view, and counts steps of three planes or more: before the fix 7-8 per
+view (55 -> 60 -> 66 -> 72 -> 76 -> 83 -> 88 -> 94 -> 95), after it 2 (the
+snapshot, then one batch).
+
 ## Adding a scenario
 
 Copy a block from `popping.spec.ts`, drive the map with `drag` / `wheelZoom` /
