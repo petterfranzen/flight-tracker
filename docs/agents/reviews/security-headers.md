@@ -22,6 +22,26 @@ defaults to `false` and Cloudflare's edge sets `CF-Connecting-IP`, which
 hole (finding M4). Fixes for the HIGH/MEDIUM items are below as
 ready-to-apply diffs.
 
+## Update (2026-11-08): remediation status
+
+Since this review the HIGH/MEDIUM items have been fixed and deployed. The
+following are **live in production**:
+
+- **Fix A — security headers** (#172): the filter runs on every response,
+  including the `/ws/live` 101 handshake.
+- **Fix B — WebSocket Origin allow-list** (#172): `setAllowedOrigins` is now an
+  explicit allow-list, so the unauthenticated cross-origin socket is closed.
+- **Fix C — per-IP WebSocket connection cap** (#176): the per-IP count is taken
+  atomically and a slot is released on every close path, so one page cannot hold
+  an unbounded number of sockets.
+- **Profile data and row caps** (#175): shipped — profile writes are checked for
+  size, row count, `flight_date`/`kind` shape and JSON well-formedness before
+  the login API is exposed (the profile feature flag itself is still off).
+
+#176 also addressed M4 (client-IP trust) and L8. The diffs below are kept for
+the record; fix C as the review drafted it leaked a slot in
+`afterConnectionClosed`, which #176 corrected (see that PR).
+
 ## Method
 
 Built the frontend-bundled jar from `2c3a284` (`mvn -DskipTests package
@@ -220,7 +240,7 @@ unboundedly. Only reachable if M4's header trust is abused; fine at this scale.
 
 ## Ready-to-apply fixes
 
-### Diff A — security headers (HIGH, H1)
+### Diff A — security headers (HIGH, H1) — **shipped in #172, live in production**
 
 New file `backend/src/main/java/com/flighttracker/config/SecurityHeadersFilter.java`:
 
@@ -292,7 +312,7 @@ vector tiles and glyphs, per `frontend/src/cyberpunkMapStyle.ts`);
 worker. If you would rather not carry `'unsafe-inline'` for styles, that is a
 separate, larger frontend change (nonce/hash the styles) — out of scope here.
 
-### Diff B — WebSocket origin enforcement (MEDIUM, M2)
+### Diff B — WebSocket origin enforcement (MEDIUM, M2) — **shipped in #172, live in production**
 
 `setAllowedOrigins(...)` is enough and needs no custom interceptor: Spring's
 `OriginHandshakeInterceptor` allows a handshake whose `Origin` matches the
@@ -348,7 +368,7 @@ Verified against a local build with `setAllowedOrigins("https://flight.pastabake
 | `null` | **403** |
 | `http://127.0.0.1:8080` | 403 (so the dev origins above are needed for local dev) |
 
-### Diff C — per-IP WebSocket connection cap (MEDIUM, M3)
+### Diff C — per-IP WebSocket connection cap (MEDIUM, M3) — **shipped in #176, live in production**
 
 In `backend/src/main/java/com/flighttracker/service/LiveFeedBroadcaster.java`,
 add a counter keyed on the client IP. Behind `cloudflared` the raw remote
