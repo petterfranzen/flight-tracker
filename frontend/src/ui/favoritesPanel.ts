@@ -4,6 +4,7 @@ import { routeKey } from "../favorites";
 import type { FlightPosition } from "../types/flight";
 import { fetchFlightLive, searchFlightsByAirport } from "../api/flightApi";
 import { h, clear } from "./h";
+import { activateModal, isPhone, type ModalHandle } from "./a11y";
 import "../components/FavoritesPanel.css";
 
 const REFRESH_INTERVAL_MS = 20_000;
@@ -28,6 +29,9 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
   let liveRoutes: Record<string, FlightPosition> = {};
   let refreshTimer: ReturnType<typeof setInterval> | null = null;
   let refreshGeneration = 0;
+  // The phone drawer is modal (a11y.ts): Tab stays inside it, Escape closes it,
+  // focus returns to the FAB. Null on desktop, where the card is not modal.
+  let trap: ModalHandle | null = null;
 
   async function refresh(): Promise<void> {
     const generation = ++refreshGeneration;
@@ -89,6 +93,23 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     renderAll();
   }
 
+  /** See flightSearch.ts's syncModal — same modal-on-phone treatment. */
+  function syncModal(): void {
+    const modal = open && isPhone();
+    if (modal && !trap) {
+      body.setAttribute("role", "dialog");
+      body.setAttribute("aria-modal", "true");
+      body.setAttribute("aria-label", "Favorites");
+      trap = activateModal(body, { onEscape: () => setOpen(false), returnTo: fab });
+    } else if (!modal && trap) {
+      trap.release();
+      trap = null;
+      body.removeAttribute("role");
+      body.removeAttribute("aria-modal");
+      body.removeAttribute("aria-label");
+    }
+  }
+
   const fab = h(
     "button",
     { type: "button", className: "favorites-panel-fab", "aria-controls": "favorites-panel-body", onClick: () => setOpen(!open) },
@@ -141,7 +162,7 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
       content.append(
         h(
           "p",
-          { className: "favorites-panel-hint" },
+          { className: "favorites-panel-hint", role: "status" },
           liveCount > 0 ? "Tap a live favorite to jump to it." : "None live right now — they light up when a matching flight is in the air.",
         ),
       );
@@ -198,6 +219,7 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     } else if (content.parentElement) {
       content.remove();
     }
+    syncModal();
   }
   renderAll();
 
@@ -220,6 +242,8 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     unsubscribeAircraft();
     unsubscribeRoutes();
     stopPolling();
+    trap?.release();
+    trap = null;
     container.remove();
   };
 }

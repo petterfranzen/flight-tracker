@@ -24,11 +24,14 @@ import {
   type ScheduledFlight,
 } from "./api/flightApi";
 import { NOTIFY_ENABLED, notificationPermission, showOsNotification } from "./notify/notifier";
-import { loadNotifyState, saveNotifyState, pruneNotifyState, emptyState, forgetFlight } from "./notify/state";
+import { loadNotifyState, saveNotifyState, pruneNotifyState, emptyState, forgetFlight, startHourlyPrune } from "./notify/state";
 import { chooseChannel, observeFlight } from "./notify/detect";
+import { commitNotifyPoll, type NotifyOutcome } from "./notify/poll";
+import { applyStandaloneViewport } from "./ui/standaloneViewport";
 import { boundsFromMap, createFollowSelected, createMap, DEFAULT_VIEW, GPUInitializationError } from "./map/map";
 import { createPlaneLayer, planeBoxSize } from "./map/planes";
 import { declutterCellDeg, newDeclutterMemory, pickNonOverlapping, spacingKey, spacingLevel, type Candidate } from "./map/declutter";
+import { perf, resetPerf } from "./map/perf";
 import { isSmallScreen } from "./map/screen";
 import { pickInitialView } from "./map/initialView";
 import { getMockPlaneCount } from "./api/mockFleet";
@@ -250,7 +253,11 @@ function boot(): void {
   const bootScreenRoot = h("div");
   const dockRoot = h("div");
   const leftOverlayStack = h("div", { className: "left-overlay-stack" });
-  const trackedChipRoot = h("div");
+  // A stable polite live region for the Active/Seen counts: aria-live lives on
+  // this wrapper (created once) rather than on .tracked-chip, which
+  // renderTrackedChip rebuilds on every change — a live region that is itself
+  // replaced each tick is not reliably announced.
+  const trackedChipRoot = h("div", { "aria-live": "polite", "aria-atomic": "true" });
   const resumeDialogRoot = h("div");
   const watchToastRoot = h("div");
   const mapRoot = h("div");
@@ -263,6 +270,8 @@ function boot(): void {
   // Home Screen hint on iOS. It hides itself when already standalone and
   // remembers a dismissal. See ui/installPrompt.ts.
   installPrompt.mount(appShell);
+  // Installed iOS app: mark standalone for the WebKit 301108 workaround; ?vpdebug readout.
+  applyStandaloneViewport();
 
   // Minimal worker (#85 reuses #82's decision; one worker, not two). It
   // caches nothing — its header says why — so a deploy can never be kept
@@ -324,6 +333,7 @@ function boot(): void {
     removeFavoriteAircraft: () => {},
     removeFavoriteRoute: () => {},
     resumeTracking: () => {},
+    dismissResumeDialog: () => {},
 
     watchFlight: () => {},
     unwatchFlight: () => {},
@@ -332,6 +342,9 @@ function boot(): void {
     dismissWatchNotice: () => {},
   };
   const store = new Store<AppState>(state);
+  // Test seam for the performance profile (src/map/perf.ts).
+  window.__flightPerf = perf;
+  window.__flightPerfReset = resetPerf;
 
   // ---- local mutable state (the original's useRef/useState-outside-store) ----
   // Only ever holds the aircraft in the current individual-marker viewport
@@ -489,6 +502,7 @@ function boot(): void {
   // Which planes were drawn last time, so a pan keeps them (see pickNonOverlapping).
   const declutterMemory = newDeclutterMemory();
   function renderAircraftLayer(): void {
+    const t0 = performance.now();
     const selectedId = store.get("selectedId");
     const reportedPos = store.get("selectedPos");
     // At its confirmed gate, not at its last (old) report: a display state only.
@@ -514,16 +528,20 @@ function boot(): void {
     // An aircraft with a newer one on top of it is a ghost: not drawn at all
     // (see map/staleness.ts). Only where 20 m is visible. A watched plane is
     // never a ghost.
+    const shadowStart = performance.now();
     const shadowed = zoom >= OVERLAP_MIN_ZOOM ? findShadowedIds(inView) : null;
     const candidates = shadowed && shadowed.size > 0 ? inView.filter((p) => !shadowed.has(p.icao24) || watchedIds.has(p.icao24)) : inView;
+    perf.parts.shadowed += performance.now() - shadowStart;
 
     // Where two planes' icons would overlap, only the first discovered is
     // drawn; the selected one is always drawn and hides whatever is under it.
+    const projectStart = performance.now();
     const points: Candidate[] = candidates.map((p) => {
       const pt = map.project(p.latitude, p.longitude);
       return { icao24: p.icao24, x: pt.x, y: pt.y, active: isActiveTraffic(p, nowMs) };
     });
     const fixed = selectedPos ? [map.project(selectedPos.latitude, selectedPos.longitude)] : [];
+    perf.parts.project += performance.now() - projectStart;
     // Watched planes are placed like the selected one: nothing is drawn over
     // them, and they are kept whatever the spacing does.
     for (const p of candidates) if (watchedIds.has(p.icao24)) fixed.push(map.project(p.latitude, p.longitude));
@@ -535,6 +553,7 @@ function boot(): void {
     // against the other, and the source is part of the key so the 7.5-8.0
     // overview band does not hand its spacing to the live source above it.
     const maxDrawn = isSmallScreen() ? MAX_DRAWN_MARKERS_SMALL_SCREEN : MAX_DRAWN_MARKERS;
+    const declutterStart = performance.now();
     const keep = pickNonOverlapping(
       points,
       fixed,
@@ -543,9 +562,18 @@ function boot(): void {
       declutterMemory,
       spacingKey(useOverview ? "overview" : "live", zoom, maxDrawn),
     );
+    const declutterMs = performance.now() - declutterStart;
+    perf.parts.declutter += declutterMs;
+    perf.declutter.calls++;
+    perf.declutter.totalMs += declutterMs;
+    perf.declutter.lastMs = declutterMs;
+    if (declutterMs > perf.declutter.maxMs) perf.declutter.maxMs = declutterMs;
     // A watched plane is always drawn: exempt from the marker cap and declutter.
+    const filterStart = performance.now();
     const drawn = candidates.filter((p) => keep.has(p.icao24) || watchedIds.has(p.icao24));
+    perf.parts.filter += performance.now() - filterStart;
 
+    const updateStart = performance.now();
     planeLayer.update({
       unselected: drawn,
       selectedPos,
@@ -553,6 +581,13 @@ function boot(): void {
       dimmed: agedIds(drawn, nowMs),
       watched: watchedIds,
     });
+    perf.parts.update += performance.now() - updateStart;
+
+    const renderMs = performance.now() - t0;
+    perf.render.calls++;
+    perf.render.totalMs += renderMs;
+    perf.render.lastMs = renderMs;
+    if (renderMs > perf.render.maxMs) perf.render.maxMs = renderMs;
   }
 
   // ---- fetch lifecycle ----
@@ -561,9 +596,7 @@ function boot(): void {
     // superseded. It opens the fill window only for a view change that lands a
     // real set; the opening view, and an empty or sparse snapshot, never hold
     // anything back.
-    arrivals.clear();
-    if (arrivalTimer) clearTimeout(arrivalTimer);
-    arrivalTimer = null;
+    clearArrivals();
     fillUntil = liveSnapshotSeen && viewChanged && list.length >= FILL_MIN_SNAPSHOT ? Date.now() + FILL_SETTLE_MS : 0;
     liveSnapshotSeen = true;
     viewChanged = false;
@@ -758,6 +791,9 @@ function boot(): void {
     store.set("zoom", nextZoom);
     if ((nextZoom < CLUSTER_FETCH_MAX_ZOOM) !== wasZoomedOut) lastAppliedView = null;
     viewChanged = true;
+    // Frames held for the view we just left are stale: drop them and their timer
+    // rather than let them release into the new view (see clearArrivals).
+    clearArrivals();
     renderAircraftLayer(); // icon sizes and what overlaps change with the zoom: redraw now, independent of the fetch below
     // A view we've seen recently is drawn right away, before the debounce.
     applyCachedView(Date.now());
@@ -803,6 +839,15 @@ function boot(): void {
     arrivals.set(p.icao24, { p, asOf: at });
     if (arrivalTimer) clearTimeout(arrivalTimer);
     arrivalTimer = setTimeout(releaseArrivals, Math.max(0, Math.min(at + FILL_QUIET_MS, firstArrivalAt + FILL_MAX_MS) - at));
+  }
+  // Held frames and their release timer belong to one view of one feed: the next
+  // snapshot, a view change, or a feed teardown (reconnect) drops them, so a timer
+  // never outlives the view or the connection that armed it.
+  function clearArrivals(): void {
+    arrivals.clear();
+    if (arrivalTimer) clearTimeout(arrivalTimer);
+    arrivalTimer = null;
+    firstArrivalAt = 0;
   }
   function releaseArrivals(): void {
     arrivalTimer = null;
@@ -1215,22 +1260,32 @@ function boot(): void {
 
     if (NOTIFY_ENABLED) {
       const notifyMap = loadNotifyState();
+      const poll: NotifyOutcome[] = [];
       for (const sample of notifySamples) {
         const position = sample.row.icao24 ? positionsNow.get(sample.row.icao24) ?? null : null;
         const prior = notifyMap[sample.key] ?? emptyState();
-        const { state: next, event } = observeFlight(prior, { ...sample, position, nowMs: Date.now() });
-        notifyMap[sample.key] = next;
-        if (!event) continue;
-        const flight = list.find((x) => watchKey(x) === sample.key);
-        if (!flight) continue;
-        const channel = chooseChannel({ hidden: document.hidden, enabled: next.enabled, permission: notificationPermission() });
-        if (channel === "os") {
-          void showOsNotification(event.title, event.text, { key: event.key, kind: event.kind });
-        } else {
-          store.set("watchNotice", { flight, text: event.text, kind: event.kind });
-        }
+        const { state, event } = observeFlight(prior, { ...sample, position, nowMs: Date.now() });
+        poll.push({ key: sample.key, state, event });
       }
-      saveNotifyState(pruneNotifyState(notifyMap));
+      // The state is persisted per flight, before its event is announced, so
+      // the record never depends on the banner drawing (commitNotifyPoll).
+      commitNotifyPoll({
+        poll,
+        map: notifyMap,
+        save: (map) => saveNotifyState(pruneNotifyState(map)),
+        announce: (outcome) => {
+          const { event } = outcome;
+          if (!event) return;
+          const flight = list.find((x) => watchKey(x) === outcome.key);
+          if (!flight) return;
+          const channel = chooseChannel({ hidden: document.hidden, enabled: outcome.state.enabled, permission: notificationPermission() });
+          if (channel === "os") {
+            void showOsNotification(event.title, event.text, { key: event.key, kind: event.kind });
+          } else {
+            store.set("watchNotice", { flight, text: event.text, kind: event.kind });
+          }
+        },
+      });
     } else if (departed.length > 0) {
       store.set("departureToast", departed[0]);
     }
@@ -1360,6 +1415,7 @@ function boot(): void {
   store.set("removeFavoriteAircraft", removeFavoriteAircraft);
   store.set("removeFavoriteRoute", removeFavoriteRoute);
   store.set("resumeTracking", startCycle);
+  store.set("dismissResumeDialog", () => store.set("showResumeDialog", false));
   store.set("watchFlight", watchFlight);
   store.set("unwatchFlight", unwatchFlight);
   store.set("goToWatched", goToWatched);
@@ -1463,14 +1519,17 @@ function boot(): void {
     .then((n) => store.set("seenCount", n))
     .catch(() => {});
 
-  subscribeLiveFeed(onLivePush);
+  // A reconnect is this feed's teardown: held frames are dropped so the next
+  // snapshot is the source of truth again (see clearArrivals).
+  subscribeLiveFeed(onLivePush, { onReconnect: clearArrivals });
 
   restartFetchCycleTimers(); // generation 0
   startWatchPoll(); // watched flights, independently of the Watch panel
   if (NOTIFY_ENABLED) {
     // #82 design §2: prune expired notification state on load and once an hour.
-    saveNotifyState(pruneNotifyState(loadNotifyState()));
-    setInterval(() => saveNotifyState(pruneNotifyState(loadNotifyState())), 60 * 60 * 1000);
+    // The disposer runs on pagehide so the interval is cleared when the page
+    // goes away instead of staying alive behind it.
+    window.addEventListener("pagehide", startHourlyPrune(), { once: true });
   }
 
   // Opening view: move the map to where the traffic is, at a zoom that draws

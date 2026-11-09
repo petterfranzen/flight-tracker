@@ -34,6 +34,17 @@ const toGl = (zoom: number): number => zoom - ZOOM_OFFSET;
 const fromGl = (zoom: number): number => zoom + ZOOM_OFFSET;
 const TILE_PX = 256;
 
+/**
+ * Whether the user has asked for reduced motion. Every camera move below is
+ * an animation (easeTo/flyTo/panTo); with this set each becomes an instant
+ * jump to the same final camera, so a selection or a zoom still lands where
+ * it should but nothing slides across the screen. Read per call, so a change
+ * to the OS setting takes effect on the next move.
+ */
+function reducedMotion(): boolean {
+  return typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
 /** The app's furthest zoom-in (the old raster layer's maxZoom). */
 export const MAX_ZOOM = 18;
 /** The app's furthest zoom-out on any screen; raised to fit the screen (see fitMinZoom). */
@@ -257,22 +268,25 @@ export class FlightMap {
   /** Moves the view. Instant unless `animate` (a short ease). */
   setView([lat, lon]: [number, number], zoom: number, opts: { animate?: boolean } = {}): void {
     const camera = { center: [lon, lat] as [number, number], zoom: toGl(zoom) };
-    if (opts.animate) this.gl.easeTo({ ...camera, duration: 250 });
+    if (opts.animate && !reducedMotion()) this.gl.easeTo({ ...camera, duration: 250 });
     else this.gl.jumpTo(camera);
   }
 
   /** Zooms about the centre. Animated unless `animate: false`, like a button zoom. */
   setZoom(zoom: number, opts: { animate?: boolean } = {}): void {
-    if (opts.animate === false) this.gl.jumpTo({ zoom: toGl(zoom) });
+    if (opts.animate === false || reducedMotion()) this.gl.jumpTo({ zoom: toGl(zoom) });
     else this.gl.easeTo({ zoom: toGl(zoom), duration: 250 });
   }
 
   flyTo([lat, lon]: [number, number], zoom: number, durationMs: number): void {
-    this.gl.flyTo({ center: [lon, lat], zoom: toGl(zoom), duration: durationMs });
+    // Reduced motion: no flight, the same camera in one jump.
+    if (reducedMotion()) this.gl.jumpTo({ center: [lon, lat], zoom: toGl(zoom) });
+    else this.gl.flyTo({ center: [lon, lat], zoom: toGl(zoom), duration: durationMs });
   }
 
   panTo([lat, lon]: [number, number], durationMs: number): void {
-    this.gl.panTo([lon, lat], { duration: durationMs });
+    if (reducedMotion()) this.gl.jumpTo({ center: [lon, lat] });
+    else this.gl.panTo([lon, lat], { duration: durationMs });
   }
 
   isMoving(): boolean {

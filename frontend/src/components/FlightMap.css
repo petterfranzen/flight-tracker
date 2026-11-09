@@ -32,6 +32,10 @@ html, body {
   margin: 0;
   padding: 0;
   overflow: hidden;
+  /* Without this the canvas behind .app-shell is the browser's white: any
+     strip the app doesn't cover (iOS standalone, where 100dvh can fall short
+     of the screen) shows as a white band instead of the theme background. */
+  background: var(--color-bg);
 }
 
 /* Form controls don't inherit font-family by default (browsers give them
@@ -104,7 +108,12 @@ html, body {
 :root[data-theme="cyberpunk"] {
   --color-bg: #050608;
   --color-panel: #0c121c;
-  --color-panel-border: #223244;
+  /* Lifted from #223244 (1.44:1 against --color-panel, i.e. an invisible
+     button/panel edge) to 3.06:1 — WCAG 1.4.11 wants 3:1 for the boundary
+     of an interactive control, which is what this token draws (buttons,
+     inputs, panel edges). Every text pairing on it still passes: --color-text
+     5.46:1, --color-marker-watched 4.74:1. */
+  --color-panel-border: #446488;
   --color-text: #eaf3fb;
   --color-text-muted: #7d90a3;
   --color-accent: #3ce0ff;
@@ -154,6 +163,23 @@ html, body {
   font-family: var(--font-ui);
   color: var(--color-text);
   overflow: hidden;
+}
+
+/* Installed iOS app: WebKit 301108 (iOS 26) ends the standalone viewport short
+   of the bottom of the screen when viewport-fit=cover and the black-translucent
+   status bar are on. Workaround from frappe-ui #1284 (tested in the iOS 26.2
+   simulator): let the root grow by the top inset, capped at 100lvh so nothing
+   scrolls where the inset is 0, and pin the shell to the edges over it.
+   ui/standaloneViewport.ts sets html.standalone (display-mode alone is not
+   reliable on iOS). `?vpdebug` shows what the phone reports. */
+html.standalone {
+  min-height: min(100lvh, calc(100% + env(safe-area-inset-top, 0px)));
+}
+html.standalone .app-shell {
+  position: fixed;
+  inset: 0;
+  width: auto;
+  height: auto;
 }
 
 /* Raises the floor for this theme's own text, and bumps the base size up
@@ -390,9 +416,36 @@ html, body {
 /* A visible, consistent focus ring on every interactive element — several
    browsers' default outlines are thin or low-contrast against a dark UI. */
 .app-shell a:focus-visible,
-.app-shell button:focus-visible {
+.app-shell button:focus-visible,
+.app-shell input:focus-visible,
+.app-shell select:focus-visible,
+.app-shell textarea:focus-visible,
+.app-shell [role="option"]:focus-visible,
+.app-shell [tabindex]:not([tabindex="-1"]):focus-visible {
   outline: 3px solid var(--color-focus);
   outline-offset: 2px;
+}
+
+/* The map canvas is a real keyboard control (arrow keys pan, +/- zoom) and it
+   is in the tab order, so it needs a ring too. Inset: the canvas fills the
+   viewport, so an outward offset would be clipped away. */
+.app-shell .maplibregl-canvas:focus-visible {
+  outline: 3px solid var(--color-focus);
+  outline-offset: -3px;
+}
+
+/* Honour a reduced-motion preference for every animation and transition the
+   DOM chrome runs (the map's own flyTo/panTo are short-circuited in
+   map/map.ts, and the plane fade-in in map/planes.ts reads the same query). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 .app-header {
@@ -950,6 +1003,16 @@ html, body {
     padding-bottom: max(28px, calc(16px + env(safe-area-inset-bottom, 0px)));
   }
 
+  /* House tap-target minimum (44x44) on the phone sheet: the expand handle,
+     the favourite toggles and "Focus plane" are text-sized otherwise (the ✕
+     below sizes itself). The visual glyph can stay small; only the hit box
+     grows. */
+  .details-panel-expand-toggle,
+  .details-panel-favorite-toggle,
+  .details-panel-focus-toggle {
+    min-height: 44px;
+  }
+
   /* The collapsed peek: the expand handle, the callsign and how fresh its
      position is (plus "Focus plane" when it's off screen). The rest —
      the eyebrow, the favourite buttons and the ICAO line — comes with the
@@ -967,8 +1030,9 @@ html, body {
     right: 10px;
     align-items: center;
     justify-content: center;
-    width: 32px;
-    height: 32px;
+    /* House tap-target minimum on a phone; the glyph stays 15px. */
+    width: 44px;
+    height: 44px;
     border-radius: 50%;
     border: none;
     background: var(--color-panel-border);

@@ -2,6 +2,7 @@ import type { AppStore } from "../state/appState";
 import type { TrackStatus } from "../types/flight";
 import { isAircraftFavorited, isRouteFavorited } from "../favorites";
 import { h, clear } from "./h";
+import { closeOnEscape, modalOpen } from "./a11y";
 
 // Past this, "last updated" reads as a warning rather than routine network
 // jitter.
@@ -187,6 +188,14 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     );
   }
 
+  // Escape closes the open dossier. Skips while a modal overlay is open (the
+  // phone drawers, the resume dialog), so one keypress closes one thing.
+  const detachEscape = closeOnEscape(() => {
+    if (modalOpen()) return;
+    if (store.get("selectedPos")) store.get("closeAircraftPanel")();
+    else if (store.get("airportDossier")) store.get("closeAirportPanel")();
+  });
+
   renderAll();
   const unsubscribeStructural = store.subscribeMany(
     ["selectedPos", "airportDossier", "dossier", "trackStatus", "dossierExpanded", "planeOffScreen", "airportInfo", "favoriteAircraft", "favoriteRoutes"],
@@ -197,6 +206,7 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
   return () => {
     unsubscribeStructural();
     unsubscribeNowMs();
+    detachEscape();
     clear(root);
   };
 }
