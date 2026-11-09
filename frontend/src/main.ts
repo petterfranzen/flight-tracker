@@ -24,8 +24,9 @@ import {
   type ScheduledFlight,
 } from "./api/flightApi";
 import { NOTIFY_ENABLED, notificationPermission, showOsNotification } from "./notify/notifier";
-import { loadNotifyState, saveNotifyState, pruneNotifyState, emptyState, forgetFlight } from "./notify/state";
+import { loadNotifyState, saveNotifyState, pruneNotifyState, emptyState, forgetFlight, startHourlyPrune } from "./notify/state";
 import { chooseChannel, observeFlight } from "./notify/detect";
+import { commitNotifyPoll, type NotifyOutcome } from "./notify/poll";
 import { boundsFromMap, createFollowSelected, createMap, DEFAULT_VIEW, GPUInitializationError } from "./map/map";
 import { createPlaneLayer, planeBoxSize } from "./map/planes";
 import { declutterCellDeg, newDeclutterMemory, pickNonOverlapping, spacingKey, spacingLevel, type Candidate } from "./map/declutter";
@@ -566,9 +567,7 @@ function boot(): void {
     // superseded. It opens the fill window only for a view change that lands a
     // real set; the opening view, and an empty or sparse snapshot, never hold
     // anything back.
-    arrivals.clear();
-    if (arrivalTimer) clearTimeout(arrivalTimer);
-    arrivalTimer = null;
+    clearArrivals();
     fillUntil = liveSnapshotSeen && viewChanged && list.length >= FILL_MIN_SNAPSHOT ? Date.now() + FILL_SETTLE_MS : 0;
     liveSnapshotSeen = true;
     viewChanged = false;
@@ -763,6 +762,9 @@ function boot(): void {
     store.set("zoom", nextZoom);
     if ((nextZoom < CLUSTER_FETCH_MAX_ZOOM) !== wasZoomedOut) lastAppliedView = null;
     viewChanged = true;
+    // Frames held for the view we just left are stale: drop them and their timer
+    // rather than let them release into the new view (see clearArrivals).
+    clearArrivals();
     renderAircraftLayer(); // icon sizes and what overlaps change with the zoom: redraw now, independent of the fetch below
     // A view we've seen recently is drawn right away, before the debounce.
     applyCachedView(Date.now());
@@ -808,6 +810,15 @@ function boot(): void {
     arrivals.set(p.icao24, { p, asOf: at });
     if (arrivalTimer) clearTimeout(arrivalTimer);
     arrivalTimer = setTimeout(releaseArrivals, Math.max(0, Math.min(at + FILL_QUIET_MS, firstArrivalAt + FILL_MAX_MS) - at));
+  }
+  // Held frames and their release timer belong to one view of one feed: the next
+  // snapshot, a view change, or a feed teardown (reconnect) drops them, so a timer
+  // never outlives the view or the connection that armed it.
+  function clearArrivals(): void {
+    arrivals.clear();
+    if (arrivalTimer) clearTimeout(arrivalTimer);
+    arrivalTimer = null;
+    firstArrivalAt = 0;
   }
   function releaseArrivals(): void {
     arrivalTimer = null;
@@ -1220,22 +1231,32 @@ function boot(): void {
 
     if (NOTIFY_ENABLED) {
       const notifyMap = loadNotifyState();
+      const poll: NotifyOutcome[] = [];
       for (const sample of notifySamples) {
         const position = sample.row.icao24 ? positionsNow.get(sample.row.icao24) ?? null : null;
         const prior = notifyMap[sample.key] ?? emptyState();
-        const { state: next, event } = observeFlight(prior, { ...sample, position, nowMs: Date.now() });
-        notifyMap[sample.key] = next;
-        if (!event) continue;
-        const flight = list.find((x) => watchKey(x) === sample.key);
-        if (!flight) continue;
-        const channel = chooseChannel({ hidden: document.hidden, enabled: next.enabled, permission: notificationPermission() });
-        if (channel === "os") {
-          void showOsNotification(event.title, event.text, { key: event.key, kind: event.kind });
-        } else {
-          store.set("watchNotice", { flight, text: event.text, kind: event.kind });
-        }
+        const { state, event } = observeFlight(prior, { ...sample, position, nowMs: Date.now() });
+        poll.push({ key: sample.key, state, event });
       }
-      saveNotifyState(pruneNotifyState(notifyMap));
+      // The state is persisted per flight, before its event is announced, so
+      // the record never depends on the banner drawing (commitNotifyPoll).
+      commitNotifyPoll({
+        poll,
+        map: notifyMap,
+        save: (map) => saveNotifyState(pruneNotifyState(map)),
+        announce: (outcome) => {
+          const { event } = outcome;
+          if (!event) return;
+          const flight = list.find((x) => watchKey(x) === outcome.key);
+          if (!flight) return;
+          const channel = chooseChannel({ hidden: document.hidden, enabled: outcome.state.enabled, permission: notificationPermission() });
+          if (channel === "os") {
+            void showOsNotification(event.title, event.text, { key: event.key, kind: event.kind });
+          } else {
+            store.set("watchNotice", { flight, text: event.text, kind: event.kind });
+          }
+        },
+      });
     } else if (departed.length > 0) {
       store.set("departureToast", departed[0]);
     }
@@ -1469,14 +1490,17 @@ function boot(): void {
     .then((n) => store.set("seenCount", n))
     .catch(() => {});
 
-  subscribeLiveFeed(onLivePush);
+  // A reconnect is this feed's teardown: held frames are dropped so the next
+  // snapshot is the source of truth again (see clearArrivals).
+  subscribeLiveFeed(onLivePush, { onReconnect: clearArrivals });
 
   restartFetchCycleTimers(); // generation 0
   startWatchPoll(); // watched flights, independently of the Watch panel
   if (NOTIFY_ENABLED) {
     // #82 design §2: prune expired notification state on load and once an hour.
-    saveNotifyState(pruneNotifyState(loadNotifyState()));
-    setInterval(() => saveNotifyState(pruneNotifyState(loadNotifyState())), 60 * 60 * 1000);
+    // The disposer runs on pagehide so the interval is cleared when the page
+    // goes away instead of staying alive behind it.
+    window.addEventListener("pagehide", startHourlyPrune(), { once: true });
   }
 
   // Opening view: move the map to where the traffic is, at a zoom that draws

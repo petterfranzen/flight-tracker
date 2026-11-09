@@ -70,6 +70,11 @@ async function stubNotifications(page: Page, opts: { permission: "default" | "gr
 /** Seeds the per-flight notification state as the bell would have left it. */
 async function seedNotify(page: Page, enabled: boolean): Promise<void> {
   await page.addInitScript(({ key, enabled }) => {
+    // Seed once. An init script runs on every navigation, so seeding blindly
+    // would erase the very state a reload is meant to read back — and a reload
+    // assertion could then never see a repeat even if dedup were broken.
+    if (sessionStorage.getItem("__ft_notify_seeded")) return;
+    sessionStorage.setItem("__ft_notify_seeded", "1");
     localStorage.setItem(
       "flighttracker:watchNotify",
       JSON.stringify({
@@ -245,9 +250,57 @@ test("landing announces once and a reload never repeats it", async ({ page }) =>
   const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("flighttracker:watchNotify")!));
   expect(stored[NOTIFY_KEY].lastEventKeys).toContain("landed");
 
-  // Reload: the same on-ground row must not announce the landing again.
+  // Reload: the same on-ground row must not announce the landing again. The
+  // state has to survive the reload for this to prove anything (the seed is
+  // one-shot for exactly this reason), and two ticks are enough for a fresh
+  // detection — so a silent banner here is real dedup, not an empty state.
   await page.reload();
   await waitForMapReady(page, 20_000);
+  const afterReload = await page.evaluate(() => JSON.parse(localStorage.getItem("flighttracker:watchNotify")!));
+  expect(afterReload[NOTIFY_KEY].lastEventKeys).toContain("landed");
+  expect(afterReload[NOTIFY_KEY].everAirborne).toBe(true);
+  await page.clock.runFor(61_000);
+  await page.clock.runFor(61_000);
+  await expect(page.locator(".watch-toast")).toBeHidden();
+});
+
+test("a flight that landed while the page was closed announces landed once after the reload", async ({ page }) => {
+  await stubNotifications(page, { permission: "granted" });
+  await freezeClock(page);
+  await mockFlightApi(page);
+  let airborne = true;
+  let onGround = false;
+  let schedulePolls = 0;
+  await page.route("**/api/schedule/search*", (route) => {
+    schedulePolls++;
+    return route.fulfill({ json: [row(airborne)] });
+  });
+  await page.route(`**/api/flights/${plane.icao24}/live*`, (route) => route.fulfill({ json: { ...plane, onGround } }));
+  await seedWatched(page, WATCHED);
+  await seedNotify(page, true);
+  await page.goto("/");
+  await waitForMapReady(page, 20_000);
+  await expect.poll(() => schedulePolls).toBeGreaterThan(0);
+  // Seen already airborne: no take-off to announce.
+  await expect(page.locator(".watch-toast")).toBeHidden();
+
+  // The page closes while the flight is in the air; it lands meanwhile.
+  airborne = false;
+  onGround = true;
+  await page.reload();
+  await waitForMapReady(page, 20_000);
+  await page.clock.runFor(61_000);
+  await page.clock.runFor(61_000);
+  const toast = page.locator(".watch-toast");
+  await expect(toast).toContainText("SK2112 landed at ARN");
+  const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("flighttracker:watchNotify")!));
+  expect(stored[NOTIFY_KEY].everAirborne).toBe(true);
+  expect(stored[NOTIFY_KEY].lastEventKeys).toContain("landed");
+
+  // And only once: another reload reads the persisted landing, not a new one.
+  await page.reload();
+  await waitForMapReady(page, 20_000);
+  await page.clock.runFor(61_000);
   await page.clock.runFor(61_000);
   await expect(page.locator(".watch-toast")).toBeHidden();
 });
