@@ -165,19 +165,17 @@ html, body {
   overflow: hidden;
 }
 
-/* Installed PWA: on iOS 26 100dvh and `position: fixed; inset: 0` both stop
-   short of the home-indicator strip, and the display-mode query isn't reliable
-   there, so ui/standaloneViewport.ts marks <html> and publishes the physical
-   screen height. Pin the shell to the top and make it at least that tall, so
-   the map paints to the real bottom edge. The map controls already add
-   env(safe-area-inset-*) themselves. */
-html.standalone .app-shell {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  width: auto;
-  height: max(100dvh, var(--standalone-h, 100dvh));
+/* Installed PWA: 100vh/100dvh in iOS standalone mode can be shorter than the
+   screen (the home-indicator strip is left out), so pin the shell to the
+   viewport edges instead of a height. Chrome and the map controls already
+   add env(safe-area-inset-*) themselves. */
+@media (display-mode: standalone) {
+  .app-shell {
+    position: fixed;
+    inset: 0;
+    width: auto;
+    height: auto;
+  }
 }
 
 /* Raises the floor for this theme's own text, and bumps the base size up

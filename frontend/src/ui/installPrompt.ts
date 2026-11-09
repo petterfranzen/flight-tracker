@@ -25,7 +25,7 @@ interface InstallPromptEvent extends Event {
   prompt(): Promise<void>;
 }
 
-export function isStandalone(): boolean {
+function isStandalone(): boolean {
   if (typeof matchMedia === "function" && matchMedia("(display-mode: standalone)").matches) return true;
   // iOS Safari's own flag; display-mode is not reliable there in every version.
   return (navigator as Navigator & { standalone?: boolean }).standalone === true;
