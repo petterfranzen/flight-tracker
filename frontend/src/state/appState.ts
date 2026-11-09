@@ -51,6 +51,8 @@ export interface AppState extends Record<string, unknown> {
   watchedStatus: Record<string, ScheduledFlight | null>;
   /** Set while a watched flight has just gone airborne; the toast offers to go to it. */
   departureToast: WatchedFlight | null;
+  /** General watched-flight event banner (#82): take-off or landing, with Go to. */
+  watchNotice: { flight: WatchedFlight; text: string; kind: "takeoff" | "landed" } | null;
 
   selectAircraft: (p: LiveMarker) => void;
   selectAirport: (ap: AirportSelection) => void;
@@ -72,6 +74,7 @@ export interface AppState extends Record<string, unknown> {
   /** Select the watched flight's plane and fly to it (no-op until it is airborne). */
   goToWatched: (w: WatchedFlight) => void;
   dismissDepartureToast: () => void;
+  dismissWatchNotice: () => void;
 }
 
 export type AppStore = Store<AppState>;

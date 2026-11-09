@@ -2,6 +2,7 @@ import { LngLat, Map as MaplibreMap, MercatorCoordinate, type MapEventType } fro
 import type { Bounds } from "../types/flight";
 import { basemapOptions, whenBasemapReady } from "./maplibreBasemap";
 import { minZoomFor, WORLD_BOUNDS } from "./zoomLimits";
+import { distanceM, geometryPoint } from "./gatePlacement";
 
 // Zoom a selection's flyTo treats as "close enough" to stop zooming
 // further in.
@@ -290,6 +291,44 @@ export class FlightMap {
 
   isMoving(): boolean {
     return this.gl.isMoving();
+  }
+
+  /**
+   * Calls `fn` when the user starts moving the map (drag, wheel, pinch, keys, buttons):
+   * MapLibre marks those moves with the DOM event that caused them. Camera moves the app
+   * makes itself (flyTo, jumpTo) carry none and do not count.
+   */
+  onUserMoveStart(fn: () => void): void {
+    this.gl.on("movestart", (e) => {
+      if ((e as { originalEvent?: unknown }).originalEvent) fn();
+    });
+  }
+
+  /**
+   * The coordinate of the gate `ref` (OpenMapTiles `aeroway` class `gate`, from
+   * the basemap's own vector tiles) nearest `near`, or null. Only tiles the map
+   * has loaded are searched, and gates are in the zoom-14 tiles: so this finds
+   * one only while the view is at an airport (app zoom 15+); callers retry on
+   * `sourcedata`.
+   */
+  findGate(ref: string, near: LatLon): LatLon | null {
+    const want = ref.trim().toUpperCase();
+    let best: { p: LatLon; d: number } | null = null;
+    let features: ReturnType<MaplibreMap["querySourceFeatures"]> = [];
+    try {
+      if (!this.gl.getSource("openmaptiles")) return null;
+      features = this.gl.querySourceFeatures("openmaptiles", { sourceLayer: "aeroway", filter: ["==", ["get", "class"], "gate"] });
+    } catch {
+      return null; // the source is mid-update; the next sourcedata asks again
+    }
+    for (const f of features) {
+      if (String(f.properties?.ref ?? "").trim().toUpperCase() !== want) continue;
+      const p = geometryPoint(f.geometry);
+      if (!p) continue;
+      const d = distanceM(near, p);
+      if (!best || d < best.d) best = { p, d };
+    }
+    return best ? best.p : null;
   }
 
   /** Re-reads the container's size, if it changed since the map last measured it. */
