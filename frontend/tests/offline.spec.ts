@@ -92,10 +92,12 @@ test.describe("offline behaviour", () => {
   test("a navigation with no network is served from the cached shell, not the browser's error page", async ({ page, context }) => {
     await mockFlightApi(page);
     await page.goto(PREVIEW);
-    // `ready` resolves once the worker is active, and the worker precaches the
-    // shell before it activates (install builds the cache, then skipWaiting).
-    const active = await page.evaluate(async () => (await navigator.serviceWorker.ready).active?.state ?? null);
-    expect(active).toBe("activated");
+    // `ready` can resolve while the worker is still activating, and the worker
+    // precaches the shell before it activates (install builds the cache, then
+    // skipWaiting). Wait for the state the test actually needs.
+    await page.waitForFunction(
+      async () => (await navigator.serviceWorker.ready).active?.state === "activated",
+    );
 
     await context.setOffline(true);
     const response = await page.goto(PREVIEW, { waitUntil: "domcontentloaded" });

@@ -72,13 +72,20 @@ test.describe("PWA installability", () => {
     // import.meta.env.PROD), so this runs against the preview on 4173.
     await page.goto(PREVIEW);
 
+    // `ready` can resolve while the worker is still activating; wait for the
+    // activated state and for clients.claim() to have taken control.
+    await page.waitForFunction(
+      async () => (await navigator.serviceWorker.ready).active?.state === "activated",
+    );
+    await page.waitForFunction(() => !!navigator.serviceWorker.controller);
+
     const state = await page.evaluate(async () => {
       const registration = await navigator.serviceWorker.ready;
-      return { scope: registration.scope, active: registration.active?.state ?? null, controlled: !!navigator.serviceWorker.controller };
+      return { scope: registration.scope, active: registration.active?.state ?? null };
     });
     expect(state.scope).toBe(new URL(page.url()).origin + "/");
     expect(state.active).toBe("activated");
-    expect(state.controlled).toBe(true);
+    expect(await page.evaluate(() => !!navigator.serviceWorker.controller)).toBe(true);
 
     // The shell is cached, under the versioned name only: a deploy's new shell
     // lands in a new cache and the old one is dropped.
