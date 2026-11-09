@@ -236,7 +236,10 @@ test.describe("confirmed gate on the map", () => {
       position(last - 10 * 60_000, { latitude: 59.66, longitude: 17.9, onGround: false, velocityMs: 60 }),
       position(last),
     ];
-    await open(page, { lastReportMs: last, history, status: atGate(last) });
+    // The marker carries the state the backend stamps for a plane a provider has put
+    // at a gate (LiveStateStore.stateOf): the landed-display rule keeps such a plane
+    // on the map however old its last report is.
+    await open(page, { lastReportMs: last, history, status: atGate(last), live: { state: "AT_GATE" } });
 
     await expect.poll(async () => (await selectedPlane(page))?.label, { timeout: 10_000 }).toBe("SAS086 · E5B");
     const plane = (await selectedPlane(page))!;
@@ -256,7 +259,7 @@ test.describe("confirmed gate on the map", () => {
       position(last),
     ];
     // The server hands the history over newest first; the trail is drawn in time order regardless.
-    await open(page, { lastReportMs: last, history: [...reported].reverse(), status: atGate(last, { confirmedAt: iso(last + 60_000) }) });
+    await open(page, { lastReportMs: last, history: [...reported].reverse(), status: atGate(last, { confirmedAt: iso(last + 60_000) }), live: { state: "AT_GATE" } });
 
     await expect.poll(async () => (await selectedPlane(page))?.label, { timeout: 10_000 }).toBe("SAS086 · E5B");
     await expect.poll(async () => (await getRouteVertices(page)).length).toBeGreaterThan(2);
@@ -274,8 +277,11 @@ test.describe("confirmed gate on the map", () => {
   });
 
   test("not confirmed at a gate: the plane is drawn where it was last reported", async ({ page }) => {
-    const last = Date.now() - HOUR;
-    await open(page, { lastReportMs: last, history: [position(last)], status: atGate(last, { state: "LANDED_CONFIRMED", gate: null }) });
+    // A provider-confirmed landing with no gate: old enough that a *gate* would move
+    // the plane (GATE_STALE_MS, 10 min), but inside the landed-display window
+    // (LANDED_HIDE_MS, 30 min), so the plane is on the map and nothing moves it.
+    const last = Date.now() - 20 * 60_000;
+    await open(page, { lastReportMs: last, history: [position(last)], status: atGate(last, { state: "LANDED_CONFIRMED", gate: null }), live: { state: "LANDED_CONFIRMED" } });
     await page.waitForTimeout(1_000); // asserting that nothing moves
     const plane = (await selectedPlane(page))!;
     expect(plane.lat).toBeCloseTo(RUNWAY_END.lat, 5);

@@ -8,7 +8,9 @@ import type { LiveMarker } from "../src/types/flight";
 // runway end. Past LANDED_HIDE_MS of silence the map leaves it off rather
 // than drawing a position that is hours out of date (map/landed.ts). The
 // state now comes on every marker of the live snapshot, not just the
-// selected plane's status, so the rule applies to all of them.
+// selected plane's status, so the rule applies to all of them — except a
+// plane a provider has put at a gate (AT_GATE), which is kept: its gate is
+// known and the gate display draws it there.
 
 const NOW = Date.parse("2026-01-01T12:00:00Z");
 const minutesAgo = (m: number) => new Date(NOW - m * 60_000).toISOString();
@@ -49,6 +51,13 @@ test.describe("hiddenLandedIds", () => {
 
   test("keeps a silent airborne plane (COVERAGE_LOST) — where it is is still an open question", () => {
     const hidden = hiddenLandedIds([marker("dddddd", { minutes: 600, onGround: false, state: "COVERAGE_LOST" })], NOW);
+    expect(hidden.size).toBe(0);
+  });
+
+  test("keeps a plane a provider has put at a gate, however old the last report is", () => {
+    // A gate-confirmed plane is drawn at its gate (map/gatePlacement.ts) once selected:
+    // there is nothing stale to hide, so it stays on the map.
+    const hidden = hiddenLandedIds([marker("gate01", { minutes: 120, onGround: true, state: "AT_GATE" })], NOW);
     expect(hidden.size).toBe(0);
   });
 
@@ -103,8 +112,9 @@ test.describe("landed planes on the map", () => {
       at("aaaaaa", 45, 0, true, "ON_GROUND"), // silent on the ground: hidden
       at("bbbbbb", 2, 0.02, true, "ON_GROUND"), // taxiing: drawn
       at("cccccc", 1, 0.04, false, "LIVE"), // airborne: drawn
+      at("dddddd", 45, 0.06, true, "AT_GATE"), // at its gate, silent: drawn (at the gate once selected)
     ]);
 
-    await expect.poll(() => drawnCallsigns(page), { timeout: 10_000 }).toEqual(["BBBBBB", "CCCCCC"]);
+    await expect.poll(() => drawnCallsigns(page), { timeout: 10_000 }).toEqual(["BBBBBB", "CCCCCC", "DDDDDD"]);
   });
 });

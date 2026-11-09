@@ -518,7 +518,9 @@ function boot(): void {
     // A plane that landed (or went quiet on the ground) and has not reported
     // since is dropped: it is drawn at its last report, which for one that
     // left coverage on the ground is the runway end, hours ago (see
-    // map/landed.ts). A watched plane is kept regardless.
+    // map/landed.ts). A plane a provider put at a gate is kept (its gate is
+    // known, and the gate display draws it there once selected), and a watched
+    // plane is kept regardless.
     const hidden = hiddenLandedIds(inView, nowMs);
     const shown = hidden.size > 0 ? inView.filter((p) => !hidden.has(p.icao24) || watchedIds.has(p.icao24)) : inView;
     const shadowed = zoom >= OVERLAP_MIN_ZOOM ? findShadowedIds(shown) : null;
