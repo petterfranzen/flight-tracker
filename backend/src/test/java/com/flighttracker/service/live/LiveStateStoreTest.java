@@ -5,6 +5,9 @@ import com.flighttracker.dto.ClusterPoint;
 import com.flighttracker.dto.LiveMarker;
 import com.flighttracker.dto.LiveOverview;
 import com.flighttracker.model.FlightPosition;
+import com.flighttracker.service.confirmation.ArrivalInfo;
+import com.flighttracker.service.confirmation.Confirmation;
+import com.flighttracker.service.confirmation.ConfirmationStore;
 import com.flighttracker.service.coverage.GapEstimate;
 import com.flighttracker.service.coverage.TrackState;
 import org.junit.jupiter.api.Test;
@@ -32,7 +35,7 @@ import static org.assertj.core.api.Assertions.within;
  * docs/cloud-migration/PLAN.md §6 A1 item 12. No Spring context, no DB —
  * warmUp()'s JdbcTemplate/Clock dependencies are never exercised here
  * (that's a @PostConstruct only Spring invokes; a plain
- * `new LiveStateStore(mock, mock)` starts with an empty map, exactly what
+ * `new LiveStateStore(mock, mock, confirmations)` starts with an empty map, exactly what
  * every test below wants).
  */
 @ExtendWith(MockitoExtension.class)
@@ -44,7 +47,13 @@ class LiveStateStoreTest {
     private Clock clock;
 
     private LiveStateStore store() {
-        return new LiveStateStore(jdbcTemplate, clock);
+        return new LiveStateStore(jdbcTemplate, clock, new ConfirmationStore(120, 5000));
+    }
+
+    /** A provider confirmation: landed at `on`, at its gate at `in` (null in = no gate). */
+    private static Confirmation confirmation(Instant on, Instant in) {
+        return new Confirmation("mock", new ArrivalInfo(null, null, on, in, in == null ? null : "B14", "2", "ESSA"),
+                on.plusSeconds(60), on);
     }
 
     private static final Instant T0 = Instant.parse("2026-01-01T00:00:00Z");
@@ -549,6 +558,30 @@ class LiveStateStoreTest {
                         tuple("air001", TrackState.LIVE),
                         tuple("gnd002", TrackState.ON_GROUND),
                         tuple("gap003", TrackState.COVERAGE_LOST));
+    }
+
+    @Test
+    void liveMarkers_stampAProviderConfirmedGateSoTheMapKeepsThePlane() {
+        ConfirmationStore confirmations = new ConfirmationStore(120, 5000);
+        LiveStateStore store = new LiveStateStore(jdbcTemplate, clock, confirmations);
+        store.upsert("gnd101", "G1", T0, 59.0, 18.0, 0.0, 0.0, 90.0, 0.0, true, "opensky");
+        store.upsert("gnd102", "G2", T0, 59.0, 18.0, 0.0, 0.0, 90.0, 0.0, true, "opensky");
+
+        Instant cutoff = T0.minusSeconds(1);
+        // No confirmation: the live row alone (this is what the landed-display rule hides).
+        assertThat(store.liveMarkers(cutoff, cutoff, null)).extracting(LiveMarker::getIcao24, LiveMarker::getState)
+                .containsExactlyInAnyOrder(
+                        tuple("gnd101", TrackState.ON_GROUND),
+                        tuple("gnd102", TrackState.ON_GROUND));
+
+        // A provider put gnd101 at a gate; only gnd102's landing is confirmed, with no gate.
+        confirmations.put("gnd101", confirmation(T0.plusSeconds(60), T0.plusSeconds(600)));
+        confirmations.put("gnd102", confirmation(T0.plusSeconds(60), null));
+
+        assertThat(store.liveMarkers(cutoff, cutoff, null)).extracting(LiveMarker::getIcao24, LiveMarker::getState)
+                .containsExactlyInAnyOrder(
+                        tuple("gnd101", TrackState.AT_GATE),
+                        tuple("gnd102", TrackState.LANDED_CONFIRMED));
     }
 
     @Test

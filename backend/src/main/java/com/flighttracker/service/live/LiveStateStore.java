@@ -7,6 +7,8 @@ import com.flighttracker.dto.LiveOverview;
 import com.flighttracker.model.FlightPosition;
 import com.flighttracker.repository.Timestamps;
 import com.flighttracker.service.LiveVisibilityWindows;
+import com.flighttracker.service.confirmation.Confirmation;
+import com.flighttracker.service.confirmation.ConfirmationStore;
 import com.flighttracker.service.coverage.GapEstimate;
 import com.flighttracker.service.coverage.TrackState;
 import jakarta.annotation.PostConstruct;
@@ -71,10 +73,12 @@ public class LiveStateStore {
     private final AtomicLong idSequence = new AtomicLong();
     private final JdbcTemplate jdbcTemplate;
     private final Clock clock;
+    private final ConfirmationStore confirmationStore;
 
-    public LiveStateStore(JdbcTemplate jdbcTemplate, Clock clock) {
+    public LiveStateStore(JdbcTemplate jdbcTemplate, Clock clock, ConfirmationStore confirmationStore) {
         this.jdbcTemplate = jdbcTemplate;
         this.clock = clock;
+        this.confirmationStore = confirmationStore;
     }
 
     /**
@@ -283,12 +287,22 @@ public class LiveStateStore {
     }
 
     /**
-     * The aircraft's coverage-gap state from the live row alone — the same
-     * mapping TrackStatus.from(LiveAircraft) uses before a provider
-     * confirmation is layered on. Cheap enough to stamp on every marker of
-     * the bulk snapshot (one field read, no lookup).
+     * The aircraft's track state, the same mapping TrackStatus.from(LiveAircraft,
+     * confirmation) uses — a provider confirmation included, from the in-memory
+     * {@link ConfirmationStore} (one map lookup, no I/O). Cheap enough to stamp on
+     * every marker of the bulk snapshot.
+     *
+     * <p>The confirmed states are what the map's landed-display rule needs to see:
+     * an aircraft a provider has put at a gate is stamped {@code AT_GATE}, so the
+     * map keeps it on the map (its gate is known; the gate display draws it there
+     * once selected) even though its last report is old. Without that layer an
+     * on-ground aircraft reads {@code ON_GROUND}, which the rule hides.
      */
-    private static TrackState stateOf(LiveAircraft a) {
+    private TrackState stateOf(LiveAircraft a) {
+        Optional<Confirmation> confirmation = confirmationStore.forAircraft(a);
+        if (confirmation.isPresent()) {
+            return confirmation.get().gateAt() != null ? TrackState.AT_GATE : TrackState.LANDED_CONFIRMED;
+        }
         if (a.onGround()) return TrackState.ON_GROUND;
         GapEstimate gap = a.gap();
         return gap == null ? TrackState.LIVE : gap.state();
