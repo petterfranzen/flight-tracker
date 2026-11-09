@@ -10,7 +10,7 @@ const MOBILE_VIEWPORT = { width: 390, height: 844 };
 const DESKTOP_VIEWPORT = { width: 1440, height: 900 };
 
 test.describe("mobile layout", () => {
-  test("header hides, search collapses to a FAB, and the FAB expands to a full overlay", async ({ page }) => {
+  test("header hides, search collapses to a FAB, and the FAB opens the anchored panel", async ({ page }) => {
     await page.setViewportSize(MOBILE_VIEWPORT);
     await mockFlightApi(page);
     await page.goto("/");
@@ -28,7 +28,11 @@ test.describe("mobile layout", () => {
     await fab.click();
     await expect(page.locator(".flight-search-panel")).toHaveClass(/flight-search-panel--open/);
     await expect(page.locator(".flight-search-input").first()).toBeVisible();
-    await expect(fab).toBeHidden(); // covered by the overlay, and CSS :has() removes it from the tab order
+    // Beside the stack, not a full-screen sheet: the button stays visible and
+    // in place while the panel is open (section9-hq#264).
+    await expect(fab).toBeVisible();
+    const panelBox = await settledBox(page.locator(".flight-search-panel"));
+    expect(panelBox.width).toBeLessThan(MOBILE_VIEWPORT.width * 0.85);
 
     await page.locator(".flight-search-panel-close").click();
     await expect(page.locator(".flight-search-panel")).not.toHaveClass(/flight-search-panel--open/);
