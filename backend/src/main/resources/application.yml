@@ -79,7 +79,7 @@ server:
     session:
       # The profile session cookie (design §1.3): named so it is not the default
       # JSESSIONID, HttpOnly, SameSite=Lax, and Secure except for local http dev
-      # (${SESSION_COOKIE_SECURE:false} only for the sandbox/tests). Idle 24h;
+      # (${SESSION_COOKIE_SECURE:true} by default; set it false only for the sandbox/tests). Idle 24h;
       # the absolute cap and the login/logout endpoints are a later step.
       timeout: 24h
       cookie:

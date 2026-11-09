@@ -6,6 +6,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.config.Customizer;
+import org.springframework.security.config.annotation.web.configuration.WebSecurityCustomizer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
@@ -13,6 +14,7 @@ import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.HttpStatusEntryPoint;
 import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
 import org.springframework.security.web.csrf.CookieCsrfTokenRepository;
+import org.springframework.security.web.firewall.DefaultHttpFirewall;
 
 /**
  * The one thing optional social login changes in the request pipeline
@@ -38,6 +40,32 @@ import org.springframework.security.web.csrf.CookieCsrfTokenRepository;
  *       everything and creates no session, which also stops Spring Boot's own
  *       deny-all default chain from ever being built. An anonymous visit is
  *       unchanged: no cookie, no 401, nothing.</li>
+ * </ul>
+ *
+ * <p><b>TODO before the flag is ever turned on</b> (the reviewer's should-fix
+ * list for the flag-on path; none of it is a defect while the flag is off):
+ *
+ * <ul>
+ *   <li>Flag on, {@code .headers()} is left at Spring Security's defaults while
+ *       the app's own {@link SecurityHeadersFilter} owns headers, so responses
+ *       can get a second/duplicate {@code X-Frame-Options},
+ *       {@code X-Content-Type-Options}, HSTS and {@code Cache-Control} set.
+ *       Decide one owner and pin the response headers (CSP included) with the
+ *       flag on.</li>
+ *   <li>{@code oauth2Login(Customizer.withDefaults())} also installs Spring
+ *       Security's generated {@code GET /login} page and {@code /login?error}
+ *       redirect, which contradicts the "no login page, plain 401" comment
+ *       below. Set {@code loginPage}/{@code failureHandler} explicitly.</li>
+ *   <li>No test drives a WebSocket handshake or an {@code Origin} rejection
+ *       with the flag on.</li>
+ *   <li>{@link #isProfileWrite} uses {@code startsWith("/api/profile")}, so a
+ *       write to {@code /api/profileX} is token-checked too. Harmless, but use
+ *       the same matcher as the authorize rule.</li>
+ *   <li>Cross-PR: the service worker (#182) answers every same-origin
+ *       navigation from its cached {@code index.html} except {@code /api} and
+ *       {@code /ws}; {@code /oauth2/authorization/*} and
+ *       {@code /login/oauth2/code/*} are navigations, so they must be added to
+ *       the worker's bypass list before the flag is enabled.</li>
  * </ul>
  */
 @Configuration
@@ -112,5 +140,29 @@ public class ProfileSecurityConfig {
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth.anyRequest().permitAll());
         return http.build();
+    }
+
+    /**
+     * With the flag off the app must be byte-identical to the pre-Spring-Security
+     * build. The one thing a bare chain still does to a request is front it with a
+     * firewall, and the default
+     * {@link org.springframework.security.web.firewall.StrictHttpFirewall} rejects
+     * {@code //}, {@code ;}, {@code %2e}/{@code %25}, backslashes and control
+     * characters with a {@code 400} that carries none of the app's headers, where
+     * Tomcat/MVC used to answer them itself ({@code 404}, or {@code 200} for a path
+     * parameter). That would be a real change to the production default, so with the
+     * flag off we install {@link DefaultHttpFirewall} — the firewall Spring Security
+     * shipped before Strict: it sanitizes rather than rejects, and it is still at
+     * least as strict as the container on its own, which is all that fronted these
+     * paths before this slice. The flag-on chain keeps Strict.
+     *
+     * <p>This is why the off path also needs a chain at all: Spring Boot only skips
+     * its own deny-all default chain when one {@code SecurityFilterChain} bean
+     * exists, so removing the chain would lock the app rather than free it.
+     */
+    @Bean
+    @ConditionalOnProperty(prefix = "flighttracker.profile", name = "enabled", havingValue = "false", matchIfMissing = true)
+    WebSecurityCustomizer flagOffLeavesRequestsToTheContainer() {
+        return web -> web.httpFirewall(new DefaultHttpFirewall());
     }
 }

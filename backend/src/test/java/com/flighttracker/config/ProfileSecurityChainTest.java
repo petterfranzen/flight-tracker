@@ -136,6 +136,16 @@ class ProfileSecurityChainTest {
     }
 
     @Test
+    void malformedPathsAreRejectedByTheStrictFirewallWithTheFlagOn() throws Exception {
+        // With the flag on the chain keeps Spring Security's default StrictHttpFirewall, which
+        // rejects these outright. The flag-off path deliberately does not (it uses
+        // DefaultHttpFirewall so production stays byte-identical) — see
+        // ProfileSecurityFlagOffTest.malformedPathsBehaveAsBeforeTheChain_andStillCarryTheAppHeaders.
+        assertThat(send("GET", "//api/health").statusCode()).isEqualTo(400);
+        assertThat(send("GET", "/api/health;x=1").statusCode()).isEqualTo(400);
+    }
+
+    @Test
     void anAnonymousVisitSetsNoSessionCookie() throws Exception {
         // IF_REQUIRED: nothing asks for a session on a map-only visit, so no cookie.
         assertThat(send("GET", "/api/flights/live").headers().allValues("Set-Cookie"))

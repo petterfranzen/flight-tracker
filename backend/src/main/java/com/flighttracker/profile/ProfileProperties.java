@@ -9,9 +9,10 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * profile endpoints are wired and the app is byte-identical to today, which is
  * how the flag should read to an anonymous visitor.
  *
- * This slice (design step 1) ships only the schema, repositories and helpers
- * behind the flag; nothing is user-visible yet. The SPI/HTTP layer that reads
- * this flag is step 3.
+ * The HTTP layer reads this flag: {@code ProfileController} answers {@code 503}
+ * for {@code GET /api/profile} while it is off (the SPA hides the sign-in
+ * control rather than show a broken one), and each security chain in
+ * {@code ProfileSecurityConfig} is gated on it.
  */
 @ConfigurationProperties(prefix = "flighttracker.profile")
 public record ProfileProperties(@DefaultValue("false") boolean enabled) {
