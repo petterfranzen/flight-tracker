@@ -242,12 +242,18 @@ function boot(): void {
   // remembers a dismissal. See ui/installPrompt.ts.
   installPrompt.mount(appShell);
 
-  // Minimal worker (#85 reuses #82's decision; one worker, not two). It
-  // caches nothing — its header says why — so a deploy can never be kept
-  // off a phone by a stale shell. Registering it is what lets Chrome show
+  // App-shell worker (#85 reuses #82's decision; one worker, not two). It
+  // caches the shell and never live data — its own header says why — and a
+  // deploy's shell lands in a new content-addressed cache, so it can never
+  // hold a fix off a phone. Registering it is what lets Chrome show
   // "Install app" and gives #82 registration.showNotification() on Android
   // and installed iOS.
-  if ("serviceWorker" in navigator) {
+  //
+  // Production only: under the Vite dev server a cached shell would hide HMR
+  // and serve stale code, so registration is gated on import.meta.env.PROD.
+  // VITE_SW_DISABLED=true is the kill-switch half that stops registration
+  // during an emergency (see public/sw-kill.js and docs/agents/pwa-install.md).
+  if (import.meta.env.PROD && import.meta.env.VITE_SW_DISABLED !== "true" && "serviceWorker" in navigator) {
     navigator.serviceWorker.register("/sw.js").catch(() => {
       // Private mode / storage disabled: the app works without it.
     });

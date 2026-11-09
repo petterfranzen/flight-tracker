@@ -1,11 +1,14 @@
 import { expect, test } from "@playwright/test";
 import { mockFlightApi } from "./helpers";
 
+const PREVIEW = "http://localhost:4173/";
+
 // #85: installability. These are the checks Chrome's install criteria and
 // Lighthouse's installable audit read, kept hermetic: the dev server serves
 // public/manifest.json and public/icons/ exactly as the jar serves them from
-// static/ in production. The worker's own "caches nothing" rule is asserted
-// too, because that is what makes a deploy's fix reach a phone.
+// static/ in production. The worker's own rules are asserted against the
+// production preview (4173), because it is registered only in the production
+// build - see the last test.
 
 test.describe("PWA installability", () => {
   // Booting the MapLibre app in the headless software renderer takes ~15 s,
@@ -65,13 +68,15 @@ test.describe("PWA installability", () => {
       const path = new URL(r.url()).pathname;
       if (path.startsWith("/api/")) apiRequests.push(path);
     });
-    await page.goto("/");
+    // The production build is what registers the worker (main.ts gates on
+    // import.meta.env.PROD), so this runs against the preview on 4173.
+    await page.goto(PREVIEW);
 
     const state = await page.evaluate(async () => {
       const registration = await navigator.serviceWorker.ready;
       return { scope: registration.scope, active: registration.active?.state ?? null, controlled: !!navigator.serviceWorker.controller };
     });
-    expect(state.scope).toBe("http://localhost:5174/");
+    expect(state.scope).toBe(new URL(page.url()).origin + "/");
     expect(state.active).toBe("activated");
     expect(state.controlled).toBe(true);
 
@@ -95,6 +100,17 @@ test.describe("PWA installability", () => {
     // ...and the app's live-data requests still go to the network (the mocked
     // responses are what the map draws) rather than being answered by the worker.
     expect(apiRequests.length).toBeGreaterThan(0);
+  });
+
+  test("the worker is registered in the production build but not under the dev server", async ({ page }) => {
+    // main.ts gates registration on import.meta.env.PROD: a cached shell under
+    // the Vite dev server would hide HMR and serve stale code.
+    await mockFlightApi(page);
+    await page.goto("/");
+    const dev = await page.evaluate(
+      async () => (await navigator.serviceWorker.getRegistration())?.active?.state ?? null,
+    );
+    expect(dev).toBeNull();
   });
 
   test("the install control appears only when the browser offers a prompt, and a dismissal is remembered", async ({ page }) => {
