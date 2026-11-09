@@ -300,6 +300,16 @@ export async function renderedPlanes(page: Page): Promise<PagePlane[]> {
 }
 
 /**
+ * The values `main.ts`'s renderAircraftLayer last handed the declutter picker
+ * (map/declutter.ts) and the widening it left in force: the app's own call-site
+ * wiring, so a spec can assert it without re-deriving it from the helpers (the
+ * mistake that let a reverted call site pass). `null` until the first render.
+ */
+export async function declutterSpacing(page: Page): Promise<{ box: number; key: string; spacing: number } | null> {
+  return withMap(page, (map) => map.declutterSpacing);
+}
+
+/**
  * MapLibre's feature query can throw while a source update is half applied
  * ("feature index out of bounds"): ask again a moment later.
  */

@@ -139,6 +139,14 @@ export class FlightMap {
   /** Test hook: every watched origin airport drawn in view. Set by ui/watchedAirports.ts. */
   renderedWatchedAirports: () => RenderedWatchedAirport[] = () => [];
 
+  /**
+   * Test hook (tests/helpers.ts declutterSpacing): the values `main.ts`'s
+   * renderAircraftLayer last passed to the declutter picker (map/declutter.ts)
+   * — the overlap box and the memory key — plus the widening (`memory.spacing`)
+   * that render left in force. `null` until the first render.
+   */
+  declutterSpacing: { box: number; key: string; spacing: number } | null = null;
+
   constructor(gl: MaplibreMap) {
     this.gl = gl;
     gl.once("style.load", () => {

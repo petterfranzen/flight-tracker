@@ -553,15 +553,15 @@ function boot(): void {
     // against the other, and the source is part of the key so the 7.5-8.0
     // overview band does not hand its spacing to the live source above it.
     const maxDrawn = isSmallScreen() ? MAX_DRAWN_MARKERS_SMALL_SCREEN : MAX_DRAWN_MARKERS;
+    // The box and the key both come from the whole level (spacingLevel); the key
+    // also names the source actually being picked. Test hook: tests read what
+    // this render used (tests/helpers.ts declutterSpacing) -- the wiring itself
+    // is what those specs guard, so a reverted call site fails them.
+    const spacingBox = planeBoxSize(spacingLevel(zoom));
+    const spacingKeyFor = spacingKey(useOverview ? "overview" : "live", zoom, maxDrawn);
     const declutterStart = performance.now();
-    const keep = pickNonOverlapping(
-      points,
-      fixed,
-      planeBoxSize(spacingLevel(zoom)),
-      maxDrawn,
-      declutterMemory,
-      spacingKey(useOverview ? "overview" : "live", zoom, maxDrawn),
-    );
+    const keep = pickNonOverlapping(points, fixed, spacingBox, maxDrawn, declutterMemory, spacingKeyFor);
+    map.declutterSpacing = { box: spacingBox, key: spacingKeyFor, spacing: declutterMemory.spacing };
     const declutterMs = performance.now() - declutterStart;
     perf.parts.declutter += declutterMs;
     perf.declutter.calls++;
