@@ -32,6 +32,10 @@ html, body {
   margin: 0;
   padding: 0;
   overflow: hidden;
+  /* Without this the canvas behind .app-shell is the browser's white: any
+     strip the app doesn't cover (iOS standalone, where 100dvh can fall short
+     of the screen) shows as a white band instead of the theme background. */
+  background: var(--color-bg);
 }
 
 /* Form controls don't inherit font-family by default (browsers give them
@@ -159,6 +163,19 @@ html, body {
   font-family: var(--font-ui);
   color: var(--color-text);
   overflow: hidden;
+}
+
+/* Installed PWA: 100vh/100dvh in iOS standalone mode can be shorter than the
+   screen (the home-indicator strip is left out), so pin the shell to the
+   viewport edges instead of a height. Chrome and the map controls already
+   add env(safe-area-inset-*) themselves. */
+@media (display-mode: standalone) {
+  .app-shell {
+    position: fixed;
+    inset: 0;
+    width: auto;
+    height: auto;
+  }
 }
 
 /* Raises the floor for this theme's own text, and bumps the base size up
