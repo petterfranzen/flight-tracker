@@ -2,6 +2,7 @@ package com.flighttracker.controller;
 
 import com.flighttracker.dto.PollingStatus;
 import com.flighttracker.repository.AppStateRepository;
+import com.flighttracker.service.ClientIpResolver;
 import com.flighttracker.service.HotPollUserBudget;
 import com.flighttracker.service.PollWindowService;
 import com.flighttracker.service.RestartRateLimiter;
@@ -49,7 +50,7 @@ class AgentControllerTest {
         HotPollUserBudget hotPollUserBudget = new HotPollUserBudget(appState, 4500);
         PollWindowService pollWindowService = new PollWindowService(appState, 300, 3, 15, 3000);
 
-        return new AgentController(pollWindowService, rateLimiter, hotPollUserBudget, trustLocal);
+        return new AgentController(pollWindowService, rateLimiter, hotPollUserBudget, new ClientIpResolver("127.0.0.1,::1"), trustLocal);
     }
 
     @Test
@@ -61,6 +62,7 @@ class AgentControllerTest {
         // the scenario this fix protects against (see ClientIpResolver's
         // javadoc): the header's public IP wins the rate-limit identity,
         // not the loopback transport address underneath it.
+        when(request.getRemoteAddr()).thenReturn("127.0.0.1"); // the tunnel
         when(request.getHeader("CF-Connecting-IP")).thenReturn("203.0.113.9");
 
         // restart-per-ip-per-minute is 3 — the 4th call within a minute must be rejected.
@@ -73,6 +75,21 @@ class AgentControllerTest {
         assertThat(r2.getStatusCode().value()).isEqualTo(200);
         assertThat(r3.getStatusCode().value()).isEqualTo(200);
         assertThat(r4.getStatusCode().value()).isEqualTo(429);
+    }
+
+    @Test
+    void spoofedForwardedForFromAnUntrustedPeer_cannotEvadeThePerIpLimiter() {
+        AgentController controller = controllerWithTrustLocal(false);
+        when(request.getRemoteAddr()).thenReturn("198.51.100.5"); // not the tunnel
+        // A fresh X-Forwarded-For / CF-Connecting-IP on every call would
+        // be a fresh limiter key if the headers were believed.
+        lenient().when(request.getHeader("CF-Connecting-IP")).thenReturn("203.0.113.1", "203.0.113.2", "203.0.113.3", "203.0.113.4");
+        lenient().when(request.getHeader("X-Forwarded-For")).thenReturn("203.0.113.1", "203.0.113.2", "203.0.113.3", "203.0.113.4");
+
+        assertThat(controller.restart(request).getStatusCode().value()).isEqualTo(200);
+        assertThat(controller.restart(request).getStatusCode().value()).isEqualTo(200);
+        assertThat(controller.restart(request).getStatusCode().value()).isEqualTo(200);
+        assertThat(controller.restart(request).getStatusCode().value()).isEqualTo(429);
     }
 
     @Test

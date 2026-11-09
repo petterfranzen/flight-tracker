@@ -63,31 +63,31 @@ class FavoriteRepositoryIntegrationTest {
 
     @Test
     void upsert_replacesTheDataAndStampsANewerUpdatedAt() {
-        repository.upsert("p1", "route", "ESSA-ESGG", "old");
+        repository.upsert("p1", "route", "ESSA-ESGG", "{\"v\":\"old\"}");
         Instant later = NOW.plusSeconds(600);
         new FavoriteRepository(jdbc, Clock.fixed(later, ZoneOffset.UTC))
-                .upsert("p1", "route", "ESSA-ESGG", "new");
+                .upsert("p1", "route", "ESSA-ESGG", "{\"v\":\"new\"}");
 
         Favorite after = repository.find("p1", "route", "ESSA-ESGG").orElseThrow();
-        assertThat(after.data()).isEqualTo("new");
+        assertThat(after.data()).isEqualTo("{\"v\":\"new\"}");
         assertThat(after.updatedAt()).isEqualTo(later);
         assertThat(repository.countForProfile("p1")).isEqualTo(1);
     }
 
     @Test
     void theSameItemKey_underTwoKindsIsTwoRows() {
-        repository.upsert("p1", "route", "X", "r");
-        repository.upsert("p1", "aircraft", "X", "a");
+        repository.upsert("p1", "route", "X", "{\"v\":\"r\"}");
+        repository.upsert("p1", "aircraft", "X", "{\"v\":\"a\"}");
 
         assertThat(repository.countForProfile("p1")).isEqualTo(2);
-        assertThat(repository.find("p1", "route", "X")).get().extracting(Favorite::data).isEqualTo("r");
-        assertThat(repository.find("p1", "aircraft", "X")).get().extracting(Favorite::data).isEqualTo("a");
+        assertThat(repository.find("p1", "route", "X")).get().extracting(Favorite::data).isEqualTo("{\"v\":\"r\"}");
+        assertThat(repository.find("p1", "aircraft", "X")).get().extracting(Favorite::data).isEqualTo("{\"v\":\"a\"}");
     }
 
     @Test
     void favoritesAreScopedToTheirProfile() {
-        repository.upsert("p1", "route", "X", "r");
-        repository.upsert("p2", "route", "X", "r");
+        repository.upsert("p1", "route", "X", "{\"v\":\"r\"}");
+        repository.upsert("p2", "route", "X", "{\"v\":\"r\"}");
 
         assertThat(repository.findByProfileId("p1")).hasSize(1);
         assertThat(repository.countForProfile("p2")).isEqualTo(1);
@@ -95,9 +95,9 @@ class FavoriteRepositoryIntegrationTest {
 
     @Test
     void delete_removesOne_andDeleteAllForProfile_removesTheRest() {
-        repository.upsert("p1", "route", "X", "r");
-        repository.upsert("p1", "route", "Y", "r");
-        repository.upsert("p2", "route", "X", "r");
+        repository.upsert("p1", "route", "X", "{\"v\":\"r\"}");
+        repository.upsert("p1", "route", "Y", "{\"v\":\"r\"}");
+        repository.upsert("p2", "route", "X", "{\"v\":\"r\"}");
 
         assertThat(repository.delete("p1", "route", "X")).isEqualTo(1);
         assertThat(repository.delete("p1", "route", "X")).isZero();
