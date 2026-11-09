@@ -2,7 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { getRouteVertices, mockFlightApi, planeTarget, renderedPlanes, setMapView, waitForMapReady, waitForPlanes, withMap } from "./helpers";
 import { OPENFREEMAP_TILEJSON } from "./fixtures/basemap";
 import { GATE_STALE_MS, gateDisplay, trailFor, type TrailPoint } from "../src/map/gatePlacement";
-import { gateFromIndex, normalizeGateRef } from "../src/map/gateIndex";
+import { gateFromIndex, nearestStandFromIndex, normalizeGateRef } from "../src/map/gateIndex";
 import type { SelectedPosition, TrackStatus } from "../src/types/flight";
 
 // #165: a flight whose gate a provider confirmed is drawn at the gate once its
@@ -411,9 +411,18 @@ test.describe("gate index: a gate resolves with no gate tile loaded", () => {
     expect(normalizeGateRef(" Gate D18 ")).toBe("D18");
     expect(normalizeGateRef("e5 b")).toBe("E5B");
     expect(gateFromIndex("ESSA", "E5B")).not.toBeNull();
+    // A remote stand's ref resolves too (parking_position, not a gate).
+    expect(gateFromIndex("ESSA", "33")).not.toBeNull();
     // A ref the airport does not carry, and an airport the index does not carry.
     expect(gateFromIndex("ESSA", "ZZ99")).toBeNull();
     expect(gateFromIndex("ESPA", "E5B")).toBeNull();
+  });
+
+  test("the nearest stand is found within range and not beyond it", () => {
+    const stand = gateFromIndex("ESSA", "33")!;
+    expect(nearestStandFromIndex("ESSA", { lat: stand.lat, lon: stand.lon }, 60)?.ref).toBe("33");
+    expect(nearestStandFromIndex("ESSA", { lat: stand.lat + 0.01, lon: stand.lon }, 60)).toBeNull();
+    expect(nearestStandFromIndex("ESPA", { lat: stand.lat, lon: stand.lon }, 60)).toBeNull();
   });
 
   // gateMinZoom 99 (the zoom tests): every tile is served without a gate
@@ -452,5 +461,38 @@ test.describe("gate index: a gate resolves with no gate tile loaded", () => {
     expect(plane.lat).toBeCloseTo(GATE_IDX().lat, 4);
     expect(plane.lon).toBeCloseTo(GATE_IDX().lon, 4);
     expect(Math.abs(plane.lat - GATE.lat)).toBeGreaterThan(0.001);
+  });
+
+  // A remote stand: a parking_position ref, not a gate. ESSA stand 33 is in the
+  // generated index, and the provider names it as the gate.
+  const STAND = () => gateFromIndex("ESSA", "33")!;
+
+  async function openOnStand(page: Page, gateRef: string) {
+    const stand = STAND();
+    const last = Date.now() - HOUR;
+    await open(page, {
+      lastReportMs: last,
+      history: [position(last, { latitude: stand.lat, longitude: stand.lon })],
+      live: { latitude: stand.lat, longitude: stand.lon },
+      status: atGate(last, { gate: gateRef, lastSeenLat: stand.lat, lastSeenLon: stand.lon, landing: landingAt("ESSA", last) }),
+      view: { ...stand, zoom: 12 },
+      gateMinZoom: 99,
+    });
+    await expect.poll(async () => (await selectedPlane(page))?.label, { timeout: 10_000 }).toBe("SAS086 · 33");
+    return (await selectedPlane(page))!;
+  }
+
+  test("a provider ref that names a remote stand is drawn at that stand", async ({ page }) => {
+    const plane = await openOnStand(page, "33");
+    expect(plane.lat).toBeCloseTo(STAND().lat, 4);
+    expect(plane.lon).toBeCloseTo(STAND().lon, 4);
+  });
+
+  test("an unknown ref on the ground snaps to the nearest stand", async ({ page }) => {
+    // The provider ref is not in the index; the plane is on the ground at the
+    // stand, so the nearest stand within STAND_SNAP_M is used and labelled.
+    const plane = await openOnStand(page, "ZZ99");
+    expect(plane.lat).toBeCloseTo(STAND().lat, 4);
+    expect(plane.lon).toBeCloseTo(STAND().lon, 4);
   });
 });
