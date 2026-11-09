@@ -165,3 +165,45 @@ test.describe("PWA installability", () => {
     await expect(page.locator(".install-banner")).toHaveCount(0);
   });
 });
+
+// #196 follow-up: the installed app must paint to the physical bottom of the
+// screen, not stop at the layout viewport (which on iOS 26 excludes the
+// home-indicator strip) — that shortfall was the white band under the app.
+// The display-mode path is the one a desktop installed Chrome PWA takes; the
+// headless test browser cannot be launched as an installed app, so the query
+// is stubbed the same way the standalone-install test above stubs it.
+test.describe("installed app sizing", () => {
+  test.describe.configure({ timeout: 90_000 });
+  test.use({ viewport: { width: 390, height: 664 }, screen: { width: 390, height: 844 } });
+
+  test("display-mode: standalone sizes the shell to the screen, not the layout viewport", async ({ page }) => {
+    await page.addInitScript(() => {
+      const original = window.matchMedia.bind(window);
+      window.matchMedia = ((query: string) => {
+        if (query === "(display-mode: standalone)") {
+          return {
+            matches: true,
+            media: query,
+            onchange: null,
+            addListener: () => {},
+            removeListener: () => {},
+            addEventListener: () => {},
+            removeEventListener: () => {},
+            dispatchEvent: () => false,
+          } as MediaQueryList;
+        }
+        return original(query);
+      }) as typeof window.matchMedia;
+    });
+    await mockFlightApi(page);
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+
+    // ui/standaloneViewport.ts marks the document; FlightMap.css then sizes the
+    // shell past the 664 px layout viewport to the 844 px physical screen.
+    await expect(page.locator("html")).toHaveClass(/\bstandalone\b/);
+    await expect.poll(async () => (await page.locator(".app-shell").boundingBox())?.height).toBe(844);
+    // Whatever strip the shell leaves must be the theme background, never the
+    // browser's white.
+    expect(await page.evaluate(() => getComputedStyle(document.body).backgroundColor)).toBe("rgb(5, 6, 8)");
+  });
+});
