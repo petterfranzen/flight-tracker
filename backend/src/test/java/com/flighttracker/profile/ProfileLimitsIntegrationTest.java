@@ -92,6 +92,20 @@ class ProfileLimitsIntegrationTest {
     }
 
     @Test
+    void favoriteData_mustBeAJsonObject_scalarsArraysAndNullAreInvalid() {
+        // The frontend only stores a FavoriteRoute/FavoriteAircraft object, so a
+        // bare scalar, an array or JSON null is not valid data.
+        for (String notAnObject : new String[]{"null", "3", "\"x\"", "true", "[]", "[1,2]", "\"\""}) {
+            assertRejected(() -> favorites.upsert("p1", "route", "a", notAnObject), Reason.INVALID, "data");
+        }
+        assertThat(favorites.countForProfile("p1")).isZero();
+
+        // an object is accepted, an empty one too
+        favorites.upsert("p1", "route", "a", "{}");
+        assertThat(favorites.find("p1", "route", "a")).isPresent();
+    }
+
+    @Test
     void favoriteKindAndItemKey_areChecked() {
         assertRejected(() -> favorites.upsert("p1", "hotel", "a", "{}"), Reason.INVALID, "kind");
         assertRejected(() -> favorites.upsert("p1", "route", " ", "{}"), Reason.INVALID, "itemKey");
@@ -183,5 +197,18 @@ class ProfileLimitsIntegrationTest {
 
         watched.upsert("p2", "SKX", "2026-10-02", "ESSA", null); // other profile unaffected
         assertThat(watched.findByProfileId("p2")).hasSize(1);
+    }
+
+    // ---- pinned caps
+
+    @Test
+    void profileCapsArePinnedToTheirDocumentedValues() {
+        // The integration tests derive their boundaries from these constants
+        // (MAX_...+1), so on their own they would not notice a cap value
+        // changing. These literals are the numbers the README and the profile
+        // API document; if a cap moves on purpose, move it here too.
+        assertThat(MAX_FAVORITE_DATA_BYTES).isEqualTo(2048);
+        assertThat(MAX_FAVORITES_PER_PROFILE).isEqualTo(200);
+        assertThat(MAX_WATCHED_FLIGHTS_PER_PROFILE).isEqualTo(50);
     }
 }

@@ -77,6 +77,21 @@ list longer than that is trimmed oldest-first in the cookie only (the
 The cookie carries only this JSON and is ignored by the server — no filter
 reads, logs or strips it (see `frontend/src/persist.ts`).
 
+The optional login API (see the comment above the `profile` table in
+`schema.sql`) keeps the same lists server-side once it ships, and caps what a
+signed-in profile may store. These are the caps in
+`backend/.../profile/ProfileLimits.java`, checked in the repositories before
+anything is written (nothing is truncated):
+
+- a favorite's `data` is at most **2048 UTF-8 bytes**, and must be a JSON
+  **object** — the `FavoriteRoute` / `FavoriteAircraft` JSON the frontend
+  already speaks. A bare scalar, an array or JSON `null` is rejected as
+  invalid, because nothing the frontend stores is anything but an object;
+- a profile holds at most **200 favorites** and **50 watched flights**;
+- the label, item-key, flight-number and airport limits (80, 32, 16 and 8)
+  count **UTF-16 chars** (`String.length()`, so one emoji counts as two),
+  unlike `data`'s byte count.
+
 To clear them: remove the site's cookies and site data in the browser
 (a "clear browsing data" for the origin, or DevTools > Application > Storage
 > Clear site data). Favorites have their own ✕ controls in the Favorites
