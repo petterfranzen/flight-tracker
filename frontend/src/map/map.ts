@@ -101,6 +101,14 @@ export interface RenderedPlane {
   drawnSince: number;
 }
 
+/** The "you are here" dot the user-location layer drew (map/userLocation.ts), for tests. */
+export interface RenderedUserLocation {
+  lat: number;
+  lon: number;
+  x: number;
+  y: number;
+}
+
 /** An airport the airport layer drew (ui/defaultAirports.ts), for tests. */
 export interface RenderedAirport {
   code: string;
@@ -138,6 +146,8 @@ export class FlightMap {
   renderedAirports: () => RenderedAirport[] = () => [];
   /** Test hook: every watched origin airport drawn in view. Set by ui/watchedAirports.ts. */
   renderedWatchedAirports: () => RenderedWatchedAirport[] = () => [];
+  /** Test hook: the user's own location dot drawn in view, or null. Set by map/userLocation.ts. */
+  renderedUserLocation: () => RenderedUserLocation | null = () => null;
 
   constructor(gl: MaplibreMap) {
     this.gl = gl;
