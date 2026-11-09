@@ -3,6 +3,7 @@ import type { Bounds } from "../types/flight";
 import { basemapOptions, whenBasemapReady } from "./maplibreBasemap";
 import { minZoomFor, WORLD_BOUNDS } from "./zoomLimits";
 import { distanceM, geometryPoint } from "./gatePlacement";
+import { gateFromIndex } from "./gateIndex";
 
 // Zoom a selection's flyTo treats as "close enough" to stop zooming
 // further in.
@@ -305,13 +306,18 @@ export class FlightMap {
   }
 
   /**
-   * The coordinate of the gate `ref` (OpenMapTiles `aeroway` class `gate`, from
-   * the basemap's own vector tiles) nearest `near`, or null. Only tiles the map
-   * has loaded are searched, and gates are in the zoom-14 tiles: so this finds
-   * one only while the view is at an airport (app zoom 15+); callers retry on
+   * The coordinate of gate `ref` at airport `icao`, or null.
+   *
+   * The static OSM index (gateIndex.ts) answers at any zoom and needs no tile,
+   * so a gate resolves even when the view is zoomed out. When the index does
+   * not carry the ref the basemap's own `aeroway` gate points are searched as a
+   * fallback (nearest `near`): those ship only in the zoom-14 tiles, so that
+   * path needs the view at the airport (app zoom 15+) and callers retry on
    * `sourcedata`.
    */
-  findGate(ref: string, near: LatLon): LatLon | null {
+  findGate(ref: string, near: LatLon, icao?: string | null): LatLon | null {
+    const indexed = gateFromIndex(icao, ref);
+    if (indexed) return indexed;
     const want = ref.trim().toUpperCase();
     let best: { p: LatLon; d: number } | null = null;
     let features: ReturnType<MaplibreMap["querySourceFeatures"]> = [];

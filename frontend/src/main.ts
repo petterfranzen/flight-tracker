@@ -69,9 +69,11 @@ const COVERAGE_LOST_REFETCH_MS = 15_000;
 // (LANDED_CONFIRMED) the gate may follow, at any time.
 const LANDED_REFETCH_MS = 60_000;
 const FETCH_STOP_MS = 5 * 60_000;
-// Gates are in the basemap's zoom-14 tiles, which load from this app zoom (map.findGate).
-// From here a view that shows the plane has those tiles loaded or loading, so a gate that
-// is still missing is not in the map and moving the camera would not find it.
+// The static OSM gate index (gateIndex.ts) resolves a gate at any zoom, so the one-time
+// fly-to is only for an airport it does not carry: the basemap's own gate points (the
+// fallback in map.findGate) live in the zoom-14 tiles, which load from this app zoom. From
+// here a view that shows the plane has those tiles loaded or loading, so a gate that is
+// still missing is not in the map and moving the camera would not find it.
 const GATE_TILE_ZOOM = 15;
 // Where the one-time fly-to to a confirmed gate goes.
 const GATE_LOOKUP_ZOOM = 16;
@@ -427,10 +429,10 @@ function boot(): void {
 
   // ---- confirmed gate ----
   // A plane whose gate a provider confirmed is drawn at the gate once its last
-  // report is old (map/gatePlacement.ts). The gate's coordinate is the gate's
-  // own point in the basemap's vector tiles (aeroway class "gate", by ref),
-  // which are loaded only while the view is at the airport: it is looked up
-  // when the status arrives and again whenever tiles load, until found.
+  // report is old (map/gatePlacement.ts). The gate's coordinate comes from the
+  // static OSM index (gateIndex.ts), keyed by the landing airport, so it needs
+  // no tile and resolves at any zoom; the basemap's own vector-tile gate points
+  // are the fallback (map.ts findGate), looked up again whenever tiles load.
   let gatePoint: { icao24: string; gate: string; lat: number; lon: number } | null = null;
   function currentGateDisplay(): GateDisplay | null {
     const pos = store.get("selectedPos");
@@ -477,7 +479,7 @@ function boot(): void {
     const gate = confirmedGate(pos, status);
     if (!pos || !status || !gate) return;
     if (gatePoint && gatePoint.icao24 === pos.icao24 && gatePoint.gate === gate) return;
-    const found = map.findGate(gate, { lat: status.lastSeenLat, lon: status.lastSeenLon });
+    const found = map.findGate(gate, { lat: status.lastSeenLat, lon: status.lastSeenLon }, status.landing?.airportIcao);
     if (!found) return;
     gatePoint = { icao24: pos.icao24, gate, lat: found.lat, lon: found.lon };
     renderAircraftLayer();
