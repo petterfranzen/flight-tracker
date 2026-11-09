@@ -1,5 +1,6 @@
 import type { AppStore } from "../state/appState";
 import { h } from "./h";
+import { activateModal, isPhone, type ModalHandle } from "./a11y";
 import "../components/Legend.css";
 
 function infoIcon(): SVGElement {
@@ -21,6 +22,9 @@ function infoIcon(): SVGElement {
  */
 export function mount(root: HTMLElement): () => void {
   let open = false;
+  // The phone sheet is modal (a11y.ts): Tab stays inside it, Escape closes it,
+  // focus returns to the FAB. Desktop renders the list inline, not modal.
+  let trap: ModalHandle | null = null;
 
   const body = h("div", { id: "map-legend-body", className: "map-legend-body" });
   const closeButton = h("button", { type: "button", className: "map-legend-body-close", onClick: () => setOpen(false) }, "Close legend ✕");
@@ -50,6 +54,23 @@ export function mount(root: HTMLElement): () => void {
     render();
   }
 
+  /** See flightSearch.ts's syncModal — same modal-on-phone treatment. */
+  function syncModal(): void {
+    const modal = open && isPhone();
+    if (modal && !trap) {
+      body.setAttribute("role", "dialog");
+      body.setAttribute("aria-modal", "true");
+      body.setAttribute("aria-label", "Map legend");
+      trap = activateModal(body, { onEscape: () => setOpen(false), returnTo: fab });
+    } else if (!modal && trap) {
+      trap.release();
+      trap = null;
+      body.removeAttribute("role");
+      body.removeAttribute("aria-modal");
+      body.removeAttribute("aria-label");
+    }
+  }
+
   function render(): void {
     body.classList.toggle("map-legend-body--open", open);
     toggle.setAttribute("aria-expanded", String(open));
@@ -61,6 +82,7 @@ export function mount(root: HTMLElement): () => void {
     // when closed, not just visually hidden.
     if (open) body.appendChild(list);
     else if (list.parentElement) list.remove();
+    syncModal();
   }
   render();
 
@@ -68,5 +90,9 @@ export function mount(root: HTMLElement): () => void {
   const container = h("div", { className: "map-legend" }, fab, body);
   root.appendChild(container);
 
-  return () => container.remove();
+  return () => {
+    trap?.release();
+    trap = null;
+    container.remove();
+  };
 }

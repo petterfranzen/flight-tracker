@@ -251,7 +251,11 @@ function boot(): void {
   const bootScreenRoot = h("div");
   const dockRoot = h("div");
   const leftOverlayStack = h("div", { className: "left-overlay-stack" });
-  const trackedChipRoot = h("div");
+  // A stable polite live region for the Active/Seen counts: aria-live lives on
+  // this wrapper (created once) rather than on .tracked-chip, which
+  // renderTrackedChip rebuilds on every change — a live region that is itself
+  // replaced each tick is not reliably announced.
+  const trackedChipRoot = h("div", { "aria-live": "polite", "aria-atomic": "true" });
   const resumeDialogRoot = h("div");
   const watchToastRoot = h("div");
   const mapRoot = h("div");
@@ -325,6 +329,7 @@ function boot(): void {
     removeFavoriteAircraft: () => {},
     removeFavoriteRoute: () => {},
     resumeTracking: () => {},
+    dismissResumeDialog: () => {},
 
     watchFlight: () => {},
     unwatchFlight: () => {},
@@ -1381,6 +1386,7 @@ function boot(): void {
   store.set("removeFavoriteAircraft", removeFavoriteAircraft);
   store.set("removeFavoriteRoute", removeFavoriteRoute);
   store.set("resumeTracking", startCycle);
+  store.set("dismissResumeDialog", () => store.set("showResumeDialog", false));
   store.set("watchFlight", watchFlight);
   store.set("unwatchFlight", unwatchFlight);
   store.set("goToWatched", goToWatched);

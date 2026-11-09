@@ -3,6 +3,7 @@ import type { FlightPosition } from "../types/flight";
 import { searchFlights, searchFlightsByAirport, type ScheduledFlight } from "../api/flightApi";
 import { watchKey, watchedMatchesQuery, type WatchedFlight } from "../watchlist";
 import { h, clear } from "./h";
+import { activateModal, isPhone, type ModalHandle } from "./a11y";
 import "../components/FlightSearch.css";
 
 const DEBOUNCE_MS = 250;
@@ -64,6 +65,9 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
   let routeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   let mobilePanelOpen = false;
+  // The phone overlay is modal: focus is trapped in it and returned to the FAB
+  // on close (see a11y.ts). Null while the panel is closed or on desktop.
+  let trap: ModalHandle | null = null;
 
   // --- watched flights: chips under the box, and listed first in the results ---
   let watched: WatchedFlight[] = store.get("watchedFlights");
@@ -360,8 +364,8 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     if (showDropdown) {
       if (!resultsList.parentElement) panel.insertBefore(resultsList, airportPanel);
       // A watched match is a result too: don't say "none" when one is listed.
-      if (loading && results.length === 0) resultsList.append(h("li", { className: "flight-search-status" }, "Searching…"));
-      else if (!loading && results.length === 0 && watchedList.hidden) resultsList.append(h("li", { className: "flight-search-status" }, "No matching flights"));
+      if (loading && results.length === 0) resultsList.append(h("li", { className: "flight-search-status", role: "status" }, "Searching…"));
+      else if (!loading && results.length === 0 && watchedList.hidden) resultsList.append(h("li", { className: "flight-search-status", role: "status" }, "No matching flights"));
       results.forEach((p, i) => resultsList.append(resultRow(p, i, i === activeIndex, "flight-search-option", choose)));
     } else if (resultsList.parentElement) {
       resultsList.remove();
@@ -376,8 +380,8 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     clear(routeResultsList);
     if (showDropdown) {
       if (!routeResultsList.parentElement) airportPanel.appendChild(routeResultsList);
-      if (routeLoading && routeResults.length === 0) routeResultsList.append(h("li", { className: "flight-search-status" }, "Searching…"));
-      else if (!routeLoading && routeResults.length === 0) routeResultsList.append(h("li", { className: "flight-search-status" }, "No matching flights"));
+      if (routeLoading && routeResults.length === 0) routeResultsList.append(h("li", { className: "flight-search-status", role: "status" }, "Searching…"));
+      else if (!routeLoading && routeResults.length === 0) routeResultsList.append(h("li", { className: "flight-search-status", role: "status" }, "No matching flights"));
       routeResults.forEach((p, i) => routeResultsList.append(resultRow(p, i, i === routeActiveIndex, "flight-search-route-option", choose)));
     } else if (routeResultsList.parentElement) {
       routeResultsList.remove();
@@ -385,6 +389,38 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     airportInput.setAttribute("aria-expanded", String(showDropdown));
     if (routeActiveIndex >= 0 && showDropdown) airportInput.setAttribute("aria-activedescendant", `flight-search-route-option-${routeActiveIndex}`);
     else airportInput.removeAttribute("aria-activedescendant");
+  }
+
+  function closeMobilePanel(): void {
+    open = false;
+    routeOpen = false;
+    mobilePanelOpen = false;
+    renderAll();
+  }
+
+  /**
+   * Keeps the focus trap in step with the panel's own open state: the phone
+   * overlay is modal (Tab stays inside, Escape closes, focus returns to the
+   * FAB), the desktop dropdown is not. Called from renderAll, so every path
+   * that opens or closes the panel (the FAB, the close button, a selection,
+   * Escape, a tap outside) goes through here.
+   */
+  function syncModal(): void {
+    const modal = mobilePanelOpen && isPhone();
+    if (modal && !trap) {
+      // A full-screen overlay is a modal dialog to assistive tech; on desktop
+      // the same element is an inline dropdown and carries neither attribute.
+      panel.setAttribute("role", "dialog");
+      panel.setAttribute("aria-modal", "true");
+      panel.setAttribute("aria-label", "Search flights");
+      trap = activateModal(panel, { onEscape: closeMobilePanel, returnTo: fab });
+    } else if (!modal && trap) {
+      trap.release();
+      trap = null;
+      panel.removeAttribute("role");
+      panel.removeAttribute("aria-modal");
+      panel.removeAttribute("aria-label");
+    }
   }
 
   function renderAll(): void {
@@ -396,6 +432,7 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     renderWatchedChips();
     renderResults();
     renderRouteResults();
+    syncModal();
   }
   renderAll();
 
@@ -423,6 +460,8 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     document.removeEventListener("pointerdown", handlePointerDown);
     if (debounceTimer) clearTimeout(debounceTimer);
     if (routeDebounceTimer) clearTimeout(routeDebounceTimer);
+    trap?.release();
+    trap = null;
     container.remove();
   };
 }

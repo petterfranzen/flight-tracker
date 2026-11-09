@@ -25,6 +25,19 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     else store.get("dismissDepartureToast")();
   }
 
+  // The toast auto-dismisses, but never out from under a keyboard user: while
+  // anything inside it has focus the countdown is suspended, and it restarts
+  // (fresh, from the full interval) once focus leaves.
+  function holdOpen(): void {
+    if (timer) clearTimeout(timer);
+    timer = null;
+  }
+  function restartCountdown(): void {
+    if (!el.hidden) timer = setTimeout(dismiss, AUTO_DISMISS_MS);
+  }
+  el.addEventListener("focusin", holdOpen);
+  el.addEventListener("focusout", restartCountdown);
+
   function render(): void {
     const notice = store.get("watchNotice");
     const departure = store.get("departureToast");

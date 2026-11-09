@@ -232,3 +232,12 @@
   background: var(--color-panel-border);
   color: var(--color-text);
 }
+
+@media (max-width: 768px) {
+  /* House tap-target minimum (44x44) on the phone drawer: the row's select
+     button is text-sized and the ✕ remove is a glyph. The favourite name stays
+     where it is; only the hit boxes grow. */
+  .favorites-panel-item-select { min-height: 44px; }
+  .favorites-panel-item-remove { min-width: 44px; min-height: 44px; }
+  .favorites-panel-body-close { min-height: 44px; }
+}
