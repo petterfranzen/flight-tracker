@@ -39,8 +39,8 @@ following are **live in production**:
   the login API is exposed (the profile feature flag itself is still off).
 
 #176 also addressed M4 (client-IP trust) and L8. The diffs below are kept for
-the record; fix C as the review drafted it leaked a slot in
-`afterConnectionClosed`, which #176 corrected (see that PR).
+the record; fix C as originally drafted leaked a slot in the close paths, so
+its entry below has been corrected to the single-`release()` shape #176 shipped.
 
 ## Method
 
@@ -370,57 +370,208 @@ Verified against a local build with `setAllowedOrigins("https://flight.pastabake
 
 ### Diff C — per-IP WebSocket connection cap (MEDIUM, M3) — **shipped in #176, live in production**
 
-In `backend/src/main/java/com/flighttracker/service/LiveFeedBroadcaster.java`,
-add a counter keyed on the client IP. Behind `cloudflared` the raw remote
-address is loopback for every visitor, so the handshake's `CF-Connecting-IP`
-(the same signal `ClientIpResolver` prefers) is the only per-client key.
+> **Corrected 2026-11-09 (second-reviewer must-fix).** As first drafted this
+> diff leaked a slot: it decremented the per-IP counter in
+> `afterConnectionClosed` **only when `sessions.remove(id) != null`**, but
+> `closeQuietly()` removes the session before `close()` — so a slow-client
+> eviction (`SessionLimitExceededException`) and a send-failure eviction never
+> decremented, and each such socket held one of the 8 slots for the life of the
+> process. The version below decrements in **exactly one place**: a single
+> idempotent `release(session)` that every close path calls, and only the caller
+> whose `sessions.remove(id)` finds the entry gives the slot back — so it can
+> never double-count or go negative. This is the shape #176 shipped.
 
-```java
-    // Cap concurrent live-feed sockets per client IP so one page (or one
-    // script) cannot open an unbounded number of them. Cloudflare's edge sets
-    // CF-Connecting-IP on the upgrade request too; behind cloudflared the raw
-    // remote address is loopback for every visitor, so the header is the only
-    // per-client signal — same reasoning as ClientIpResolver.
-    private static final int MAX_CONNECTIONS_PER_IP = 8;
+In `backend/src/main/java/com/flighttracker/service/LiveFeedBroadcaster.java`.
+The patch below is against the review's baseline `2c3a284`; `git apply --check`
+is clean there and the result compiles and is exercised by the test beneath it.
 
-    private final Map<String, Integer> connectionCountByIp = new ConcurrentHashMap<>();
-
-    @Override
-    public void afterConnectionEstablished(WebSocketSession session) {
-        if (stopping) {
-            closeQuietly(session, CloseStatus.GOING_AWAY);
-            return;
-        }
-        String ip = clientIp(session);
-        if (connectionCountByIp.merge(ip, 1, Integer::sum) > MAX_CONNECTIONS_PER_IP) {
-            connectionCountByIp.computeIfPresent(ip, (k, v) -> v <= 1 ? null : v - 1);
-            closeQuietly(session, CloseStatus.SERVICE_OVERLOAD); // 1013
-            return;
-        }
-        sessions.put(session.getId(), new ConcurrentWebSocketSessionDecorator(
-                session, SEND_TIME_LIMIT_MS, BUFFER_SIZE_LIMIT_BYTES,
-                ConcurrentWebSocketSessionDecorator.OverflowStrategy.DROP));
-    }
-
-    @Override
-    public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
-        if (sessions.remove(session.getId()) != null) {
-            connectionCountByIp.computeIfPresent(clientIp(session), (k, v) -> v <= 1 ? null : v - 1);
-        }
-    }
-
-    private static String clientIp(WebSocketSession session) {
-        String cf = session.getHandshakeHeaders().getFirst("CF-Connecting-IP");
-        if (cf != null && !cf.isBlank()) {
-            return cf.trim();
-        }
-        InetSocketAddress remote = session.getRemoteAddress();
-        return remote == null ? "unknown" : remote.getAddress().getHostAddress();
-    }
+```diff
+diff --git a/backend/src/main/java/com/flighttracker/service/LiveFeedBroadcaster.java b/backend/src/main/java/com/flighttracker/service/LiveFeedBroadcaster.java
+index f7421e5..fe3b40e 100644
+--- a/backend/src/main/java/com/flighttracker/service/LiveFeedBroadcaster.java
++++ b/backend/src/main/java/com/flighttracker/service/LiveFeedBroadcaster.java
+@@ -25,6 +25,7 @@ import org.springframework.web.socket.handler.SessionLimitExceededException;
+ import org.springframework.web.socket.handler.TextWebSocketHandler;
+ 
+ import java.io.IOException;
++import java.net.InetSocketAddress;
+ import java.util.ArrayList;
+ import java.util.List;
+ import java.util.Map;
+@@ -92,8 +93,23 @@ public class LiveFeedBroadcaster extends TextWebSocketHandler implements SmartLi
+     // behind a stalled client's blocked write, so it can't be open-ended.
+     static final long CLOSE_TIMEOUT_MS = 2_000;
+ 
+-    // Decorated sessions, keyed by the raw session's id.
+-    private final Map<String, WebSocketSession> sessions = new ConcurrentHashMap<>();
++    // Cap concurrent live-feed sockets per client IP so one page (or one
++    // script) cannot open an unbounded number of them. Cloudflare's edge sets
++    // CF-Connecting-IP on the upgrade request too; behind cloudflared the raw
++    // remote address is loopback for every visitor, so the header is the only
++    // per-client signal — same reasoning as ClientIpResolver.
++    static final int MAX_CONNECTIONS_PER_IP = 8;
++
++    // A registered session and the client IP it was counted under.
++    private record Registered(WebSocketSession session, String ip) { }
++
++    // Registered sessions, keyed by the raw session's id. Whoever removes an
++    // entry (release) is the one that gives its slot back, so each session is
++    // counted out exactly once however many close paths fire.
++    private final Map<String, Registered> sessions = new ConcurrentHashMap<>();
++    // Open sessions per client IP, never above MAX_CONNECTIONS_PER_IP. Entries
++    // are removed at zero, so the map only holds IPs with a live socket.
++    private final Map<String, Integer> connectionCountByIp = new ConcurrentHashMap<>();
+     private final ExecutorService sendExecutor = Executors.newVirtualThreadPerTaskExecutor();
+     private final ViewportService viewportService;
+     private volatile boolean running;
+@@ -117,14 +133,79 @@ public class LiveFeedBroadcaster extends TextWebSocketHandler implements SmartLi
+             closeQuietly(session, CloseStatus.GOING_AWAY);
+             return;
+         }
+-        sessions.put(session.getId(), new ConcurrentWebSocketSessionDecorator(
++        String ip = clientIp(session);
++        if (!acquire(ip)) {
++            // Not registered — there is no slot to release on its close.
++            closeQuietly(session, CloseStatus.SERVICE_OVERLOAD); // 1013, "try again later"
++            return;
++        }
++        sessions.put(session.getId(), new Registered(new ConcurrentWebSocketSessionDecorator(
+                 session, SEND_TIME_LIMIT_MS, BUFFER_SIZE_LIMIT_BYTES,
+-                ConcurrentWebSocketSessionDecorator.OverflowStrategy.DROP));
++                ConcurrentWebSocketSessionDecorator.OverflowStrategy.DROP), ip));
++        // A client that hung up between the slot being taken and the entry
++        // being stored has already had its close callback find nothing to
++        // release; give the slot back here instead of leaking it.
++        if (!session.isOpen()) {
++            release(session);
++        }
+     }
+ 
+     @Override
+     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
+-        sessions.remove(session.getId());
++        release(session);
++    }
++
++    @Override
++    public void handleTransportError(WebSocketSession session, Throwable exception) {
++        // The container normally follows with afterConnectionClosed, but a slot
++        // must not depend on that; release() is idempotent.
++        release(session);
++    }
++
++    /** Takes a slot for ip, or refuses when it already holds MAX_CONNECTIONS_PER_IP. */
++    private boolean acquire(String ip) {
++        boolean[] taken = {false};
++        connectionCountByIp.compute(ip, (k, n) -> {
++            int open = n == null ? 0 : n;
++            if (open >= MAX_CONNECTIONS_PER_IP) return n;
++            taken[0] = true;
++            return open + 1;
++        });
++        return taken[0];
++    }
++
++    /**
++     * Forgets the session and gives its IP slot back — exactly once. Only the
++     * caller whose remove() finds the entry decrements, so afterConnectionClosed,
++     * a transport error, closeQuietly (slow-client / send-failure eviction) and
++     * stop() can all call this for the same session. A session that was never
++     * registered (refused over the cap, or turned away while stopping) holds no
++     * slot and is a no-op.
++     */
++    private void release(WebSocketSession session) {
++        Registered removed = sessions.remove(session.getId());
++        if (removed != null) {
++            connectionCountByIp.computeIfPresent(removed.ip(), (k, n) -> n <= 1 ? null : n - 1);
++        }
++    }
++
++    /** Open sessions counted against ip (for tests and diagnostics). */
++    int connectionsFor(String ip) {
++        return connectionCountByIp.getOrDefault(ip, 0);
++    }
++
++    /** Number of IPs holding a slot; 0 when nothing is connected (for tests). */
++    int trackedIps() {
++        return connectionCountByIp.size();
++    }
++
++    private static String clientIp(WebSocketSession session) {
++        String cf = session.getHandshakeHeaders().getFirst("CF-Connecting-IP");
++        if (cf != null && !cf.isBlank()) {
++            return cf.trim();
++        }
++        InetSocketAddress remote = session.getRemoteAddress();
++        return remote == null ? "unknown" : remote.getAddress().getHostAddress();
+     }
+ 
+     /**
+@@ -152,7 +233,7 @@ public class LiveFeedBroadcaster extends TextWebSocketHandler implements SmartLi
+             }
+         }
+         if (messages.isEmpty()) return;
+-        sessions.values().forEach(s -> sendExecutor.execute(() -> sendAll(s, messages)));
++        sessions.values().forEach(r -> sendExecutor.execute(() -> sendAll(r.session(), messages)));
+     }
+ 
+     // Cloudflare Tunnel's own idle-close window (~100s) is what this
+@@ -172,7 +253,7 @@ public class LiveFeedBroadcaster extends TextWebSocketHandler implements SmartLi
+     void sendKeepalive() {
+         if (sessions.isEmpty()) return;
+         List<WebSocketMessage<?>> ping = List.of(new PingMessage());
+-        sessions.values().forEach(s -> sendExecutor.execute(() -> sendAll(s, ping)));
++        sessions.values().forEach(r -> sendExecutor.execute(() -> sendAll(r.session(), ping)));
+     }
+ 
+     /**
+@@ -198,7 +279,7 @@ public class LiveFeedBroadcaster extends TextWebSocketHandler implements SmartLi
+     }
+ 
+     private void closeQuietly(WebSocketSession session, CloseStatus status) {
+-        sessions.remove(session.getId());
++        release(session);
+         try {
+             session.close(status);
+         } catch (IOException | RuntimeException ignored) {
+@@ -230,8 +311,7 @@ public class LiveFeedBroadcaster extends TextWebSocketHandler implements SmartLi
+     public void stop() {
+         stopping = true;
+         running = false;
+-        List<WebSocketSession> open = new ArrayList<>(sessions.values());
+-        sessions.clear();
++        List<WebSocketSession> open = sessions.values().stream().map(Registered::session).toList();
+         if (open.isEmpty()) return;
+         CompletableFuture<?>[] closes = open.stream()
+                 .map(s -> CompletableFuture.runAsync(() -> closeQuietly(s, CloseStatus.GOING_AWAY), sendExecutor))
 ```
 
-(Add `java.net.InetSocketAddress` to the imports. `8` is a suggestion — the
-frontend opens one socket per tab.)
+Notes: `acquire(ip)` takes a slot atomically with `compute` (never above the
+cap, also under concurrent connects); a socket refused over the cap is closed
+1013 **before** it is registered, so its own close callback has nothing to
+release; `clientIp(session)` prefers the handshake's `CF-Connecting-IP` and
+falls back to the remote address (`java.net.InetSocketAddress` import added).
+`connectionsFor(ip)` / `trackedIps()` are package-private hooks for the test.
+`8` is a suggestion — the frontend opens one socket per tab.
+
+**Verified locally (2026-11-09)** against the real `LiveFeedBroadcaster` — a
+new `PerIpCapReleaseTest` (5 tests, run with
+`mvn -o test -Dtest=PerIpCapReleaseTest`) drives every close path, including a
+`sendMessage` that throws exactly what the decorated session throws in
+production:
+
+| Path exercised | Counter after |
+|---|---|
+| normal close (`afterConnectionClosed`) | 0 |
+| slow client — `sendMessage` throws `SessionLimitExceededException`, then evicted by `closeQuietly` | 0, and a following close callback leaves it 0 (idempotent) |
+| send failure — `sendMessage` throws `IOException` | 0 |
+| shutdown — `stop()` with 3 sockets across 2 IPs | 0 |
+| over cap — 9th connect refused 1013 | stays 8; the refused socket's own close callback frees nothing |
+
+To prove the test bites, `closeQuietly()` was reverted to the original
+`sessions.remove(id)` (no decrement): the same file then runs **3/5 red** — slow
+client, send failure and shutdown all leave the counter at 1 — and **5/5 green**
+with the diff above.
 
 ### Brief D — HSTS at Cloudflare (MEDIUM, M5)
 
