@@ -28,9 +28,9 @@
  *
  * See docs/popping-harness.md.
  */
-import { OPENFREEMAP_TILEJSON } from "../fixtures/basemap";
 import { expect, type Page, type TestInfo } from "@playwright/test";
 import { clusterMockFleet, onePerCell } from "../../src/api/mockFleet";
+import { OPENFREEMAP_TILEJSON } from "../fixtures/basemap";
 import recording from "../fixtures/popping/recording.json" with { type: "json" };
 
 // ---- the recording's shape (mirrors scripts/record-popping-fixtures.ts) ----
@@ -168,6 +168,8 @@ export interface Replay {
   tick(): Promise<void>;
   /** Advances one recorded tick and pushes its frames, without waiting for the app to settle. */
   advance(): void;
+  /** With `ramp` set: the server forgets the area again, as when the view moves somewhere it was not watching. */
+  restartRamp(): void;
   /**
    * Reads what was drawn now and returns the popping numbers for this step.
    * `waitForTick` (default true) first waits for the app to apply the current
@@ -255,6 +257,15 @@ export interface ReplayOptions {
    * so the two never disagree and the idle reversion cannot show.
    */
   rawFrames?: boolean;
+  /**
+   * The server learns an area over time, like the real one: the hot poll only
+   * covers a viewport once someone looks at it, so right after a view change
+   * /live (and the frames) carry only part of what is there, and the rest
+   * follows tick by tick as reports are persisted (#151). `startFrac` is the
+   * share of aircraft known at `h.restartRamp()`, `perTick` how much more is
+   * known with each tick. Unset, the server knows everything at once.
+   */
+  ramp?: { startFrac: number; perTick: number };
 }
 
 export async function startReplay(page: Page, testInfo: TestInfo, opts: ReplayOptions = {}): Promise<Replay> {
@@ -295,11 +306,15 @@ export async function startReplay(page: Page, testInfo: TestInfo, opts: ReplayOp
     onGround: f.onGround,
   });
   const inBbox = (lat: number, lon: number, b: Bbox): boolean => lat >= b.latMin && lat <= b.latMax && lon >= b.lonMin && lon <= b.lonMax;
+  let rampTick = 0;
+  const knownFrac = (): number => (opts.ramp ? Math.min(1, opts.ramp.startFrac + (tickIndex - rampTick) * opts.ramp.perTick) : 1);
+  /** Whether the server has heard of aircraft `j` yet: a fixed pseudo-random order, so the same ones come first every run. */
+  const known = (j: number): boolean => ((j * 37) % REC.fleet.length) / REC.fleet.length < knownFrac();
   const markersIn = (b: Bbox | null): { icao24: string; callsign: string; observedAt: string; latitude: number; longitude: number; headingDeg: number | null; onGround: boolean }[] => {
     const t = at();
     return REC.fleet
       .map((f, i) => ({ f, i }))
-      .filter(({ i }) => !b || inBbox(t.lat[i], t.lon[i], b))
+      .filter(({ i }) => known(i) && (!b || inBbox(t.lat[i], t.lon[i], b)))
       .map(({ f, i }) => ({ icao24: f.icao24, callsign: f.callsign, observedAt: observedAtOf(Math.min(tickIndex, REC.ticks.length - 1)), latitude: t.lat[i], longitude: t.lon[i], headingDeg: f.headingDeg, onGround: f.onGround }));
   };
   const rawFrames = opts.rawFrames ?? false;
@@ -313,7 +328,7 @@ export async function startReplay(page: Page, testInfo: TestInfo, opts: ReplayOp
     const t = REC.ticks[reportIndex(i)];
     return REC.fleet
       .map((f, j) => ({ f, j }))
-      .filter(({ j }) => !b || inBbox(t.lat[j], t.lon[j], b))
+      .filter(({ j }) => known(j) && (!b || inBbox(t.lat[j], t.lon[j], b)))
       .map(({ f, j }) => ({ icao24: f.icao24, callsign: f.callsign, observedAt: observedAtOf(i), latitude: t.lat[j], longitude: t.lon[j], headingDeg: f.headingDeg, onGround: f.onGround }));
   };
   const bboxOf = (u: URL): Bbox | null =>
@@ -425,6 +440,9 @@ export async function startReplay(page: Page, testInfo: TestInfo, opts: ReplayOp
     pageErrors,
     truth: async () => (await projection()).pts,
     drawn,
+    restartRamp() {
+      rampTick = tickIndex;
+    },
     advance() {
       tickIndex++;
       pushTick();

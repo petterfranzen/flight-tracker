@@ -87,6 +87,7 @@ const labelTranslate = (mobile: boolean) => byZoom((size) => [size / 2 + 4, 0], 
 interface PlaneColors {
   marker: string;
   selected: string;
+  watched: string;
   outline: string;
   shadow: string;
 }
@@ -159,6 +160,8 @@ export interface PlaneLayerUpdate {
   selectedPos: SelectedPosition | null;
   /** icao24s of unselected aircraft to draw dimmed (reports older than 2 h). Never applied to the selected one. */
   dimmed?: ReadonlySet<string>;
+  /** icao24s of unselected aircraft that are a watched flight: drawn in the watched colour, above ordinary traffic. */
+  watched?: ReadonlySet<string>;
 }
 
 export interface PlaneLayerHandle {
@@ -176,16 +179,17 @@ interface PlaneProps {
   known: boolean;
   rot: number;
   dimmed: boolean;
+  watched: boolean;
   entering: boolean;
-  /** Draw order: dimmed ghosts under live traffic. */
+  /** Draw order: dimmed ghosts under live traffic, a watched flight's plane above it. */
   sort: number;
 }
 
 const displayCallsign = (p: LiveMarker): string => p.callsign?.trim() || p.icao24.toUpperCase();
 
-function props(p: LiveMarker, dimmed: boolean, entering: boolean): PlaneProps {
+function props(p: LiveMarker, dimmed: boolean, entering: boolean, watched = false): PlaneProps {
   const known = p.headingDeg != null;
-  return { id: p.icao24, cs: displayCallsign(p), known, rot: known ? (p.headingDeg as number) : 0, dimmed, entering, sort: dimmed ? 0 : 1 };
+  return { id: p.icao24, cs: displayCallsign(p), known, rot: known ? (p.headingDeg as number) : 0, dimmed, watched, entering, sort: dimmed ? 0 : watched ? 2 : 1 };
 }
 
 function feature(p: LiveMarker, properties: object): GeoJSON.Feature<GeoJSON.Point> {
@@ -222,6 +226,7 @@ export function createPlaneLayer(map: FlightMap, onSelect: (p: LiveMarker) => vo
     const colors: PlaneColors = {
       marker: cssToken("--color-marker", "#3ce0ff"),
       selected: cssToken("--color-marker-selected", "#ffb63c"),
+      watched: cssToken("--color-marker-watched", "#22d3a6"),
       outline: cssToken("--color-plane-outline", "rgba(0, 0, 0, 0.7)"),
       shadow: cssToken("--color-plane-shadow", "rgba(0, 0, 0, 0.6)"),
     };
@@ -231,6 +236,8 @@ export function createPlaneLayer(map: FlightMap, onSelect: (p: LiveMarker) => vo
     add("plane", drawPlane(colors.marker, colors, false));
     add("plane-selected", drawPlane(colors.selected, colors, false));
     add("plane-unknown", drawPlane(colors.marker, colors, true));
+    add("plane-watched", drawPlane(colors.watched, colors, false));
+    add("plane-watched-unknown", drawPlane(colors.watched, colors, true));
     add("plane-halo", drawHalo(cssToken("--color-marker-halo", "#4db2ff")));
 
     const labelStyle: LabelStyle = {
@@ -260,7 +267,12 @@ export function createPlaneLayer(map: FlightMap, onSelect: (p: LiveMarker) => vo
     const planeLayout = (selected: boolean) => ({
       "icon-image": (selected
         ? ["case", ["get", "known"], "plane-selected", "plane-unknown"]
-        : ["case", ["get", "known"], "plane", "plane-unknown"]) as ExpressionSpecification,
+        : [
+            "case",
+            ["get", "known"],
+            ["case", ["get", "watched"], "plane-watched", "plane"],
+            ["case", ["get", "watched"], "plane-watched-unknown", "plane-unknown"],
+          ]) as ExpressionSpecification,
       "icon-rotate": ["get", "rot"] as ExpressionSpecification,
       "icon-rotation-alignment": "map" as const,
       "icon-size": iconSize(mobile, selected),
@@ -360,7 +372,7 @@ export function createPlaneLayer(map: FlightMap, onSelect: (p: LiveMarker) => vo
     setUnselected(unselectedData.map((f) => ((f.properties as PlaneProps).entering ? { ...f, properties: { ...f.properties, entering: false } } : f)));
   }
 
-  function update({ unselected, selectedPos, dimmed }: PlaneLayerUpdate): void {
+  function update({ unselected, selectedPos, dimmed, watched }: PlaneLayerUpdate): void {
     // Arrivals: not drawn last time (selected or not). A one-shot fade-in for
     // a few aircraft appearing; a zoom or a fetch that replaces most of the
     // view just appears.
@@ -382,8 +394,8 @@ export function createPlaneLayer(map: FlightMap, onSelect: (p: LiveMarker) => vo
     const features: GeoJSON.Feature[] = [];
     let changed = nextEntering.size !== entering.size || [...nextEntering].some((id) => !entering.has(id));
     for (const p of unselected) {
-      const pr = props(p, dimmed?.has(p.icao24) ?? false, nextEntering.has(p.icao24));
-      const key = `${p.latitude},${p.longitude},${pr.rot},${pr.known},${pr.cs},${pr.dimmed}`;
+      const pr = props(p, dimmed?.has(p.icao24) ?? false, nextEntering.has(p.icao24), watched?.has(p.icao24) ?? false);
+      const key = `${p.latitude},${p.longitude},${pr.rot},${pr.known},${pr.cs},${pr.dimmed},${pr.watched}`;
       nextKey.set(p.icao24, key);
       if (unselectedKey.get(p.icao24) !== key) changed = true;
       features.push(feature(p, pr));
@@ -470,6 +482,7 @@ export function createPlaneLayer(map: FlightMap, onSelect: (p: LiveMarker) => vo
         size: planeIconSize(zoom, mobile, selected),
         selected,
         dimmed: !selected && pr.dimmed,
+        watched: !selected && pr.watched,
         label: selected ? pr.cs : null,
         fadedIn: fadedIn.has(pr.id),
         drawnSince: drawnSince.get(pr.id) ?? 0,

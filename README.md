@@ -82,6 +82,72 @@ To clear them: remove the site's cookies and site data in the browser
 > Clear site data). Favorites have their own ✕ controls in the Favorites
 panel; watched flights, in the Watch panel.
 
+## Health and monitoring
+
+Two endpoints answer "is the box okay". Neither one touches OpenSky, so a
+deploy or a monitor never fails, and a deploy is never rolled back, just
+because the upstream is down or rate-limiting.
+
+### `GET /api/health`
+
+200 when the database answers a plain `SELECT 1`, 503 when it doesn't — the
+body is the same either way. This is the endpoint
+[`deploy/hetzner/deploy.sh`](deploy/hetzner/README.md) polls after every
+deploy: it waits (up to 90 s) for `version` to equal the git SHA it just
+shipped before calling the release healthy, and rolls back if it never does.
+CI passes `-Dgit.sha=$GITHUB_SHA`; a build with no such property (a local
+`mvn verify`) reports `"dev"`.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `status` | string | `"UP"` or `"DOWN"` — mirrors `db` |
+| `version` | string | the 40-char git SHA, or `"dev"` when the build had none |
+| `db` | string | `"UP"`/`"DOWN"`, from the `SELECT 1` |
+| `lastSweepAt` | string (ISO-8601) or `null` | when the last *productive* global sweep ran — a sweep that wrote rows. A skipped or empty cycle does **not** advance it: it is `null` until the first productive sweep, then freezes while sweeps are quiet |
+| `lastSweepRows` | integer | rows the last productive sweep wrote; `0` until one has happened |
+| `skippedSweeps` | integer | consecutive completed sweeps since then that wrote nothing; reset to `0` by a productive one |
+
+```json
+{
+  "status": "UP",
+  "version": "5f3c1b0e9a6d4c2f8b7a1e0d9c8b7a6f5e4d3c2b",
+  "db": "UP",
+  "lastSweepAt": "2026-11-07T09:12:44.318Z",
+  "lastSweepRows": 842,
+  "skippedSweeps": 0
+}
+```
+
+An upstream outage is a legal state and shows up as *freshness*, not as
+`DOWN`: the app is fine, the data is old. A fresh jar that has never had a
+productive sweep (no network, OpenSky down) answers 200 with:
+
+```json
+{
+  "status": "UP",
+  "version": "5f3c1b0e9a6d4c2f8b7a1e0d9c8b7a6f5e4d3c2b",
+  "db": "UP",
+  "lastSweepAt": null,
+  "lastSweepRows": 0,
+  "skippedSweeps": 1
+}
+```
+
+### `GET /api/health/sweep`
+
+A monitor-only check of whether the global sweep is still producing data,
+independent of the poll window and of OpenSky. **200** while the last
+productive sweep is within **3× the sweep interval**
+(`flighttracker.agents.global-sweep-interval-seconds`, default 360 s → 18
+min), **503** once it has been quiet longer than that — or when no productive
+sweep has happened yet. 3× rather than 1× on purpose: one slow or skipped
+cycle (backoff, a transient DB hiccup) is normal; this only fires once the
+sweep looks like it has actually stopped. It is deliberately not a deploy
+gate: `deploy.sh` still waits only on `/api/health`'s `version`.
+
+The same three numbers also appear under the `freshness` block of
+`GET /api/ops/stats`, next to `aircraftSeenLast10m`.
+
 ## Deploying
 
 GitHub Actions builds a single jar (backend + the built frontend bundled

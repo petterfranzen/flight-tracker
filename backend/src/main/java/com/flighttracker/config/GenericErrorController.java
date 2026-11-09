@@ -29,6 +29,15 @@ import java.nio.charset.StandardCharsets;
  * <p>Registered for the container's error page path, so it also serves the
  * error dispatch for a 404, 405, 400 or 500 the MVC layer raises, and a
  * direct request to {@code /error} itself.
+ *
+ * <p>A controller's own {@code ResponseEntity.notFound()} is not an error
+ * dispatch, so it never reaches here: it stays a bodyless 404 (see
+ * {@code AircraftController}, {@code FlightController},
+ * {@code AirportController}). Decision (section9-hq #141): keep it empty.
+ * It is a deliberate negative, and an empty body carries nothing that
+ * fingerprints the stack, so a body would be a client-visible behaviour
+ * change for no gain. {@code blackbox-tests/error-bodies.test.js} pins the
+ * empty body.
  */
 @Controller
 public class GenericErrorController implements ErrorController {

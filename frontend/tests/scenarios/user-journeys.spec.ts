@@ -41,7 +41,10 @@ const AMS = AIRPORTS.find((a) => a.iata === "AMS")!;
 // (removed, or never shown) so step 1's screenshot is not of the overlay.
 async function boot(page: import("@playwright/test").Page) {
   await page.goto("/");
-  await page.locator(".boot-screen").waitFor({ state: "hidden", timeout: 45_000 }).catch(() => {});
+  // Waited out, not swallowed: a boot screen that never goes away must fail
+  // the step loudly rather than let the position check run against a map
+  // that never drew.
+  await page.locator(".boot-screen").waitFor({ state: "hidden", timeout: 45_000 });
   await waitForMapReady(page, 45_000);
   await waitForPlanes(page);
 }

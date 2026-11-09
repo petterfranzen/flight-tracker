@@ -131,6 +131,32 @@ CI's opening overview at z7 drew 64 planes where the sandbox drew 102, so the
 absolute counts are environment-dependent even when the popping is not; the
 budgets are set from the worse of the two.
 
+The three dead-reckoned scenarios below (#150) assert "0 planes moved backwards"
+directly rather than going through a `BUDGET`: a single backwards move *is* the
+bug, so there is no headroom to leave. Their baseline, sandbox, one worker,
+measured on the merged #150 fix with
+`npx playwright test tests/popping.spec.ts --workers=1 --timeout=300000`
+(7 tests, 7.2 min):
+
+| scenario | steps | vanished | appeared | backwards | worst back° |
+| --- | --- | --- | --- | --- | --- |
+| a plane never moves backwards when a cached view is redrawn during a pan | 4 | 0 | 0 | 0 | 0.0000 |
+| the selected plane's estimate survives a cached view of the same report | 4 | 0 | 0 | 0 | 0.0000 |
+| a plane never moves backwards while the view is idle | 5 | 0-10 (usually 0-1) | 0-22 (usually 0-3) | 0 | 0.0000 |
+
+The idle scenario's drawn set is steady in some runs and churns a little on the
+overview refresh in others. Re-measured on `main` (#175), sandbox, 12 runs
+(`--workers=1` and `--workers=2`, repeated; a further run failed on a locator timeout and printed no
+summary): vanished/appeared 0/0 (4 runs), 0/2 (2), 1/3 (3), 4/4 (2), 10/22 (1);
+backwards 0 and worst back 0.0000 in every run. The earlier "9 vanished,
+20 appeared" was one churny run like the 10/22 one, not the typical case: QA's
+0/0 is within the normal range. The churn is not the pop; the pop is a plane
+moving *against its own track*, and the count for it is 0. The #150 run also reproduced the four `BUDGET` baselines
+within their headroom (vanished 4/3/0/1, appeared 1/1/1/1, backwards 0
+throughout, the selected plane 2 steps at 0.0045°): the counts move a little
+with timing, the no-backwards claim does not. CI is the authority for the
+repeated run.
+
 ### A server that dead-reckons
 
 `startReplay(page, testInfo, { deadReckonMs })` makes the mocked server behave
@@ -139,15 +165,38 @@ lands (every `deadReckonMs`) while the position it returns keeps advancing with
 the tick. Two snapshots of the same report therefore share `observedAt` with
 different positions, the older one behind — the case #53/#97 is about, and one
 the tick-per-report shape cannot reproduce (every snapshot gets a new
-`observedAt`, so the older position loses on its own). Two scenarios use it:
+`observedAt`, so the older position loses on its own). Three scenarios use it:
 "a plane never moves backwards when a cached view is redrawn during a pan" and
-"the selected plane's estimate survives a cached view of the same report".
+"the selected plane's estimate survives a cached view of the same report" (both
+read below with `h.advance()` / `h.step(name, false)`), and "a plane never moves
+backwards while the view is idle" — the #150 case, where the reports land
+unprompted and the view never moves at all.
+
+`startReplay(page, testInfo, { deadReckonMs, rawFrames: true })` additionally
+makes the WebSocket frames carry the aircraft's **raw** last report, the way the
+backend really pushes it (`LiveFrame.of`), while `/live` and `/live/overview`
+keep serving the dead-reckoned display — so the two payloads of one report
+disagree by several km, which is what the idle scenario measures. Unset, a frame
+carries the same dead-reckoned position the REST endpoints do, the two never
+disagree, and the idle reversion cannot show (the shape #53/#97's baselines
+were recorded on).
 
 Reading those: `h.advance()` moves to the next tick without waiting for the app
 to settle, and `h.step(name, false)` reads what is drawn without waiting for it
 to match the tick's recorded truth — both for a frame that is deliberately not
 the tick's own (a cached view just redrawn during a pan, held still by pausing
 the clock before it).
+
+### A server that learns the area (`ramp`)
+
+`startReplay(page, testInfo, { ramp: { startFrac, perTick } })` makes `/live` and
+the frames carry only part of an area after `h.restartRamp()`, and more with each
+tick, the way the real hot poll covers a newly watched viewport (#151). The
+scenario "a settled view fills in one update, not plane by plane" samples the
+drawn count every 250 ms of app time after a zoom to z8 and after returning to a
+cached view, and counts steps of three planes or more: before the fix 7-8 per
+view (55 -> 60 -> 66 -> 72 -> 76 -> 83 -> 88 -> 94 -> 95), after it 2 (the
+snapshot, then one batch).
 
 ## Adding a scenario
 
