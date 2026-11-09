@@ -165,17 +165,21 @@ html, body {
   overflow: hidden;
 }
 
-/* Installed PWA: 100vh/100dvh in iOS standalone mode can be shorter than the
-   screen (the home-indicator strip is left out), so pin the shell to the
-   viewport edges instead of a height. Chrome and the map controls already
-   add env(safe-area-inset-*) themselves. */
-@media (display-mode: standalone) {
-  .app-shell {
-    position: fixed;
-    inset: 0;
-    width: auto;
-    height: auto;
-  }
+/* Installed iOS app: WebKit 301108 (iOS 26) ends the standalone viewport short
+   of the bottom of the screen when viewport-fit=cover and the black-translucent
+   status bar are on. Workaround from frappe-ui #1284 (tested in the iOS 26.2
+   simulator): let the root grow by the top inset, capped at 100lvh so nothing
+   scrolls where the inset is 0, and pin the shell to the edges over it.
+   ui/standaloneViewport.ts sets html.standalone (display-mode alone is not
+   reliable on iOS). `?vpdebug` shows what the phone reports. */
+html.standalone {
+  min-height: min(100lvh, calc(100% + env(safe-area-inset-top, 0px)));
+}
+html.standalone .app-shell {
+  position: fixed;
+  inset: 0;
+  width: auto;
+  height: auto;
 }
 
 /* Raises the floor for this theme's own text, and bumps the base size up
