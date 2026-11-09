@@ -1,6 +1,11 @@
 package com.flighttracker.service;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 import org.springframework.mock.web.MockHttpServletRequest;
 
 import java.util.Map;
@@ -49,6 +54,46 @@ class ClientIpResolverTest {
     void trustedPeer_noHeaders_fallsBackToPeer() {
         assertThat(resolve("127.0.0.1", Map.of())).isEqualTo("127.0.0.1");
         assertThat(resolve("::1", Map.of("CF-Connecting-IP", "  "))).isEqualTo("0:0:0:0:0:0:0:1");
+    }
+
+    @Test
+    void trustedProxyWithoutClientIpHeaders_keepsThePeerKey_andWarnsOncePerProxyIp() {
+        Logger logger = (Logger) LoggerFactory.getLogger(ClientIpResolver.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            ClientIpResolver r = new ClientIpResolver("127.0.0.1,10.0.0.0/8");
+            for (int i = 0; i < 5; i++) {
+                assertThat(r.resolve("127.0.0.1", Map.<String, String>of()::get)).isEqualTo("127.0.0.1");
+            }
+            assertThat(r.resolve("10.1.2.3", Map.<String, String>of()::get)).isEqualTo("10.1.2.3");
+            assertThat(r.resolve("10.1.2.3", Map.of("X-Forwarded-For", "garbage")::get)).isEqualTo("10.1.2.3");
+            // a second proxy IP warns separately; a proxy that does send a header never warns
+            assertThat(r.resolve("10.9.9.9", Map.of("CF-Connecting-IP", "203.0.113.9")::get)).isEqualTo("203.0.113.9");
+
+            assertThat(appender.list).hasSize(2);
+            assertThat(appender.list).allSatisfy(e -> assertThat(e.getLevel()).isEqualTo(Level.WARN));
+            assertThat(appender.list.get(0).getFormattedMessage()).contains("127.0.0.1");
+            assertThat(appender.list.get(1).getFormattedMessage()).contains("10.1.2.3");
+        } finally {
+            logger.detachAppender(appender);
+        }
+    }
+
+    @Test
+    void untrustedPeerWithoutHeaders_isNotAProxy_soNeverWarns() {
+        Logger logger = (Logger) LoggerFactory.getLogger(ClientIpResolver.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            assertThat(resolve("192.0.2.1", Map.of())).isEqualTo("192.0.2.1");
+            assertThat(resolve("192.0.2.1", Map.of("CF-Connecting-IP", "203.0.113.9"))).isEqualTo("192.0.2.1");
+            assertThat(appender.list).isEmpty();
+        } finally {
+            logger.detachAppender(appender);
+        }
     }
 
     @Test

@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { getRouteVertices, mockFlightApi, planeTarget, renderedPlanes, setMapView, waitForMapReady, waitForPlanes } from "./helpers";
+import { getRouteVertices, mockFlightApi, planeTarget, renderedPlanes, setMapView, waitForMapReady, waitForPlanes, withMap } from "./helpers";
 import { OPENFREEMAP_TILEJSON } from "./fixtures/basemap";
 import { GATE_STALE_MS, gateDisplay, trailFor, type TrailPoint } from "../src/map/gatePlacement";
 import type { SelectedPosition, TrackStatus } from "../src/types/flight";
@@ -167,26 +167,61 @@ function gateTile(z: number, x: number, y: number, ref: string, at: { lat: numbe
   return Buffer.from(lenDelimited(3, layer));
 }
 
-async function open(page: Page, opts: { lastReportMs: number; history: ReturnType<typeof position>[]; status: TrackStatus }) {
+interface OpenOptions {
+  lastReportMs: number;
+  history: ReturnType<typeof position>[];
+  status: TrackStatus;
+  /** Opening view (app zoom 16 at the runway end by default). */
+  view?: { lat: number; lon: number; zoom: number };
+  /** The ref the basemap's gate point carries (E5B by default). */
+  gateRef?: string;
+  /** The basemap has gates from this tile zoom up only, as OpenMapTiles does (every zoom by default). */
+  gateMinZoom?: number;
+  /** The status request is held until this resolves. */
+  holdStatus?: Promise<void>;
+  /** Overrides on the last report the live endpoints serve. */
+  live?: Partial<SelectedPosition & { id: number }>;
+}
+
+/** Counts the camera flights from here on (the adapter is the one object that flies). */
+async function countFlights(page: Page) {
+  await withMap(page, (map) => {
+    const w = window as unknown as { __flights: number };
+    w.__flights = 0;
+    const fly = map.flyTo.bind(map);
+    map.flyTo = (...a: Parameters<typeof map.flyTo>) => {
+      w.__flights++;
+      fly(...a);
+    };
+  });
+}
+const flights = (page: Page) => page.evaluate(() => (window as unknown as { __flights: number }).__flights);
+
+async function open(page: Page, opts: OpenOptions) {
   await mockFlightApi(page);
   // The airport's tiles carry the gate E5B.
   await page.route(/tiles\.openfreemap\.org\/t\/(\d+)\/(\d+)\/(\d+)\.pbf/, (r) => {
     const [, z, x, y] = r.request().url().match(/\/t\/(\d+)\/(\d+)\/(\d+)\.pbf/)!;
-    const body = gateTile(+z, +x, +y, "E5B", GATE);
+    const body = +z >= (opts.gateMinZoom ?? 0) ? gateTile(+z, +x, +y, opts.gateRef ?? "E5B", GATE) : null;
     return r.fulfill({ body: body ?? Buffer.alloc(0), contentType: "application/x-protobuf" });
   });
   await page.route("https://tiles.openfreemap.org/planet", (r) => r.fulfill({ json: OPENFREEMAP_TILEJSON }));
-  const live = position(opts.lastReportMs);
+  const live = position(opts.lastReportMs, opts.live);
   await page.route("**/api/flights/live*", (r) => r.fulfill({ json: [live] }));
   await page.route(`**/api/flights/${ICAO}/live*`, (r) => r.fulfill({ json: live }));
   await page.route(`**/api/flights/${ICAO}/history*`, (r) => r.fulfill({ json: opts.history }));
-  await page.route(`**/api/flights/${ICAO}/status`, (r) => r.fulfill({ json: opts.status }));
+  await page.route(`**/api/flights/${ICAO}/status`, async (r) => {
+    await opts.holdStatus;
+    await r.fulfill({ json: opts.status });
+  });
   await page.goto("/");
   await waitForMapReady(page);
-  await setMapView(page, RUNWAY_END.lat, RUNWAY_END.lon, 16);
+  const view = opts.view ?? { ...RUNWAY_END, zoom: 16 };
+  await setMapView(page, view.lat, view.lon, view.zoom);
   await waitForPlanes(page);
   // The plane is where it was last reported until it is selected.
   await page.waitForTimeout(500);
+  await countFlights(page);
   await planeTarget(page, ICAO).click();
   await page.getByText(`ICAO24 ${ICAO.toUpperCase()}`).waitFor({ timeout: 5_000 });
 }
@@ -245,5 +280,97 @@ test.describe("confirmed gate on the map", () => {
     const plane = (await selectedPlane(page))!;
     expect(plane.lat).toBeCloseTo(RUNWAY_END.lat, 5);
     expect(plane.label).toBe("SAS086");
+  });
+});
+
+// ---- the one-time fly-to to a confirmed gate (#187) ----
+
+test.describe("gate fly-to respects the user", () => {
+  const OUT = { lat: RUNWAY_END.lat, lon: RUNWAY_END.lon, zoom: 12 }; // gate tiles (zoom 14) not loaded
+  // An old report of a plane in the air: the selection itself does not zoom in, so what moves the
+  // camera after the status arrives is the gate fly-to alone.
+  const stale = () => Date.now() - HOUR;
+  const flying = { onGround: false, velocityMs: 70 };
+
+  // The selection's own flight starts when the first fresh position arrives: the status must come after it.
+  const selectionFlown = async (page: Page) => {
+    await expect.poll(() => flights(page), { timeout: 10_000 }).toBeGreaterThan(0);
+    await settled(page);
+  };
+  const settled = (page: Page) => expect.poll(() => withMap(page, (m) => m.isMoving()), { timeout: 10_000 }).toBe(false);
+  const camera = (page: Page) => withMap(page, (m) => ({ ...m.getCenter(), zoom: m.getZoom() }));
+
+  test("the happy path: a gate the view cannot show yet is flown to once, and then drawn", async ({ page }) => {
+    const last = stale();
+    let release!: () => void;
+    const holdStatus = new Promise<void>((r) => (release = r));
+    await open(page, { lastReportMs: last, history: [position(last)], status: atGate(last), view: OUT, gateMinZoom: 14, holdStatus, live: flying });
+    await selectionFlown(page);
+    expect(await flights(page)).toBe(1);
+    release();
+    await expect.poll(async () => (await camera(page)).zoom, { timeout: 10_000 }).toBeCloseTo(16, 1);
+    await settled(page);
+    expect(await flights(page)).toBe(2); // the selection's, and the gate's, once
+    await expect.poll(async () => (await selectedPlane(page))?.label, { timeout: 10_000 }).toBe("SAS086 · E5B");
+  });
+
+  test("the user panned away after selecting: the gate status does not pull the map back", async ({ page }) => {
+    const last = stale();
+    let release!: () => void;
+    const holdStatus = new Promise<void>((r) => (release = r));
+    await open(page, { lastReportMs: last, history: [position(last)], status: atGate(last), view: OUT, gateMinZoom: 14, holdStatus, live: flying });
+    await selectionFlown(page);
+
+    const box = (await page.locator(".map-container").boundingBox())!;
+    const x = box.x + box.width / 2;
+    const y = box.y + box.height / 2;
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x + 40, y + 20, { steps: 4 });
+    await page.mouse.move(x + 120, y + 60, { steps: 4 });
+    await page.mouse.up();
+    await settled(page);
+    const before = await camera(page);
+    const flown = await flights(page);
+
+    release();
+    await expect(page.locator(".details-panel-status")).toContainText("At gate E5B (confirmed");
+    await page.waitForTimeout(1_500); // asserting that nothing moves
+    expect(await flights(page)).toBe(flown);
+    const after = await camera(page);
+    expect(after.lat).toBeCloseTo(before.lat, 6);
+    expect(after.lon).toBeCloseTo(before.lon, 6);
+    expect(after.zoom).toBeCloseTo(before.zoom, 6);
+  });
+
+  test("the gate is not in the basemap and its tiles are in view: no camera move at all", async ({ page }) => {
+    const last = stale();
+    let release!: () => void;
+    const holdStatus = new Promise<void>((r) => (release = r));
+    // Zoom 15.5: the gate tiles are loaded, and the point E5B is not in them.
+    await open(page, {
+      lastReportMs: last,
+      history: [position(last)],
+      status: atGate(last),
+      view: { ...RUNWAY_END, zoom: 15.5 },
+      gateRef: "Z9",
+      gateMinZoom: 14,
+      holdStatus,
+      live: flying,
+    });
+    await selectionFlown(page);
+    const before = await camera(page);
+    const flown = await flights(page);
+
+    release();
+    await expect(page.locator(".details-panel-status")).toContainText("At gate E5B (confirmed");
+    await page.waitForTimeout(1_500); // asserting that nothing moves
+    expect(await flights(page)).toBe(flown);
+    const after = await camera(page);
+    expect(after.lat).toBeCloseTo(before.lat, 6);
+    expect(after.lon).toBeCloseTo(before.lon, 6);
+    expect(after.zoom).toBeCloseTo(before.zoom, 6);
+    // No gate point, so the plane stays where it was reported.
+    expect((await selectedPlane(page))?.label).toBe("SAS086");
   });
 });
