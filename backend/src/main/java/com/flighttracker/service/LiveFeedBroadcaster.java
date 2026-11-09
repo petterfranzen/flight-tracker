@@ -198,6 +198,11 @@ public class LiveFeedBroadcaster extends TextWebSocketHandler implements SmartLi
         return connectionsByIp.getOrDefault(ip, 0);
     }
 
+    /** Number of IPs holding a slot; 0 when nothing is connected (for tests). */
+    int trackedIps() {
+        return connectionsByIp.size();
+    }
+
     int openSessions() {
         return sessions.size();
     }

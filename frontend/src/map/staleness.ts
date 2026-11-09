@@ -48,7 +48,12 @@ export function findShadowedIds(list: LiveMarker[]): Set<string> {
 
   // Newest first, so a marker only ever has to be compared with markers
   // already known to be newer than it.
-  const byFreshness = [...list].sort((a, b) => observedAtMs(b.observedAt) - observedAtMs(a.observedAt));
+  // `|| 0` keeps the order defined when a report has no parseable
+  // `observedAt` (observedAtMs -> NaN): the two compare equal and the
+  // stable sort leaves the input order, instead of leaning on a NaN.
+  const byFreshness = [...list].sort(
+    (a, b) => (observedAtMs(b.observedAt) - observedAtMs(a.observedAt)) || 0,
+  );
   for (const m of byFreshness) {
     const row = Math.floor(m.latitude / cellLat);
     const col = Math.floor(m.longitude / cellLon);
