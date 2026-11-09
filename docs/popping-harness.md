@@ -146,16 +146,18 @@ measured on the merged #150 fix with
 
 The idle scenario's drawn set is steady in some runs and churns a little on the
 overview refresh in others. Re-measured on `main` (#175), sandbox, 12 runs
-(`--workers=1` and `--workers=2`, repeated; a further run failed on a locator timeout and printed no
-summary): vanished/appeared 0/0 (4 runs), 0/2 (2), 1/3 (3), 4/4 (2), 10/22 (1);
-backwards 0 and worst back 0.0000 in every run. The earlier "9 vanished,
-20 appeared" was one churny run like the 10/22 one, not the typical case: QA's
-0/0 is within the normal range. The churn is not the pop; the pop is a plane
-moving *against its own track*, and the count for it is 0. The #150 run also reproduced the four `BUDGET` baselines
-within their headroom (vanished 4/3/0/1, appeared 1/1/1/1, backwards 0
-throughout, the selected plane 2 steps at 0.0045°): the counts move a little
-with timing, the no-backwards claim does not. CI is the authority for the
-repeated run.
+(`--workers=1` and `--workers=2`, repeated; a further run failed on a locator
+timeout and printed no summary): vanished/appeared 0/0 (4 runs), 0/2 (2), 1/3
+(3), 4/4 (2), 10/22 (1); backwards 0 and worst back 0.0000 in every run. The
+earlier "9 vanished, 20 appeared" was one churny run like the 10/22 one, not
+the typical case: the 0/0 seen in the #170/#171 QA run. The churn is not the
+pop; the pop is a plane moving *against its own track*, and the count for it is
+0.
+
+The #150 run also reproduced the four `BUDGET` baselines within their headroom
+(vanished 4/3/0/1, appeared 1/1/1/1, backwards 0 throughout, the selected plane
+2 steps at 0.0045°): the counts move a little with timing, the no-backwards
+claim does not. CI is the authority for the repeated run.
 
 ### A server that dead-reckons
 

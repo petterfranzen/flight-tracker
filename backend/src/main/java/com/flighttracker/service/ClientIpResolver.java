@@ -1,6 +1,8 @@
 package com.flighttracker.service;
 
 import jakarta.servlet.http.HttpServletRequest;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -8,6 +10,8 @@ import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.UnaryOperator;
 import java.util.regex.Pattern;
 
@@ -39,14 +43,25 @@ import java.util.regex.Pattern;
  * entry the last trusted hop appended), never the client-controlled
  * leftmost one. Header values that are not IP literals are ignored.
  * HTTP and WebSocket callers share this, so one visitor has one identity.
+ *
+ * <p>A trusted proxy that sends none of the client-IP headers (or only
+ * unusable ones) is keyed by its own peer address, so all its visitors share
+ * one identity and one per-IP cap. That is the safe direction (never more
+ * allowance, never a spoofable key), but it is almost certainly a
+ * misconfigured proxy, so it is logged once at WARN per proxy IP.
  */
 @Component
 public class ClientIpResolver {
+
+    private static final Logger log = LoggerFactory.getLogger(ClientIpResolver.class);
+    /** Bound on the warn-once memory, so a wide trusted CIDR cannot grow it without limit. */
+    private static final int MAX_WARNED = 256;
 
     private static final Pattern IPV4 = Pattern.compile("\\d{1,3}(\\.\\d{1,3}){3}");
     private static final Pattern IPV6_CHARS = Pattern.compile("[0-9A-Fa-f:.]{2,45}");
 
     private final List<Cidr> trustedProxies;
+    private final Set<String> warnedProxies = ConcurrentHashMap.newKeySet();
 
     public ClientIpResolver(@Value("${flighttracker.proxy.trusted-proxies:127.0.0.1,::1}") String trustedProxies) {
         this.trustedProxies = parseTrusted(trustedProxies);
@@ -79,7 +94,15 @@ public class ClientIpResolver {
                 if (!isTrustedProxy(hop)) return hop;
             }
         }
+        warnOnce(peerIp);
         return peerIp;
+    }
+
+    private void warnOnce(String proxyIp) {
+        if (warnedProxies.size() < MAX_WARNED && warnedProxies.add(proxyIp)) {
+            log.warn("Trusted proxy {} sent no usable client-IP header (CF-Connecting-IP, X-Real-IP, "
+                    + "X-Forwarded-For): its visitors share one identity and one per-IP cap", proxyIp);
+        }
     }
 
     public boolean isTrustedProxy(String ip) {

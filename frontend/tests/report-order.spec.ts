@@ -74,3 +74,60 @@ test.describe("staleness: newest by instant", () => {
     expect([...shadowed]).toEqual(["whole"]);
   });
 });
+
+// A report whose `observedAt` is missing or unparseable must not throw, and the
+// order must not wobble run to run: `findShadowedIds` sorts by the parsed
+// instant, and one that will not parse sorts as a tie (observedAtMs -> NaN,
+// held to 0 by the `|| 0` guard) so the input order decides (#178 QA).
+test.describe("staleness: unparseable observedAt", () => {
+  const at = (icao24: string, observedAt: string) => ({
+    icao24,
+    callsign: null,
+    observedAt,
+    latitude: 59.65,
+    longitude: 17.92,
+    headingDeg: null,
+  });
+
+  test("an invalid observedAt does not throw", () => {
+    expect(() => findShadowedIds([at("bad", "not-a-date"), at("good", "2026-01-01T10:00:00Z")])).not.toThrow();
+  });
+
+  test("an empty observedAt does not throw", () => {
+    expect(() => findShadowedIds([at("empty", ""), at("good", "2026-01-01T10:00:00Z")])).not.toThrow();
+  });
+
+  test("an unparseable report does not hide a valid newer one", () => {
+    // Same spot, so the two overlap; the newest valid report must survive.
+    const shadowed = findShadowedIds([at("newest", "2026-01-01T10:00:00.500Z"), at("bad", "not-a-date")]);
+    expect([...shadowed]).not.toContain("newest");
+    expect([...shadowed]).toEqual(["bad"]);
+  });
+
+  test("invalid and empty observedAt tie deterministically across repeated runs", () => {
+    const list = [
+      at("newest", "2026-01-01T10:00:00.500Z"),
+      at("bad", "not-a-date"),
+      at("empty", ""),
+      at("oldest", "2026-01-01T09:00:00Z"),
+      at("middle", "2026-01-01T09:30:00Z"),
+    ];
+    const first = [...findShadowedIds(list)];
+    // The newest valid report survives; every other marker is shadowed by it.
+    expect(first).not.toContain("newest");
+    expect(first.length).toBe(list.length - 1);
+    for (let i = 0; i < 50; i++) {
+      expect([...findShadowedIds(list)], `run ${i} differed from the first`).toEqual(first);
+    }
+  });
+
+  test("a list of only unparseable reports keeps the input order, stably", () => {
+    const list = [at("a", "nope"), at("b", ""), at("c", "still-nope")];
+    const first = [...findShadowedIds(list)];
+    // All three tie; the first is placed, the rest are shadowed in input order.
+    expect(first).toEqual(["b", "c"]);
+    for (let i = 0; i < 50; i++) {
+      expect([...findShadowedIds(list)]).toEqual(first);
+    }
+  });
+});

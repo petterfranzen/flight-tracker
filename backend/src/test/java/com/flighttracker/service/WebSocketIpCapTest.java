@@ -18,6 +18,7 @@ import java.net.ServerSocket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.WebSocket;
+import java.net.http.WebSocketHandshakeException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletionStage;
@@ -152,5 +153,56 @@ class WebSocketIpCapTest {
             assertThat(c.closeCodes()).isEmpty();
         }
         clients.forEach(c -> c.ws().abort());
+    }
+
+    @Test
+    void trustedProxyWithoutHeadersSharesOneCapUnderThePeerKey() throws Exception {
+        List<Client> held = new ArrayList<>();
+        for (int i = 0; i < 3; i++) held.add(open(null)); // loopback is trusted but names no visitor
+        awaitCount("127.0.0.1", 3);
+        Client extra = open(null);
+        await().atMost(10, TimeUnit.SECONDS).untilAsserted(
+                () -> assertThat(extra.closeCodes()).containsExactly(1013));
+        assertThat(broadcaster.connectionsFor("127.0.0.1")).isEqualTo(3);
+        // a visitor the proxy does name is not caught by that shared cap
+        Client named = open("203.0.113.77");
+        awaitCount("203.0.113.77", 1);
+        assertThat(named.closeCodes()).isEmpty();
+
+        held.forEach(c -> c.ws().abort());
+        named.ws().abort();
+        awaitCount("127.0.0.1", 0);
+        awaitCount("203.0.113.77", 0);
+    }
+
+    @Test
+    void originRejectedHandshakeNeverTakesASlot() throws Exception {
+        String visitor = "203.0.113.90";
+        for (int i = 0; i < 10; i++) { // more attempts than the cap of 3
+            WebSocket.Builder builder = HttpClient.newHttpClient().newWebSocketBuilder()
+                    .header("Origin", "https://evil.example")
+                    .header("CF-Connecting-IP", visitor);
+            Throwable failure = null;
+            try {
+                builder.buildAsync(URI.create("ws://127.0.0.1:" + PORT + "/ws/live"),
+                        new WebSocket.Listener() { }).get(10, TimeUnit.SECONDS);
+            } catch (Exception ex) {
+                failure = ex.getCause();
+            }
+            assertThat(failure).isInstanceOf(WebSocketHandshakeException.class);
+            assertThat(((WebSocketHandshakeException) failure).getResponse().statusCode()).isEqualTo(403);
+        }
+        assertThat(broadcaster.connectionsFor(visitor)).isZero();
+        assertThat(broadcaster.connectionsFor("127.0.0.1")).isZero();
+        assertThat(broadcaster.trackedIps()).isZero();
+        assertThat(broadcaster.openSessions()).isZero();
+
+        // and the visitor still gets its full allowance afterwards
+        List<Client> held = new ArrayList<>();
+        for (int i = 0; i < 3; i++) held.add(open(visitor));
+        awaitCount(visitor, 3);
+        for (Client c : held) assertThat(c.closeCodes()).isEmpty();
+        held.forEach(c -> c.ws().abort());
+        awaitCount(visitor, 0);
     }
 }
