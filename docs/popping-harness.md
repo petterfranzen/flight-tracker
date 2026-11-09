@@ -200,6 +200,14 @@ cached view, and counts steps of three planes or more: before the fix 7-8 per
 view (55 -> 60 -> 66 -> 72 -> 76 -> 83 -> 88 -> 94 -> 95), after it 2 (the
 snapshot, then one batch).
 
+The two boot tests pin the other side of the guard: the hold arms only for a
+*view change* whose snapshot carries a real set (>= 5 planes), never at boot. An
+**empty** opening snapshot and a **full** one (>= 5 planes) both draw the frames
+that follow at once, not after the 4-12 s fill window. The held frames and their
+release timer are dropped by the next snapshot, by a view change, and by a feed
+reconnect (`clearArrivals`), so a timer never outlives the view or the connection
+that armed it.
+
 ## Adding a scenario
 
 Copy a block from `popping.spec.ts`, drive the map with `drag` / `wheelZoom` /
