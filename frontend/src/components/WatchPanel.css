@@ -103,6 +103,68 @@
   /* The house tap-target minimum on a phone, both axes: the stop-watching
      button is otherwise a glyph-sized target, under the minimum in width. */
   .watch-panel-search, .watch-panel-watch, .watch-panel-goto, .watch-panel-remove { min-height: 44px; min-width: 44px; }
+  /* The four form fields as well: at the inheriting 15px text plus 6px padding
+     they are only ~30px tall. */
+  .watch-panel-form input { min-height: 44px; }
 }
 .watch-panel-watch:disabled { opacity: 0.6; cursor: default; }
 .watch-panel-ground { color: var(--color-text-muted); }
+
+/* Notifications bell (#82 design §5): a 44x44 action-line control, a filled
+   dot once this flight is opted in, and a compact consent block under it. */
+.watch-panel-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.watch-panel-actions .watch-panel-goto,
+.watch-panel-actions .watch-panel-remove { align-self: center; }
+.watch-panel-bell {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0;
+  background: none;
+  color: var(--color-text);
+  border: 1px solid var(--color-panel-border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.watch-panel-bell:hover { background: var(--color-panel-border); }
+.watch-panel-bell--on { border-color: var(--color-marker-watched); color: var(--color-marker-watched); }
+.watch-panel-bell--on::after {
+  content: "";
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-marker-watched);
+}
+.watch-panel-bell-icon, .watch-panel-bell-icon svg { display: block; width: 20px; height: 20px; fill: currentColor; }
+.watch-panel-notify {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 8px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-panel-border);
+  border-radius: 6px;
+}
+.watch-panel-notify-copy { margin: 0; color: var(--color-text-muted); line-height: 1.35; }
+.watch-panel-notify-status { margin: 0; font-weight: 600; }
+.watch-panel-notify-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.watch-panel-notify-action {
+  background: none;
+  color: var(--color-text);
+  border: 1px solid var(--color-panel-border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font: inherit;
+  cursor: pointer;
+}
+.watch-panel-notify-action:hover { background: var(--color-panel-border); }
+@media (max-width: 768px) {
+  .watch-panel-notify-action { min-height: 44px; }
+}

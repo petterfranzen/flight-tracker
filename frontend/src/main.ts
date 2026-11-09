@@ -19,9 +19,14 @@ import {
   fetchPollingStatus,
   restartPolling,
   searchSchedule,
+  searchScheduleWithStatus,
   subscribeLiveFeed,
   type ScheduledFlight,
 } from "./api/flightApi";
+import { NOTIFY_ENABLED, notificationPermission, showOsNotification } from "./notify/notifier";
+import { loadNotifyState, saveNotifyState, pruneNotifyState, emptyState, forgetFlight, startHourlyPrune } from "./notify/state";
+import { chooseChannel, observeFlight } from "./notify/detect";
+import { commitNotifyPoll, type NotifyOutcome } from "./notify/poll";
 import { boundsFromMap, createFollowSelected, createMap, DEFAULT_VIEW, GPUInitializationError } from "./map/map";
 import { createPlaneLayer, planeBoxSize } from "./map/planes";
 import { declutterCellDeg, newDeclutterMemory, pickNonOverlapping, spacingKey, spacingLevel, type Candidate } from "./map/declutter";
@@ -32,6 +37,7 @@ import { getMockPlaneCount } from "./api/mockFleet";
 import { agedIds, findShadowedIds, isActiveTraffic, OVERLAP_MIN_ZOOM } from "./map/staleness";
 import { newerReport, notOlderReport, sameReport } from "./map/reportOrder";
 import { createRouteLayer } from "./map/route";
+import { confirmedGate, displayedPosition, gateDisplay, trailFor, type GateDisplay } from "./map/gatePlacement";
 import { createUncertaintyLayer } from "./map/uncertainty";
 import { keepCellWinners } from "./map/cellWinners";
 import { snapBounds, ViewCache, type CachedView } from "./map/viewCache";
@@ -63,6 +69,12 @@ const COVERAGE_LOST_REFETCH_MS = 15_000;
 // (LANDED_CONFIRMED) the gate may follow, at any time.
 const LANDED_REFETCH_MS = 60_000;
 const FETCH_STOP_MS = 5 * 60_000;
+// Gates are in the basemap's zoom-14 tiles, which load from this app zoom (map.findGate).
+// From here a view that shows the plane has those tiles loaded or loading, so a gate that
+// is still missing is not in the map and moving the camera would not find it.
+const GATE_TILE_ZOOM = 15;
+// Where the one-time fly-to to a confirmed gate goes.
+const GATE_LOOKUP_ZOOM = 16;
 const DIALOG_STOP_MS = 5 * 60_000;
 
 // Below this zoom the map asks the server for a thinned-out set (one plane per
@@ -116,6 +128,18 @@ const MAX_DRAWN_MARKERS_SMALL_SCREEN = 150;
 // How long the view must sit still before the zoom levels either side of it are
 // fetched in the background, so the next zoom step is drawn from cache.
 const PREFETCH_DELAY_MS = 600;
+
+// A view that has just changed is still being learnt: /live carries part of it
+// and the rest follows as WebSocket frames, report by report, over several
+// seconds. Aircraft those frames bring that the snapshot did not have are held
+// for this long after the view changes and drawn together in one update, not
+// one by one (#151): until none has arrived for FILL_QUIET_MS, or FILL_MAX_MS
+// after the first. Later arrivals, in a view that has settled, are drawn as
+// they land.
+const FILL_SETTLE_MS = 8_000;
+const FILL_MIN_SNAPSHOT = 5;
+const FILL_QUIET_MS = 4_000;
+const FILL_MAX_MS = 12_000;
 
 // Fraction of the view's size drawn beyond each edge.
 // Wide enough that a pan or a one-level zoom-out lands on planes that are already there.
@@ -228,7 +252,11 @@ function boot(): void {
   const bootScreenRoot = h("div");
   const dockRoot = h("div");
   const leftOverlayStack = h("div", { className: "left-overlay-stack" });
-  const trackedChipRoot = h("div");
+  // A stable polite live region for the Active/Seen counts: aria-live lives on
+  // this wrapper (created once) rather than on .tracked-chip, which
+  // renderTrackedChip rebuilds on every change — a live region that is itself
+  // replaced each tick is not reliably announced.
+  const trackedChipRoot = h("div", { "aria-live": "polite", "aria-atomic": "true" });
   const resumeDialogRoot = h("div");
   const watchToastRoot = h("div");
   const mapRoot = h("div");
@@ -285,6 +313,7 @@ function boot(): void {
     watchedFlights: loadWatched(),
     watchedStatus: {},
     departureToast: null,
+    watchNotice: null,
 
     // Placeholders — replaced with real closures below once every module
     // they need (map, layers) exists. Never called before that happens:
@@ -301,11 +330,13 @@ function boot(): void {
     removeFavoriteAircraft: () => {},
     removeFavoriteRoute: () => {},
     resumeTracking: () => {},
+    dismissResumeDialog: () => {},
 
     watchFlight: () => {},
     unwatchFlight: () => {},
     goToWatched: () => {},
     dismissDepartureToast: () => {},
+    dismissWatchNotice: () => {},
   };
   const store = new Store<AppState>(state);
   // Test seam for the performance profile (src/map/perf.ts).
@@ -347,6 +378,13 @@ function boot(): void {
   // threshold, so a plane that lands or drops out of the cell thinning stays
   // on screen (see map/overviewHold.ts).
   const overviewHold = newOverviewHold<AsOfMarker>();
+  // Frames of aircraft the drawn set does not have yet, held while a changed
+  // view fills in (FILL_SETTLE_MS) and released together (see flushLivePushes).
+  const arrivals = new Map<string, { p: FlightPosition; asOf: number }>();
+  let fillUntil = 0;
+  let viewChanged = false; // a view change whose snapshot has not landed yet
+  let liveSnapshotSeen = false; // the opening view is never held
+  let arrivalTimer: ReturnType<typeof setTimeout> | null = null;
   // Which source the map is drawing from right now. A cached view from the
   // other side is not this frame: drawing it would swap the whole set before
   // the response for the new zoom arrives.
@@ -383,11 +421,67 @@ function boot(): void {
   function drawRoute(): void {
     const pos = store.get("selectedPos");
     const tip = pos && pos.icao24 === store.get("selectedId") ? pos : null;
-    const until = tip ? Date.parse(tip.observedAt) : Infinity;
-    route = routePoints.filter((pt) => Date.parse(pt.observedAt) <= until).map((pt): [number, number] => [pt.lat, pt.lon]);
-    const end = route[route.length - 1];
-    if (tip && !(end && end[0] === tip.latitude && end[1] === tip.longitude)) route.push([tip.latitude, tip.longitude]);
+    route = trailFor(routePoints, tip, currentGateDisplay(), Date.now());
     routeLayer.update(route);
+  }
+
+  // ---- confirmed gate ----
+  // A plane whose gate a provider confirmed is drawn at the gate once its last
+  // report is old (map/gatePlacement.ts). The gate's coordinate is the gate's
+  // own point in the basemap's vector tiles (aeroway class "gate", by ref),
+  // which are loaded only while the view is at the airport: it is looked up
+  // when the status arrives and again whenever tiles load, until found.
+  let gatePoint: { icao24: string; gate: string; lat: number; lon: number } | null = null;
+  function currentGateDisplay(): GateDisplay | null {
+    const pos = store.get("selectedPos");
+    const status = store.get("trackStatus");
+    const gate = confirmedGate(pos, status);
+    const point = gate && gatePoint && gatePoint.icao24 === pos?.icao24 && gatePoint.gate === gate ? gatePoint : null;
+    return gateDisplay(pos, status, Date.now(), point);
+  }
+  // Once per selection, if the gate's tile is not loaded: go where it is. Never against
+  // the user: not after they moved the map since selecting, nor while it is moving.
+  let gateZoomDone = false;
+  let userMovedMap = false; // set by the map's user-move listener (below, once `map` exists)
+  function onGateStatus(status: TrackStatus | null): void {
+    resolveGate();
+    const pos = store.get("selectedPos");
+    const gate = confirmedGate(pos, status);
+    if (gate && status && !gateZoomDone && !(gatePoint && gatePoint.gate === gate && gatePoint.icao24 === pos?.icao24)) {
+      gateZoomDone = true;
+      flyToGate(store.get("selectedId"), status.lastSeenLat, status.lastSeenLon);
+    }
+    renderAircraftLayer(); // the status can also stop qualifying (a gate that changed)
+    drawRoute();
+  }
+  // The selection's own camera move is usually still running when the status arrives: wait
+  // for it to end, then decide. Whatever the user did meanwhile (or the gate resolving) wins.
+  function flyToGate(selectedId: string | null, lat: number, lon: number): void {
+    if (map.isMoving()) {
+      const retry = () => {
+        map.off("moveend", retry);
+        flyToGate(selectedId, lat, lon);
+      };
+      map.on("moveend", retry);
+      return;
+    }
+    if (store.get("selectedId") !== selectedId || userMovedMap || gatePoint) return;
+    // The gate tiles are already in reach (zoom, and the plane in view): the gate is not in
+    // the basemap, and no camera move can change that.
+    if (map.getZoom() >= GATE_TILE_ZOOM && map.contains(lat, lon)) return;
+    map.flyTo([lat, lon], GATE_LOOKUP_ZOOM, 800);
+  }
+  function resolveGate(): void {
+    const pos = store.get("selectedPos");
+    const status = store.get("trackStatus");
+    const gate = confirmedGate(pos, status);
+    if (!pos || !status || !gate) return;
+    if (gatePoint && gatePoint.icao24 === pos.icao24 && gatePoint.gate === gate) return;
+    const found = map.findGate(gate, { lat: status.lastSeenLat, lon: status.lastSeenLon });
+    if (!found) return;
+    gatePoint = { icao24: pos.icao24, gate, lat: found.lat, lon: found.lon };
+    renderAircraftLayer();
+    drawRoute();
   }
   function appendRoutePoint(p: LiveMarker): void {
     if (lastRouteObservedAt == null || newerReport(p.observedAt, lastRouteObservedAt)) {
@@ -407,7 +501,9 @@ function boot(): void {
   function renderAircraftLayer(): void {
     const t0 = performance.now();
     const selectedId = store.get("selectedId");
-    const selectedPos = store.get("selectedPos");
+    const reportedPos = store.get("selectedPos");
+    // At its confirmed gate, not at its last (old) report: a display state only.
+    const selectedPos = reportedPos ? displayedPosition(reportedPos, currentGateDisplay()) : null;
     const nowMs = Date.now();
     // Only what's on screen (plus a margin, so a short drag doesn't reveal
     // empty edges before moveend re-renders). `positions` can hold a wider
@@ -493,6 +589,14 @@ function boot(): void {
 
   // ---- fetch lifecycle ----
   function applyLiveSnapshot(list: AsOfMarker[]): void {
+    // The snapshot is the whole truth for this view: frames held for it are
+    // superseded. It opens the fill window only for a view change that lands a
+    // real set; the opening view, and an empty or sparse snapshot, never hold
+    // anything back.
+    clearArrivals();
+    fillUntil = liveSnapshotSeen && viewChanged && list.length >= FILL_MIN_SNAPSHOT ? Date.now() + FILL_SETTLE_MS : 0;
+    liveSnapshotSeen = true;
+    viewChanged = false;
     if (overviewPlanes.length > 0) setOverviewPlanes([]); // the snapshot is the source from here on
     drawnSource = "live";
     const selectedId = store.get("selectedId");
@@ -683,6 +787,10 @@ function boot(): void {
     zoom = nextZoom;
     store.set("zoom", nextZoom);
     if ((nextZoom < CLUSTER_FETCH_MAX_ZOOM) !== wasZoomedOut) lastAppliedView = null;
+    viewChanged = true;
+    // Frames held for the view we just left are stale: drop them and their timer
+    // rather than let them release into the new view (see clearArrivals).
+    clearArrivals();
     renderAircraftLayer(); // icon sizes and what overlaps change with the zoom: redraw now, independent of the fetch below
     // A view we've seen recently is drawn right away, before the debounce.
     applyCachedView(Date.now());
@@ -720,6 +828,37 @@ function boot(): void {
     if (!wsFlushTimer) wsFlushTimer = setTimeout(flushLivePushes, WS_FLUSH_MS);
   }
 
+  // Frames of aircraft the drawn set does not have yet, held while a changed
+  // view fills in (FILL_SETTLE_MS) and released together.
+  let firstArrivalAt = 0;
+  function holdArrival(p: FlightPosition, at: number): void {
+    if (arrivals.size === 0) firstArrivalAt = at;
+    arrivals.set(p.icao24, { p, asOf: at });
+    if (arrivalTimer) clearTimeout(arrivalTimer);
+    arrivalTimer = setTimeout(releaseArrivals, Math.max(0, Math.min(at + FILL_QUIET_MS, firstArrivalAt + FILL_MAX_MS) - at));
+  }
+  // Held frames and their release timer belong to one view of one feed: the next
+  // snapshot, a view change, or a feed teardown (reconnect) drops them, so a timer
+  // never outlives the view or the connection that armed it.
+  function clearArrivals(): void {
+    arrivals.clear();
+    if (arrivalTimer) clearTimeout(arrivalTimer);
+    arrivalTimer = null;
+    firstArrivalAt = 0;
+  }
+  function releaseArrivals(): void {
+    arrivalTimer = null;
+    if (arrivals.size === 0) return;
+    let added = false;
+    for (const { p, asOf } of arrivals.values()) {
+      if (positions.has(p.icao24) || !inDrawnArea(p)) continue; // a snapshot has them, or the view moved on
+      positions.set(p.icao24, { ...p, asOf });
+      added = true;
+    }
+    arrivals.clear();
+    if (added) renderAircraftLayer();
+  }
+
   function flushLivePushes(): void {
     wsFlushTimer = null;
     if (pendingWs.size === 0) return;
@@ -744,6 +883,12 @@ function boot(): void {
       // the snapshot its dead-reckoned display (see frameAdvances).
       if (existing && (existing.asOf >= arrival || !frameAdvances(existing, p))) continue;
       if (p.icao24 !== selectedId && !inDrawnArea(p)) continue;
+      if (!existing && p.icao24 !== selectedId && (arrival < fillUntil || arrivals.size > 0)) {
+        // New to the drawn set while the view is still filling in: held, so the
+        // fill is one update.
+        holdArrival(p, arrival);
+        continue;
+      }
       positions.set(p.icao24, { ...p, asOf: arrival });
       changed = true;
       if (p.icao24 === selectedId) selectedUpdate = p;
@@ -864,6 +1009,7 @@ function boot(): void {
       store.set("trackStatus", status);
       uncertaintyLayer.update(status);
       if (status?.estimate) moveSelectedToEstimate(icao24, status);
+      onGateStatus(status);
       const landed = status?.state === "LANDED_INFERRED" || status?.state === "LANDED_CONFIRMED";
       const wantedMs = status?.state === "COVERAGE_LOST" ? COVERAGE_LOST_REFETCH_MS : landed ? LANDED_REFETCH_MS : 0;
       if (statusTimer && statusTimerMs !== wantedMs) {
@@ -923,6 +1069,9 @@ function boot(): void {
 
     // Cleared unconditionally: switching directly from aircraft A to B
     // never passes through "selected = null".
+    gatePoint = null;
+    gateZoomDone = false;
+    userMovedMap = false;
     route = [];
     lastRouteObservedAt = null;
     routePoints = [];
@@ -1054,46 +1203,89 @@ function boot(): void {
     const entries = await Promise.all(
       list.map(async (w) => {
         try {
-          const rows = await searchSchedule({ flight: w.flightNumber, date: w.date, airport: w.airport });
-          return [watchKey(w), rows.find((r) => r.airport === w.airport) ?? null] as const;
+          const { rows, status } = await searchScheduleWithStatus({ flight: w.flightNumber, date: w.date, airport: w.airport });
+          return [watchKey(w), rows.find((r) => r.airport === w.airport) ?? null, status] as const;
         } catch {
-          return [watchKey(w), prev[watchKey(w)] ?? null] as const;
+          return [watchKey(w), prev[watchKey(w)] ?? null, "incomplete"] as const;
         }
       }),
     );
     if (gen !== watchGen) return;
     const status: Record<string, ScheduledFlight | null> = {};
     const airborneNow = new Set<string>();
+    const positionsNow = new Map<string, FlightPosition | null>();
     const fetches: Promise<void>[] = [];
     const departed: WatchedFlight[] = [];
-    for (const [key, row] of entries) {
+    const notifySamples: { key: string; row: ScheduledFlight; boardStatus: "ok" | "stale" | "incomplete" }[] = [];
+    for (const [key, row, boardStatus] of entries) {
       status[key] = row;
       const air = !!(row && row.airborne && row.icao24);
       const was = watchedAirborne.get(key);
       watchedAirborne.set(key, air);
-      if (air && row!.icao24) {
-        const icao24 = row!.icao24;
-        airborneNow.add(icao24);
+      const icao24 = row?.icao24 ?? null;
+      // With the notify flag off, keep the request pattern exactly as it was
+      // before this slice: fetch a flight's live position only while it is
+      // airborne. The extra fetch for a not-yet-airborne flight exists only to
+      // feed the notification detector (the on-ground ticks that prove a
+      // landing), so it is gated on the flag instead of being paid for by every
+      // default build.
+      if (icao24 && (air || NOTIFY_ENABLED)) {
+        if (air) airborneNow.add(icao24);
         fetches.push(
           fetchFlightLive(icao24)
             .then((p) => {
-              if (p) watchedLive.set(icao24, { ...p, asOf: Date.now() });
+              positionsNow.set(icao24, p);
+              if (p && air) watchedLive.set(icao24, { ...p, asOf: Date.now() });
             })
-            .catch(() => {}),
+            .catch(() => {
+              positionsNow.set(icao24, null);
+            }),
         );
       }
       if (air && was === false) {
         const w = list.find((x) => watchKey(x) === key);
         if (w) departed.push(w);
       }
+      if (NOTIFY_ENABLED && row) notifySamples.push({ key, row, boardStatus });
     }
-    // A flight no longer airborne: drop the position we kept for it.
-    for (const icao24 of Array.from(watchedLive.keys())) if (!airborneNow.has(icao24)) watchedLive.delete(icao24);
     await Promise.all(fetches);
     if (gen !== watchGen) return;
+    // A flight no longer airborne: drop the position we kept for it.
+    for (const icao24 of Array.from(watchedLive.keys())) if (!airborneNow.has(icao24)) watchedLive.delete(icao24);
     store.set("watchedStatus", status);
     renderAircraftLayer();
-    if (departed.length > 0) store.set("departureToast", departed[0]);
+
+    if (NOTIFY_ENABLED) {
+      const notifyMap = loadNotifyState();
+      const poll: NotifyOutcome[] = [];
+      for (const sample of notifySamples) {
+        const position = sample.row.icao24 ? positionsNow.get(sample.row.icao24) ?? null : null;
+        const prior = notifyMap[sample.key] ?? emptyState();
+        const { state, event } = observeFlight(prior, { ...sample, position, nowMs: Date.now() });
+        poll.push({ key: sample.key, state, event });
+      }
+      // The state is persisted per flight, before its event is announced, so
+      // the record never depends on the banner drawing (commitNotifyPoll).
+      commitNotifyPoll({
+        poll,
+        map: notifyMap,
+        save: (map) => saveNotifyState(pruneNotifyState(map)),
+        announce: (outcome) => {
+          const { event } = outcome;
+          if (!event) return;
+          const flight = list.find((x) => watchKey(x) === outcome.key);
+          if (!flight) return;
+          const channel = chooseChannel({ hidden: document.hidden, enabled: outcome.state.enabled, permission: notificationPermission() });
+          if (channel === "os") {
+            void showOsNotification(event.title, event.text, { key: event.key, kind: event.kind });
+          } else {
+            store.set("watchNotice", { flight, text: event.text, kind: event.kind });
+          }
+        },
+      });
+    } else if (departed.length > 0) {
+      store.set("departureToast", departed[0]);
+    }
   }
 
   function startWatchPoll(): void {
@@ -1145,11 +1337,16 @@ function boot(): void {
     delete status[key];
     store.set("watchedStatus", status);
     watchedAirborne.delete(key);
+    if (NOTIFY_ENABLED) forgetFlight(key);
     store.set("watchedFlights", next);
   }
 
   function dismissDepartureToast(): void {
     store.set("departureToast", null);
+  }
+
+  function dismissWatchNotice(): void {
+    store.set("watchNotice", null);
   }
 
   // ---- favorites ----
@@ -1193,6 +1390,9 @@ function boot(): void {
   // planes, the selected plane (each module adds its layers below the next).
   const mapController = createMap(mapRoot, handleViewportChange, (ready) => store.set("basemapReady", ready));
   const map = mapController.map;
+  map.onUserMoveStart(() => {
+    userMovedMap = true;
+  });
   // ?debug: a read-only diagnostics panel for a misbehaving device (ui/debugOverlay.ts).
   if (new URLSearchParams(location.search).has("debug")) import("./ui/debugOverlay").then((m) => m.mountDebugOverlay(map)).catch(() => {});
   const planeLayer = createPlaneLayer(map, handleSelectAircraft);
@@ -1212,10 +1412,12 @@ function boot(): void {
   store.set("removeFavoriteAircraft", removeFavoriteAircraft);
   store.set("removeFavoriteRoute", removeFavoriteRoute);
   store.set("resumeTracking", startCycle);
+  store.set("dismissResumeDialog", () => store.set("showResumeDialog", false));
   store.set("watchFlight", watchFlight);
   store.set("unwatchFlight", unwatchFlight);
   store.set("goToWatched", goToWatched);
   store.set("dismissDepartureToast", dismissDepartureToast);
+  store.set("dismissWatchNotice", dismissWatchNotice);
 
   // ---- UI modules ----
   scaleBar.mount(map);
@@ -1296,6 +1498,7 @@ function boot(): void {
   // ---- per-selection effect wiring ----
   store.subscribe("selectedId", onSelectedIdChanged);
   store.subscribe("selectedPos", drawRoute); // the trail ends at the marker, wherever it moves
+  map.on("sourcedata", resolveGate); // the gate's tile may arrive after the status
   onSelectedIdChanged(); // selectedId starts null — harmless initial reset
 
   // ---- mount-only effects ----
@@ -1313,10 +1516,18 @@ function boot(): void {
     .then((n) => store.set("seenCount", n))
     .catch(() => {});
 
-  subscribeLiveFeed(onLivePush);
+  // A reconnect is this feed's teardown: held frames are dropped so the next
+  // snapshot is the source of truth again (see clearArrivals).
+  subscribeLiveFeed(onLivePush, { onReconnect: clearArrivals });
 
   restartFetchCycleTimers(); // generation 0
   startWatchPoll(); // watched flights, independently of the Watch panel
+  if (NOTIFY_ENABLED) {
+    // #82 design §2: prune expired notification state on load and once an hour.
+    // The disposer runs on pagehide so the interval is cleared when the page
+    // goes away instead of staying alive behind it.
+    window.addEventListener("pagehide", startHourlyPrune(), { once: true });
+  }
 
   // Opening view: move the map to where the traffic is, at a zoom that draws
   // individual aircraft, before the first viewport report (see

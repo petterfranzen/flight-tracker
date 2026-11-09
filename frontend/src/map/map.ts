@@ -2,6 +2,7 @@ import { LngLat, Map as MaplibreMap, MercatorCoordinate, type MapEventType } fro
 import type { Bounds } from "../types/flight";
 import { basemapOptions, whenBasemapReady } from "./maplibreBasemap";
 import { minZoomFor, WORLD_BOUNDS } from "./zoomLimits";
+import { distanceM, geometryPoint } from "./gatePlacement";
 
 // Zoom a selection's flyTo treats as "close enough" to stop zooming
 // further in.
@@ -32,6 +33,17 @@ const ZOOM_OFFSET = 1;
 const toGl = (zoom: number): number => zoom - ZOOM_OFFSET;
 const fromGl = (zoom: number): number => zoom + ZOOM_OFFSET;
 const TILE_PX = 256;
+
+/**
+ * Whether the user has asked for reduced motion. Every camera move below is
+ * an animation (easeTo/flyTo/panTo); with this set each becomes an instant
+ * jump to the same final camera, so a selection or a zoom still lands where
+ * it should but nothing slides across the screen. Read per call, so a change
+ * to the OS setting takes effect on the next move.
+ */
+function reducedMotion(): boolean {
+  return typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
 
 /** The app's furthest zoom-in (the old raster layer's maxZoom). */
 export const MAX_ZOOM = 18;
@@ -256,26 +268,67 @@ export class FlightMap {
   /** Moves the view. Instant unless `animate` (a short ease). */
   setView([lat, lon]: [number, number], zoom: number, opts: { animate?: boolean } = {}): void {
     const camera = { center: [lon, lat] as [number, number], zoom: toGl(zoom) };
-    if (opts.animate) this.gl.easeTo({ ...camera, duration: 250 });
+    if (opts.animate && !reducedMotion()) this.gl.easeTo({ ...camera, duration: 250 });
     else this.gl.jumpTo(camera);
   }
 
   /** Zooms about the centre. Animated unless `animate: false`, like a button zoom. */
   setZoom(zoom: number, opts: { animate?: boolean } = {}): void {
-    if (opts.animate === false) this.gl.jumpTo({ zoom: toGl(zoom) });
+    if (opts.animate === false || reducedMotion()) this.gl.jumpTo({ zoom: toGl(zoom) });
     else this.gl.easeTo({ zoom: toGl(zoom), duration: 250 });
   }
 
   flyTo([lat, lon]: [number, number], zoom: number, durationMs: number): void {
-    this.gl.flyTo({ center: [lon, lat], zoom: toGl(zoom), duration: durationMs });
+    // Reduced motion: no flight, the same camera in one jump.
+    if (reducedMotion()) this.gl.jumpTo({ center: [lon, lat], zoom: toGl(zoom) });
+    else this.gl.flyTo({ center: [lon, lat], zoom: toGl(zoom), duration: durationMs });
   }
 
   panTo([lat, lon]: [number, number], durationMs: number): void {
-    this.gl.panTo([lon, lat], { duration: durationMs });
+    if (reducedMotion()) this.gl.jumpTo({ center: [lon, lat] });
+    else this.gl.panTo([lon, lat], { duration: durationMs });
   }
 
   isMoving(): boolean {
     return this.gl.isMoving();
+  }
+
+  /**
+   * Calls `fn` when the user starts moving the map (drag, wheel, pinch, keys, buttons):
+   * MapLibre marks those moves with the DOM event that caused them. Camera moves the app
+   * makes itself (flyTo, jumpTo) carry none and do not count.
+   */
+  onUserMoveStart(fn: () => void): void {
+    this.gl.on("movestart", (e) => {
+      if ((e as { originalEvent?: unknown }).originalEvent) fn();
+    });
+  }
+
+  /**
+   * The coordinate of the gate `ref` (OpenMapTiles `aeroway` class `gate`, from
+   * the basemap's own vector tiles) nearest `near`, or null. Only tiles the map
+   * has loaded are searched, and gates are in the zoom-14 tiles: so this finds
+   * one only while the view is at an airport (app zoom 15+); callers retry on
+   * `sourcedata`.
+   */
+  findGate(ref: string, near: LatLon): LatLon | null {
+    const want = ref.trim().toUpperCase();
+    let best: { p: LatLon; d: number } | null = null;
+    let features: ReturnType<MaplibreMap["querySourceFeatures"]> = [];
+    try {
+      if (!this.gl.getSource("openmaptiles")) return null;
+      features = this.gl.querySourceFeatures("openmaptiles", { sourceLayer: "aeroway", filter: ["==", ["get", "class"], "gate"] });
+    } catch {
+      return null; // the source is mid-update; the next sourcedata asks again
+    }
+    for (const f of features) {
+      if (String(f.properties?.ref ?? "").trim().toUpperCase() !== want) continue;
+      const p = geometryPoint(f.geometry);
+      if (!p) continue;
+      const d = distanceM(near, p);
+      if (!best || d < best.d) best = { p, d };
+    }
+    return best ? best.p : null;
   }
 
   /** Re-reads the container's size, if it changed since the map last measured it. */
