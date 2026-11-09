@@ -65,6 +65,8 @@ export interface AppState extends Record<string, unknown> {
   removeFavoriteAircraft: (entry: FavoriteAircraft) => void;
   removeFavoriteRoute: (route: FavoriteRoute) => void;
   resumeTracking: () => void;
+  /** Hide the resume dialog without resuming (Escape / dismiss). */
+  dismissResumeDialog: () => void;
 
   /** Watched-flight actions, set once at boot like the others. */
   watchFlight: (w: WatchedFlight) => void;

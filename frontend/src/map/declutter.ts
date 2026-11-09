@@ -177,26 +177,75 @@ interface Placed {
 function pickOnce(order: { c: Candidate; held: boolean }[], fixed: { x: number; y: number }[], min: number, spacing: (held: boolean) => number = () => min): Set<string> {
   let cell = min;
   for (const o of order) cell = Math.max(cell, spacing(o.held));
-  const grid = new Map<number, Placed[]>();
-  const key = (cx: number, cy: number): number => cx * 100_003 + cy;
+  // The grid is a flat array indexed by (cell x, cell y), offset by the run's
+  // own minimum cell: the screen coords of one render are a small rectangle, so
+  // this is one allocation and an array index per lookup, where a Map keyed by
+  // integers cost a hash per lookup. At 2,000 candidates over every pass of a
+  // zoom that was the largest single cost inside renderAircraftLayer.
+  let minCx = Infinity;
+  let minCy = Infinity;
+  let maxCx = -Infinity;
+  let maxCy = -Infinity;
+  for (const o of order) {
+    const cx = Math.floor(o.c.x / cell);
+    const cy = Math.floor(o.c.y / cell);
+    if (cx < minCx) minCx = cx;
+    if (cx > maxCx) maxCx = cx;
+    if (cy < minCy) minCy = cy;
+    if (cy > maxCy) maxCy = cy;
+  }
+  for (const f of fixed) {
+    const cx = Math.floor(f.x / cell);
+    const cy = Math.floor(f.y / cell);
+    if (cx < minCx) minCx = cx;
+    if (cx > maxCx) maxCx = cx;
+    if (cy < minCy) minCy = cy;
+    if (cy > maxCy) maxCy = cy;
+  }
+  if (minCx > maxCx) return new Set(); // no candidates and no fixed points
+  // One cell of padding each side, so the nine-cell scan never leaves the array.
+  const stride = maxCx - minCx + 3;
+  const cells: (Placed[] | undefined)[] = new Array<Placed[] | undefined>((maxCy - minCy + 3) * stride);
+  const at = (cx: number, cy: number): number => (cy - minCy + 1) * stride + (cx - minCx + 1);
   const add = (p: Placed): void => {
-    const k = key(Math.floor(p.x / cell), Math.floor(p.y / cell));
-    const bucket = grid.get(k);
+    const i = at(Math.floor(p.x / cell), Math.floor(p.y / cell));
+    const bucket = cells[i];
     if (bucket) bucket.push(p);
-    else grid.set(k, [p]);
+    else cells[i] = [p];
   };
-  const overlapping = (p: { x: number; y: number }, d: number): Placed[] => {
+  // Reused by collect(): the newcomer pass needs the hits to decide whether
+  // to displace them, but allocating an array per candidate was most of the
+  // declutter pass's cost at 2,000+ planes. The held pass only needs a yes/no.
+  const hits: Placed[] = [];
+  const overlaps = (p: { x: number; y: number }, d: number): boolean => {
     const cx = Math.floor(p.x / cell);
     const cy = Math.floor(p.y / cell);
-    const out: Placed[] = [];
     for (let dx = -1; dx <= 1; dx++) {
       for (let dy = -1; dy <= 1; dy++) {
-        for (const q of grid.get(key(cx + dx, cy + dy)) ?? []) {
-          if (!q.gone && Math.abs(p.x - q.x) < d && Math.abs(p.y - q.y) < d) out.push(q);
+        const bucket = cells[at(cx + dx, cy + dy)];
+        if (!bucket) continue;
+        for (const q of bucket) {
+          if (q.gone) continue;
+          if (Math.abs(p.x - q.x) < d && Math.abs(p.y - q.y) < d) return true;
         }
       }
     }
-    return out;
+    return false;
+  };
+  const collect = (p: { x: number; y: number }, d: number): Placed[] => {
+    hits.length = 0;
+    const cx = Math.floor(p.x / cell);
+    const cy = Math.floor(p.y / cell);
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        const bucket = cells[at(cx + dx, cy + dy)];
+        if (!bucket) continue;
+        for (const q of bucket) {
+          if (!q.gone && Math.abs(p.x - q.x) < d && Math.abs(p.y - q.y) < d) hits.push(q);
+        }
+      }
+    }
+    return hits;
   };
 
   for (const f of fixed) add({ x: f.x, y: f.y, at: -1, held: true });
@@ -205,7 +254,7 @@ function pickOnce(order: { c: Candidate; held: boolean }[], fixed: { x: number; 
   // they only give way to the selected plane or to each other.
   const heldD = spacing(true);
   order.forEach(({ c, held }, at) => {
-    if (!held || overlapping(c, heldD).length > 0) return;
+    if (!held || overlaps(c, heldD)) return;
     add({ x: c.x, y: c.y, at, held: true, icao24: c.icao24 });
     shown.add(c.icao24);
   });
@@ -214,7 +263,7 @@ function pickOnce(order: { c: Candidate; held: boolean }[], fixed: { x: number; 
     if (held) return;
     const d = spacing(false);
     const close = heldD * DISPLACE_FRACTION; // against the held plane's spacing, not the widened newcomer one
-    const hits = overlapping(c, d);
+    const hits = collect(c, d);
     const displaceable = hits.every((q) => q.held && q.at > at && Math.abs(c.x - q.x) < close && Math.abs(c.y - q.y) < close);
     if (!displaceable) return;
     for (const q of hits) {

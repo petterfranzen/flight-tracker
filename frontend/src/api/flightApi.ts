@@ -237,12 +237,21 @@ export function liveFeedUrl(loc: Pick<Location, "href" | "protocol"> = location)
  * backoff (see the constants above). Never touches /api/agents/restart:
  * reopening the poll window is a page-load / Resume-button decision only.
  */
-export function subscribeLiveFeed(onPosition: (p: FlightPosition) => void): () => void {
+export interface LiveFeedOptions {
+  /**
+   * Called when the feed reconnects after a drop (not the first connect), so a
+   * caller can drop the state it held between the two connections.
+   */
+  onReconnect?: () => void;
+}
+
+export function subscribeLiveFeed(onPosition: (p: FlightPosition) => void, options: LiveFeedOptions = {}): () => void {
   let socket: WebSocket | null = null;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let stableTimer: ReturnType<typeof setTimeout> | null = null;
   let backoffMs = WS_RECONNECT_MIN_MS;
   let stopped = false;
+  let connected = false;
 
   function connect(): void {
     reconnectTimer = null;
@@ -261,6 +270,8 @@ export function subscribeLiveFeed(onPosition: (p: FlightPosition) => void): () =
     // close the *new* connection).
     ws.onopen = () => {
       if (ws !== socket) return;
+      if (connected) options.onReconnect?.();
+      connected = true;
       stableTimer = setTimeout(() => {
         backoffMs = WS_RECONNECT_MIN_MS;
       }, WS_STABLE_AFTER_MS);

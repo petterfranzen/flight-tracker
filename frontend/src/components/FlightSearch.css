@@ -223,4 +223,11 @@
 @media (max-width: 768px) {
   /* 44px tap targets for the chips, the house minimum (glyph stays small). */
   .flight-search-chip { min-height: 44px; }
+  /* The text fields are targets too — at 16px text plus 10px padding they land
+     around 39px, a shade under the house minimum. */
+  .flight-search-input { min-height: 44px; }
+  /* ...and for the result/watch rows and the overlay's close button, which are
+     otherwise sized by their 13px text. */
+  .flight-search-option { min-height: 44px; }
+  .flight-search-panel-close { min-height: 44px; min-width: 44px; }
 }

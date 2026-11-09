@@ -119,8 +119,16 @@
     font-size: 14px;
     font-weight: 600;
     padding: 8px;
+    /* House tap-target minimum on a phone (glyph stays the same size). */
+    min-height: 44px;
+    min-width: 44px;
     cursor: pointer;
   }
+
+  /* The legend is a swatch key, not a control — but its rows are still on a
+     phone's own hit map, so the house minimum applies to each one too. */
+  .map-legend-list { gap: 0; }
+  .map-legend-row { min-height: 44px; }
 
   /* Redundant once the FAB opens straight to this content and the close
      button above can dismiss it again — this toggle's only reachable
