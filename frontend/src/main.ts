@@ -50,6 +50,7 @@ import * as favoritesPanel from "./ui/favoritesPanel";
 import * as watchPanel from "./ui/watchPanel";
 import * as watchToast from "./ui/watchToast";
 import * as legend from "./ui/legend";
+import * as locate from "./ui/locate";
 import * as installPrompt from "./ui/installPrompt";
 import * as dossierPanel from "./ui/dossierPanel";
 import * as bootScreen from "./ui/bootScreen";
@@ -1432,6 +1433,9 @@ function boot(): void {
   favoritesPanel.mount(leftOverlayStack, store);
   watchPanel.mount(leftOverlayStack, store);
   legend.mount(leftOverlayStack); // no store slots — its open/closed state is purely local (see ui/legend.ts)
+  // "Go to my location" (section9-hq#263): asks the browser, flies the map
+  // there and marks it with a GL dot. Nothing leaves the page.
+  locate.mount(leftOverlayStack, map);
   bootScreen.mount(bootScreenRoot, store);
   resumeDialog.mount(resumeDialogRoot, store);
   dossierPanel.mount(dossierRoot, store);
