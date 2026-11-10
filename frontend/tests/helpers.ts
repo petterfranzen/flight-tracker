@@ -1,6 +1,6 @@
 import { expect, type Locator, type Page, type Route } from "@playwright/test";
 import { OPENFREEMAP_TILEJSON } from "./fixtures/basemap";
-import type { FlightMap, RenderedAirport, RenderedPlane, RenderedWatchedAirport } from "../src/map/map";
+import type { FlightMap, RenderedAirport, RenderedPlane, RenderedUserLocation, RenderedWatchedAirport } from "../src/map/map";
 import liveFixture from "./fixtures/live.json" with { type: "json" };
 import history4aad15 from "./fixtures/history-4aad15.json" with { type: "json" };
 import history4d00d9 from "./fixtures/history-4d00d9.json" with { type: "json" };
@@ -451,6 +451,44 @@ export async function getRoutePathScreenPoints(page: Page): Promise<{ x: number;
     },
     vertices,
   );
+}
+
+/** The camera as the app sees it (app zoom units): centre lat/lon and zoom. */
+export async function mapCentre(page: Page): Promise<{ lat: number; lon: number; zoom: number }> {
+  return withMap(page, (map) => {
+    const c = map.getCenter();
+    return { lat: c.lat, lon: c.lon, zoom: map.getZoom() };
+  });
+}
+
+/** The "you are here" dot the user-location layer drew (map/userLocation.ts), x/y in page pixels; null when no dot is drawn. */
+export async function renderedUserLocation(page: Page): Promise<RenderedUserLocation | null> {
+  return retryMidUpdate(page, () =>
+    withMap(page, (map) => {
+      const dot = map.renderedUserLocation();
+      if (!dot) return null;
+      const rect = map.getContainer().getBoundingClientRect();
+      return { ...dot, x: dot.x + rect.x, y: dot.y + rect.y };
+    }),
+  );
+}
+
+/**
+ * Taps the control-stack "go to my location" button (ui/locate.ts), like a
+ * user — waits for the boot screen to clear first, so the tap cannot land on
+ * it (see clickAt).
+ */
+export async function clickLocate(page: Page): Promise<void> {
+  await page.locator(".boot-screen:not(.boot-screen--hidden)").waitFor({ state: "detached", timeout: 15_000 });
+  await page.locator(".map-locate-button").click();
+}
+
+/** The visible locate failure toast's text (ui/locate.ts), or null when none is shown. */
+export async function locateToastText(page: Page): Promise<string | null> {
+  const toast = page.locator(".locate-toast");
+  if ((await toast.count()) === 0) return null;
+  if (!(await toast.isVisible())) return null;
+  return (await toast.textContent())?.trim() ?? null;
 }
 
 /** Serves OpenFreeMap's tileset as empty: the basemap draws its background colour and nothing else. */
