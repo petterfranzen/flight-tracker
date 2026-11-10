@@ -24,6 +24,18 @@ import static com.flighttracker.profile.ProfileLimitException.Reason.TOO_LONG;
  * routeKey (ICAO-ICAO) or an icao24 (6 hex), a flight number is at most about
  * 8 chars, an airport an ICAO code (4). The row caps are far above what a
  * person favourites by hand.
+ *
+ * Counting units differ by field, and the profile API's docs must say so:
+ * {@link #MAX_FAVORITE_DATA_BYTES} counts UTF-8 <b>bytes</b>, while the label
+ * and key limits ({@link #MAX_ITEM_KEY_LENGTH}, {@link #MAX_FLIGHT_NUMBER_LENGTH},
+ * {@link #MAX_AIRPORT_LENGTH}, {@link #MAX_LABEL_LENGTH}) count UTF-16
+ * <b>chars</b> via {@code String.length()}, so one non-BMP character (an emoji)
+ * counts as two.
+ *
+ * {@code data} must be a JSON <b>object</b>: the frontend only ever stores a
+ * FavoriteRoute or FavoriteAircraft object (frontend/src/favorites.ts), so a bare
+ * scalar, an array or JSON {@code null} is rejected as {@link ProfileLimitException.Reason#INVALID}
+ * rather than stored. The profile API and the README document the same caps.
  */
 public final class ProfileLimits {
 
@@ -58,11 +70,13 @@ public final class ProfileLimits {
         }
         try {
             JsonNode node = JSON.readTree(data);
-            if (node == null || node.isMissingNode()) {
-                throw new IllegalArgumentException("empty");
+            // The frontend only stores a FavoriteRoute/FavoriteAircraft object, so
+            // a bare scalar, an array or JSON null does not count as valid data.
+            if (node == null || node.isMissingNode() || !node.isObject()) {
+                throw new IllegalArgumentException("data must be a JSON object");
             }
         } catch (Exception e) {
-            throw new ProfileLimitException(INVALID, "data", "data is not valid JSON");
+            throw new ProfileLimitException(INVALID, "data", "data must be a JSON object");
         }
     }
 
