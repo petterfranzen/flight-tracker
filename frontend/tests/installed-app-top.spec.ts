@@ -34,6 +34,10 @@ async function installedApp(page: Page): Promise<void> {
   await mockFlightApi(page);
   await page.goto("/");
   await waitForMapReady(page, 30_000);
+  // The boot screen covers the whole viewport until the first load and the
+  // basemap are in; it fades (boot-screen--hidden) and is then removed. Probe
+  // the top strip only once it is gone, or it is the boot screen we measure.
+  await page.locator(".boot-screen").waitFor({ state: "detached", timeout: 30_000 });
 }
 
 test.describe("installed app: no band across the top", () => {
