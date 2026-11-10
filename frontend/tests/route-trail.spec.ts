@@ -90,6 +90,31 @@ test("a gap in the reports is drawn as its own dashed segment, not spliced acros
   expect(route.trail[0][route.trail[0].length - 1]).toEqual([history[2].latitude, history[2].longitude]);
 });
 
+// #281 follow-up: the distance rule must not dash ordinary traffic. A jet at
+// cruise (~250 m/s) covers 4.5 km in an 18 s poll tick and 9 km in a skipped
+// 36 s one; both are well under a real gap, so the trail stays one solid run.
+test("a cruising jet reported every 18-36 s is one solid run, with no gap", async ({ page }) => {
+  await mockFlightApi(page);
+  const base = Date.parse(plane.observedAt);
+  const intervals = [36, 18, 36, 18, 36, 18];
+  const points = [{ ms: base, dLat: 0 }];
+  let ms = base;
+  let dLat = 0;
+  for (const dt of intervals) {
+    ms -= dt * 1_000;
+    dLat -= (250 * dt) / 111_320; // 250 m/s, north-south so 1 deg = 111.32 km
+    points.push({ ms, dLat });
+  }
+  const history = points.reverse().map((p) => report(p.ms, p.dLat));
+  await page.route("**/api/flights/4d00d9/history*", (route) => route.fulfill({ json: history }));
+  await selectPlane(page);
+
+  await expect.poll(async () => (await getRouteVertices(page)).length, { timeout: 10_000 }).toBeGreaterThan(0);
+  const route = await renderedRoute(page);
+  expect(route.gaps).toHaveLength(0);
+  expect(route.trail).toHaveLength(1);
+});
+
 test("a tight run of reports is one solid line, with no gap segment", async ({ page }) => {
   await mockFlightApi(page);
   const base = Date.parse(plane.observedAt);

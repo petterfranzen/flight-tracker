@@ -9,11 +9,16 @@ const ROUTE_SPLINE_SEGMENTS = 8;
 
 // Two consecutive reports further apart than either of these are a gap in the
 // data, not a stretch of the flown path: the solid trail breaks there and the
-// missing leg is drawn as its own dashed segment (see routeSegments). ~60 s is
-// where a sparse feed starts reading as missing rather than slow, and 5 km is
-// further than a report interval's worth of level flight covers.
+// missing leg is drawn as its own dashed segment (see routeSegments).
+//
+// Time is the rule that matters: the hot poll runs every 18 s, so a gap over
+// ~60 s means at least two reports were missed. The distance rule is a floor
+// only, catching a jump no aircraft could make in that time: 20 km in 60 s is
+// 1200 km/h, well past cruise (~900 km/h, i.e. 4.5-15 km per 18-60 s tick).
+// The earlier 5 km floor dashed ordinary cruise traffic as it skipped a tick
+// (section9-hq#281: "the trails look broken almost all the time").
 export const ROUTE_GAP_MAX_SECONDS = 60;
-export const ROUTE_GAP_MAX_KM = 5;
+export const ROUTE_GAP_MAX_KM = 20;
 
 /** One point of the selected aircraft's trail, with the time of its report. */
 export interface RoutePoint {
@@ -34,9 +39,11 @@ function distanceKm(a: RoutePoint, b: RoutePoint): number {
 
 /**
  * Whether two consecutive reports are far enough apart to be a gap: more than
- * ~60 s of missing time, or more than ~5 km of missing track. Two points at
- * the same instant are the dead-reckoned tip of one report, not a gap between
- * two, however far it has been projected — so the tip connector stays solid.
+ * ~60 s of missing time (a missed poll), or more than ~20 km of missing track
+ * (a jump no aircraft could make while the time is still under that). Two
+ * points at the same instant are the dead-reckoned tip of one report, not a
+ * gap between two, however far it has been projected — so the tip connector
+ * stays solid.
  */
 export function isRouteGap(a: RoutePoint, b: RoutePoint, maxSeconds = ROUTE_GAP_MAX_SECONDS, maxKm = ROUTE_GAP_MAX_KM): boolean {
   const dtSeconds = Math.abs(b.observedAtMs - a.observedAtMs) / 1000;
