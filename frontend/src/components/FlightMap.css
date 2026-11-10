@@ -165,13 +165,17 @@ html, body {
   overflow: hidden;
 }
 
-/* Installed iOS app: WebKit 301108 (iOS 26) ends the standalone viewport short
+/* Installed iOS app: WebKit 301108 (iOS 26) ended the standalone viewport short
    of the bottom of the screen when viewport-fit=cover and the black-translucent
-   status bar are on. Workaround from frappe-ui #1284 (tested in the iOS 26.2
-   simulator): let the root grow by the top inset, capped at 100lvh so nothing
-   scrolls where the inset is 0, and pin the shell to the edges over it.
-   ui/standaloneViewport.ts sets html.standalone (display-mode alone is not
-   reliable on iOS). `?vpdebug` shows what the phone reports. */
+   status bar were on (#201). The black-translucent meta is gone now (iOS 26.1+
+   deprecated it and drew a dim scrim over the status bar, section9-hq#277), so
+   the top inset is 0 and this rule is inert on current iOS; it is kept as the
+   guard for the bottom-band regression on any build that still reports a short
+   viewport. Workaround from frappe-ui #1284: let the root grow by the top
+   inset, capped at 100lvh so nothing scrolls where the inset is 0, and pin the
+   shell to the edges over it. ui/standaloneViewport.ts sets html.standalone
+   (display-mode alone is not reliable on iOS). `?vpdebug` shows what the phone
+   reports. */
 html.standalone {
   min-height: min(100lvh, calc(100% + env(safe-area-inset-top, 0px)));
 }
