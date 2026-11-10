@@ -514,9 +514,7 @@ html.standalone .app-shell {
    corner. Bumping this wrapper's own z-index whenever a child drawer is
    open — not just the drawer's — lets the whole subtree clear every
    same-level sibling instead of only what's nested underneath it. */
-.left-overlay-stack:has(.flight-search-panel--open),
-.left-overlay-stack:has(.favorites-panel-body--open),
-.left-overlay-stack:has(.map-legend-body--open) {
+.left-overlay-stack:has(.control-panel--open) {
   z-index: 1001;
 }
 

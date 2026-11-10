@@ -79,8 +79,12 @@ API, WebSocket and SPA on the same port either way.
   `status`/`version`/`db` and its sweep-freshness trio
   (`lastSweepAt`, `lastSweepRows`, `skippedSweeps`), and
   `GET /api/health/sweep`'s 200-or-503 shape (never an HTML error page).
-  Reaches no external source: an unreachable OpenSky is a legal state and
-  is asserted as-is (`lastSweepAt: null`, the sweep check 503).
+  The agreement between the sweep check and the freshness fields needs a
+  productive global sweep to have landed, so that case waits for one (after
+  reopening the poll window and polling `/api/health`), and the file itself
+  reaches no external source. Against a jar with no reachable data source
+  (`lastSweepAt` stays null) there is nothing to agree about: the case is
+  skipped with its reason instead of passing on a branch that never ran.
 - `live-feed.test.js` — `GET /ws/live`: WebSocket upgrade succeeds, the
   connection stays open, and any frames received parse as JSON matching the
   `FlightPosition` shape. Traffic is real and external (OpenSky), so this
