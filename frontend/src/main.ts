@@ -27,6 +27,7 @@ import { NOTIFY_ENABLED, notificationPermission, showOsNotification } from "./no
 import { loadNotifyState, saveNotifyState, pruneNotifyState, emptyState, forgetFlight, startHourlyPrune } from "./notify/state";
 import { chooseChannel, observeFlight } from "./notify/detect";
 import { commitNotifyPoll, type NotifyOutcome } from "./notify/poll";
+import { applyStandaloneViewport } from "./ui/standaloneViewport";
 import { boundsFromMap, createFollowSelected, createMap, DEFAULT_VIEW, GPUInitializationError } from "./map/map";
 import { createPlaneLayer, planeBoxSize } from "./map/planes";
 import { declutterCellDeg, newDeclutterMemory, pickNonOverlapping, spacingKey, spacingLevel, type Candidate } from "./map/declutter";
@@ -269,6 +270,8 @@ function boot(): void {
   // Home Screen hint on iOS. It hides itself when already standalone and
   // remembers a dismissal. See ui/installPrompt.ts.
   installPrompt.mount(appShell);
+  // Installed iOS app: mark standalone for the WebKit 301108 workaround; ?vpdebug readout.
+  applyStandaloneViewport();
 
   // Minimal worker (#85 reuses #82's decision; one worker, not two). It
   // caches nothing — its header says why — so a deploy can never be kept

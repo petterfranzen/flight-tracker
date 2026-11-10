@@ -11,8 +11,10 @@ import org.springframework.boot.info.BuildProperties;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.Optional;
 import java.util.Properties;
 
@@ -38,7 +40,10 @@ class HealthControllerTest {
     private final SweepHealthTracker sweepHealthTracker = new SweepHealthTracker();
 
     private HealthController controller(long globalSweepIntervalSeconds) {
-        return new HealthController(jdbcTemplate, sweepHealthTracker, buildProperties, globalSweepIntervalSeconds);
+        // The production clock (ClockConfig's bean); the tests that need a pinned
+        // "now" build their own controller with a fixed one below.
+        return new HealthController(jdbcTemplate, sweepHealthTracker, buildProperties,
+                globalSweepIntervalSeconds, Clock.systemUTC());
     }
 
     @Test
@@ -76,17 +81,6 @@ class HealthControllerTest {
         sweepHealthTracker.recordSweepCompleted(5);
 
         assertThat(controller(360).sweepHealth().getStatusCode().value()).isEqualTo(200);
-    }
-
-    @Test
-    void sweepHealth_staleSweep_beyondThreeIntervals_returns503() throws InterruptedException {
-        // A 0-second interval means "3x the interval" is already elapsed
-        // the instant recordSweepCompleted(5) returns — the simplest way to
-        // exercise the "gone stale" branch without sleeping for real time.
-        sweepHealthTracker.recordSweepCompleted(5);
-        Thread.sleep(5);
-
-        assertThat(controller(0).sweepHealth().getStatusCode().value()).isEqualTo(503);
     }
 
     // ---- version: exactly the injected git.sha
@@ -139,21 +133,40 @@ class HealthControllerTest {
 
     // ---- /sweep: 200 inside 3x the interval, 503 beyond it, at the boundary either side
 
+    /**
+     * "Now" for the /sweep boundary tests. Pinned through the injected Clock, so the
+     * age of the sweep is exact — no {@code Instant.now()} in the test, no sleep, and
+     * no margin for the app's own clock to drift across the threshold mid-assertion.
+     */
+    private static final Instant NOW = Instant.parse("2026-10-12T12:00:00Z");
+    private static final Clock CLOCK_AT_NOW = Clock.fixed(NOW, ZoneOffset.UTC);
+
+    /** A controller whose real SweepHealthTracker is replaced by a stub reporting this stamp. */
     private HealthController controllerWithLastSweep(Instant lastSweepAt, long intervalSeconds) {
         SweepHealthTracker tracker = mock(SweepHealthTracker.class);
         when(tracker.lastSweepAt()).thenReturn(Optional.ofNullable(lastSweepAt));
-        return new HealthController(jdbcTemplate, tracker, buildProperties, intervalSeconds);
+        return new HealthController(jdbcTemplate, tracker, buildProperties, intervalSeconds, CLOCK_AT_NOW);
     }
+
+    // 60s interval => the 3x threshold is exactly 180s; each case sits one second
+    // inside, exactly on, and one second past it (the check is a strict "<", so the
+    // boundary itself already counts as stale).
 
     @Test
     void sweepHealth_justInsideThreeIntervals_returns200() {
-        Instant lastSweep = Instant.now().minus(Duration.ofSeconds(3 * 60 - 30));
+        Instant lastSweep = NOW.minus(Duration.ofSeconds(3 * 60 - 1));
         assertThat(controllerWithLastSweep(lastSweep, 60).sweepHealth().getStatusCode().value()).isEqualTo(200);
     }
 
     @Test
+    void sweepHealth_exactlyAtThreeIntervals_returns503() {
+        Instant lastSweep = NOW.minus(Duration.ofSeconds(3 * 60));
+        assertThat(controllerWithLastSweep(lastSweep, 60).sweepHealth().getStatusCode().value()).isEqualTo(503);
+    }
+
+    @Test
     void sweepHealth_justBeyondThreeIntervals_returns503() {
-        Instant lastSweep = Instant.now().minus(Duration.ofSeconds(3 * 60 + 30));
+        Instant lastSweep = NOW.minus(Duration.ofSeconds(3 * 60 + 1));
         assertThat(controllerWithLastSweep(lastSweep, 60).sweepHealth().getStatusCode().value()).isEqualTo(503);
     }
 
