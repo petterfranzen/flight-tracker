@@ -1,7 +1,7 @@
 import type { GeoJSONSource } from "maplibre-gl";
 import type { FlightMap } from "./map";
 import { PLANES_LAYER } from "./planes";
-import { ROUTE_LAYER_ID } from "./route";
+import { ROUTE_BOTTOM_LAYER_ID, ROUTE_LAYER_ID } from "./route";
 import { cssToken, withAlpha } from "./glImages";
 
 /**
@@ -51,7 +51,7 @@ export function createUserLocationLayer(map: FlightMap): UserLocationLayer {
     gl.addSource(SOURCE, { type: "geojson", data: data() });
     // Under the route/planes/airports when they already exist; on top of the
     // basemap alone when this runs first (they are added above it later).
-    const before = [ROUTE_LAYER_ID, PLANES_LAYER, "airports"].find((id) => gl.getLayer(id));
+    const before = [ROUTE_BOTTOM_LAYER_ID, ROUTE_LAYER_ID, PLANES_LAYER, "airports"].find((id) => gl.getLayer(id));
     gl.addLayer(
       {
         id: HALO_LAYER,

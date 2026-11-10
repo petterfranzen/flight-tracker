@@ -445,14 +445,40 @@ export async function clickAirport(page: Page, code: string): Promise<void> {
   await clickAt(page, ap.x, ap.y);
 }
 
-/** The selected aircraft's trail as drawn: the route source's line, [lat, lon] per vertex (map/route.ts). */
+/**
+ * The selected aircraft's trail as drawn, [lat, lon] per vertex in path order
+ * (map/route.ts): the solid runs' splined vertices and, where the feed had a
+ * gap, the gap segment's own endpoints, all flattened start to tip.
+ */
 export async function getRouteVertices(page: Page): Promise<{ lat: number; lon: number }[]> {
   return withMap(page, async (map) => {
-    const source = map.gl.getSource("flight-route") as { getData(): Promise<{ geometry?: { coordinates: [number, number][] } }> } | undefined;
+    const source = map.gl.getSource("flight-route") as
+      | { getData(): Promise<{ features?: { geometry?: { coordinates: [number, number][] } }[] }> }
+      | undefined;
     if (!source) return [];
     const data = await source.getData();
-    return (data.geometry?.coordinates ?? []).map(([lon, lat]) => ({ lat, lon }));
+    return (data.features ?? []).flatMap((f) => (f.geometry?.coordinates ?? []).map(([lon, lat]) => ({ lat, lon })));
   });
+}
+
+/** The trail as the route layer split it for drawing: solid runs and gap segments (map/route.ts). */
+export async function renderedRoute(page: Page): Promise<RenderedRoute> {
+  return withMap(page, (map) => map.renderedRoute());
+}
+
+/**
+ * A map layer's paint as the map holds it, to check what a layer was actually
+ * drawn with (e.g. the trail line is solid: no line-dasharray on it).
+ */
+export async function layerPaint(page: Page, id: string): Promise<Record<string, unknown>> {
+  return withMap(
+    page,
+    (map, id: string) => {
+      const layer = (map.gl.getStyle().layers ?? []).find((l) => l.id === id) as { paint?: Record<string, unknown> } | undefined;
+      return { ...(layer?.paint ?? {}) };
+    },
+    id,
+  );
 }
 
 /** The coverage-gap cone as drawn: the outer ring of each polygon in the uncertainty source, [lat, lon] per vertex (map/uncertainty.ts). */

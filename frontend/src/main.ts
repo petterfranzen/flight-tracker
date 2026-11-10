@@ -37,9 +37,9 @@ import { pickInitialView } from "./map/initialView";
 import { getMockPlaneCount } from "./api/mockFleet";
 import { agedIds, findShadowedIds, isActiveTraffic, OVERLAP_MIN_ZOOM } from "./map/staleness";
 import { newerReport, notOlderReport, sameReport } from "./map/reportOrder";
-import { createRouteLayer } from "./map/route";
+import { createRouteLayer, type RoutePoint } from "./map/route";
 import { lastContinuousRun, TRAIL_FALLBACK_WINDOW_MS } from "./map/trailWindow";
-import { confirmedGate, displayedPosition, gateDisplay, trailFor, type GateDisplay } from "./map/gatePlacement";
+import { confirmedGate, displayedPosition, gateDisplay, trailPointsFor, type GateDisplay } from "./map/gatePlacement";
 import { createUncertaintyLayer } from "./map/uncertainty";
 import { keepCellWinners } from "./map/cellWinners";
 import { snapBounds, ViewCache, type CachedView } from "./map/viewCache";
@@ -402,7 +402,7 @@ function boot(): void {
   const pendingWs = new Map<string, FlightPosition>();
   let wsFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
-  let route: [number, number][] = [];
+  let route: RoutePoint[] = [];
   let lastRouteObservedAt: string | null = null;
   let routePoints: { lat: number; lon: number; observedAt: string }[] = [];
   let legStartAt: string | null = null;
@@ -438,7 +438,11 @@ function boot(): void {
     }
     const pos = store.get("selectedPos");
     const tip = pos && pos.icao24 === store.get("selectedId") ? pos : null;
-    route = trailFor(routePoints, tip, currentGateDisplay(), Date.now());
+    // With each report's time, so the trail layer can break the line across a
+    // real gap in the feed (map/route.ts), instead of dashing the whole path.
+    route = trailPointsFor(routePoints, tip, currentGateDisplay(), Date.now()).map(
+      (p): RoutePoint => ({ lat: p.lat, lon: p.lon, observedAtMs: Date.parse(p.observedAt) }),
+    );
     routeLayer.update(route);
   }
 
