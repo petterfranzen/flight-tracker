@@ -8,8 +8,33 @@ import { findMarkerNear, LIVE_FIXTURE, mockFlightApi, setMapView, waitForMapRead
 
 test.describe("dossier speed and vertical rate", () => {
   test("show '—' until a full position arrives, then km/h and signed m/s", async ({ page }) => {
+    // A live push is a fresh report; a months-old one reads "at last report"
+    // (below). The pushes are stamped 1s apart from here, and a viewport
+    // snapshot is stamped at `base` itself: always older than every push.
+    const base = Date.now() - 60_000;
     await mockFlightApi(page);
     await page.route("**/api/flights/*/live*", (route) => route.fulfill({ status: 404, json: null }));
+    // /live answers with a LiveMarker — identity, position and heading only
+    // (FlightController.live), never the altitude, speed or vertical rate the
+    // dossier reads. Serving the shared fixture's full rows here let a
+    // background viewport refresh land mid-test and overwrite the very fields
+    // a push had just filled in with the fixture's months-old capture, and
+    // stamp the dossier stale: the row flipped back to "… (at last report)".
+    // Serve the server's own shape so a snapshot can only ever be superseded
+    // by a push, and the pushes stay the only writer of those fields.
+    await page.route(/\/api\/flights\/live(\?|$)/, (route) =>
+      route.fulfill({
+        json: LIVE_FIXTURE.map(({ icao24, callsign, latitude, longitude, headingDeg, onGround }) => ({
+          icao24,
+          callsign,
+          observedAt: new Date(base).toISOString(),
+          latitude,
+          longitude,
+          headingDeg,
+          onGround,
+        })),
+      }),
+    );
     let feed: WebSocketRoute | null = null;
     await page.routeWebSocket("**/ws/live", (ws) => {
       feed = ws;
@@ -31,7 +56,6 @@ test.describe("dossier speed and vertical rate", () => {
     await expect(verticalRate).toHaveText("—");
 
     expect(feed).not.toBeNull();
-    const base = Date.now() - 60_000; // a live push is a fresh report; a stale one reads "at last report" (below)
     const push = (i: number, velocityMs: number, verticalRateMs: number) =>
       feed!.send(JSON.stringify({ ...target, observedAt: new Date(base + i * 1_000).toISOString(), velocityMs, verticalRateMs }));
 

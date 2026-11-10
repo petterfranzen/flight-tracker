@@ -5,7 +5,9 @@ import type { FlightPosition } from "../types/flight";
 import { fetchFlightLive, searchFlightsByAirport } from "../api/flightApi";
 import { h, clear } from "./h";
 import { activateModal, isPhone, type ModalHandle } from "./a11y";
+import { closeControlPanel, registerControlPanel, toggleControlPanel } from "./controlStack";
 import "../components/FavoritesPanel.css";
+import "../components/ControlPanel.css";
 
 const REFRESH_INTERVAL_MS = 20_000;
 
@@ -82,7 +84,7 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
   // would otherwise leave the user staring at the list with the plane hidden.
   function selectAndClose(select: () => void): void {
     select();
-    if (window.matchMedia("(max-width: 768px)").matches) setOpen(false);
+    if (window.matchMedia("(max-width: 768px)").matches) closeControlPanel("favorites");
   }
 
   function setOpen(next: boolean): void {
@@ -100,7 +102,7 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
       body.setAttribute("role", "dialog");
       body.setAttribute("aria-modal", "true");
       body.setAttribute("aria-label", "Favorites");
-      trap = activateModal(body, { onEscape: () => setOpen(false), returnTo: fab });
+      trap = activateModal(body, { onEscape: () => closeControlPanel("favorites"), returnTo: fab });
     } else if (!modal && trap) {
       trap.release();
       trap = null;
@@ -112,17 +114,17 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
 
   const fab = h(
     "button",
-    { type: "button", className: "favorites-panel-fab", "aria-controls": "favorites-panel-body", onClick: () => setOpen(!open) },
+    { type: "button", className: "favorites-panel-fab control-stack-button", "aria-controls": "favorites-panel-body", onClick: () => toggleControlPanel("favorites") },
     starIconSvg(),
   );
-  const bodyClose = h("button", { type: "button", className: "favorites-panel-body-close", onClick: () => setOpen(false) }, "Close favorites ✕");
+  const bodyClose = h("button", { type: "button", className: "favorites-panel-body-close control-panel-close", onClick: () => closeControlPanel("favorites") }, "Close favorites ✕");
   const toggle = h(
     "button",
-    { type: "button", className: "favorites-panel-toggle", "aria-controls": "favorites-panel-content", onClick: () => setOpen(!open) },
+    { type: "button", className: "favorites-panel-toggle", "aria-controls": "favorites-panel-content", onClick: () => toggleControlPanel("favorites") },
     "★ Favorites ▼",
   );
   const content = h("div", { id: "favorites-panel-content", className: "favorites-panel-content" });
-  const body = h("div", { id: "favorites-panel-body", className: "favorites-panel-body" }, bodyClose, toggle);
+  const body = h("div", { id: "favorites-panel-body", className: "favorites-panel-body control-panel" }, bodyClose, toggle);
   const container = h("div", { className: "favorites-panel" }, fab, body);
 
   function itemRow(
@@ -207,6 +209,7 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
   }
 
   function renderAll(): void {
+    body.classList.toggle("control-panel--open", open);
     body.classList.toggle("favorites-panel-body--open", open);
     fab.setAttribute("aria-expanded", String(open));
     fab.setAttribute("aria-label", open ? "Close favorites" : "Favorites");
@@ -238,7 +241,14 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
   const unsubscribeRoutes = store.subscribe("favoriteRoutes", onFavoritesChanged);
 
   root.appendChild(container);
+  const unregister = registerControlPanel("favorites", {
+    panel: body,
+    button: fab,
+    open: () => setOpen(true),
+    close: () => setOpen(false),
+  });
   return () => {
+    unregister();
     unsubscribeAircraft();
     unsubscribeRoutes();
     stopPolling();

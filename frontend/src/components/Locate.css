@@ -1,0 +1,111 @@
+/* The "go to my location" control (ui/locate.ts, section9-hq#263) — the same
+   card-with-an-icon the other control-stack buttons use, so it sits in that
+   column without a new look. Desktop keeps the full-width card; on a phone it
+   collapses to the same 48px round FAB as search/favourites/info. Tokens
+   only — no new colours. */
+.map-locate {
+  width: 100%;
+}
+
+.map-locate-button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--color-panel);
+  color: var(--color-text);
+  border: 1px solid var(--color-panel-border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+}
+
+.map-locate-button:hover:not(:disabled) {
+  background: var(--color-panel-border);
+}
+
+.map-locate-icon {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+}
+
+/* Centred on the user: the control reads as pressed, like a toggle. */
+.map-locate-button--active {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+}
+
+.map-locate-button--error {
+  color: var(--color-warn);
+  border-color: var(--color-warn);
+}
+
+.map-locate-button:disabled {
+  cursor: default;
+}
+
+.map-locate-button--error:disabled {
+  opacity: 0.6;
+}
+
+/* The polite failure toast (denied / timed out / unavailable). position:fixed
+   for the same reason .app-header uses it: this lives inside the 220px
+   .left-overlay-stack column, and `absolute` would anchor it to that column
+   instead of the viewport. */
+.locate-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 84px;
+  transform: translateX(-50%);
+  z-index: 1002;
+  max-width: calc(100vw - 32px);
+  box-sizing: border-box;
+  padding: 10px 14px;
+  background: var(--color-panel);
+  color: var(--color-text);
+  border: 1px solid var(--color-warn);
+  border-radius: 8px;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.5);
+  font-size: 13px;
+}
+
+.locate-toast[hidden] {
+  display: none;
+}
+
+/* Mobile layout (see MOBILE_BREAKPOINT_PX in FlightMap.tsx for why this is
+   the same literal, not a shared constant) — matches FlightSearch/
+   FavoritesPanel/Legend's own FAB block. The text label is hidden; the
+   button keeps its aria-label, so its accessible name survives. */
+@media (max-width: 768px) {
+  .map-locate-button {
+    width: 48px;
+    height: 48px;
+    padding: 0;
+    justify-content: center;
+    gap: 0;
+    border-radius: 50%;
+  }
+
+  .map-locate-label {
+    display: none;
+  }
+
+  .map-locate-icon {
+    width: 22px;
+    height: 22px;
+  }
+
+  .locate-toast {
+    bottom: 16px;
+  }
+}
