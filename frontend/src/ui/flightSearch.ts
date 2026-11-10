@@ -4,7 +4,9 @@ import { searchFlights, searchFlightsByAirport, type ScheduledFlight } from "../
 import { watchKey, watchedMatchesQuery, type WatchedFlight } from "../watchlist";
 import { h, clear } from "./h";
 import { activateModal, isPhone, type ModalHandle } from "./a11y";
+import { closeControlPanel, registerControlPanel, toggleControlPanel } from "./controlStack";
 import "../components/FlightSearch.css";
+import "../components/ControlPanel.css";
 
 const DEBOUNCE_MS = 250;
 
@@ -40,7 +42,7 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     routeResults = [];
     routeOpen = false;
     routeActiveIndex = -1;
-    mobilePanelOpen = false;
+    closeControlPanel("search");
     input.value = "";
     airportInput.value = "";
     renderAll();
@@ -165,8 +167,7 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
   });
   input.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
-      open = false;
-      mobilePanelOpen = false;
+      closeControlPanel("search");
       renderAll();
       return;
     }
@@ -208,8 +209,7 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
   });
   airportInput.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
-      routeOpen = false;
-      mobilePanelOpen = false;
+      closeControlPanel("search");
       renderAll();
       return;
     }
@@ -240,22 +240,19 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     "button",
     {
       type: "button",
-      className: "flight-search-fab",
+      className: "flight-search-fab control-stack-button",
       "aria-controls": "flight-search-panel",
-      onClick: () => {
-        mobilePanelOpen = !mobilePanelOpen;
-        renderAll();
-      },
+      onClick: () => toggleControlPanel("search"),
     },
     searchIconSvg(),
   );
   const panelClose = h(
     "button",
-    { type: "button", className: "flight-search-panel-close", onClick: () => { mobilePanelOpen = false; renderAll(); } },
+    { type: "button", className: "flight-search-panel-close control-panel-close", onClick: () => closeControlPanel("search") },
     "Close search ✕",
   );
   const eyebrow = h("span", { className: "flight-search-eyebrow" }, "Query // Flight No.");
-  const panel = h("div", { id: "flight-search-panel", className: "flight-search-panel" }, panelClose, eyebrow, input, chips, watchedList, airportPanel);
+  const panel = h("div", { id: "flight-search-panel", className: "flight-search-panel control-panel" }, panelClose, eyebrow, input, chips, watchedList, airportPanel);
   const container = h("div", { className: "flight-search" }, fab, panel);
 
   function setActiveRow(listEl: HTMLElement, activeIdx: number): void {
@@ -391,11 +388,19 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     else airportInput.removeAttribute("aria-activedescendant");
   }
 
-  function closeMobilePanel(): void {
-    open = false;
-    routeOpen = false;
-    mobilePanelOpen = false;
+  /** The one place the phone panel's open state is written: it must go through
+   * the shared stack so another panel never stays open underneath. */
+  function setOpen(next: boolean): void {
+    mobilePanelOpen = next;
+    if (!next) {
+      open = false;
+      routeOpen = false;
+    }
     renderAll();
+  }
+
+  function closeMobilePanel(): void {
+    closeControlPanel("search");
   }
 
   /**
@@ -424,6 +429,7 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
   }
 
   function renderAll(): void {
+    panel.classList.toggle("control-panel--open", mobilePanelOpen);
     panel.classList.toggle("flight-search-panel--open", mobilePanelOpen);
     fab.setAttribute("aria-expanded", String(mobilePanelOpen));
     fab.setAttribute("aria-label", mobilePanelOpen ? "Close search" : "Search flights");
@@ -437,10 +443,16 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
   renderAll();
 
   function handlePointerDown(e: PointerEvent): void {
-    if (!container.contains(e.target as Node)) {
+    if (container.contains(e.target as Node)) return;
+    // The map (or another stack button): close the phone panel through the
+    // shared stack, and drop the desktop dropdown on the same tap.
+    if (mobilePanelOpen) {
+      closeControlPanel("search");
+      return;
+    }
+    if (open || routeOpen) {
       open = false;
       routeOpen = false;
-      mobilePanelOpen = false;
       renderAll();
     }
   }
@@ -455,7 +467,14 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
   });
 
   root.appendChild(container);
+  const unregister = registerControlPanel("search", {
+    panel,
+    button: fab,
+    open: () => setOpen(true),
+    close: () => setOpen(false),
+  });
   return () => {
+    unregister();
     unsubscribeWatched();
     document.removeEventListener("pointerdown", handlePointerDown);
     if (debounceTimer) clearTimeout(debounceTimer);

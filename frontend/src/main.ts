@@ -50,6 +50,7 @@ import * as favoritesPanel from "./ui/favoritesPanel";
 import * as watchPanel from "./ui/watchPanel";
 import * as watchToast from "./ui/watchToast";
 import * as legend from "./ui/legend";
+import * as locate from "./ui/locate";
 import * as installPrompt from "./ui/installPrompt";
 import * as dossierPanel from "./ui/dossierPanel";
 import * as bootScreen from "./ui/bootScreen";
@@ -553,15 +554,15 @@ function boot(): void {
     // against the other, and the source is part of the key so the 7.5-8.0
     // overview band does not hand its spacing to the live source above it.
     const maxDrawn = isSmallScreen() ? MAX_DRAWN_MARKERS_SMALL_SCREEN : MAX_DRAWN_MARKERS;
+    // The box and the key both come from the whole level (spacingLevel); the key
+    // also names the source actually being picked. Test hook: tests read what
+    // this render used (tests/helpers.ts declutterSpacing) -- the wiring itself
+    // is what those specs guard, so a reverted call site fails them.
+    const spacingBox = planeBoxSize(spacingLevel(zoom));
+    const spacingKeyFor = spacingKey(useOverview ? "overview" : "live", zoom, maxDrawn);
     const declutterStart = performance.now();
-    const keep = pickNonOverlapping(
-      points,
-      fixed,
-      planeBoxSize(spacingLevel(zoom)),
-      maxDrawn,
-      declutterMemory,
-      spacingKey(useOverview ? "overview" : "live", zoom, maxDrawn),
-    );
+    const keep = pickNonOverlapping(points, fixed, spacingBox, maxDrawn, declutterMemory, spacingKeyFor);
+    map.declutterSpacing = { box: spacingBox, key: spacingKeyFor, spacing: declutterMemory.spacing };
     const declutterMs = performance.now() - declutterStart;
     perf.parts.declutter += declutterMs;
     perf.declutter.calls++;
@@ -1432,6 +1433,9 @@ function boot(): void {
   favoritesPanel.mount(leftOverlayStack, store);
   watchPanel.mount(leftOverlayStack, store);
   legend.mount(leftOverlayStack); // no store slots — its open/closed state is purely local (see ui/legend.ts)
+  // "Go to my location" (section9-hq#263): asks the browser, flies the map
+  // there and marks it with a GL dot. Nothing leaves the page.
+  locate.mount(leftOverlayStack, map);
   bootScreen.mount(bootScreenRoot, store);
   resumeDialog.mount(resumeDialogRoot, store);
   dossierPanel.mount(dossierRoot, store);
