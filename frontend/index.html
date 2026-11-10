@@ -7,11 +7,15 @@
          env(safe-area-inset-*) padding in the CSS. -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <!-- PWA colours are the cyberpunk tokens in src/components/FlightMap.css
-         (:root[data-theme="cyberpunk"]): --color-bg #050608. Keep them in step. -->
+         (:root[data-theme="cyberpunk"]): --color-bg #050608. Keep them in step.
+         The status bar is left at its default (opaque) style on purpose: iOS
+         26.1+ deprecated black-translucent and draws a dark scrim over the
+         status-bar area of an installed app, which read as a dim band across
+         the top of the map. With no status-bar-style meta the bar takes this
+         theme colour and the page starts below it, so nothing dims the map. -->
     <meta name="theme-color" content="#050608" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Skygrid" />
     <link rel="manifest" href="/manifest.json" />
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon-180.png" />

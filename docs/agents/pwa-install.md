@@ -10,7 +10,7 @@ real phone, and the production settings that matter.
 |---|---|---|
 | Web app manifest | `frontend/public/manifest.json` | name **Netwatch Skygrid**, short name **Skygrid**, `start_url` and `scope` `/`, `display: standalone`. Colours are the cyberpunk tokens: `#050608` = `--color-bg` in `frontend/src/components/FlightMap.css`. |
 | Icons | `frontend/public/icons/` | 192, 512, maskable 512, apple-touch-icon 180. Generated from the map's own plane dart (`PLANE_PATH` in `src/map/planes.ts`) by `npm run icons` (`scripts/generate-pwa-icons.mjs`). Re-run it if the mark or the cyberpunk tokens change. |
-| iOS meta tags | `frontend/index.html` | `viewport-fit=cover`, `apple-mobile-web-app-capable`, `black-translucent` status bar, apple-touch-icon, `theme-color`. |
+| iOS meta tags | `frontend/index.html` | `viewport-fit=cover`, `apple-mobile-web-app-capable`, apple-touch-icon, `theme-color`. No `apple-mobile-web-app-status-bar-style`: iOS 26.1+ deprecated `black-translucent` and draws a dark scrim over the status-bar area of an installed app, so the bar is left at its default (opaque, theme-coloured) style. |
 | Service worker | `frontend/public/sw.js` | Minimal: **no cache and no precache**. It exists to satisfy Chrome's install-prompt requirement (a worker with a fetch handler must control the page) and to give #82's notifications `registration.showNotification()` on Android / installed iOS. Its fetch listener never calls `respondWith()`, so every request goes to the network exactly as before. |
 | Install UI | `frontend/src/ui/installPrompt.ts` + `src/components/InstallPrompt.css` | Bottom-centre pill: "Install app" after `beforeinstallprompt` (Android/desktop Chrome), or the one-line Share > Add to Home Screen hint on iOS Safari. Dismissable and remembered in `localStorage`; hidden when already standalone and while a drawer/dossier is open. |
 | Tests | `frontend/tests/pwa.spec.ts` | Manifest fields + every icon resolves as PNG; document links and iOS meta tags; worker registers and caches nothing; install pill appears only after the event and remembers a dismissal; iOS hint; hidden in standalone. |
@@ -52,8 +52,9 @@ prompt on `controllerchange` — do not make the worker cache silently.
 3. Tap **Share** (the square with the up arrow) → **Add to Home Screen** →
    **Add**.
 4. **What should happen:** a **Skygrid** icon appears. Open it: full-screen,
-   black-translucent status bar, map and bottom sheet clear the notch and the
-   home indicator.
+   the status bar is a solid strip in the app's dark theme colour (no dim band
+   over the map), and the map and bottom sheet clear the notch and the home
+   indicator.
 5. Already installed: opening from the home screen shows no hint or pill.
 
 ### Both orientations
