@@ -300,6 +300,16 @@ export async function renderedPlanes(page: Page): Promise<PagePlane[]> {
 }
 
 /**
+ * The values `main.ts`'s renderAircraftLayer last handed the declutter picker
+ * (map/declutter.ts) and the widening it left in force: the app's own call-site
+ * wiring, so a spec can assert it without re-deriving it from the helpers (the
+ * mistake that let a reverted call site pass). `null` until the first render.
+ */
+export async function declutterSpacing(page: Page): Promise<{ box: number; key: string; spacing: number } | null> {
+  return withMap(page, (map) => map.declutterSpacing);
+}
+
+/**
  * MapLibre's feature query can throw while a source update is half applied
  * ("feature index out of bounds"): ask again a moment later.
  */
@@ -327,6 +337,26 @@ export async function planeLayerIds(page: Page): Promise<string[]> {
 }
 
 /** Every airport the airport layer drew in view (ui/defaultAirports.ts), x/y in page pixels. */
+/**
+ * The drawn planes' coordinates as the plane source holds them (map/planes.ts),
+ * icao24 included. Where planeLayerIds reads the ids, this reads where each one
+ * sits - including a position the glide has moved it to, which lives in the
+ * source data rather than only in a rendered frame (so it is readable while the
+ * clock, and with it the render loop, are frozen).
+ */
+export async function planeLayerPositions(page: Page): Promise<{ icao24: string; lat: number; lon: number }[]> {
+  return withMap(page, (map) => {
+    const source = map.gl.getSource("planes") as
+      | { serialize(): { data?: { features?: { properties?: { id?: string }; geometry?: { coordinates?: [number, number] } }[] } } }
+      | undefined;
+    return (source?.serialize().data?.features ?? []).map((f) => ({
+      icao24: f.properties?.id ?? "",
+      lat: f.geometry?.coordinates?.[1] ?? Number.NaN,
+      lon: f.geometry?.coordinates?.[0] ?? Number.NaN,
+    }));
+  });
+}
+
 export async function renderedAirports(page: Page): Promise<RenderedAirport[]> {
   return retryMidUpdate(page, () =>
     withMap(page, (map) => {

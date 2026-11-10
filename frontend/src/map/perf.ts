@@ -17,6 +17,8 @@ export interface RenderStats {
   setData: { planes: number; selected: number };
   /** Where the time inside renderAircraftLayer went, ms. */
   parts: { shadowed: number; project: number; declutter: number; update: number; filter: number };
+  /** Milliseconds and moved-batch calls for the optional glide ticker (map/glide.ts), off by default. */
+  glide: { calls: number; totalMs: number; lastMs: number; maxMs: number };
 }
 
 export const perf: RenderStats = {
@@ -24,6 +26,7 @@ export const perf: RenderStats = {
   declutter: { calls: 0, totalMs: 0, lastMs: 0, maxMs: 0 },
   setData: { planes: 0, selected: 0 },
   parts: { shadowed: 0, project: 0, declutter: 0, update: 0, filter: 0 },
+  glide: { calls: 0, totalMs: 0, lastMs: 0, maxMs: 0 },
 };
 
 export function resetPerf(): void {
@@ -31,6 +34,7 @@ export function resetPerf(): void {
   perf.declutter = { calls: 0, totalMs: 0, lastMs: 0, maxMs: 0 };
   perf.setData = { planes: 0, selected: 0 };
   perf.parts = { shadowed: 0, project: 0, declutter: 0, update: 0, filter: 0 };
+  perf.glide = { calls: 0, totalMs: 0, lastMs: 0, maxMs: 0 };
 }
 
 declare global {
