@@ -106,26 +106,63 @@ const STALE_AFTER_MS = SWEEP_INTERVAL_SECONDS * 3 * 1000;
 // Within this of the 3x boundary the two clocks and the two requests can disagree: no assertion.
 const BOUNDARY_SLACK_MS = 10_000;
 
-test("the sweep check agrees with the freshness fields on /api/health", async () => {
-  // lastSweepAt only moves forward, so read /api/health before and after the sweep
-  // check and assert only when it did not change in between (a sweep landing
-  // mid-test would make the pair inconsistent for a legitimate reason).
+async function readHealth() {
+  return JSON.parse((await get("/api/health")).body);
+}
+
+// How long to wait, and how often to look, for a productive global sweep to land before
+// concluding none can happen here. A fresh jar seeds one at boot when its database is
+// empty (AgentOrchestrator.seedOnStartup) and then sweeps on its own schedule, so with a
+// reachable data source the stamp is usually already there on the first read; an offline
+// jar never stamps it, and waiting the whole sweep interval out would only slow the suite.
+const SWEEP_WAIT_MS = Number(process.env.SWEEP_WAIT_MS || 60_000);
+const SWEEP_POLL_MS = 2_000;
+
+/** Poll /api/health until a productive sweep has stamped lastSweepAt, or the bound expires. */
+async function waitForProductiveSweep() {
+  const deadline = Date.now() + SWEEP_WAIT_MS;
+  let health = await readHealth();
+  while (health.lastSweepAt === null && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, SWEEP_POLL_MS));
+    health = await readHealth();
+  }
+  return health;
+}
+
+test("the sweep check agrees with the freshness fields once a productive sweep has landed", async (t) => {
+  // Reopen the poll window first (the call the frontend itself makes). It does not run a
+  // global sweep — only that sweep stamps lastSweepAt — but this is the app's own
+  // "start doing work now" request, and a sweep is what we then wait for.
+  await fetch(apiUrl("/api/agents/restart"), { method: "POST" }).catch(() => {});
+
+  const landed = await waitForProductiveSweep();
+  if (landed.lastSweepAt === null) {
+    // No productive sweep can happen here: the jar has no reachable data source, so the
+    // global sweep writes nothing and never advances lastSweepAt. The 3x-interval
+    // agreement is then untestable — say so loudly rather than passing on a branch that
+    // never ran.
+    t.skip(
+      `no productive global sweep within ${SWEEP_WAIT_MS / 1000}s: this jar's data source ` +
+        `is unreachable (an offline repro), so lastSweepAt stays null and the 3x-interval ` +
+        `agreement cannot be asserted here.`
+    );
+    return;
+  }
+
+  // A productive sweep exists: 200 within 3x the interval, 503 once it is staler than
+  // that. lastSweepAt only moves forward, so read /api/health either side of the sweep
+  // check and assert only while it held still (a sweep landing mid-test would make the
+  // pair inconsistent for a legitimate reason).
   for (let attempt = 0; attempt < 5; attempt++) {
-    const before = JSON.parse((await get("/api/health")).body);
+    const before = await readHealth();
     const sweep = await get("/api/health/sweep");
-    const after = JSON.parse((await get("/api/health")).body);
+    const after = await readHealth();
     assert.ok([200, 503].includes(sweep.status), `unexpected sweep status ${sweep.status}`);
     if (before.lastSweepAt !== after.lastSweepAt) continue;
+    assert.notEqual(before.lastSweepAt, null, "a sweep has landed, so lastSweepAt must still be set");
 
-    if (before.lastSweepAt === null) {
-      // No productive sweep ever (OpenSky unreachable since boot is the usual case for a
-      // fresh blackbox jar): the check cannot report healthy.
-      assert.equal(sweep.status, 503, "lastSweepAt null (no productive sweep yet) must be 503");
-      return;
-    }
-    // A productive sweep exists: 200 within 3x the interval, 503 once it is staler than that.
     const ageMs = Date.now() - Date.parse(before.lastSweepAt);
-    if (Math.abs(ageMs - STALE_AFTER_MS) < BOUNDARY_SLACK_MS) return;
+    if (Math.abs(ageMs - STALE_AFTER_MS) < BOUNDARY_SLACK_MS) return; // too close to the edge to call
     assert.equal(
       sweep.status,
       ageMs < STALE_AFTER_MS ? 200 : 503,

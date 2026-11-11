@@ -1,0 +1,78 @@
+/*
+ * The one container every control-stack panel uses: search, favourites,
+ * watch and info today, plus the locate button to come. On a phone it floats
+ * BESIDE the 48px button column — anchored to the viewport, never in the
+ * stack's own flex flow — so opening a panel never moves, hides or covers a
+ * button. It is never full screen: it stops inside the 16px gutters, caps its
+ * height to the viewport and scrolls its own content.
+ *
+ * Desktop keeps its own inline-card layout (see each component's stylesheet);
+ * this class only carries the phone placement and the shared card tokens.
+ */
+.control-panel {
+  box-sizing: border-box;
+}
+
+@media (max-width: 768px) {
+  /* Closed by default; each component adds --open from its own render. */
+  .control-panel {
+    display: none;
+  }
+
+  .control-panel.control-panel--open {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    position: fixed;
+    top: var(--safe-top);
+    /* Beside the stack: gutter + one 48px button + a 12px gap. */
+    left: calc(max(16px, env(safe-area-inset-left, 0px)) + 48px + 12px);
+    right: max(16px, env(safe-area-inset-right, 0px));
+    width: auto;
+    max-width: 360px;
+    /* vh first for older engines, dvh where the browser chrome can shrink. */
+    max-height: calc(100vh - var(--safe-top) - max(16px, env(safe-area-inset-bottom, 0px)));
+    max-height: calc(100dvh - var(--safe-top) - max(16px, env(safe-area-inset-bottom, 0px)));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 12px;
+    background: var(--color-panel);
+    color: var(--color-text);
+    border: 1px solid var(--color-panel-border);
+    border-radius: 8px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+    /* Above MapLibre's own control corners, as the full-screen sheets were. */
+    z-index: 1001;
+  }
+
+  /* A control that is in the stack stays put and stays visible while its
+     panel is open; the pressed state is the visible feedback. */
+  .left-overlay-stack .control-stack-button[aria-expanded="true"] {
+    background: var(--color-panel-border);
+  }
+}
+
+/* Shared close control, phone only (desktop cards have their own toggles). */
+.control-panel-close {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  /* Doubled class: each component's own base rule sets display:none for its
+     desktop toggle, and stylesheet order between the component files is not
+     something to rely on. */
+  .control-panel-close.control-panel-close {
+    display: block;
+    align-self: flex-end;
+    min-height: 44px;
+    min-width: 44px;
+    padding: 8px;
+    background: none;
+    border: none;
+    color: var(--color-text-muted);
+    font: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+}

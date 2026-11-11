@@ -4,7 +4,7 @@ import { AIRPORTS } from "../worldMapData";
 import type { AirportSelection } from "../types/flight";
 import { canvas, cssToken, drawLabel, measureLabel, serveImages, type LabelStyle } from "../map/glImages";
 import { PLANES_LAYER } from "../map/planes";
-import { ROUTE_LAYER_ID } from "../map/route";
+import { ROUTE_BOTTOM_LAYER_ID, ROUTE_LAYER_ID } from "../map/route";
 
 /**
  * How far down Natural Earth's significance ranking to draw, per zoom
@@ -103,7 +103,7 @@ export function mount(map: FlightMap, onAirportSelect: (ap: AirportSelection) =>
           "icon-ignore-placement": true,
         },
       },
-      [ROUTE_LAYER_ID, PLANES_LAYER].find((id) => gl.getLayer(id)),
+      [ROUTE_BOTTOM_LAYER_ID, ROUTE_LAYER_ID, PLANES_LAYER].find((id) => gl.getLayer(id)),
     );
     added = true;
   });

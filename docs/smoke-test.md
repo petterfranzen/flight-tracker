@@ -17,7 +17,9 @@ Run it after every deploy, and in the daily check-in.
 | 2 | `GET /api/flights/live/overview?...` | not JSON with `planes`/`clusters` arrays; a plane carries an out-of-range position; the active count for the box falls outside `SMOKE_MIN_ACTIVE..SMOKE_MAX_ACTIVE` |
 | 3 | `GET /api/flights/live?...` | not a JSON array; a row carries an out-of-range position; the row count falls outside `SMOKE_MIN_LIVE..SMOKE_MAX_LIVE` |
 | 4 | the front page in Playwright | the page does not answer, renders no map canvas, or logs any `console.error` / uncaught exception |
-| 5 | `wss://…/ws/live` | no `LiveFrame` arrives within `SMOKE_WS_TIMEOUT` seconds, or the frame is not a plausible `LiveFrame` |
+| 5 | response headers on `/` and `/api/health` | any of `Content-Security-Policy` (or `Content-Security-Policy-Report-Only` when the roll-back is on), `X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy` is missing from either path |
+| 6 | `wss://…/ws/live` with `Origin: <the site>` | the handshake does not answer `101`, no `LiveFrame` arrives within `SMOKE_WS_TIMEOUT` seconds, or the frame is not a plausible `LiveFrame` |
+| 7 | `wss://…/ws/live` with `Origin: https://evil.example` | the handshake does not answer `403` — i.e. the `Origin` allow-list is not rejecting a foreign site |
 
 Checks 2 and 3 run against the Baltic/Stockholm box the app itself falls back
 to (`latMin=54, latMax=66, lonMin=10, lonMax=25` — `ViewportService.DEFAULT`),
@@ -29,10 +31,13 @@ The summary line printed at the end looks like this:
 ```
 smoke-prod: https://flight.pastabake.cloud (expected sha: 192eecc…)
 PASS health: status=UP db=UP version=192eecc…
+PASS headers: / has Content-Security-Policy, X-Content-Type-Options, Referrer-Policy, Permissions-Policy
+PASS headers: /api/health has Content-Security-Policy, X-Content-Type-Options, Referrer-Policy, Permissions-Policy
 PASS overview: planes=41 clusters=0 active=41 (latMin=54&latMax=66&lonMin=10&lonMax=25)
 PASS live: rows=640 (latMin=54&latMax=66&lonMin=10&lonMax=25)
 PASS front page: HTTP 200 title='Netwatch Skygrid' canvas=1 console errors=0
-PASS websocket: LiveFrame after 3606ms: {"icao24":"8015f7","callsign":"AIC71A",…}
+PASS websocket: 101 with Origin https://flight.pastabake.cloud, LiveFrame after 3606ms: {"icao24":"8015f7",…}
+PASS websocket: 403 for Origin https://evil.example
 smoke-prod: PASS — https://flight.pastabake.cloud healthy in 22s
 ```
 
@@ -53,11 +58,55 @@ Environment overrides (all optional): `SMOKE_BASE_URL`/`BASE_URL`,
 `SMOKE_WS_TIMEOUT` (default 30), `SMOKE_HTTP_TIMEOUT` (default 10),
 `SMOKE_PAGE_SETTLE_MS` (default 7000), `SMOKE_MIN_ACTIVE`/`SMOKE_MAX_ACTIVE`
 (default 1/20000), `SMOKE_MIN_LIVE`/`SMOKE_MAX_LIVE` (default 1/100000),
+`SMOKE_CSP_REPORT_ONLY` (default `false` — see the roll-back section below),
+`SMOKE_WS_ORIGIN` (default: the origin of `--url`, i.e. the public site),
+`SMOKE_WS_BAD_ORIGIN` (default `https://evil.example`),
 `PW_CHROMIUM_PATH`, `NODE_PATH`/`SMOKE_NODE_PATH`.
 
 **Exit codes:** `0` every check passed · `1` one or more checks failed, one
 line per failure on stdout · `2` bad usage (unknown flag, a SHA that is not 40
 hex chars, a malformed `SMOKE_BBOX`). A healthy run takes roughly 25–50 s.
+
+## The same checks against a local jar
+
+`blackbox-tests/security-headers.test.js` makes the same assertions without a
+deploy: the four headers on `/` and `/api/health`, `101` plus (when there is
+traffic) a first `LiveFrame` for the public site's `Origin`, and `403` for a
+foreign one. CI's `blackbox` job runs it against the jar that `deploy` ships,
+so the assertions are proven against a known-good build before this script
+ever runs at production. Locally:
+
+```bash
+BASE_URL=http://127.0.0.1:8080 node --test blackbox-tests/security-headers.test.js
+```
+
+## Rolling back
+
+Both the CSP and the `Origin` allow-list have a switch that takes effect on
+the next deploy, without a code change. Change the value in the box's
+environment, redeploy/restart, then run this script again — it reports which
+state it found, so a half-applied roll-back is visible rather than silent.
+
+- **CSP is breaking something** (a blocked script, style or connection the
+  policy did not anticipate): set `FLIGHTTRACKER_CSP_REPORT_ONLY=true`. The
+  policy then ships as `Content-Security-Policy-Report-Only` — reported, not
+  enforced — and this script must be run with `SMOKE_CSP_REPORT_ONLY=true` so
+  it expects that header instead. Revert by setting it back to `false`.
+  On a live box the usual cause is a third-party origin missing from
+  `connect-src`/`img-src`; the browser console names the blocked URI.
+- **The live feed stops connecting** after a deploy or a hostname change: the
+  browser's `Origin` is not on `flighttracker.ws.allowed-origins`
+  (`FLIGHTTRACKER_WS_ALLOWED_ORIGINS`, comma-separated full origins —
+  `scheme://host[:port]`, no paths, no wildcards; a `*` entry is ignored by
+  design). Add the public origin, redeploy, and re-run this script: check 6
+  answering something other than `101` for `Origin: <the site>` is this
+  misconfiguration, and check 7 turning into a `101` means the allow-list was
+  emptied or bypassed. Revert by removing the origin again.
+
+Neither switch needs a Cloudflare or deploy-key change: both are read from the
+service's own environment — `/etc/flight-tracker/env`, the systemd unit's
+`EnvironmentFile` (see `deploy/hetzner/README.md`) — so they roll back on the
+next restart without touching the tunnel, the origin or the deploy key.
 
 ## What it needs
 

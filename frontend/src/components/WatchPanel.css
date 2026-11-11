@@ -50,10 +50,10 @@
     line-height: 16px;
     text-align: center;
   }
-  .watch-panel-content { width: min(320px, calc(100vw - 32px)); }
 }
 
 .watch-panel-content {
+  box-sizing: border-box;
   margin-top: 6px;
   padding: 8px;
   background: var(--color-panel);
@@ -65,12 +65,26 @@
   font-size: 12px;
   color: var(--color-text);
 }
+
+/* Phone: the shared .control-panel (ControlPanel.css) owns the placement,
+   the width and the viewport-capped scroll box, so drop the inline-card cap. */
+@media (max-width: 768px) {
+  .watch-panel-content {
+    margin-top: 0;
+    max-height: none;
+    overflow: visible;
+  }
+}
 .watch-panel-content[hidden] { display: none; }
 
-.watch-panel-form { display: flex; flex-direction: column; gap: 4px; }
+.watch-panel-form { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .watch-panel-form input {
   box-sizing: border-box;
   width: 100%;
+  /* The date field's picker adds intrinsic width; without these it ran to
+     the panel's right edge (and its calendar glyph clipped). */
+  min-width: 0;
+  max-width: 100%;
   background: var(--color-bg);
   color: var(--color-text);
   border: 1px solid var(--color-panel-border);
@@ -103,6 +117,9 @@
   /* The house tap-target minimum on a phone, both axes: the stop-watching
      button is otherwise a glyph-sized target, under the minimum in width. */
   .watch-panel-search, .watch-panel-watch, .watch-panel-goto, .watch-panel-remove { min-height: 44px; min-width: 44px; }
+  /* The four form fields as well: at the inheriting 15px text plus 6px padding
+     they are only ~30px tall. */
+  .watch-panel-form input { min-height: 44px; }
 }
 .watch-panel-watch:disabled { opacity: 0.6; cursor: default; }
 .watch-panel-ground { color: var(--color-text-muted); }
