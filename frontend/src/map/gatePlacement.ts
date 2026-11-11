@@ -72,31 +72,46 @@ export interface TrailPoint {
 }
 
 /**
- * The trail to draw. Real reports only, in time order, none after the last
- * observation. Normally it ends at the marker (which can be a dead-reckoned
- * estimate: a movable tip). When the plane is drawn at its gate, the trail
- * must not run on to the gate (that stretch was never reported) and, if the
- * last report is old, it is not drawn at all: it would end away from the
- * plane, at wherever coverage was lost.
+ * The trail to draw, keeping each report's time. Real reports only, in time
+ * order, none after the last observation. Normally it ends at the marker
+ * (which can be a dead-reckoned estimate: a movable tip, carrying the
+ * observedAt of the report it was projected from). When the plane is drawn at
+ * its gate, the trail must not run on to the gate (that stretch was never
+ * reported) and, if the last report is old, it is not drawn at all: it would
+ * end away from the plane, at wherever coverage was lost. The times are what
+ * lets the trail layer break the line across a real gap in the reports
+ * (map/route.ts).
  */
+export function trailPointsFor(
+  points: TrailPoint[],
+  tip: { latitude: number; longitude: number; observedAt: string } | null,
+  display: GateDisplay | null,
+  nowMs: number,
+): TrailPoint[] {
+  const until = tip ? Date.parse(tip.observedAt) : Infinity;
+  const real = points
+    .filter((pt) => Date.parse(pt.observedAt) <= until)
+    .sort((a, b) => Date.parse(a.observedAt) - Date.parse(b.observedAt));
+  if (display) {
+    const last = tip ? Date.parse(tip.observedAt) : NaN;
+    return Number.isFinite(last) && nowMs - last > GATE_STALE_MS ? [] : real;
+  }
+  const out = real;
+  const end = out[out.length - 1];
+  if (tip && !(end && end.lat === tip.latitude && end.lon === tip.longitude)) {
+    out.push({ lat: tip.latitude, lon: tip.longitude, observedAt: tip.observedAt });
+  }
+  return out;
+}
+
+/** The trail as [lat, lon] vertices, dropping the report times (see trailPointsFor). */
 export function trailFor(
   points: TrailPoint[],
   tip: { latitude: number; longitude: number; observedAt: string } | null,
   display: GateDisplay | null,
   nowMs: number,
 ): [number, number][] {
-  const until = tip ? Date.parse(tip.observedAt) : Infinity;
-  const real = points
-    .filter((pt) => Date.parse(pt.observedAt) <= until)
-    .sort((a, b) => Date.parse(a.observedAt) - Date.parse(b.observedAt))
-    .map((pt): [number, number] => [pt.lat, pt.lon]);
-  if (display) {
-    const last = tip ? Date.parse(tip.observedAt) : NaN;
-    return Number.isFinite(last) && nowMs - last > GATE_STALE_MS ? [] : real;
-  }
-  const end = real[real.length - 1];
-  if (tip && !(end && end[0] === tip.latitude && end[1] === tip.longitude)) real.push([tip.latitude, tip.longitude]);
-  return real;
+  return trailPointsFor(points, tip, display, nowMs).map((p): [number, number] => [p.lat, p.lon]);
 }
 
 /** The first coordinate of a GeoJSON geometry as lat/lon: a gate is a point, but a mapped one may be an area. */

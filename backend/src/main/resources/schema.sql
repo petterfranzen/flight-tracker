@@ -1,4 +1,15 @@
 -- Flight Tracker schema (SQLite — cloud migration A2, PLAN.md §6)
+-- Migrations are additive and backward-compatible for one release: add
+-- nullable columns or new tables; never drop, rename or retype within the
+-- rollback window. There are no down-migrations — a rollback lands the
+-- previous jar on this already-migrated file — so a statement that removes
+-- or changes a column the older jar still writes leaves that jar failing
+-- its INSERTs while /api/health (SELECT 1) keeps reporting healthy. The
+-- rule is enforced by SchemaMigrationGuardTest; a deliberate exception
+-- must be explicit and explained, with an
+-- `-- additive-migrations: allow <reason>` comment on the line immediately
+-- above (or inline with) the statement.
+
 -- Design goal: every position report is kept (never overwritten), so usage
 -- (flight hours, distance flown, utilisation %) can be derived later from
 -- the historic series rather than from a "current state" row.

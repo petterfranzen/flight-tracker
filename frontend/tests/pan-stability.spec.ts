@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { newDeclutterMemory, pickNonOverlapping, spacingKey, spacingLevel, type Candidate, type DeclutterMemory } from "../src/map/declutter";
 import { planeBoxSize } from "../src/map/planes";
-import { mockFlightApi, renderedPlanes, setMapView, trackRequests, waitForMapReady } from "./helpers";
+import { declutterSpacing, mockFlightApi, renderedPlanes, setMapView, trackRequests, waitForMapReady } from "./helpers";
 
 // Panning at a fixed zoom must not make planes pop in and out all over the
 // screen (Petter's screencast, 30 Oct). #138 fixed the case where planes were
@@ -33,7 +33,7 @@ function traffic(n: number) {
 
 /** /live answers for the requested bbox only, as the server does. */
 async function serveByBbox(page: Page, list: ReturnType<typeof traffic>) {
-  await mockFlightApi(page);
+  await mockFlightApi(page, { overviewPlanes: list });
   await page.route(/\/api\/flights\/live(\?|$)/, (route) => {
     const q = new URL(route.request().url()).searchParams;
     const [latMin, latMax, lonMin, lonMax] = ["latMin", "latMax", "lonMin", "lonMax"].map((k) => Number(q.get(k)));
@@ -155,47 +155,144 @@ test.describe("pickNonOverlapping with memory", () => {
 
 // Follow-ups from the QA of #141 (section9-hq #66). The spacing memory added by
 // #141 is keyed on `<rounded zoom>:<cap>` and never relaxes; both are fixed here,
-// one spec each.
+// one spec each (the relaxation has two halves).
+//
+// Every spec reads the app's own call site as well as the helper:
+// `declutterSpacing()` is the box, key and widening that `renderAircraftLayer`
+// last handed `pickNonOverlapping`, after a real pan or zoom. Reverting the call
+// site back to a fractional box or a key without the source or the whole level
+// fails all of them — the earlier versions re-derived the call site's inputs
+// from the helper and stayed green through exactly that regression (QA of #148).
 
 /** A grid of active candidates 20 px apart: far more than the cap at a 30 px box. */
 const gridAt = (cols: number, rows: number, x0 = 0): Candidate[] =>
   Array.from({ length: cols * rows }, (_, i) => ({ icao24: `g${x0}_${i}`, x: x0 + (i % cols) * 20, y: Math.floor(i / cols) * 20, active: true }));
 
-test.describe("#66 (1) the spacing key follows the whole zoom level", () => {
-  test("a pinch inside one level hands the picker the same box and key, so nothing is re-spaced", () => {
-    // planeBoxSize reads the viewport (window.matchMedia) for the phone factor;
-    // this picker check runs in node, so stand in a desktop viewport.
-    (globalThis as { window?: unknown }).window = { matchMedia: () => ({ matches: false }) };
-    // The box does move inside a whole level — which is why measuring it at the
-    // fractional zoom while keying the memory on the rounded one left the stored
-    // widening applied to a box that had changed under it.
-    expect(planeBoxSize(7.6)).not.toBe(planeBoxSize(7.9));
-    // The call site (main.ts): the box and the key both come from spacingLevel.
-    const box = (zoom: number) => planeBoxSize(spacingLevel(zoom));
-    const key = (zoom: number) => spacingKey("live", zoom, 150);
-    expect(box(7.6)).toBe(box(7.9));
-    expect(key(7.6)).toBe(key(7.9));
+/** The box, key and widening the app's last render used (main.ts renderAircraftLayer). */
+async function callSite(page: Page) {
+  const s = await declutterSpacing(page);
+  if (!s) throw new Error("renderAircraftLayer has not run yet");
+  return s;
+}
 
+/** Wait until the app keys its spacing under `prefix`, then return what it used. */
+async function callSiteForKey(page: Page, prefix: string, timeout = 30_000) {
+  await expect
+    .poll(async () => ((await declutterSpacing(page))?.key ?? "").startsWith(prefix), {
+      timeout,
+      message: `the app's spacing key starts with ${prefix}`,
+    })
+    .toBe(true);
+  return callSite(page);
+}
+
+/** planeBoxSize reads window.matchMedia for the phone factor; these helper checks run in node. */
+function desktopViewport() {
+  (globalThis as { window?: unknown }).window = { matchMedia: () => ({ matches: false }) };
+}
+
+/**
+ * Dense over (lat 59.4, lon 16) on a lattice wider than a z12 viewport and
+ * coarser than the icon box, then a handful at lon 21: one pan at one whole
+ * level goes from well over the marker cap to a nearly empty view.
+ */
+function denseThenSparse() {
+  const cols = 60;
+  const rows = 40;
+  const dense = Array.from({ length: cols * rows }, (_, i) => ({
+    icao24: `d${i.toString(16).padStart(5, "0")}`,
+    callsign: `D${i}`,
+    observedAt: minutesAgo(1),
+    latitude: 59.25 + Math.floor(i / cols) * 0.005,
+    longitude: 15.7 + (i % cols) * 0.006,
+    headingDeg: 90,
+    onGround: false,
+  }));
+  const sparse = Array.from({ length: 20 }, (_, i) => ({
+    icao24: `s${i}`,
+    callsign: `S${i}`,
+    observedAt: minutesAgo(1),
+    latitude: 59.3 + (i % 5) * 0.05,
+    longitude: 20.9 + Math.floor(i / 5) * 0.05,
+    headingDeg: 90,
+    onGround: false,
+  }));
+  return [...dense, ...sparse];
+}
+
+test.describe("#66 (1) the spacing key follows the whole zoom level", () => {
+  test("a pinch inside one level leaves the app's box and key unchanged", async ({ page }) => {
+    test.setTimeout(240_000);
+    await serveByBbox(page, traffic(4_000));
+    await page.goto("/");
+    await waitForMapReady(page, 60_000);
+
+    // Two fractional zooms in level 8, then the level's own whole zoom: the app
+    // must measure all three with the same whole-level box, and key the first
+    // two identically. A fractional box changes at each and fails here.
+    await setMapView(page, LAT, 16, 7.6);
+    const a = await callSiteForKey(page, "overview:8:");
+    await setMapView(page, LAT, 16, 7.9);
+    const b = await callSiteForKey(page, "overview:8:");
+    await setMapView(page, LAT, 16, 8.0);
+    const whole = await callSiteForKey(page, "live:8:");
+
+    expect(a.box).toBe(whole.box); // planeBoxSize(8), whatever a pinch does inside 8
+    expect(b.box).toBe(whole.box);
+    expect(b.key).toBe(a.key); // one level, one cap, one source: one entry
+
+    // Through the real path: the pinch drew planes, on both sides of it.
+    await expect.poll(async () => (await renderedPlanes(page)).length, { timeout: 10_000, message: "planes drawn after a real pinch" }).toBeGreaterThan(0);
+
+    // Given the box and key the app itself uses, the helper re-spaces nothing
+    // between the two fractional zooms either.
     const memory = newDeclutterMemory();
-    const before = pickNonOverlapping(gridAt(40, 30), [], box(7.6), 150, memory, key(7.6));
-    const after = pickNonOverlapping(gridAt(40, 30), [], box(7.9), 150, memory, key(7.9));
+    const before = pickNonOverlapping(gridAt(40, 30), [], a.box, Number(a.key.split(":").pop()), memory, a.key);
+    const after = pickNonOverlapping(gridAt(40, 30), [], b.box, Number(b.key.split(":").pop()), memory, b.key);
     expect([...after].sort()).toEqual([...before].sort());
+
+    // And the helper's own rule: the box moves fractionally, the whole level does not.
+    desktopViewport();
+    expect(planeBoxSize(7.6)).not.toBe(planeBoxSize(7.9));
+    expect(planeBoxSize(spacingLevel(7.6))).toBe(planeBoxSize(spacingLevel(7.9)));
+    expect(spacingKey("live", 7.6, 150)).toBe(spacingKey("live", 7.9, 150));
   });
 });
 
 test.describe("#66 (2) a widened spacing relaxes again", () => {
   const KEY = spacingKey("overview", 7.6, 150);
 
-  test("it relaxes once most of the drawn planes have left, without dropping one", () => {
+  test("the app relaxes it once most of the drawn planes have left, without dropping one", async ({ page }) => {
+    test.setTimeout(240_000);
+    await serveByBbox(page, denseThenSparse());
+    await page.goto("/");
+    await waitForMapReady(page, 60_000);
+
+    await setMapView(page, LAT, 16, 12.4);
+    const dense = await callSiteForKey(page, "live:12:");
+    // The call site this spec guards: whole-level box, source-qualified key.
+    expect(dense.key).toMatch(/^live:12:\d+$/);
+    await expect.poll(async () => (await callSite(page)).spacing, { timeout: 30_000, message: "the dense view widened the spacing" }).toBeGreaterThan(1);
+    const wide = (await callSite(page)).spacing;
+    expect(wide).toBeGreaterThan(1);
+
+    // A pan off the block at the same level: almost none of the drawn planes
+    // remain, so the widening was for a density that is gone and relaxes.
+    await setMapView(page, LAT, 21, 12.4);
+    await expect
+      .poll(async () => (await callSite(page)).spacing, { timeout: 30_000, message: "the sparse view relaxed the spacing" })
+      .toBe(1);
+    // It kept drawing through the pan, and what it draws there is real.
+    await expect.poll(async () => (await renderedPlanes(page)).length, { timeout: 10_000, message: "planes drawn on the sparse view" }).toBeGreaterThan(0);
+
+    // The helper's own half, with its own numbers: relaxation drops nothing
+    // already drawn, and the room it held open fills in.
     const memory = newDeclutterMemory();
-    const dense = gridAt(60, 40);
-    const first = pickNonOverlapping(dense, [], 30, 150, memory, KEY);
+    const grid = gridAt(60, 40);
+    const first = pickNonOverlapping(grid, [], 30, 150, memory, KEY);
     expect(first.size).toBeGreaterThan(50);
     expect(memory.spacing).toBeGreaterThan(1); // the cap widened it
-
-    // Pan out of the dense block: a handful of the planes drawn there are still
-    // on screen, and two newcomers arrive in the room the widening held open.
-    const survivors = dense.filter((c) => first.has(c.icao24)).slice(0, 5);
+    const survivors = grid.filter((c) => first.has(c.icao24)).slice(0, 5);
     const after = pickNonOverlapping(
       [...survivors, { icao24: "new1", x: 4_000, y: 0, active: true }, { icao24: "new2", x: 4_200, y: 0, active: true }],
       [],
@@ -204,53 +301,82 @@ test.describe("#66 (2) a widened spacing relaxes again", () => {
       memory,
       KEY,
     );
-
     expect(memory.spacing).toBe(1); // back to the zoom's own spacing
-    // Nothing already drawn drops for it: every survivor is still drawn...
     for (const c of survivors) expect(after.has(c.icao24), `${c.icao24} was on screen and is still drawn`).toBe(true);
-    // ...and the room that was held open fills in.
     expect(after.has("new1")).toBe(true);
     expect(after.has("new2")).toBe(true);
   });
 
-  test("it is kept while most of the drawn planes are still on screen", () => {
-    const memory = newDeclutterMemory();
-    const dense = gridAt(60, 40);
-    const first = pickNonOverlapping(dense, [], 30, 150, memory, KEY);
-    const wide = memory.spacing;
+  test("the app keeps it while most of the drawn planes are still on screen", async ({ page }) => {
+    test.setTimeout(240_000);
+    await serveByBbox(page, denseThenSparse());
+    await page.goto("/");
+    await waitForMapReady(page, 60_000);
+
+    await setMapView(page, LAT, 16, 12.4);
+    const dense = await callSiteForKey(page, "live:12:");
+    await expect.poll(async () => (await callSite(page)).spacing, { timeout: 30_000, message: "the dense view widened the spacing" }).toBeGreaterThan(1);
+    const wide = (await callSite(page)).spacing;
+
+    // Same view, one fraction of a whole level over: nearly every drawn plane
+    // is still there, so the widening is still doing its job and must not
+    // relax under it.
+    await setMapView(page, LAT, 16, 12.45);
+    const nudged = await callSiteForKey(page, "live:12:");
+    expect(nudged.key).toBe(dense.key); // still the same whole level
+    expect(nudged.box).toBe(dense.box);
+    await expect.poll(async () => (await callSite(page)).spacing, { timeout: 15_000, message: "the widening is kept on the same view" }).toBe(wide);
     expect(wide).toBeGreaterThan(1);
 
-    // The same view: nearly every drawn plane is still there, so the widening is
-    // still doing its job and must not be relaxed under it.
-    const again = pickNonOverlapping(dense.map((c) => ({ ...c })), [], 30, 150, memory, KEY);
-    expect(memory.spacing).toBe(wide);
+    // The helper's own half, with its own numbers.
+    const memory = newDeclutterMemory();
+    const grid = gridAt(60, 40);
+    const first = pickNonOverlapping(grid, [], 30, 150, memory, KEY);
+    const helperWide = memory.spacing;
+    expect(helperWide).toBeGreaterThan(1);
+    const again = pickNonOverlapping(grid.map((c) => ({ ...c })), [], 30, 150, memory, KEY);
+    expect(memory.spacing).toBe(helperWide);
     expect([...again].filter((id) => first.has(id)).length).toBeGreaterThan(first.size * 0.9);
   });
 });
 
 test.describe("#66 (3) the source is part of the spacing key", () => {
-  test("the overview band that rounds to level 8 does not hand its spacing to the live source", () => {
-    // Below CLUSTER_FETCH_MAX_ZOOM the map draws the overview; the 7.5-8.0 band
-    // rounds to level 8, the same level the live source at 8.0 and up uses, so a
-    // level-only key is one string for both.
-    expect(spacingKey("overview", 7.6, 150)).not.toBe(spacingKey("live", 8.2, 150));
-    expect(spacingKey("overview", 7.6, 150)).toBe(spacingKey("overview", 7.9, 150)); // one band, one level
+  test("the app does not hand the overview band's spacing to the live source", async ({ page }) => {
+    test.setTimeout(240_000);
+    await serveByBbox(page, traffic(4_000));
+    await page.goto("/");
+    await waitForMapReady(page, 60_000);
 
-    // With the source in the key, the switch re-works the spacing: level 8's live
-    // frame is the band's own planes, which all fit at the level's spacing.
+    // 7.9 rounds to level 8 but still draws the overview; 8.1 is the live
+    // source at the same level. The key must differ so the switch re-works the
+    // spacing instead of inheriting the band's.
+    await setMapView(page, LAT, 16, 7.9);
+    const band = await callSiteForKey(page, "overview:8:");
+    await setMapView(page, LAT, 16, 8.1);
+    const live = await callSiteForKey(page, "live:8:");
+
+    expect(band.key).not.toBe(live.key);
+    expect(band.box).toBe(live.box); // one level, one box; only the source changed
+    await expect.poll(async () => (await renderedPlanes(page)).length, { timeout: 10_000, message: "planes drawn after the source switch" }).toBeGreaterThan(0);
+
+    // Given those two keys, the switch re-works the spacing: the live frame all
+    // fits at the level's own spacing.
     const memory = newDeclutterMemory();
-    const band = pickNonOverlapping(gridAt(60, 40), [], 30, 150, memory, spacingKey("overview", 7.6, 150));
+    const picked = pickNonOverlapping(gridAt(60, 40), [], 30, 300, memory, band.key);
     expect(memory.spacing).toBeGreaterThan(1);
-    const live = gridAt(60, 40).filter((c) => band.has(c.icao24));
-    const switched = pickNonOverlapping(live, [], 30, 150, memory, spacingKey("live", 8.2, 150));
+    const liveFrame = gridAt(60, 40).filter((c) => picked.has(c.icao24));
+    const switched = pickNonOverlapping(liveFrame, [], 30, 300, memory, live.key);
     expect(memory.spacing).toBe(1);
-    expect([...switched].sort()).toEqual(live.map((c) => c.icao24).sort());
+    expect([...switched].sort()).toEqual(liveFrame.map((c) => c.icao24).sort());
 
-    // The key without the source in it (what the call site used to pass) is the
-    // same string for both, so the live frame keeps the band's widening instead.
+    // The helper's own rule: a level-only key is one string for both sources, so
+    // the band's widening is kept when the live frame replaces it.
+    expect(spacingKey("overview", 7.6, 150)).not.toBe(spacingKey("live", 8.2, 150));
+    expect(spacingKey("overview", 7.6, 150)).toBe(spacingKey("overview", 7.9, 150));
     const stale = newDeclutterMemory();
     pickNonOverlapping(gridAt(60, 40), [], 30, 150, stale, "8:150");
-    pickNonOverlapping(live, [], 30, 150, stale, "8:150");
-    expect(stale.spacing).toBeGreaterThan(1);
+    const frame = gridAt(60, 40).filter((c) => stale.drawn.has(c.icao24));
+    pickNonOverlapping(frame, [], 30, 150, stale, "8:150");
+    expect(stale.spacing).toBeGreaterThan(1); // what the level-only key kept
   });
 });

@@ -425,8 +425,8 @@ export async function startReplay(page: Page, testInfo: TestInfo, opts: ReplayOp
       const src = map.gl.getSource("flight-route");
       if (!src) return null;
       const data = await src.getData();
-      const c = data.geometry && data.geometry.coordinates;
-      if (!c || c.length === 0) return null;
+      const c = (data.features || []).flatMap((f) => (f.geometry && f.geometry.coordinates) || []);
+      if (c.length === 0) return null;
       const last = c[c.length - 1];
       return { lat: last[1], lon: last[0] };
     })()`);

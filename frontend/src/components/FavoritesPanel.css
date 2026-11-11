@@ -70,46 +70,8 @@
     fill: currentColor;
   }
 
-  /* Covered by the full-screen body when open (next rule) — hidden
-     outright rather than left to rely on stacking order alone, so it's
-     also out of the keyboard tab order while the sheet is open. */
-  .favorites-panel:has(.favorites-panel-body--open) .favorites-panel-fab {
-    display: none;
-  }
-
-  .favorites-panel-body {
-    display: none;
-  }
-
-  .favorites-panel-body--open {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    position: fixed;
-    inset: 0;
-    /* Above the map's own control corners (the scale bar, the
-       attribution), same reasoning as FlightSearch's
-       identical rule. */
-    z-index: 1001;
-    padding: 16px;
-    padding-top: max(16px, env(safe-area-inset-top));
-    padding-bottom: max(16px, env(safe-area-inset-bottom, 0px));
-    overflow-y: auto;
-    background: var(--color-bg);
-  }
-
-  .favorites-panel-body-close {
-    display: block;
-    align-self: flex-end;
-    background: none;
-    border: none;
-    color: var(--color-text-muted);
-    font: inherit;
-    font-size: 14px;
-    font-weight: 600;
-    padding: 8px;
-    cursor: pointer;
-  }
+  /* The panel is the shared .control-panel beside the stack
+     (ControlPanel.css); the FAB stays visible and in place while it is open. */
 
   /* Redundant once the FAB opens straight to this content and the close
      button above can dismiss it again — this toggle's only reachable
@@ -231,4 +193,12 @@
 .favorites-panel-item-remove:hover {
   background: var(--color-panel-border);
   color: var(--color-text);
+}
+
+@media (max-width: 768px) {
+  /* House tap-target minimum (44x44) on the phone drawer: the row's select
+     button is text-sized and the ✕ remove is a glyph. The favourite name stays
+     where it is; only the hit boxes grow. */
+  .favorites-panel-item-select { min-height: 44px; }
+  .favorites-panel-item-remove { min-width: 44px; min-height: 44px; }
 }

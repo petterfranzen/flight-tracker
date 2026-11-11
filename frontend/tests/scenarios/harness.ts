@@ -245,7 +245,8 @@ export async function routeExtentPx(page: Page): Promise<{ width: number; height
     const map = document.querySelector(".map-container")._flightMap;
     const data = await map.gl.getSource("flight-route").getData();
     const size = map.getSize();
-    const pts = data.geometry.coordinates.map(([lon, lat]) => map.project(lat, lon)).filter((p) => p.x >= 0 && p.y >= 0 && p.x <= size.x && p.y <= size.y);
+    const coords = (data.features || []).flatMap((f) => (f.geometry && f.geometry.coordinates) || []);
+    const pts = coords.map(([lon, lat]) => map.project(lat, lon)).filter((p) => p.x >= 0 && p.y >= 0 && p.x <= size.x && p.y <= size.y);
     if (pts.length === 0) return { width: 0, height: 0 };
     const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
     return { width: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys) };
