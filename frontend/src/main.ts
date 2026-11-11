@@ -27,6 +27,7 @@ import { NOTIFY_ENABLED, notificationPermission, showOsNotification } from "./no
 import { loadNotifyState, saveNotifyState, pruneNotifyState, emptyState, forgetFlight, startHourlyPrune } from "./notify/state";
 import { chooseChannel, observeFlight } from "./notify/detect";
 import { commitNotifyPoll, type NotifyOutcome } from "./notify/poll";
+import { applyStandaloneViewport } from "./ui/standaloneViewport";
 import { boundsFromMap, createFollowSelected, createMap, DEFAULT_VIEW, GPUInitializationError } from "./map/map";
 import { createPlaneLayer, planeBoxSize } from "./map/planes";
 import { declutterCellDeg, newDeclutterMemory, pickNonOverlapping, spacingKey, spacingLevel, type Candidate } from "./map/declutter";
@@ -36,8 +37,9 @@ import { pickInitialView } from "./map/initialView";
 import { getMockPlaneCount } from "./api/mockFleet";
 import { agedIds, findShadowedIds, isActiveTraffic, OVERLAP_MIN_ZOOM } from "./map/staleness";
 import { newerReport, notOlderReport, sameReport } from "./map/reportOrder";
-import { createRouteLayer } from "./map/route";
-import { confirmedGate, displayedPosition, gateDisplay, trailFor, type GateDisplay } from "./map/gatePlacement";
+import { createRouteLayer, type RoutePoint } from "./map/route";
+import { lastContinuousRun, TRAIL_FALLBACK_WINDOW_MS } from "./map/trailWindow";
+import { confirmedGate, displayedPosition, gateDisplay, trailPointsFor, type GateDisplay } from "./map/gatePlacement";
 import { nearestStandFromIndex } from "./map/gateIndex";
 import { createUncertaintyLayer } from "./map/uncertainty";
 import { keepCellWinners } from "./map/cellWinners";
@@ -50,6 +52,7 @@ import * as favoritesPanel from "./ui/favoritesPanel";
 import * as watchPanel from "./ui/watchPanel";
 import * as watchToast from "./ui/watchToast";
 import * as legend from "./ui/legend";
+import * as locate from "./ui/locate";
 import * as installPrompt from "./ui/installPrompt";
 import * as dossierPanel from "./ui/dossierPanel";
 import * as bootScreen from "./ui/bootScreen";
@@ -276,6 +279,8 @@ function boot(): void {
   // Home Screen hint on iOS. It hides itself when already standalone and
   // remembers a dismissal. See ui/installPrompt.ts.
   installPrompt.mount(appShell);
+  // Installed iOS app: mark standalone for the WebKit 301108 workaround; ?vpdebug readout.
+  applyStandaloneViewport();
 
   // Minimal worker (#85 reuses #82's decision; one worker, not two). It
   // caches nothing — its header says why — so a deploy can never be kept
@@ -404,11 +409,14 @@ function boot(): void {
   const pendingWs = new Map<string, FlightPosition>();
   let wsFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
-  let route: [number, number][] = [];
+  let route: RoutePoint[] = [];
   let lastRouteObservedAt: string | null = null;
   let routePoints: { lat: number; lon: number; observedAt: string }[] = [];
   let legStartAt: string | null = null;
   let selectionEffectSeq = 0;
+  // Whether this selection's own history has landed: until it has, there is no
+  // trail to draw — no tip-only stub, and no untrimmed 6 h track.
+  let trailReady = false;
 
   let nowMsTimer: ReturnType<typeof setInterval> | null = null;
   let priorityPollTimer: ReturnType<typeof setInterval> | null = null;
@@ -426,9 +434,22 @@ function boot(): void {
   // selected from an older list) wait until the marker gets there: drawn
   // straight away, they ran the trail ahead of the plane.
   function drawRoute(): void {
+    // Nothing of a fresh selection is drawn before its own history lands
+    // (onSelectedIdChanged): a lone dead-reckoned tip then, or even a moment
+    // of the untrimmed 6 h track, is a trail that corrects itself in front of
+    // the user — the ghost trail this selection is meant to prevent.
+    if (!trailReady) {
+      route = [];
+      routeLayer.update(route);
+      return;
+    }
     const pos = store.get("selectedPos");
     const tip = pos && pos.icao24 === store.get("selectedId") ? pos : null;
-    route = trailFor(routePoints, tip, currentGateDisplay(), Date.now());
+    // With each report's time, so the trail layer can break the line across a
+    // real gap in the feed (map/route.ts), instead of dashing the whole path.
+    route = trailPointsFor(routePoints, tip, currentGateDisplay(), Date.now()).map(
+      (p): RoutePoint => ({ lat: p.lat, lon: p.lon, observedAtMs: Date.parse(p.observedAt) }),
+    );
     routeLayer.update(route);
   }
 
@@ -506,6 +527,10 @@ function boot(): void {
     drawRoute();
   }
   function appendRoutePoint(p: LiveMarker): void {
+    // The trail starts with this selection's own history: appended to an empty
+    // route first, a live report drew a single-point trail that then jumped
+    // when the real track arrived.
+    if (!trailReady) return;
     if (lastRouteObservedAt == null || newerReport(p.observedAt, lastRouteObservedAt)) {
       // A new real report: it joins the trail.
       lastRouteObservedAt = p.observedAt;
@@ -572,15 +597,15 @@ function boot(): void {
     // against the other, and the source is part of the key so the 7.5-8.0
     // overview band does not hand its spacing to the live source above it.
     const maxDrawn = isSmallScreen() ? MAX_DRAWN_MARKERS_SMALL_SCREEN : MAX_DRAWN_MARKERS;
+    // The box and the key both come from the whole level (spacingLevel); the key
+    // also names the source actually being picked. Test hook: tests read what
+    // this render used (tests/helpers.ts declutterSpacing) -- the wiring itself
+    // is what those specs guard, so a reverted call site fails them.
+    const spacingBox = planeBoxSize(spacingLevel(zoom));
+    const spacingKeyFor = spacingKey(useOverview ? "overview" : "live", zoom, maxDrawn);
     const declutterStart = performance.now();
-    const keep = pickNonOverlapping(
-      points,
-      fixed,
-      planeBoxSize(spacingLevel(zoom)),
-      maxDrawn,
-      declutterMemory,
-      spacingKey(useOverview ? "overview" : "live", zoom, maxDrawn),
-    );
+    const keep = pickNonOverlapping(points, fixed, spacingBox, maxDrawn, declutterMemory, spacingKeyFor);
+    map.declutterSpacing = { box: spacingBox, key: spacingKeyFor, spacing: declutterMemory.spacing };
     const declutterMs = performance.now() - declutterStart;
     perf.parts.declutter += declutterMs;
     perf.declutter.calls++;
@@ -1083,6 +1108,10 @@ function boot(): void {
     nowMsTimer = setInterval(() => store.set("nowMs", Date.now()), 1_000);
   }
 
+  // How long a selection waits for the dossier's leg start before drawing the
+  // fallback window instead. The dossier normally answers well inside this.
+  const LEG_START_WAIT_MS = 1_500;
+
   function onSelectedIdChanged(): void {
     const seq = ++selectionEffectSeq;
     stopPriorityPoll();
@@ -1098,6 +1127,7 @@ function boot(): void {
     lastRouteObservedAt = null;
     routePoints = [];
     legStartAt = null;
+    trailReady = false;
     routeLayer.update(route);
 
     const selectedId = store.get("selectedId");
@@ -1110,35 +1140,66 @@ function boot(): void {
     startNowMsTicker();
     startPriorityPoll(selectedId);
 
-    const to = new Date().toISOString();
-    const from = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString(); // last 6h of history
-    fetchHistory(selectedId, from, to).then((track) => {
+    store.set("dossier", null); // clear the previous aircraft's fields while the new lookup is in flight
+    // A dossier that fails simply means no leg start: the fallback below draws
+    // the last continuous run instead. The selection (the marker, the panel)
+    // is never held up by it.
+    const dossier = fetchAircraftDossier(selectedId).catch(() => null);
+
+    // The dossier's leg start is where this selection's trail begins. Wait for
+    // it before asking for any history at all: a history that lands first
+    // carries every earlier leg of the same airframe (an out-and-back, a
+    // turnaround), and drawing that is the long, complex trail that then snaps
+    // short. Also the guard the history fetch used to need has moved here: a
+    // superseded selection never reaches the fetch.
+    const legStart = Promise.race([
+      dossier.then((d) => d?.legStartAt ?? null),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), LEG_START_WAIT_MS)),
+    ]);
+
+    dossier.then((d) => {
       if (seq !== selectionEffectSeq) return; // superseded by a newer selection
-      const filtered = legStartAt ? track.filter((p) => notOlderReport(p.observedAt, legStartAt!)) : track;
-      if (filtered.length > 0) lastRouteObservedAt = filtered[filtered.length - 1].observedAt;
-      routePoints = filtered.map((p) => ({ lat: p.latitude, lon: p.longitude, observedAt: p.observedAt }));
-      drawRoute();
-      const currentSelectedPos = store.get("selectedPos");
-      if (currentSelectedPos) appendRoutePoint(currentSelectedPos);
+      store.set("dossier", d);
+      const start = d?.legStartAt ?? null;
+      // A dossier slower than the wait above still trims what was drawn.
+      if (start && start !== legStartAt) {
+        legStartAt = start;
+        const trimmed = routePoints.filter((pt) => notOlderReport(pt.observedAt, start));
+        if (trimmed.length !== routePoints.length) {
+          routePoints = trimmed;
+          drawRoute();
+        }
+      }
     });
 
-    store.set("dossier", null); // clear the previous aircraft's fields while the new lookup is in flight
-    fetchAircraftDossier(selectedId)
-      .then((d) => {
-        if (seq !== selectionEffectSeq) return;
-        store.set("dossier", d);
-        legStartAt = d?.legStartAt ?? null;
-        if (legStartAt) {
-          const trimmed = routePoints.filter((pt) => notOlderReport(pt.observedAt, legStartAt!));
-          if (trimmed.length !== routePoints.length) {
-            routePoints = trimmed;
-            drawRoute();
-          }
-        }
-      })
-      .catch(() => {
-        if (seq === selectionEffectSeq) store.set("dossier", null);
-      });
+    legStart.then((start) => {
+      if (seq !== selectionEffectSeq) return; // superseded by a newer selection
+      legStartAt = start ?? legStartAt;
+      // With a leg start, ask for that leg alone: a smaller payload than 6 h,
+      // and nothing left to trim. Without one — the dossier failed, or was too
+      // slow to wait on — a short window instead of 6 h, and of that only the
+      // last continuous run of reports.
+      const to = new Date().toISOString();
+      const from = start ?? new Date(Date.now() - TRAIL_FALLBACK_WINDOW_MS).toISOString();
+      fetchHistory(selectedId, from, to)
+        .then((track) => {
+          if (seq !== selectionEffectSeq) return; // superseded by a newer selection
+          const points = start ? track.filter((p) => notOlderReport(p.observedAt, start)) : lastContinuousRun(track);
+          if (points.length > 0) lastRouteObservedAt = points[points.length - 1].observedAt;
+          routePoints = points.map((p) => ({ lat: p.latitude, lon: p.longitude, observedAt: p.observedAt }));
+          trailReady = true; // from here the trail is this selection's own leg
+          drawRoute();
+          const currentSelectedPos = store.get("selectedPos");
+          if (currentSelectedPos) appendRoutePoint(currentSelectedPos);
+        })
+        .catch(() => {
+          if (seq !== selectionEffectSeq) return;
+          // No history: an empty trail, which the live reports (the priority
+          // poll, the push feed) then build from here — never a 6 h guess.
+          trailReady = true;
+          drawRoute();
+        });
+    });
   }
 
   // ---- selection actions ----
@@ -1451,6 +1512,9 @@ function boot(): void {
   favoritesPanel.mount(leftOverlayStack, store);
   watchPanel.mount(leftOverlayStack, store);
   legend.mount(leftOverlayStack); // no store slots — its open/closed state is purely local (see ui/legend.ts)
+  // "Go to my location" (section9-hq#263): asks the browser, flies the map
+  // there and marks it with a GL dot. Nothing leaves the page.
+  locate.mount(leftOverlayStack, map);
   bootScreen.mount(bootScreenRoot, store);
   resumeDialog.mount(resumeDialogRoot, store);
   dossierPanel.mount(dossierRoot, store);

@@ -102,6 +102,14 @@ export interface RenderedPlane {
   drawnSince: number;
 }
 
+/** The "you are here" dot the user-location layer drew (map/userLocation.ts), for tests. */
+export interface RenderedUserLocation {
+  lat: number;
+  lon: number;
+  x: number;
+  y: number;
+}
+
 /** An airport the airport layer drew (ui/defaultAirports.ts), for tests. */
 export interface RenderedAirport {
   code: string;
@@ -109,6 +117,14 @@ export interface RenderedAirport {
   lon: number;
   x: number;
   y: number;
+}
+
+/** The selected aircraft's trail as it was split for drawing (map/route.ts), for tests. */
+export interface RenderedRoute {
+  /** Solid runs, each [lat, lon] per vertex, splined. */
+  trail: [number, number][][];
+  /** Dashed connectors across data gaps, each its two real endpoints. */
+  gaps: [number, number][][];
 }
 
 /** A watched, not-yet-airborne flight's origin airport, drawn by ui/watchedAirports.ts: its departure point with the scheduled/estimated time. */
@@ -137,8 +153,20 @@ export class FlightMap {
   renderedPlanes: () => RenderedPlane[] = () => [];
   /** Test hook: every airport drawn in view. Set by ui/defaultAirports.ts. */
   renderedAirports: () => RenderedAirport[] = () => [];
+  /** Test hook: the trail's solid runs and gap segments. Set by map/route.ts. */
+  renderedRoute: () => RenderedRoute = () => ({ trail: [], gaps: [] });
   /** Test hook: every watched origin airport drawn in view. Set by ui/watchedAirports.ts. */
   renderedWatchedAirports: () => RenderedWatchedAirport[] = () => [];
+  /** Test hook: the user's own location dot drawn in view, or null. Set by map/userLocation.ts. */
+  renderedUserLocation: () => RenderedUserLocation | null = () => null;
+
+  /**
+   * Test hook (tests/helpers.ts declutterSpacing): the values `main.ts`'s
+   * renderAircraftLayer last passed to the declutter picker (map/declutter.ts)
+   * — the overlap box and the memory key — plus the widening (`memory.spacing`)
+   * that render left in force. `null` until the first render.
+   */
+  declutterSpacing: { box: number; key: string; spacing: number } | null = null;
 
   constructor(gl: MaplibreMap) {
     this.gl = gl;

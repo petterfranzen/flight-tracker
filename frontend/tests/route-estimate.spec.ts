@@ -16,9 +16,32 @@ const plane = LIVE_FIXTURE.find((p) => p.icao24 === "4d00d9")!;
 
 const routeVertices = (page: import("@playwright/test").Page) => getRouteVertices(page);
 
+// The app waits for the dossier's leg start before drawing any history (#284).
+// Pin it to the fixture's own first report, so the fixture is one leg and these
+// tests keep measuring the estimate handling rather than the leg split.
+const DOSSIER = {
+  icao24: plane.icao24,
+  registration: null,
+  model: null,
+  operator: null,
+  originAirport: null,
+  originAirportName: null,
+  originAirportIata: null,
+  destinationAirport: null,
+  destinationAirportName: null,
+  destinationAirportIata: null,
+  flightMinutes: null,
+  etaMinutes: null,
+  cruisingAltitudeM: null,
+  flightPhase: null,
+  staleExplanation: null,
+  legStartAt: HISTORIES["4d00d9"][0].observedAt,
+};
+
 test("estimated positions move the end of the trail instead of piling up in it", async ({ page }) => {
   await page.clock.install(); // before the page starts its timers; time still flows until we jump it
   await mockFlightApi(page);
+  await page.route("**/api/aircraft/4d00d9*", (route) => route.fulfill({ json: DOSSIER }));
   let polls = 0;
   // Same observedAt as the last real report every time, further along each poll.
   const estimate = () => ({ ...plane, latitude: plane.latitude - 0.02 * polls, longitude: plane.longitude + 0.01 * polls });
@@ -62,6 +85,7 @@ test("estimated positions move the end of the trail instead of piling up in it",
 // position drew the trail past the marker until the next poll caught up.
 test("the trail ends at the selected plane's marker, never past it", async ({ page }) => {
   await mockFlightApi(page);
+  await page.route("**/api/aircraft/4d00d9*", (route) => route.fulfill({ json: DOSSIER }));
   // The selected plane's own poll is down: the marker keeps the position it was selected at.
   await page.route("**/api/flights/4d00d9/live*", (route) => route.fulfill({ status: 404, json: null }));
   const history = HISTORIES["4d00d9"];

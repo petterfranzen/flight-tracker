@@ -1,6 +1,6 @@
 import { expect, type Locator, type Page, type Route } from "@playwright/test";
 import { OPENFREEMAP_TILEJSON } from "./fixtures/basemap";
-import type { FlightMap, RenderedAirport, RenderedPlane, RenderedWatchedAirport } from "../src/map/map";
+import type { FlightMap, RenderedAirport, RenderedPlane, RenderedUserLocation, RenderedWatchedAirport } from "../src/map/map";
 import liveFixture from "./fixtures/live.json" with { type: "json" };
 import history4aad15 from "./fixtures/history-4aad15.json" with { type: "json" };
 import history4d00d9 from "./fixtures/history-4d00d9.json" with { type: "json" };
@@ -300,6 +300,16 @@ export async function renderedPlanes(page: Page): Promise<PagePlane[]> {
 }
 
 /**
+ * The values `main.ts`'s renderAircraftLayer last handed the declutter picker
+ * (map/declutter.ts) and the widening it left in force: the app's own call-site
+ * wiring, so a spec can assert it without re-deriving it from the helpers (the
+ * mistake that let a reverted call site pass). `null` until the first render.
+ */
+export async function declutterSpacing(page: Page): Promise<{ box: number; key: string; spacing: number } | null> {
+  return withMap(page, (map) => map.declutterSpacing);
+}
+
+/**
  * MapLibre's feature query can throw while a source update is half applied
  * ("feature index out of bounds"): ask again a moment later.
  */
@@ -327,6 +337,26 @@ export async function planeLayerIds(page: Page): Promise<string[]> {
 }
 
 /** Every airport the airport layer drew in view (ui/defaultAirports.ts), x/y in page pixels. */
+/**
+ * The drawn planes' coordinates as the plane source holds them (map/planes.ts),
+ * icao24 included. Where planeLayerIds reads the ids, this reads where each one
+ * sits - including a position the glide has moved it to, which lives in the
+ * source data rather than only in a rendered frame (so it is readable while the
+ * clock, and with it the render loop, are frozen).
+ */
+export async function planeLayerPositions(page: Page): Promise<{ icao24: string; lat: number; lon: number }[]> {
+  return withMap(page, (map) => {
+    const source = map.gl.getSource("planes") as
+      | { serialize(): { data?: { features?: { properties?: { id?: string }; geometry?: { coordinates?: [number, number] } }[] } } }
+      | undefined;
+    return (source?.serialize().data?.features ?? []).map((f) => ({
+      icao24: f.properties?.id ?? "",
+      lat: f.geometry?.coordinates?.[1] ?? Number.NaN,
+      lon: f.geometry?.coordinates?.[0] ?? Number.NaN,
+    }));
+  });
+}
+
 export async function renderedAirports(page: Page): Promise<RenderedAirport[]> {
   return retryMidUpdate(page, () =>
     withMap(page, (map) => {
@@ -415,14 +445,40 @@ export async function clickAirport(page: Page, code: string): Promise<void> {
   await clickAt(page, ap.x, ap.y);
 }
 
-/** The selected aircraft's trail as drawn: the route source's line, [lat, lon] per vertex (map/route.ts). */
+/**
+ * The selected aircraft's trail as drawn, [lat, lon] per vertex in path order
+ * (map/route.ts): the solid runs' splined vertices and, where the feed had a
+ * gap, the gap segment's own endpoints, all flattened start to tip.
+ */
 export async function getRouteVertices(page: Page): Promise<{ lat: number; lon: number }[]> {
   return withMap(page, async (map) => {
-    const source = map.gl.getSource("flight-route") as { getData(): Promise<{ geometry?: { coordinates: [number, number][] } }> } | undefined;
+    const source = map.gl.getSource("flight-route") as
+      | { getData(): Promise<{ features?: { geometry?: { coordinates: [number, number][] } }[] }> }
+      | undefined;
     if (!source) return [];
     const data = await source.getData();
-    return (data.geometry?.coordinates ?? []).map(([lon, lat]) => ({ lat, lon }));
+    return (data.features ?? []).flatMap((f) => (f.geometry?.coordinates ?? []).map(([lon, lat]) => ({ lat, lon })));
   });
+}
+
+/** The trail as the route layer split it for drawing: solid runs and gap segments (map/route.ts). */
+export async function renderedRoute(page: Page): Promise<RenderedRoute> {
+  return withMap(page, (map) => map.renderedRoute());
+}
+
+/**
+ * A map layer's paint as the map holds it, to check what a layer was actually
+ * drawn with (e.g. the trail line is solid: no line-dasharray on it).
+ */
+export async function layerPaint(page: Page, id: string): Promise<Record<string, unknown>> {
+  return withMap(
+    page,
+    (map, id: string) => {
+      const layer = (map.gl.getStyle().layers ?? []).find((l) => l.id === id) as { paint?: Record<string, unknown> } | undefined;
+      return { ...(layer?.paint ?? {}) };
+    },
+    id,
+  );
 }
 
 /** The coverage-gap cone as drawn: the outer ring of each polygon in the uncertainty source, [lat, lon] per vertex (map/uncertainty.ts). */
@@ -451,6 +507,44 @@ export async function getRoutePathScreenPoints(page: Page): Promise<{ x: number;
     },
     vertices,
   );
+}
+
+/** The camera as the app sees it (app zoom units): centre lat/lon and zoom. */
+export async function mapCentre(page: Page): Promise<{ lat: number; lon: number; zoom: number }> {
+  return withMap(page, (map) => {
+    const c = map.getCenter();
+    return { lat: c.lat, lon: c.lon, zoom: map.getZoom() };
+  });
+}
+
+/** The "you are here" dot the user-location layer drew (map/userLocation.ts), x/y in page pixels; null when no dot is drawn. */
+export async function renderedUserLocation(page: Page): Promise<RenderedUserLocation | null> {
+  return retryMidUpdate(page, () =>
+    withMap(page, (map) => {
+      const dot = map.renderedUserLocation();
+      if (!dot) return null;
+      const rect = map.getContainer().getBoundingClientRect();
+      return { ...dot, x: dot.x + rect.x, y: dot.y + rect.y };
+    }),
+  );
+}
+
+/**
+ * Taps the control-stack "go to my location" button (ui/locate.ts), like a
+ * user — waits for the boot screen to clear first, so the tap cannot land on
+ * it (see clickAt).
+ */
+export async function clickLocate(page: Page): Promise<void> {
+  await page.locator(".boot-screen:not(.boot-screen--hidden)").waitFor({ state: "detached", timeout: 15_000 });
+  await page.locator(".map-locate-button").click();
+}
+
+/** The visible locate failure toast's text (ui/locate.ts), or null when none is shown. */
+export async function locateToastText(page: Page): Promise<string | null> {
+  const toast = page.locator(".locate-toast");
+  if ((await toast.count()) === 0) return null;
+  if (!(await toast.isVisible())) return null;
+  return (await toast.textContent())?.trim() ?? null;
 }
 
 /** Serves OpenFreeMap's tileset as empty: the basemap draws its background colour and nothing else. */

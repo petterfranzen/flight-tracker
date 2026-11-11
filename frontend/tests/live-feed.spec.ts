@@ -92,8 +92,16 @@ test.describe("live feed reconnect", () => {
       // attempt k+1 has been made, and its 1013 close has reached the page
       await expect.poll(async () => (await live()).closes.length, { timeout: 10_000 }).toBe(k + 1);
       expect(accepted).toBe(k + 1);
-      // Just short of the earliest the retry may fire: nothing new.
-      await page.clock.runFor(bases[k] * 0.75 - 50);
+      // Just short of the earliest the retry may fire: nothing new. The margin
+      // is measured from the close's own stamp on the (frozen) clock, not from
+      // wherever the previous step stopped. The app arms its retry timer when
+      // the close reaches the page - a real-time event, however fast the clock
+      // runs - so virtual time a previous runFor had already advanced past that
+      // instant would otherwise be spent out of this margin and let the retry
+      // fire inside it.
+      const armedAt = (await live()).closes[k].at;
+      const sinceArmed = await page.evaluate(() => Date.now()) - armedAt;
+      await page.clock.runFor(Math.max(0, bases[k] * 0.75 - 50 - sinceArmed));
       await page.waitForTimeout(100); // before asserting that something did *not* happen
       expect((await live()).connects, `no retry before ${0.75 * bases[k] - 50} ms`).toHaveLength(k + 1);
       // Past the latest it may fire: exactly one retry, not a burst.

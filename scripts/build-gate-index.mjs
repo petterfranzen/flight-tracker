@@ -56,8 +56,9 @@ const ENDPOINTS = [
 ];
 const ATTEMPTS = 5;
 const TIMEOUT_MS = 45_000;
-// Every served airport has at least 15 gate nodes; fewer than this means the
-// query hit a broken or rate-limited instance, not a real answer.
+// Every served airport has far more gates than this (the smallest here is
+// ESGG with 16); fewer means the query hit a broken or rate-limited instance,
+// not a real answer.
 const MIN_GATES = 5;
 
 const OUT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "frontend", "src", "map", "gateIndexData.ts");

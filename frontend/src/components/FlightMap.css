@@ -79,6 +79,17 @@ html, body {
   --color-airport-fill: #1a1a1a;
   --color-airport-label-bg: rgba(20, 20, 20, 0.75);
   --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  /* Clearance for chrome pinned to the top of the screen (the button column,
+     the Active/Seen chip, the control panels, the header), so nothing active
+     is faded out by the iOS status-bar scrim. In an installed app the map
+     runs edge to edge under the translucent status bar
+     (viewport-fit=cover + the apple-mobile-web-app-status-bar-style meta
+     restored in index.html, section9-hq#287), so env(safe-area-inset-top) is
+     the status-bar height and iOS 26.1+ fades its dark scrim a little below
+     the bar — the controls clear the whole scrim by adding 20px. In a browser
+     tab or on desktop the inset is 0 and min() keeps the value at the 16px
+     gutter this layout has always used, so nothing there moves. */
+  --safe-top: calc(max(16px, env(safe-area-inset-top, 0px)) + min(20px, env(safe-area-inset-top, 0px)));
 }
 
 /* Cyberpunk 2077-styled theme (the only theme; index.html sets it) — every token
@@ -165,17 +176,25 @@ html, body {
   overflow: hidden;
 }
 
-/* Installed PWA: 100vh/100dvh in iOS standalone mode can be shorter than the
-   screen (the home-indicator strip is left out), so pin the shell to the
-   viewport edges instead of a height. Chrome and the map controls already
-   add env(safe-area-inset-*) themselves. */
-@media (display-mode: standalone) {
-  .app-shell {
-    position: fixed;
-    inset: 0;
-    width: auto;
-    height: auto;
-  }
+/* Installed iOS app: WebKit 301108 (iOS 26) ended the standalone viewport short
+   of the bottom of the screen when viewport-fit=cover and the black-translucent
+   status bar were on (#201). The black-translucent meta is back (section9-hq#287:
+   the map runs edge to edge under the status bar, and --safe-top above clears
+   the status-bar scrim for the top-pinned chrome), so the safe-area inset is the
+   status-bar height again; this rule stays the guard for that bottom-band
+   regression on any build that still reports a short viewport. Workaround from
+   frappe-ui #1284: let the root grow by the top inset, capped at 100lvh so
+   nothing scrolls where the inset is 0, and pin the shell to the edges over it.
+   ui/standaloneViewport.ts sets html.standalone (display-mode alone is not
+   reliable on iOS). `?vpdebug` shows what the phone reports. */
+html.standalone {
+  min-height: min(100lvh, calc(100% + env(safe-area-inset-top, 0px)));
+}
+html.standalone .app-shell {
+  position: fixed;
+  inset: 0;
+  width: auto;
+  height: auto;
 }
 
 /* Raises the floor for this theme's own text, and bumps the base size up
@@ -204,7 +223,7 @@ html, body {
      of an incidental page scroll, only because we explicitly reposition
      it. */
   position: fixed;
-  top: max(16px, env(safe-area-inset-top, 0px));
+  top: var(--safe-top);
   right: max(16px, env(safe-area-inset-right, 0px));
   z-index: 500;
   display: flex;
@@ -456,7 +475,7 @@ html, body {
      DOM nesting depth, keeping this theme's placement exactly as before
      the JSX move. */
   position: fixed;
-  top: max(16px, env(safe-area-inset-top, 0px));
+  top: var(--safe-top);
   left: 50%;
   transform: translateX(-50%);
   z-index: 500;
@@ -488,8 +507,9 @@ html, body {
      can't drift with a page scroll regardless of what causes it. */
   position: fixed;
   /* viewport-fit=cover means the raw viewport edge is under the notch / home
-     indicator; keep floating chrome inside the safe area. */
-  top: max(16px, env(safe-area-inset-top, 0px));
+     indicator; keep floating chrome inside the safe area. --safe-top also
+     clears the iOS status-bar scrim in an installed app (section9-hq#287). */
+  top: var(--safe-top);
   left: max(16px, env(safe-area-inset-left, 0px));
   z-index: 500;
   display: flex;
@@ -510,9 +530,7 @@ html, body {
    corner. Bumping this wrapper's own z-index whenever a child drawer is
    open — not just the drawer's — lets the whole subtree clear every
    same-level sibling instead of only what's nested underneath it. */
-.left-overlay-stack:has(.flight-search-panel--open),
-.left-overlay-stack:has(.favorites-panel-body--open),
-.left-overlay-stack:has(.map-legend-body--open) {
+.left-overlay-stack:has(.control-panel--open) {
   z-index: 1001;
 }
 
