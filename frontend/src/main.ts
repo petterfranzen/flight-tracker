@@ -40,7 +40,7 @@ import { newerReport, notOlderReport, sameReport } from "./map/reportOrder";
 import { createRouteLayer, type RoutePoint } from "./map/route";
 import { lastContinuousRun, TRAIL_FALLBACK_WINDOW_MS } from "./map/trailWindow";
 import { confirmedGate, displayedPosition, gateDisplay, trailPointsFor, type GateDisplay } from "./map/gatePlacement";
-import { nearestStandFromIndex } from "./map/gateIndex";
+import { loadGateIndex, nearestStandFromIndex } from "./map/gateIndex";
 import { createUncertaintyLayer } from "./map/uncertainty";
 import { keepCellWinners } from "./map/cellWinners";
 import { snapBounds, ViewCache, type CachedView } from "./map/viewCache";
@@ -459,31 +459,42 @@ function boot(): void {
   // static OSM index (gateIndex.ts), keyed by the landing airport, so it needs
   // no tile and resolves at any zoom; the basemap's own vector-tile gate points
   // are the fallback (map.ts findGate), looked up again whenever tiles load.
-  let gatePoint: { icao24: string; gate: string; label?: string; lat: number; lon: number } | null = null;
+  let gatePoint: { icao24: string; gate: string; lat: number; lon: number } | null = null;
+  // A stand guessed for an on-ground plane whose ref the index does not carry.
+  // Deliberately not `gatePoint`: it never blocks a real gate, the tile lookup
+  // or the fly-to, and it is dropped the moment one of those answers.
+  let standSnap: { icao24: string; lat: number; lon: number } | null = null;
   function currentGateDisplay(): GateDisplay | null {
     const pos = store.get("selectedPos");
     const status = store.get("trackStatus");
     const gate = confirmedGate(pos, status);
-    const point = gate && gatePoint && gatePoint.icao24 === pos?.icao24 && gatePoint.gate === gate ? gatePoint : null;
-    const display = gateDisplay(pos, status, Date.now(), point);
-    // A stand fallback labels the plane with the stand's own ref, not the
-    // provider ref the index could not match.
-    return display && point?.label ? { ...display, gate: point.label } : display;
+    const point =
+      gate && gatePoint && gatePoint.icao24 === pos?.icao24 && gatePoint.gate === gate
+        ? gatePoint
+        : standSnap && standSnap.icao24 === pos?.icao24
+          ? standSnap
+          : null;
+    // The label stays the provider's own ref, snapped stand or not: the dossier
+    // shows that ref, and a guessed stand name would contradict it.
+    return gateDisplay(pos, status, Date.now(), point);
   }
   // Once per selection, if the gate's tile is not loaded: go where it is. Never against
   // the user: not after they moved the map since selecting, nor while it is moving.
   let gateZoomDone = false;
   let userMovedMap = false; // set by the map's user-move listener (below, once `map` exists)
   function onGateStatus(status: TrackStatus | null): void {
-    resolveGate();
-    const pos = store.get("selectedPos");
-    const gate = confirmedGate(pos, status);
-    if (gate && status && !gateZoomDone && !(gatePoint && gatePoint.gate === gate && gatePoint.icao24 === pos?.icao24)) {
-      gateZoomDone = true;
-      flyToGate(store.get("selectedId"), status.lastSeenLat, status.lastSeenLon);
-    }
-    renderAircraftLayer(); // the status can also stop qualifying (a gate that changed)
-    drawRoute();
+    // The index chunk may still be in flight, so decide the fly-to only after
+    // the lookup has had its answer: an index hit must never drag the camera in.
+    void resolveGate().then(() => {
+      const pos = store.get("selectedPos");
+      const gate = confirmedGate(pos, status);
+      if (gate && status && !gateZoomDone && !(gatePoint && gatePoint.gate === gate && gatePoint.icao24 === pos?.icao24)) {
+        gateZoomDone = true;
+        flyToGate(store.get("selectedId"), status.lastSeenLat, status.lastSeenLon);
+      }
+      renderAircraftLayer(); // the status can also stop qualifying (a gate that changed)
+      drawRoute();
+    });
   }
   // The selection's own camera move is usually still running when the status arrives: wait
   // for it to end, then decide. Whatever the user did meanwhile (or the gate resolving) wins.
@@ -502,7 +513,17 @@ function boot(): void {
     if (map.getZoom() >= GATE_TILE_ZOOM && map.contains(lat, lon)) return;
     map.flyTo([lat, lon], GATE_LOOKUP_ZOOM, 800);
   }
-  function resolveGate(): void {
+  /**
+   * The gate tiles are in reach when the view is at the airport and the plane is
+   * in it: from there a gate the basemap does not carry is genuinely absent, and
+   * no camera move would find one. Only then may an on-ground plane be snapped
+   * to a stand.
+   */
+  function gateTilesInReach(onGround: boolean | undefined, status: TrackStatus): boolean {
+    return onGround === true && map.getZoom() >= GATE_TILE_ZOOM && map.contains(status.lastSeenLat, status.lastSeenLon);
+  }
+  async function resolveGate(): Promise<void> {
+    await loadGateIndex(); // a no-op once the chunk has landed
     const pos = store.get("selectedPos");
     const status = store.get("trackStatus");
     const gate = confirmedGate(pos, status);
@@ -510,19 +531,17 @@ function boot(): void {
     if (gatePoint && gatePoint.icao24 === pos.icao24 && gatePoint.gate === gate) return;
     const near = { lat: status.lastSeenLat, lon: status.lastSeenLon };
     const icao = status.landing?.airportIcao;
-    let found = map.findGate(gate, near, icao);
-    let label: string | undefined;
-    // A provider ref the index does not carry may name a remote stand: on the
-    // ground, snap to the nearest stand within a few tens of metres.
-    if (!found && pos.onGround === true) {
+    const found = map.findGate(gate, near, icao);
+    if (found) {
+      gatePoint = { icao24: pos.icao24, gate, lat: found.lat, lon: found.lon };
+      standSnap = null;
+    } else if (standSnap?.icao24 !== pos.icao24 && gateTilesInReach(pos.onGround, status)) {
+      // The ref is in neither the index nor a loaded tile, and no camera move
+      // can find one: an on-ground plane may be parked at a remote stand.
+      // Guessed, never as final — the tile lookup keeps running and wins.
       const stand = nearestStandFromIndex(icao, near, STAND_SNAP_M);
-      if (stand) {
-        found = { lat: stand.lat, lon: stand.lon };
-        label = stand.ref;
-      }
+      standSnap = stand ? { icao24: pos.icao24, lat: stand.lat, lon: stand.lon } : null;
     }
-    if (!found) return;
-    gatePoint = { icao24: pos.icao24, gate, lat: found.lat, lon: found.lon, ...(label ? { label } : {}) };
     renderAircraftLayer();
     drawRoute();
   }
@@ -1121,6 +1140,7 @@ function boot(): void {
     // Cleared unconditionally: switching directly from aircraft A to B
     // never passes through "selected = null".
     gatePoint = null;
+    standSnap = null;
     gateZoomDone = false;
     userMovedMap = false;
     route = [];
@@ -1585,6 +1605,10 @@ function boot(): void {
   store.subscribe("selectedId", onSelectedIdChanged);
   store.subscribe("selectedPos", drawRoute); // the trail ends at the marker, wherever it moves
   map.on("sourcedata", resolveGate); // the gate's tile may arrive after the status
+
+  // The gate index is a chunk of its own (gateIndex.ts): start fetching it with
+  // the app, and answer whatever the selection asked for while it was in flight.
+  void loadGateIndex().then(() => resolveGate());
   onSelectedIdChanged(); // selectedId starts null — harmless initial reset
 
   // ---- mount-only effects ----

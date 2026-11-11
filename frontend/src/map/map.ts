@@ -337,14 +337,15 @@ export class FlightMap {
    * The coordinate of gate `ref` at airport `icao`, or null.
    *
    * The static OSM index (gateIndex.ts) answers at any zoom and needs no tile,
-   * so a gate resolves even when the view is zoomed out. When the index does
-   * not carry the ref the basemap's own `aeroway` gate points are searched as a
-   * fallback (nearest `near`): those ship only in the zoom-14 tiles, so that
-   * path needs the view at the airport (app zoom 15+) and callers retry on
-   * `sourcedata`.
+   * so a gate resolves even when the view is zoomed out; it holds several
+   * coordinates per ref and answers with the one nearest `near`. Until its
+   * chunk has loaded, and when it does not carry the ref, the basemap's own
+   * `aeroway` gate points are searched as a fallback (nearest `near`): those
+   * ship only in the zoom-14 tiles, so that path needs the view at the airport
+   * (app zoom 15+) and callers retry on `sourcedata`.
    */
   findGate(ref: string, near: LatLon, icao?: string | null): LatLon | null {
-    const indexed = gateFromIndex(icao, ref);
+    const indexed = gateFromIndex(icao, ref, near);
     if (indexed) return indexed;
     const want = ref.trim().toUpperCase();
     let best: { p: LatLon; d: number } | null = null;

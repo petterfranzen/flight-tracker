@@ -27,9 +27,9 @@ import { writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
-// The airports we carry layouts for: the eight surveyed in section9-hq #195 —
-// ARN plus the European hubs the app sees most. The generator takes a list, so
-// adding an airport is one line (ICAO + a centre inside the terminal area).
+// The airports we carry layouts for: ARN plus the European hubs the app sees
+// most. The generator takes a list, so adding an airport is one line (ICAO + a
+// centre inside the terminal area).
 const AIRPORTS = [
   { icao: "ESSA", name: "Stockholm Arlanda", lat: 59.6519, lon: 17.9186 },
   { icao: "ESGG", name: "Gothenburg Landvetter", lat: 57.6628, lon: 12.2798 },
@@ -136,7 +136,15 @@ async function layoutFor(airport) {
     if (parts.length > 1) composite++;
     const coord = [rounded(lon), rounded(lat)];
     const target = kind === "gate" ? gates : stands;
-    for (const key of parts) if (!target.has(key)) target.set(key, coord); // stable: elements come in id order
+    // Every coordinate a ref carries, in element-id order: a ref can name more
+    // than one object (EGLL has A-pier refs at two terminals), and the lookup
+    // picks the one nearest the plane. Keeping only the first would put the
+    // plane at the wrong terminal.
+    for (const key of parts) {
+      const list = target.get(key);
+      if (list) list.push(coord);
+      else target.set(key, [coord]);
+    }
   }
   return { gates, stands, gateNodes, standObjects, composite };
 }
@@ -185,14 +193,15 @@ async function main() {
 //   out center;
 //
 // \`gates\` are aeroway=gate nodes; \`stands\` are aeroway=parking_position nodes
-// and areas (their centre). Both are ref -> [lon, lat], refs normalised the
-// same way the runtime lookup does (upper-case, a leading GATE dropped, no
-// spaces). The basemap ships gate points only from tile zoom 14 up, so this
-// static index is what places a confirmed gate below app zoom 15.
+// and areas (their centre). Both are ref -> [[lon, lat], ...] — every
+// coordinate that ref carries, since one ref can name several objects — with
+// refs normalised the same way the runtime lookup does (upper-case, a leading
+// GATE dropped, no spaces). The basemap ships gate points only from tile zoom
+// 14 up, so this static index is what places a confirmed gate below app zoom 15.
 
 export interface AirportLayout {
-  gates: Record<string, [number, number]>;
-  stands: Record<string, [number, number]>;
+  gates: Record<string, [number, number][]>;
+  stands: Record<string, [number, number][]>;
 }
 
 export type GateIndex = Record<string, AirportLayout>;
