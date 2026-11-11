@@ -1,0 +1,55 @@
+diff --git a/.github/workflows/build-deploy.yml b/.github/workflows/build-deploy.yml
+index 8f06781..59cfaa0 100644
+--- a/.github/workflows/build-deploy.yml
++++ b/.github/workflows/build-deploy.yml
+@@ -52,7 +52,49 @@ jobs:
+           cache-dependency-path: frontend/package-lock.json
+       - run: npm ci
+       - run: npm run build
+-      - run: npx playwright install --with-deps chromium
++      # apt retries every URL it fails to fetch, and each try stalls about 20 s
++      # on the runner, so one doomed install attempt costs ~10 minutes end to
++      # end (11 Nov: 15:05:13 -> 15:15:18). That would leave the retry below no
++      # room for a second attempt inside its bound, so fail fast here and let
++      # the loop do the retrying. The config lands in the runner's ephemeral
++      # /etc and this job's only apt consumer is the next step; delete this step
++      # if you would rather keep the diff minimal - the retry stands on its own.
++      - name: Keep a dead mirror from stalling apt
++        run: |
++          printf '%s\n' \
++            'Acquire::Retries "0";' \
++            'Acquire::http::Timeout "10";' \
++            'Acquire::https::Timeout "10";' \
++            | sudo tee /etc/apt/apt.conf.d/99-ci-acquire >/dev/null
++      # apt installs from the runner's Ubuntu mirror. On 11 Nov a runner DNS
++      # outage there ("Temporary failure resolving 'azure.archive.ubuntu.com'",
++      # apt exit 100) failed this step twice and held up the deploy of an
++      # already QA-passed fix for over an hour, with no code at fault (#289).
++      # Retry the install up to four times with 30/60/120 s backoff, refreshing
++      # the package lists between attempts (--fix-missing lets apt repair a
++      # half-fetched index instead of aborting on it), and bound the step with
++      # timeout-minutes. A healthy install takes about 17 s.
++      - name: Install the Playwright browser
++        timeout-minutes: 15
++        run: |
++          for attempt in 1 2 3 4; do
++            echo "playwright install --with-deps chromium: attempt ${attempt}/4"
++            if npx playwright install --with-deps chromium; then
++              exit 0
++            else
++              status=$?
++            fi
++            if [ "${attempt}" -eq 4 ]; then
++              echo "::error::playwright install failed after 4 attempts (last exit ${status})"
++              exit "${status}"
++            fi
++            delay=$(( 30 * 2 ** (attempt - 1) ))  # 30, 60, 120
++            echo "attempt ${attempt} failed (exit ${status}); retrying in ${delay}s"
++            sleep "${delay}"
++            # Refresh the package lists between attempts, and let apt repair a
++            # half-fetched index instead of aborting on it.
++            sudo apt-get -qq update || sudo apt-get -qq --fix-missing update || true
++          done
+       - run: npm run test:e2e
+         env:
+           CI: "true"
