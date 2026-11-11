@@ -38,6 +38,7 @@ import { getMockPlaneCount } from "./api/mockFleet";
 import { agedIds, findShadowedIds, isActiveTraffic, OVERLAP_MIN_ZOOM } from "./map/staleness";
 import { newerReport, notOlderReport, sameReport } from "./map/reportOrder";
 import { createRouteLayer } from "./map/route";
+import { lastContinuousRun, TRAIL_FALLBACK_WINDOW_MS } from "./map/trailWindow";
 import { confirmedGate, displayedPosition, gateDisplay, trailFor, type GateDisplay } from "./map/gatePlacement";
 import { createUncertaintyLayer } from "./map/uncertainty";
 import { keepCellWinners } from "./map/cellWinners";
@@ -406,6 +407,9 @@ function boot(): void {
   let routePoints: { lat: number; lon: number; observedAt: string }[] = [];
   let legStartAt: string | null = null;
   let selectionEffectSeq = 0;
+  // Whether this selection's own history has landed: until it has, there is no
+  // trail to draw — no tip-only stub, and no untrimmed 6 h track.
+  let trailReady = false;
 
   let nowMsTimer: ReturnType<typeof setInterval> | null = null;
   let priorityPollTimer: ReturnType<typeof setInterval> | null = null;
@@ -423,6 +427,15 @@ function boot(): void {
   // selected from an older list) wait until the marker gets there: drawn
   // straight away, they ran the trail ahead of the plane.
   function drawRoute(): void {
+    // Nothing of a fresh selection is drawn before its own history lands
+    // (onSelectedIdChanged): a lone dead-reckoned tip then, or even a moment
+    // of the untrimmed 6 h track, is a trail that corrects itself in front of
+    // the user — the ghost trail this selection is meant to prevent.
+    if (!trailReady) {
+      route = [];
+      routeLayer.update(route);
+      return;
+    }
     const pos = store.get("selectedPos");
     const tip = pos && pos.icao24 === store.get("selectedId") ? pos : null;
     route = trailFor(routePoints, tip, currentGateDisplay(), Date.now());
@@ -488,6 +501,10 @@ function boot(): void {
     drawRoute();
   }
   function appendRoutePoint(p: LiveMarker): void {
+    // The trail starts with this selection's own history: appended to an empty
+    // route first, a live report drew a single-point trail that then jumped
+    // when the real track arrived.
+    if (!trailReady) return;
     if (lastRouteObservedAt == null || newerReport(p.observedAt, lastRouteObservedAt)) {
       // A new real report: it joins the trail.
       lastRouteObservedAt = p.observedAt;
@@ -1065,6 +1082,10 @@ function boot(): void {
     nowMsTimer = setInterval(() => store.set("nowMs", Date.now()), 1_000);
   }
 
+  // How long a selection waits for the dossier's leg start before drawing the
+  // fallback window instead. The dossier normally answers well inside this.
+  const LEG_START_WAIT_MS = 1_500;
+
   function onSelectedIdChanged(): void {
     const seq = ++selectionEffectSeq;
     stopPriorityPoll();
@@ -1080,6 +1101,7 @@ function boot(): void {
     lastRouteObservedAt = null;
     routePoints = [];
     legStartAt = null;
+    trailReady = false;
     routeLayer.update(route);
 
     const selectedId = store.get("selectedId");
@@ -1092,35 +1114,66 @@ function boot(): void {
     startNowMsTicker();
     startPriorityPoll(selectedId);
 
-    const to = new Date().toISOString();
-    const from = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString(); // last 6h of history
-    fetchHistory(selectedId, from, to).then((track) => {
+    store.set("dossier", null); // clear the previous aircraft's fields while the new lookup is in flight
+    // A dossier that fails simply means no leg start: the fallback below draws
+    // the last continuous run instead. The selection (the marker, the panel)
+    // is never held up by it.
+    const dossier = fetchAircraftDossier(selectedId).catch(() => null);
+
+    // The dossier's leg start is where this selection's trail begins. Wait for
+    // it before asking for any history at all: a history that lands first
+    // carries every earlier leg of the same airframe (an out-and-back, a
+    // turnaround), and drawing that is the long, complex trail that then snaps
+    // short. Also the guard the history fetch used to need has moved here: a
+    // superseded selection never reaches the fetch.
+    const legStart = Promise.race([
+      dossier.then((d) => d?.legStartAt ?? null),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), LEG_START_WAIT_MS)),
+    ]);
+
+    dossier.then((d) => {
       if (seq !== selectionEffectSeq) return; // superseded by a newer selection
-      const filtered = legStartAt ? track.filter((p) => notOlderReport(p.observedAt, legStartAt!)) : track;
-      if (filtered.length > 0) lastRouteObservedAt = filtered[filtered.length - 1].observedAt;
-      routePoints = filtered.map((p) => ({ lat: p.latitude, lon: p.longitude, observedAt: p.observedAt }));
-      drawRoute();
-      const currentSelectedPos = store.get("selectedPos");
-      if (currentSelectedPos) appendRoutePoint(currentSelectedPos);
+      store.set("dossier", d);
+      const start = d?.legStartAt ?? null;
+      // A dossier slower than the wait above still trims what was drawn.
+      if (start && start !== legStartAt) {
+        legStartAt = start;
+        const trimmed = routePoints.filter((pt) => notOlderReport(pt.observedAt, start));
+        if (trimmed.length !== routePoints.length) {
+          routePoints = trimmed;
+          drawRoute();
+        }
+      }
     });
 
-    store.set("dossier", null); // clear the previous aircraft's fields while the new lookup is in flight
-    fetchAircraftDossier(selectedId)
-      .then((d) => {
-        if (seq !== selectionEffectSeq) return;
-        store.set("dossier", d);
-        legStartAt = d?.legStartAt ?? null;
-        if (legStartAt) {
-          const trimmed = routePoints.filter((pt) => notOlderReport(pt.observedAt, legStartAt!));
-          if (trimmed.length !== routePoints.length) {
-            routePoints = trimmed;
-            drawRoute();
-          }
-        }
-      })
-      .catch(() => {
-        if (seq === selectionEffectSeq) store.set("dossier", null);
-      });
+    legStart.then((start) => {
+      if (seq !== selectionEffectSeq) return; // superseded by a newer selection
+      legStartAt = start ?? legStartAt;
+      // With a leg start, ask for that leg alone: a smaller payload than 6 h,
+      // and nothing left to trim. Without one — the dossier failed, or was too
+      // slow to wait on — a short window instead of 6 h, and of that only the
+      // last continuous run of reports.
+      const to = new Date().toISOString();
+      const from = start ?? new Date(Date.now() - TRAIL_FALLBACK_WINDOW_MS).toISOString();
+      fetchHistory(selectedId, from, to)
+        .then((track) => {
+          if (seq !== selectionEffectSeq) return; // superseded by a newer selection
+          const points = start ? track.filter((p) => notOlderReport(p.observedAt, start)) : lastContinuousRun(track);
+          if (points.length > 0) lastRouteObservedAt = points[points.length - 1].observedAt;
+          routePoints = points.map((p) => ({ lat: p.latitude, lon: p.longitude, observedAt: p.observedAt }));
+          trailReady = true; // from here the trail is this selection's own leg
+          drawRoute();
+          const currentSelectedPos = store.get("selectedPos");
+          if (currentSelectedPos) appendRoutePoint(currentSelectedPos);
+        })
+        .catch(() => {
+          if (seq !== selectionEffectSeq) return;
+          // No history: an empty trail, which the live reports (the priority
+          // poll, the push feed) then build from here — never a 6 h guess.
+          trailReady = true;
+          drawRoute();
+        });
+    });
   }
 
   // ---- selection actions ----
