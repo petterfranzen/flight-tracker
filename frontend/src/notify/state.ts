@@ -87,3 +87,20 @@ export function forgetFlight(key: string, nowMs = Date.now()): void {
   delete map[key];
   saveNotifyState(map);
 }
+
+/** Prunes the stored map and writes it back (the load job and the hourly job). */
+export function pruneNotifyStorage(nowMs = Date.now()): void {
+  saveNotifyState(pruneNotifyState(loadNotifyState(nowMs), nowMs));
+}
+
+/**
+ * #82 design §2: prune expired notification state on load and once an hour.
+ * Returns a disposer that clears the interval, so the caller can stop it when
+ * the page goes away and the timer never outlives the document it was started
+ * for (QA: "the hourly prune setInterval should be cleaned up").
+ */
+export function startHourlyPrune(): () => void {
+  pruneNotifyStorage();
+  const timer = setInterval(() => pruneNotifyStorage(), HOUR_MS);
+  return () => clearInterval(timer);
+}

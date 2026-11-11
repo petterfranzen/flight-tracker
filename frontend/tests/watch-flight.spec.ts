@@ -105,16 +105,24 @@ test("on a phone the new watch entry is visible without scrolling the panel, and
   const item = page.locator(".watch-panel-item").last();
   await expect(item).toContainText("SK2112");
 
-  // The panel keeps its own scroll box (the 320 px cap is not removed to make
-  // the entry fit) ...
-  const box = await content.evaluate((el) => ({
-    clientHeight: el.clientHeight,
-    scrollHeight: el.scrollHeight,
-    overflowY: getComputedStyle(el).overflowY,
-  }));
+  // The panel keeps its own viewport-tied scroll box: short content grows it
+  // (no fixed 320 px card cap any more, section9-hq#264) but it can never be
+  // taller than the screen and scrolls itself when it is.
+  const box = await content.evaluate((el) => {
+    const r = el.getBoundingClientRect();
+    return {
+      clientHeight: el.clientHeight,
+      scrollHeight: el.scrollHeight,
+      overflowY: getComputedStyle(el).overflowY,
+      top: r.top,
+      bottom: r.bottom,
+    };
+  });
   expect(box.overflowY).toBe("auto");
-  expect(box.scrollHeight).toBeGreaterThan(box.clientHeight); // it still scrolls
-  expect(box.clientHeight).toBeLessThanOrEqual(340); // the 320 px cap (+ 8 px padding a side) holds
+  expect(box.clientHeight).toBeLessThanOrEqual(844 - 32);
+  expect(box.top).toBeGreaterThanOrEqual(15);
+  expect(box.bottom).toBeLessThanOrEqual(844 - 15);
+  expect(box.scrollHeight).toBeLessThanOrEqual(box.clientHeight); // everything fits for this one entry
 
   // ... and the new entry is inside that box without the user scrolling it.
   await expect

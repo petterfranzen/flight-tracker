@@ -1,7 +1,7 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 import { clusterMockFleet, onePerCell } from "../src/api/mockFleet";
 import { fleet10k, FLEET_SIZE, type FleetAircraft } from "./fixtures/fleet10k";
-import { renderedPlanes, stubBasemapTiles, waitForMapReady, waitForPlanes, withMap } from "./helpers";
+import { mockDenseFleet, renderedPlanes, setMapView, stubBasemapTiles, waitForMapReady, waitForPlanes, withMap } from "./helpers";
 
 // Main-thread budget for any single task while zooming and selecting with a
 // realistic worldwide fleet. 200ms is "the UI visibly froze"; before this
@@ -380,4 +380,80 @@ test.describe("performance with 10,000 live aircraft @perf", () => {
     expect(aborted[0]).toBe(started[0]);
     api.releaseLive();
   });
+
+// Where the 2000-plane profile (docs/perf/PROFILE-2026-11-planes.md) lands as
+// a guard. `mockDenseFleet` puts every plane in one z10 viewport, which the
+// app's own ?mockPlanes=N cannot do (its fleet is worldwide, so a zoomed-in
+// view sees a fraction of it). The declared budget is the reference-machine
+// figure scaled by this box's CPU slowdown: a software-WebGL runner is much
+// slower than hardware, so the number is loose on purpose. A local `test:perf`
+// run in a busy container is not authoritative; CI is.
+const PLANE_RENDER_BUDGET_MS = 120;
+const PLANE_COUNT = 2000;
+
+interface PlanePerf {
+  render: { calls: number; totalMs: number; lastMs: number; maxMs: number };
+  declutter: { calls: number; totalMs: number; lastMs: number; maxMs: number };
+  setData: { planes: number; selected: number };
+}
+
+test("2,000 planes in view: renderAircraftLayer stays under budget, and setData only when the drawn set changed @perf", async ({ page }, testInfo) => {
+  test.setTimeout(180_000);
+  await startLongTaskObserver(page); // stubs the basemap; installs the long-task observer
+  await mockDenseFleet(page, PLANE_COUNT);
+  await page.goto("/");
+  await waitForMapReady(page, 60_000);
+  await setMapView(page, LONDON.lat, LONDON.lon, 10);
+  await waitForPlanes(page, 1, 30_000);
+  await page.waitForTimeout(1_000);
+
+  const read = () =>
+    page.evaluate(() => {
+      const p = (window as unknown as { __flightPerf: PlanePerf }).__flightPerf;
+      return { render: { ...p.render }, declutter: { ...p.declutter }, setData: { ...p.setData } };
+    });
+  const setDataCount = (p: { setData: { planes: number; selected: number } }) => p.setData.planes + p.setData.selected;
+
+  await page.evaluate(() => (window as unknown as { __flightPerfReset: () => void }).__flightPerfReset());
+  // Pan into traffic, then zoom through a level boundary and back: the drawn
+  // set changes (planes enter/leave the view and the cap re-spaces them), so
+  // setData must fire; then hold still and it must not.
+  for (const lon of [LONDON.lon + 0.1, LONDON.lon + 0.2, LONDON.lon + 0.1]) {
+    await setMapView(page, LONDON.lat, lon, 10);
+    await page.waitForTimeout(600);
+  }
+  await setMapView(page, LONDON.lat, LONDON.lon, 12);
+  await page.waitForTimeout(800);
+  await setMapView(page, LONDON.lat, LONDON.lon, 10);
+  await page.waitForTimeout(800);
+
+  const active = await read();
+  // Idle: the viewport is still and the WebSocket is stubbed, so the drawn
+  // set cannot change. Anything re-sent here is a per-frame setData bug.
+  const before = setDataCount(await read());
+  await page.waitForTimeout(1_500);
+  const after = setDataCount(await read());
+
+  const slowdown = Math.max(1, await cpuSlowdown(page));
+  const budget = PLANE_RENDER_BUDGET_MS * slowdown;
+  const msPerCall = active.render.calls ? active.render.totalMs / active.render.calls : 0;
+  const declutterPerCall = active.declutter.calls ? active.declutter.totalMs / active.declutter.calls : 0;
+  const metrics = {
+    planes: PLANE_COUNT,
+    calls: active.render.calls,
+    msPerCall: Number(msPerCall.toFixed(2)),
+    maxMs: Number(active.render.maxMs.toFixed(2)),
+    declutterMsPerCall: Number(declutterPerCall.toFixed(2)),
+    setData: setDataCount(active),
+    idleSetData: after - before,
+    slowdown: Number(slowdown.toFixed(2)),
+    budgetMs: Math.round(budget),
+  };
+  testInfo.annotations.push({ type: "perf-planes", description: JSON.stringify(metrics) });
+  console.log("perf-planes:", JSON.stringify(metrics));
+
+  expect(setDataCount(active), "setData fired at least once while the drawn set changed").toBeGreaterThan(0);
+  expect(after - before, "setData fired while idle with the drawn set unchanged").toBe(0);
+  expect(msPerCall, `renderAircraftLayer ms per call (budget ${Math.round(budget)}ms = ${PLANE_RENDER_BUDGET_MS}ms x ${slowdown.toFixed(2)})`).toBeLessThan(budget);
+});
 });

@@ -1,6 +1,8 @@
-import type { AppStore } from "../state/appState";
 import { h } from "./h";
+import { activateModal, isPhone, type ModalHandle } from "./a11y";
+import { closeControlPanel, registerControlPanel, toggleControlPanel } from "./controlStack";
 import "../components/Legend.css";
+import "../components/ControlPanel.css";
 
 function infoIcon(): SVGElement {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -21,19 +23,22 @@ function infoIcon(): SVGElement {
  */
 export function mount(root: HTMLElement): () => void {
   let open = false;
+  // The phone panel is modal (a11y.ts): Tab stays inside it, Escape closes it,
+  // focus returns to the FAB. Desktop renders the list inline, not modal.
+  let trap: ModalHandle | null = null;
 
-  const body = h("div", { id: "map-legend-body", className: "map-legend-body" });
-  const closeButton = h("button", { type: "button", className: "map-legend-body-close", onClick: () => setOpen(false) }, "Close legend ✕");
+  const body = h("div", { id: "map-legend-body", className: "map-legend-body control-panel" });
+  const closeButton = h("button", { type: "button", className: "map-legend-body-close control-panel-close", onClick: () => closeControlPanel("info") }, "Close legend ✕");
   const toggle = h(
     "button",
-    { type: "button", className: "map-legend-toggle", "aria-controls": "map-legend-content", onClick: () => setOpen(!open) },
+    { type: "button", className: "map-legend-toggle", "aria-controls": "map-legend-content", onClick: () => toggleControlPanel("info") },
     infoIcon(),
     " ",
     h("span", null, "Legend ▼"),
   );
   const fab = h(
     "button",
-    { type: "button", className: "map-legend-fab", "aria-controls": "map-legend-body", "aria-label": "Legend", onClick: () => setOpen(!open) },
+    { type: "button", className: "map-legend-fab control-stack-button", "aria-controls": "map-legend-body", "aria-label": "Legend", onClick: () => toggleControlPanel("info") },
     infoIcon(),
   );
   const list = h(
@@ -50,7 +55,25 @@ export function mount(root: HTMLElement): () => void {
     render();
   }
 
+  /** See flightSearch.ts's syncModal — same modal-on-phone treatment. */
+  function syncModal(): void {
+    const modal = open && isPhone();
+    if (modal && !trap) {
+      body.setAttribute("role", "dialog");
+      body.setAttribute("aria-modal", "true");
+      body.setAttribute("aria-label", "Map legend");
+      trap = activateModal(body, { onEscape: () => closeControlPanel("info"), returnTo: fab });
+    } else if (!modal && trap) {
+      trap.release();
+      trap = null;
+      body.removeAttribute("role");
+      body.removeAttribute("aria-modal");
+      body.removeAttribute("aria-label");
+    }
+  }
+
   function render(): void {
+    body.classList.toggle("control-panel--open", open);
     body.classList.toggle("map-legend-body--open", open);
     toggle.setAttribute("aria-expanded", String(open));
     fab.setAttribute("aria-expanded", String(open));
@@ -61,6 +84,7 @@ export function mount(root: HTMLElement): () => void {
     // when closed, not just visually hidden.
     if (open) body.appendChild(list);
     else if (list.parentElement) list.remove();
+    syncModal();
   }
   render();
 
@@ -68,5 +92,17 @@ export function mount(root: HTMLElement): () => void {
   const container = h("div", { className: "map-legend" }, fab, body);
   root.appendChild(container);
 
-  return () => container.remove();
+  const unregister = registerControlPanel("info", {
+    panel: body,
+    button: fab,
+    open: () => setOpen(true),
+    close: () => setOpen(false),
+  });
+
+  return () => {
+    unregister();
+    trap?.release();
+    trap = null;
+    container.remove();
+  };
 }
