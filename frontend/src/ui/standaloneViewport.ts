@@ -3,10 +3,11 @@ import { isStandalone } from "./installPrompt";
 /**
  * iOS 26 installed-app bottom band (WebKit 301108): with viewport-fit=cover and
  * the black-translucent status bar, the standalone viewport ended short of the
- * bottom of the screen. The black-translucent meta is gone now (iOS 26.1+
- * deprecated it, section9-hq#277), so the top inset is 0 and the CSS workaround
- * is inert on current iOS; the class is kept as the guard for that bottom-band
- * regression. The CSS display-mode query is unreliable on iOS, so mark
+ * bottom of the screen. The black-translucent meta is back (section9-hq#287):
+ * the map runs edge to edge under the translucent status bar, and the CSS clears
+ * the iOS status-bar scrim for every top-pinned control (--safe-top in
+ * FlightMap.css). The class stays as the guard for that bottom-band regression.
+ * The CSS display-mode query is unreliable on iOS, so mark
  * <html class="standalone"> here (isStandalone also reads
  * navigator.standalone) and let FlightMap.css apply the workaround.
  *
