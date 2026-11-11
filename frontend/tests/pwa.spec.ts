@@ -47,7 +47,11 @@ test.describe("PWA installability", () => {
     await expect(page.locator('link[rel="manifest"]')).toHaveAttribute("href", "/manifest.json");
     await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute("content", "#050608");
     await expect(page.locator('meta[name="apple-mobile-web-app-capable"]')).toHaveAttribute("content", "yes");
-    await expect(page.locator('meta[name="apple-mobile-web-app-status-bar-style"]')).toHaveAttribute("content", "black-translucent");
+    // iOS 26.1+ deprecated black-translucent and draws a dark scrim over the
+    // status-bar area of an installed app (a dim band across the top of the
+    // map). The tag must stay absent so the bar takes the theme colour and the
+    // page starts below it. See section9-hq#277.
+    await expect(page.locator('meta[name="apple-mobile-web-app-status-bar-style"]')).toHaveCount(0);
     await expect(page.locator('link[rel="apple-touch-icon"]')).toHaveAttribute("href", "/icons/apple-touch-icon-180.png");
 
     const viewport = await page.locator('meta[name="viewport"]').getAttribute("content");
