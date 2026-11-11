@@ -1,24 +1,34 @@
 import { expect, test, type Page } from "@playwright/test";
 import { mockFlightApi, waitForMapReady } from "./helpers";
 
-// section9-hq#277: an installed (Home Screen) app on iOS showed a dark dim band
-// across the top of the map, from the screen edge down to the first control
-// button (~65 pt). The cause was the deprecated
-// `apple-mobile-web-app-status-bar-style: black-translucent` meta: iOS 26.1+
-// no longer draws the page under the status bar and instead paints a dark scrim
-// over that strip. The fix removes the meta so the bar takes the theme colour
-// and the page starts below it.
+// section9-hq#287: the installed (Home Screen) app runs the map edge to edge
+// again, under the translucent iOS status bar, with iOS 26.1+'s dark scrim over
+// that strip. That is fine as long as nothing active is faded out by the scrim:
+// the map canvas starts at y=0, and every control / text element pinned to the
+// top clears the scrim by at least the safe-area inset + 16px.
+//
+// The earlier #277 fix removed `apple-mobile-web-app-status-bar-style:
+// black-translucent`, which dropped the status bar to opaque and pushed the page
+// below it (no map under the bar). #287 restores the meta and moves the chrome
+// down instead, via the shared --safe-top token.
 //
 // Playwright cannot emulate the iOS status bar itself, but it can emulate the
 // safe-area insets the app lays out against (CDP
 // Emulation.setSafeAreaInsetsOverride) and the installed-app class the app sets
-// from navigator.standalone. This guards the DOM half of the fix: the map
-// canvas must start at y=0 and nothing opaque may cover the top strip, with no
-// band at the bottom either (#201).
+// from navigator.standalone. This guards the DOM half of the fix.
 
-const IPHONE = { width: 390, height: 844 };
-const TOP_INSET = 62;
+const IPHONE = { width: 393, height: 852 }; // iPhone 15/16 logical size
+const TOP_INSET = 59; // status-bar height in installed-app emulation
 const BOTTOM_INSET = 34;
+// The scrim fades a little below the status bar, so nothing active may have its
+// top inside [0, inset + 16).
+const CLEAR = TOP_INSET + 16;
+
+// Chrome that must clear the scrim, whether or not it is currently open.
+const TOP_CHROME = [".app-header", ".tracked-chip", ".left-overlay-stack", ".left-overlay-stack > *", ".control-panel"];
+
+// Anything the user can tap or type into.
+const INTERACTIVE = "button, input, select, textarea, a[href], [role='button']";
 
 async function installedApp(page: Page): Promise<void> {
   await page.setViewportSize(IPHONE);
@@ -40,69 +50,111 @@ async function installedApp(page: Page): Promise<void> {
   await page.locator(".boot-screen").waitFor({ state: "detached", timeout: 30_000 });
 }
 
-test.describe("installed app: no band across the top", () => {
+test.describe("installed app: map edge to edge, controls clear of the status-bar scrim", () => {
   test.describe.configure({ timeout: 120_000 });
 
-  test("the status-bar-style meta is gone, so iOS cannot draw its scrim", async ({ page }) => {
-    await installedApp(page);
-    await expect(page.locator('meta[name="apple-mobile-web-app-status-bar-style"]')).toHaveCount(0);
-    // The bar still needs a colour to take: the cyberpunk --color-bg token.
-    await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute("content", "#050608");
-  });
-
-  test("the map canvas starts at y=0 and nothing opaque covers the top strip", async ({ page }) => {
+  test("the map canvas starts at y=0 and nothing active sits in the scrim strip", async ({ page }) => {
     await installedApp(page);
 
-    const geometry = await page.evaluate(() => {
-      const canvas = document.querySelector(".map-container canvas") as HTMLElement | null;
-      const shell = document.querySelector(".app-shell") as HTMLElement | null;
-      const box = (el: Element | null) => {
-        if (!el) return null;
-        const r = el.getBoundingClientRect();
-        return { top: r.top, left: r.left, right: r.right, bottom: r.bottom, width: r.width, height: r.height };
-      };
-      // Walk the top strip at three columns: the map must be the topmost thing
-      // there, or whatever is on top must be fully transparent.
-      const probes: { x: number; y: number; tag: string; cls: string; opaque: boolean }[] = [];
-      for (const x of [20, 195, 370]) {
-        for (const y of [0, 8, 16, 32, 48, 60]) {
-          const el = document.elementFromPoint(x, y) as HTMLElement | null;
-          const cs = el ? getComputedStyle(el) : null;
-          const bg = cs?.backgroundColor ?? "rgba(0, 0, 0, 0)";
-          const alpha = bg.startsWith("rgba(") ? Number(bg.slice(5, -1).split(",")[3]) : 1;
-          const hasImage = !!cs && cs.backgroundImage !== "none";
-          probes.push({
-            x,
-            y,
-            tag: el?.tagName ?? "none",
-            cls: el && typeof el.className === "string" ? el.className : "",
-            opaque: alpha > 0 || hasImage,
+    const report = await page.evaluate(
+      ({ chrome, interactive, clear }) => {
+        const visible = (el: Element): boolean => {
+          const cs = getComputedStyle(el);
+          if (cs.display === "none" || cs.visibility === "hidden" || Number(cs.opacity) <= 0) return false;
+          const r = el.getBoundingClientRect();
+          return r.width > 0 && r.height > 0;
+        };
+        const box = (el: Element | null) => {
+          if (!el) return null;
+          const r = el.getBoundingClientRect();
+          return { top: r.top, left: r.left, right: r.right, bottom: r.bottom, width: r.width, height: r.height };
+        };
+
+        const chromeRows: { sel: string; cls: string; top: number }[] = [];
+        for (const sel of chrome) {
+          for (const el of Array.from(document.querySelectorAll(sel))) {
+            if (!visible(el)) continue;
+            chromeRows.push({ sel, cls: typeof el.className === "string" ? el.className : "", top: el.getBoundingClientRect().top });
+          }
+        }
+
+        const interactiveRows: { tag: string; cls: string; name: string; top: number }[] = [];
+        for (const el of Array.from(document.querySelectorAll(interactive))) {
+          if (!visible(el)) continue;
+          interactiveRows.push({
+            tag: el.tagName,
+            cls: typeof el.className === "string" ? el.className : "",
+            name: el.getAttribute("aria-label") ?? (el.textContent ?? "").trim().slice(0, 40),
+            top: el.getBoundingClientRect().top,
           });
         }
-      }
-      return {
-        innerHeight: window.innerHeight,
-        innerWidth: window.innerWidth,
-        canvas: box(canvas),
-        shell: box(shell),
-        probes,
-      };
-    });
+
+        // Walk the strip: the topmost element there must be the map, never a
+        // control or panel.
+        const offenders: { x: number; y: number; tag: string; cls: string }[] = [];
+        const hitSel = `${interactive}, .control-panel, .tracked-chip, .app-header, .left-overlay-stack`;
+        for (const x of [20, Math.round(window.innerWidth / 2), window.innerWidth - 20]) {
+          for (let y = 0; y < clear; y += 8) {
+            const el = document.elementFromPoint(x, y) as HTMLElement | null;
+            const hit = el?.closest(hitSel);
+            if (hit) offenders.push({ x, y, tag: el!.tagName, cls: typeof el!.className === "string" ? el!.className : "" });
+          }
+        }
+
+        return {
+          innerHeight: window.innerHeight,
+          innerWidth: window.innerWidth,
+          canvas: box(document.querySelector(".map-container canvas")),
+          shell: box(document.querySelector(".app-shell")),
+          chromeRows,
+          interactiveRows,
+          offenders,
+        };
+      },
+      { chrome: TOP_CHROME, interactive: INTERACTIVE, clear: CLEAR },
+    );
 
     // The map runs to the very top and the very bottom of the viewport.
-    expect(geometry.canvas).not.toBeNull();
-    expect(geometry.canvas!.top).toBe(0);
-    expect(geometry.canvas!.left).toBe(0);
-    expect(geometry.canvas!.width).toBe(geometry.innerWidth);
-    expect(geometry.canvas!.bottom).toBe(geometry.innerHeight);
+    expect(report.canvas).not.toBeNull();
+    expect(report.canvas!.top).toBe(0);
+    expect(report.canvas!.left).toBe(0);
+    expect(report.canvas!.width).toBe(report.innerWidth);
+    expect(report.canvas!.bottom).toBe(report.innerHeight);
 
-    // No band at the bottom either (#201): the shell fills the viewport.
-    expect(geometry.shell).not.toBeNull();
-    expect(geometry.shell!.top).toBe(0);
-    expect(geometry.shell!.bottom).toBe(geometry.innerHeight);
+    // The shell still fills the viewport (#201): no band at the bottom either.
+    expect(report.shell).not.toBeNull();
+    expect(report.shell!.top).toBe(0);
+    expect(report.shell!.bottom).toBe(report.innerHeight);
 
-    // Nothing opaque sits over the top strip.
-    const covering = geometry.probes.filter((p) => p.opaque);
-    expect(covering, `opaque elements over the top strip: ${JSON.stringify(covering)}`).toEqual([]);
+    // Every top-pinned control and text panel clears the scrim.
+    for (const row of report.chromeRows) {
+      expect(row.top, `${row.sel} ${row.cls} top`).toBeGreaterThanOrEqual(CLEAR);
+    }
+    // ...and so does every visible button, input and link.
+    for (const row of report.interactiveRows) {
+      expect(row.top, `${row.tag} ${row.cls} "${row.name}" top`).toBeGreaterThanOrEqual(CLEAR);
+    }
+    // Nothing interactive or panel-like is in the faded strip at all.
+    expect(report.offenders, `elements in [0, ${CLEAR}): ${JSON.stringify(report.offenders)}`).toEqual([]);
+  });
+
+  test("every open control panel clears the scrim", async ({ page }) => {
+    await installedApp(page);
+
+    const panels: { button: string; panel: string }[] = [
+      { button: ".flight-search-fab", panel: "#flight-search-panel" },
+      { button: ".favorites-panel-fab", panel: "#favorites-panel-body" },
+      { button: ".watch-panel-toggle", panel: ".watch-panel-content" },
+      { button: ".map-legend-fab", panel: "#map-legend-body" },
+    ];
+
+    for (const { button, panel } of panels) {
+      await page.locator(button).click();
+      const open = page.locator(`${panel}.control-panel--open`);
+      await expect(open, `${panel} did not open`).toBeVisible();
+      const box = await open.boundingBox();
+      expect(box, `${panel} has no box`).not.toBeNull();
+      expect(box!.y, `${panel} top`).toBeGreaterThanOrEqual(CLEAR);
+    }
   });
 });

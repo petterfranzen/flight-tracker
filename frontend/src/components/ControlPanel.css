@@ -24,15 +24,15 @@
     flex-direction: column;
     gap: 8px;
     position: fixed;
-    top: max(16px, env(safe-area-inset-top, 0px));
+    top: var(--safe-top);
     /* Beside the stack: gutter + one 48px button + a 12px gap. */
     left: calc(max(16px, env(safe-area-inset-left, 0px)) + 48px + 12px);
     right: max(16px, env(safe-area-inset-right, 0px));
     width: auto;
     max-width: 360px;
     /* vh first for older engines, dvh where the browser chrome can shrink. */
-    max-height: calc(100vh - max(16px, env(safe-area-inset-top, 0px)) - max(16px, env(safe-area-inset-bottom, 0px)));
-    max-height: calc(100dvh - max(16px, env(safe-area-inset-top, 0px)) - max(16px, env(safe-area-inset-bottom, 0px)));
+    max-height: calc(100vh - var(--safe-top) - max(16px, env(safe-area-inset-bottom, 0px)));
+    max-height: calc(100dvh - var(--safe-top) - max(16px, env(safe-area-inset-bottom, 0px)));
     overflow-y: auto;
     overscroll-behavior: contain;
     padding: 12px;
