@@ -52,7 +52,20 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
       - run: npm run build
-      - run: npx playwright install --with-deps chromium
+      # The browser comes from Playwright's CDN; its system packages come from
+      # the runner's Ubuntu mirror. On 11 Nov that mirror was unresolvable for
+      # hours ("Temporary failure resolving 'azure.archive.ubuntu.com'") and
+      # held up a QA-passed deploy (section9-hq #289). The runner image already
+      # ships Chrome's libraries; what the mirror adds is mostly fonts, which no
+      # test asserts on. So the browser download is required, the system
+      # packages are best effort and time-boxed, and a missing library
+      # still fails the tests that follow.
+      - run: npx playwright install chromium
+      - name: Install browser system packages (best effort)
+        # A dead mirror makes apt stall ~10 min, so bound it and carry on.
+        continue-on-error: true
+        timeout-minutes: 6
+        run: npx playwright install-deps chromium
       - run: npm run test:e2e
         env:
           CI: "true"
