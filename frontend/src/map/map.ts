@@ -118,6 +118,14 @@ export interface RenderedAirport {
   y: number;
 }
 
+/** The selected aircraft's trail as it was split for drawing (map/route.ts), for tests. */
+export interface RenderedRoute {
+  /** Solid runs, each [lat, lon] per vertex, splined. */
+  trail: [number, number][][];
+  /** Dashed connectors across data gaps, each its two real endpoints. */
+  gaps: [number, number][][];
+}
+
 /** A watched, not-yet-airborne flight's origin airport, drawn by ui/watchedAirports.ts: its departure point with the scheduled/estimated time. */
 export interface RenderedWatchedAirport {
   /** Origin IATA code. */
@@ -144,6 +152,8 @@ export class FlightMap {
   renderedPlanes: () => RenderedPlane[] = () => [];
   /** Test hook: every airport drawn in view. Set by ui/defaultAirports.ts. */
   renderedAirports: () => RenderedAirport[] = () => [];
+  /** Test hook: the trail's solid runs and gap segments. Set by map/route.ts. */
+  renderedRoute: () => RenderedRoute = () => ({ trail: [], gaps: [] });
   /** Test hook: every watched origin airport drawn in view. Set by ui/watchedAirports.ts. */
   renderedWatchedAirports: () => RenderedWatchedAirport[] = () => [];
   /** Test hook: the user's own location dot drawn in view, or null. Set by map/userLocation.ts. */
