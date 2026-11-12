@@ -2,11 +2,18 @@ import { expect, test, type Page } from "@playwright/test";
 import { getRouteVertices, mockFlightApi, planeTarget, renderedPlanes, setMapView, waitForMapReady, waitForPlanes, withMap } from "./helpers";
 import { OPENFREEMAP_TILEJSON } from "./fixtures/basemap";
 import { GATE_STALE_MS, gateDisplay, trailFor, type TrailPoint } from "../src/map/gatePlacement";
+import { gateFromIndex, gateIndexReady, loadGateIndex, nearestStandFromIndex, normalizeGateRef } from "../src/map/gateIndex";
+import { GATE_INDEX } from "../src/map/gateIndexData";
 import type { SelectedPosition, TrackStatus } from "../src/types/flight";
 
 // #165: a flight whose gate a provider confirmed is drawn at the gate once its
 // last report is old (SAS086: seen at the runway end, "At gate E5B (confirmed)"
 // an hour later), and its trail is the reports only, never a stretch to the gate.
+//
+// #244: the gate's coordinate now comes from the build-time OSM index
+// (src/map/gateIndexData.ts, written by scripts/build-gate-index.mjs) before the
+// basemap's own gate point, so it resolves at any zoom. The tests that drive
+// the basemap path use an airport the index does not carry (see AIRPORT).
 
 test.use({ timezoneId: "UTC" });
 
@@ -35,6 +42,14 @@ function position(observedAtMs: number, over: Partial<SelectedPosition & { id: n
   };
 }
 
+// The mocked basemap carries the gate point, so the tests that drive *that*
+// path must use an airport the build-time index does NOT carry — otherwise
+// findGate answers from the index before it ever queries a tile. ESPA (Luleå)
+// is one of many airports absent from scripts/build-gate-index.mjs's eight.
+// The index path has its own specs below, on ESSA.
+const AIRPORT = "ESPA";
+const landingAt = (airportIcao: string, observedAtMs: number) => ({ airportIcao, runway: "19R", touchdownAt: iso(observedAtMs - 5 * 60_000) });
+
 function atGate(observedAtMs: number, over: Partial<TrackStatus> = {}): TrackStatus {
   return {
     icao24: ICAO,
@@ -46,7 +61,7 @@ function atGate(observedAtMs: number, over: Partial<TrackStatus> = {}): TrackSta
     lastSeenLat: RUNWAY_END.lat,
     lastSeenLon: RUNWAY_END.lon,
     estimate: null,
-    landing: { airportIcao: "ESSA", runway: "19R", touchdownAt: iso(observedAtMs - 5 * 60_000) },
+    landing: landingAt(AIRPORT, observedAtMs),
     gate: "E5B",
     terminal: "5",
     confirmedAt: iso(observedAtMs + 3 * 60_000),
@@ -372,5 +387,138 @@ test.describe("gate fly-to respects the user", () => {
     expect(after.zoom).toBeCloseTo(before.zoom, 6);
     // No gate point, so the plane stays where it was reported.
     expect((await selectedPlane(page))?.label).toBe("SAS086");
+  });
+});
+
+// ---- the build-time OSM gate index: a gate resolves at any zoom ----
+//
+// On main, findGate reads only the basemap's own `aeroway` gate points, which
+// ship from tile zoom 14 up (app zoom 15): below that the lookup is empty, and
+// the app can only fall back to its one-time fly-to. The committed index
+// (src/map/gateIndexData.ts, from OSM) carries ESSA E5B with no tile at all, so
+// the gate resolves while the view is at app zoom 12 — and the index wins over
+// a tile point when the basemap has one, because it is the fuller OSM snapshot.
+
+test.describe("gate index: a gate resolves with no gate tile loaded", () => {
+  // The index is its own chunk (gateIndex.ts): load it before the pure lookups.
+  test.beforeAll(() => loadGateIndex());
+  const AT_RUNWAY = { lat: RUNWAY_END.lat, lon: RUNWAY_END.lon };
+  const GATE_IDX = () => gateFromIndex("ESSA", "E5B", AT_RUNWAY)!;
+  // The plane's last report: a couple of hundred metres from the gate, so both
+  // it and the gate sit inside the view at every zoom these tests use (the map
+  // draws the selected plane only where the viewport can render it).
+  const nearGate = () => ({ lat: GATE_IDX().lat - 0.0015, lon: GATE_IDX().lon });
+
+  test("the index carries ESSA E5B and the ref normaliser is tolerant", async () => {
+    await loadGateIndex();
+    expect(gateIndexReady()).toBe(true);
+    expect(normalizeGateRef("E5B")).toBe("E5B");
+    expect(normalizeGateRef("d18")).toBe("D18");
+    expect(normalizeGateRef(" Gate D18 ")).toBe("D18");
+    expect(normalizeGateRef("e5 b")).toBe("E5B");
+    expect(gateFromIndex("ESSA", "E5B", AT_RUNWAY)).not.toBeNull();
+    // A remote stand's ref resolves too (parking_position, not a gate).
+    expect(gateFromIndex("ESSA", "33", AT_RUNWAY)).not.toBeNull();
+    // A ref the airport does not carry, and an airport the index does not carry.
+    expect(gateFromIndex("ESSA", "ZZ99", AT_RUNWAY)).toBeNull();
+    expect(gateFromIndex("ESPA", "E5B", AT_RUNWAY)).toBeNull();
+  });
+
+  test("a ref that names several objects resolves to the one nearest the plane", () => {
+    // EGLL's A-pier refs sit at two terminals: taking the first would put a T2
+    // arrival at T5, about 2.6 km away. The nearest to the plane's last report wins.
+    const points = GATE_INDEX.EGLL.gates.A16;
+    expect(points.length).toBeGreaterThan(1);
+    const [lonA, latA] = points[0];
+    const [lonB, latB] = points[points.length - 1];
+    expect(lonA === lonB && latA === latB).toBe(false);
+    expect(gateFromIndex("EGLL", "A16", { lat: latA, lon: lonA })).toEqual({ lat: latA, lon: lonA });
+    expect(gateFromIndex("EGLL", "A16", { lat: latB, lon: lonB })).toEqual({ lat: latB, lon: lonB });
+  });
+
+  test("the nearest stand is found within range and not beyond it", () => {
+    const stand = gateFromIndex("ESSA", "33", AT_RUNWAY)!;
+    expect(nearestStandFromIndex("ESSA", { lat: stand.lat, lon: stand.lon }, 60)?.ref).toBe("33");
+    expect(nearestStandFromIndex("ESSA", { lat: stand.lat + 0.01, lon: stand.lon }, 60)).toBeNull();
+    expect(nearestStandFromIndex("ESPA", { lat: stand.lat, lon: stand.lon }, 60)).toBeNull();
+  });
+
+  // gateMinZoom 99 (the zoom tests): every tile is served without a gate
+  // point, so only the index can place the plane. Returns the plane as drawn.
+  async function openIndexed(page: Page, zoom: number, gateMinZoom: number) {
+    const last = Date.now() - HOUR;
+    const at = nearGate();
+    await open(page, {
+      lastReportMs: last,
+      history: [position(last, { latitude: at.lat, longitude: at.lon })],
+      live: { latitude: at.lat, longitude: at.lon },
+      status: atGate(last, { lastSeenLat: at.lat, lastSeenLon: at.lon, landing: landingAt("ESSA", last) }),
+      view: { ...at, zoom },
+      gateMinZoom,
+    });
+    await expect.poll(async () => (await selectedPlane(page))?.label, { timeout: 10_000 }).toBe("SAS086 · E5B");
+    return (await selectedPlane(page))!;
+  }
+
+  test("at app zoom 12, with no gate tile, the plane is drawn at its gate and the camera stays put", async ({ page }) => {
+    const plane = await openIndexed(page, 12, 99);
+    expect(plane.lat).toBeCloseTo(GATE_IDX().lat, 4);
+    expect(plane.lon).toBeCloseTo(GATE_IDX().lon, 4);
+    // The index answered, so the one-time gate fly-to must not have run: only
+    // the selection's own flight (counted before the click) is on the camera.
+    await page.waitForTimeout(1_000); // asserting that nothing moves
+    expect(await flights(page)).toBe(1);
+  });
+
+  test("at app zoom 15, with no gate tile, the plane is drawn at its gate", async ({ page }) => {
+    const plane = await openIndexed(page, 15, 99);
+    expect(plane.lat).toBeCloseTo(GATE_IDX().lat, 4);
+    expect(plane.lon).toBeCloseTo(GATE_IDX().lon, 4);
+  });
+
+  test("the index wins over the basemap's own gate point", async ({ page }) => {
+    // The mocked tile carries E5B at GATE (59.6485, 17.9215); the index has the
+    // real OSM point, elsewhere, so which one the app uses is measurable.
+    const plane = await openIndexed(page, 16, 14);
+    expect(plane.lat).toBeCloseTo(GATE_IDX().lat, 4);
+    expect(plane.lon).toBeCloseTo(GATE_IDX().lon, 4);
+    expect(Math.abs(plane.lat - GATE.lat)).toBeGreaterThan(0.001);
+  });
+
+  // A remote stand: a parking_position ref, not a gate. ESSA stand 33 is in the
+  // generated index, and the provider names it as the gate.
+  const STAND = () => gateFromIndex("ESSA", "33", AT_RUNWAY)!;
+
+  async function openOnStand(page: Page, gateRef: string) {
+    const stand = STAND();
+    const last = Date.now() - HOUR;
+    await open(page, {
+      lastReportMs: last,
+      history: [position(last, { latitude: stand.lat, longitude: stand.lon })],
+      live: { latitude: stand.lat, longitude: stand.lon },
+      status: atGate(last, { gate: gateRef, lastSeenLat: stand.lat, lastSeenLon: stand.lon, landing: landingAt("ESSA", last) }),
+      view: { ...stand, zoom: 12 },
+      gateMinZoom: 99,
+    });
+    // The label is the provider's ref, snapped stand or not.
+    await expect.poll(async () => (await selectedPlane(page))?.label, { timeout: 10_000 }).toBe(`SAS086 · ${gateRef}`);
+    return (await selectedPlane(page))!;
+  }
+
+  test("a provider ref that names a remote stand is drawn at that stand", async ({ page }) => {
+    const plane = await openOnStand(page, "33");
+    expect(plane.lat).toBeCloseTo(STAND().lat, 4);
+    expect(plane.lon).toBeCloseTo(STAND().lon, 4);
+  });
+
+  test("an unknown ref on the ground snaps to the nearest stand, keeping the provider's label", async ({ page }) => {
+    // The provider ref is in neither the index nor a tile, and the view ends up
+    // at the airport (the selection's own fly), so the plane is drawn at the
+    // nearest stand within STAND_SNAP_M — but still labelled with the ref the
+    // provider gave, not the guessed stand's name.
+    const plane = await openOnStand(page, "ZZ99");
+    expect(plane.label).toBe("SAS086 · ZZ99");
+    expect(plane.lat).toBeCloseTo(STAND().lat, 4);
+    expect(plane.lon).toBeCloseTo(STAND().lon, 4);
   });
 });
