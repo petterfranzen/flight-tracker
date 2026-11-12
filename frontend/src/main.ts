@@ -39,8 +39,8 @@ import { agedIds, findShadowedIds, isActiveTraffic, OVERLAP_MIN_ZOOM } from "./m
 import { newerReport, notOlderReport, sameReport } from "./map/reportOrder";
 import { createRouteLayer, type RoutePoint } from "./map/route";
 import { lastContinuousRun, TRAIL_FALLBACK_WINDOW_MS } from "./map/trailWindow";
-import { confirmedGate, displayedPosition, gateDisplay, trailPointsFor, type GateDisplay } from "./map/gatePlacement";
-import { loadGateIndex, nearestStandFromIndex } from "./map/gateIndex";
+import { confirmedGate, displayedPosition, gateDisplay, trailPointsFor, GATE_MAX_DISTANCE_M, type GateDisplay } from "./map/gatePlacement";
+import { loadGateIndex, nearestGateOrStandFromIndex, nearestStandFromIndex } from "./map/gateIndex";
 import { createUncertaintyLayer } from "./map/uncertainty";
 import { keepCellWinners } from "./map/cellWinners";
 import { snapBounds, ViewCache, type CachedView } from "./map/viewCache";
@@ -460,10 +460,17 @@ function boot(): void {
   // no tile and resolves at any zoom; the basemap's own vector-tile gate points
   // are the fallback (map.ts findGate), looked up again whenever tiles load.
   let gatePoint: { icao24: string; gate: string; lat: number; lon: number } | null = null;
-  // A stand guessed for an on-ground plane whose ref the index does not carry.
+  // A guessed point for a gate the index and the tiles cannot place.
   // Deliberately not `gatePoint`: it never blocks a real gate, the tile lookup
-  // or the fly-to, and it is dropped the moment one of those answers.
-  let standSnap: { icao24: string; lat: number; lon: number } | null = null;
+  // or the one-time fly-to, and it is dropped the moment one of those answers.
+  //  - `approximate: false`: a plane on the ground at the airport parked at a
+  //    stand within STAND_SNAP_M. The label stays the provider's own ref: the
+  //    dossier shows that ref, and a guessed stand name would contradict it.
+  //  - `approximate: true`: the provider named a gate the index does not carry
+  //    (87, F58 and F62 at ARN are in neither OSM's gate layer nor the index),
+  //    so the nearest indexed gate or stand within GATE_MAX_DISTANCE_M stands
+  //    in for it and the label says "Gate <ref>".
+  let fallbackPoint: { icao24: string; lat: number; lon: number; approximate: boolean } | null = null;
   function currentGateDisplay(): GateDisplay | null {
     const pos = store.get("selectedPos");
     const status = store.get("trackStatus");
@@ -471,11 +478,9 @@ function boot(): void {
     const point =
       gate && gatePoint && gatePoint.icao24 === pos?.icao24 && gatePoint.gate === gate
         ? gatePoint
-        : standSnap && standSnap.icao24 === pos?.icao24
-          ? standSnap
+        : fallbackPoint && fallbackPoint.icao24 === pos?.icao24
+          ? fallbackPoint
           : null;
-    // The label stays the provider's own ref, snapped stand or not: the dossier
-    // shows that ref, and a guessed stand name would contradict it.
     return gateDisplay(pos, status, Date.now(), point);
   }
   // Once per selection, if the gate's tile is not loaded: go where it is. Never against
@@ -513,15 +518,6 @@ function boot(): void {
     if (map.getZoom() >= GATE_TILE_ZOOM && map.contains(lat, lon)) return;
     map.flyTo([lat, lon], GATE_LOOKUP_ZOOM, 800);
   }
-  /**
-   * The gate tiles are in reach when the view is at the airport and the plane is
-   * in it: from there a gate the basemap does not carry is genuinely absent, and
-   * no camera move would find one. Only then may an on-ground plane be snapped
-   * to a stand.
-   */
-  function gateTilesInReach(onGround: boolean | undefined, status: TrackStatus): boolean {
-    return onGround === true && map.getZoom() >= GATE_TILE_ZOOM && map.contains(status.lastSeenLat, status.lastSeenLon);
-  }
   async function resolveGate(): Promise<void> {
     await loadGateIndex(); // a no-op once the chunk has landed
     const pos = store.get("selectedPos");
@@ -534,13 +530,21 @@ function boot(): void {
     const found = map.findGate(gate, near, icao);
     if (found) {
       gatePoint = { icao24: pos.icao24, gate, lat: found.lat, lon: found.lon };
-      standSnap = null;
-    } else if (standSnap?.icao24 !== pos.icao24 && gateTilesInReach(pos.onGround, status)) {
-      // The ref is in neither the index nor a loaded tile, and no camera move
-      // can find one: an on-ground plane may be parked at a remote stand.
-      // Guessed, never as final — the tile lookup keeps running and wins.
-      const stand = nearestStandFromIndex(icao, near, STAND_SNAP_M);
-      standSnap = stand ? { icao24: pos.icao24, lat: stand.lat, lon: stand.lon } : null;
+      fallbackPoint = null;
+    } else if (fallbackPoint?.icao24 !== pos.icao24) {
+      // The ref is in neither the index nor a loaded tile. Two guesses, both
+      // dropped the moment a real gate answers:
+      //  - an on-ground plane may be parked at a stand within STAND_SNAP_M (the
+      //    label stays the provider's ref). The index needs no tile, so this
+      //    does not wait for the view to reach the airport;
+      //  - otherwise the plane is somewhere in the airport's terminal area, so
+      //    the nearest indexed gate or stand within GATE_MAX_DISTANCE_M stands
+      //    in for the unmapped gate, labelled "Gate <ref>".
+      const stand = pos.onGround === true ? nearestStandFromIndex(icao, near, STAND_SNAP_M) : null;
+      const area = stand ? null : nearestGateOrStandFromIndex(icao, near, GATE_MAX_DISTANCE_M);
+      if (stand) fallbackPoint = { icao24: pos.icao24, lat: stand.lat, lon: stand.lon, approximate: false };
+      else if (area) fallbackPoint = { icao24: pos.icao24, lat: area.lat, lon: area.lon, approximate: true };
+      else fallbackPoint = null;
     }
     renderAircraftLayer();
     drawRoute();
@@ -1140,7 +1144,7 @@ function boot(): void {
     // Cleared unconditionally: switching directly from aircraft A to B
     // never passes through "selected = null".
     gatePoint = null;
-    standSnap = null;
+    fallbackPoint = null;
     gateZoomDone = false;
     userMovedMap = false;
     route = [];

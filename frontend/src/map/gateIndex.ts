@@ -101,6 +101,38 @@ export function nearestStandFromIndex(
   return best ? { ref: best.ref, lat: best.lat, lon: best.lon } : null;
 }
 
+/**
+ * The gate or stand nearest `near` at airport `icao`, within `maxM` metres, or
+ * null. The fallback for a provider ref the index does not carry at all: the
+ * plane is somewhere in the airport's terminal area, so the nearest mapped gate
+ * or stand stands in for the unmapped one (87, F58 and F62 at ARN are in
+ * neither OSM's gate layer nor this index).
+ *
+ * A ref can carry several points along a pier — EGLL's 409 and 423 stands each
+ * have three to six — so nearest-to-last-report can pick a different point from
+ * the gate the provider named. That is why the caller labels the result as a
+ * guess ("Gate <ref>") rather than as the gate.
+ */
+export function nearestGateOrStandFromIndex(
+  icao: string | null | undefined,
+  near: LatLon,
+  maxM: number,
+): (LatLon & { ref: string; kind: "gate" | "stand" }) | null {
+  const layout = layoutFor(icao);
+  if (!layout) return null;
+  let best: { ref: string; kind: "gate" | "stand"; lat: number; lon: number; d: number } | null = null;
+  for (const kind of ["stand", "gate"] as const) {
+    const list = kind === "stand" ? layout.stands : layout.gates;
+    for (const [ref, points] of Object.entries(list)) {
+      for (const [lon, lat] of points) {
+        const d = distanceM(near, { lat, lon });
+        if (d <= maxM && (!best || d < best.d)) best = { ref, kind, lat, lon, d };
+      }
+    }
+  }
+  return best ? { ref: best.ref, kind: best.kind, lat: best.lat, lon: best.lon } : null;
+}
+
 function layoutFor(icao: string | null | undefined): AirportLayout | null {
   if (!index || !icao) return null;
   return index[icao.trim().toUpperCase()] ?? null;
