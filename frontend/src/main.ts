@@ -308,6 +308,7 @@ function boot(): void {
 
     selectedId: null,
     selectedPos: null,
+    gateApproximate: false,
     selectedPosFresh: false,
     dossier: null,
     trackStatus: null,
@@ -518,34 +519,54 @@ function boot(): void {
     if (map.getZoom() >= GATE_TILE_ZOOM && map.contains(lat, lon)) return;
     map.flyTo([lat, lon], GATE_LOOKUP_ZOOM, 800);
   }
+  /**
+   * The dossier's gate line says when the marker is at a guess rather than the
+   * gate itself. Set wherever the display can change; the store set is a no-op
+   * unless it flips, so the panel is not rebuilt on every tile event.
+   */
+  function syncGateApproximate(): void {
+    const approximate = currentGateDisplay()?.approximate === true;
+    if (store.get("gateApproximate") !== approximate) store.set("gateApproximate", approximate);
+  }
   async function resolveGate(): Promise<void> {
     await loadGateIndex(); // a no-op once the chunk has landed
     const pos = store.get("selectedPos");
     const status = store.get("trackStatus");
     const gate = confirmedGate(pos, status);
-    if (!pos || !status || !gate) return;
-    if (gatePoint && gatePoint.icao24 === pos.icao24 && gatePoint.gate === gate) return;
-    const near = { lat: status.lastSeenLat, lon: status.lastSeenLon };
-    const icao = status.landing?.airportIcao;
-    const found = map.findGate(gate, near, icao);
-    if (found) {
-      gatePoint = { icao24: pos.icao24, gate, lat: found.lat, lon: found.lon };
+    if (!pos || !status || !gate) {
+      // The status stopped qualifying (the plane moved on, the provider dropped
+      // the gate): a guess from before is no longer about this plane.
       fallbackPoint = null;
-    } else if (fallbackPoint?.icao24 !== pos.icao24) {
-      // The ref is in neither the index nor a loaded tile. Two guesses, both
-      // dropped the moment a real gate answers:
-      //  - an on-ground plane may be parked at a stand within STAND_SNAP_M (the
-      //    label stays the provider's ref). The index needs no tile, so this
-      //    does not wait for the view to reach the airport;
-      //  - otherwise the plane is somewhere in the airport's terminal area, so
-      //    the nearest indexed gate or stand within GATE_MAX_DISTANCE_M stands
-      //    in for the unmapped gate, labelled "Gate <ref>".
-      const stand = pos.onGround === true ? nearestStandFromIndex(icao, near, STAND_SNAP_M) : null;
-      const area = stand ? null : nearestGateOrStandFromIndex(icao, near, GATE_MAX_DISTANCE_M);
-      if (stand) fallbackPoint = { icao24: pos.icao24, lat: stand.lat, lon: stand.lon, approximate: false };
-      else if (area) fallbackPoint = { icao24: pos.icao24, lat: area.lat, lon: area.lon, approximate: true };
-      else fallbackPoint = null;
+      syncGateApproximate();
+      return;
     }
+    if (!(gatePoint && gatePoint.icao24 === pos.icao24 && gatePoint.gate === gate)) {
+      const near = { lat: status.lastSeenLat, lon: status.lastSeenLon };
+      const icao = status.landing?.airportIcao;
+      const found = map.findGate(gate, near, icao);
+      if (found) {
+        gatePoint = { icao24: pos.icao24, gate, lat: found.lat, lon: found.lon };
+        fallbackPoint = null;
+      } else {
+        // The ref is in neither the index nor a loaded tile. Two guesses, both
+        // dropped the moment a real gate answers:
+        //  - an on-ground plane may be parked at a stand within STAND_SNAP_M (the
+        //    label stays the provider's ref). The index needs no tile, so this
+        //    does not wait for the view to reach the airport;
+        //  - otherwise the plane is somewhere in the airport's terminal area, so
+        //    the nearest indexed gate or stand within GATE_MAX_DISTANCE_M stands
+        //    in for the unmapped gate, labelled "Gate <ref>".
+        // Re-guessed on every resolve, never once per selection: a plane that
+        // taxis after the first status moves to another stand, and the marker
+        // must follow it. Both lookups are in-memory scans of the loaded index.
+        const stand = pos.onGround === true ? nearestStandFromIndex(icao, near, STAND_SNAP_M) : null;
+        const area = stand ? null : nearestGateOrStandFromIndex(icao, near, GATE_MAX_DISTANCE_M);
+        if (stand) fallbackPoint = { icao24: pos.icao24, lat: stand.lat, lon: stand.lon, approximate: false };
+        else if (area) fallbackPoint = { icao24: pos.icao24, lat: area.lat, lon: area.lon, approximate: true };
+        else fallbackPoint = null;
+      }
+    }
+    syncGateApproximate();
     renderAircraftLayer();
     drawRoute();
   }

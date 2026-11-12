@@ -127,6 +127,15 @@ test.describe("gate placement rule", () => {
     expect(gateDisplay(pos(stale), atGate(stale, { state: "LANDED_CONFIRMED", gate: null }), now, GATE)).toBeNull();
   });
 
+  test("a fresh on-ground report is never replaced by a guess; a mapped gate still is", () => {
+    const fresh = now - 60_000;
+    const guess = { lat: GATE.lat, lon: GATE.lon, approximate: true };
+    // The plane is taxiing where the report says it is: a guess has nothing to add.
+    expect(gateDisplay(pos(fresh, { onGround: true }), atGate(fresh), now, guess)).toBeNull();
+    // The gate's own point is knowledge, not a guess, and still wins.
+    expect(gateDisplay(pos(fresh, { onGround: true }), atGate(fresh), now, GATE)).not.toBeNull();
+  });
+
   // #245: a gate the index does not carry is drawn at a guessed point in the
   // airport's terminal area, and the label says so.
   test("a terminal-area guess is labelled \"Gate <ref>\"; a mapped gate keeps the bare ref", () => {
@@ -344,6 +353,54 @@ test.describe("confirmed gate on the map", () => {
     expect(Math.abs(plane.lat - RUNWAY_END.lat) + Math.abs(plane.lon - RUNWAY_END.lon)).toBeGreaterThan(0.001);
     // An hour-old report: the trail would end at the runway end, away from the plane.
     await expect.poll(() => getRouteVertices(page), { timeout: 30_000 }).toEqual([]);
+    // The dossier says the point is a guess, not the stand.
+    await expect(page.locator(".details-panel-status")).toContainText("approx. position");
+  });
+
+  // #245: the guess is recomputed on every resolve, never frozen at the first
+  // one: a plane that lands at the runway end and then taxis to a pier must not
+  // keep the marker back at the runway-side stand.
+  test("the guess follows the plane: a later lastSeen moves the drawn point", async ({ page }) => {
+    await page.clock.install(); // time still flows; runFor jumps the 60 s landed refetch below
+    const last = Date.now() - HOUR;
+    const runwayStand = nearestGateOrStandFromIndex("ESSA", RUNWAY_END, GATE_MAX_DISTANCE_M)!;
+    const parked = gateFromIndex("ESSA", "33", RUNWAY_END)!;
+    const opts = {
+      lastReportMs: last,
+      history: [position(last)],
+      status: atGate(last, {
+        state: "LANDED_CONFIRMED",
+        gate: "87",
+        landing: landingAt("ESSA", last),
+        confirmedAt: iso(last - 30 * 60_000),
+      }),
+      gateMinZoom: 99,
+    };
+    await open(page, opts);
+    // Count the landed refetches from here on, and serve the moving lastSeen.
+    let requests = 0;
+    let served = opts.status;
+    await page.route(`**/api/flights/${ICAO}/status`, (r) => {
+      requests++;
+      return r.fulfill({ json: served });
+    });
+
+    // First guess: the nearest indexed gate or stand to the runway-end report.
+    await expect.poll(async () => (await selectedPlane(page))?.label, { timeout: 30_000 }).toBe("SAS086 · Gate 87");
+    let plane = (await selectedPlane(page))!;
+    expect(plane.lat).toBeCloseTo(runwayStand.lat, 4);
+    expect(plane.lon).toBeCloseTo(runwayStand.lon, 4);
+
+    // It taxied to a pier stand; the 60 s landed refetch brings the new lastSeen,
+    // which lands within the 60 m stand snap, so the label drops the guess marker.
+    served = { ...opts.status, lastSeenLat: parked.lat, lastSeenLon: parked.lon };
+    // fastForward, not runFor: it fires each due timer once instead of replaying
+    // 61 s of animation frames, which a map spec cannot afford.
+    await page.clock.fastForward(61_000);
+    await expect.poll(async () => (await selectedPlane(page))?.label, { timeout: 30_000 }).toBe("SAS086 · 87");
+    plane = (await selectedPlane(page))!;
+    expect(plane.lat).toBeCloseTo(parked.lat, 4);
+    expect(plane.lon).toBeCloseTo(parked.lon, 4);
   });
 
   // #245: the same knowledge as AT_GATE, so a confirmed landing whose provider

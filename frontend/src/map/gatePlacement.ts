@@ -87,7 +87,9 @@ export function gateDisplay(pos: SelectedPosition | null, status: TrackStatus | 
   } else {
     const gateIn = status.confirmedAt ? Date.parse(status.confirmedAt) : NaN;
     if (Number.isFinite(gateIn) && observed > gateIn + GATE_LATER_MOVEMENT_MS) return null;
-    if (!stale && pos.onGround !== true) return null;
+    // A fresh on-ground report is where the plane actually is; a guess may only
+    // stand in when there is nothing better (a stale report, or one in the air).
+    if (!stale && (pos.onGround !== true || gatePoint.approximate === true)) return null;
   }
   if (distanceM({ lat: status.lastSeenLat, lon: status.lastSeenLon }, gatePoint) > GATE_MAX_DISTANCE_M) return null;
   return { lat: gatePoint.lat, lon: gatePoint.lon, gate, approximate: gatePoint.approximate === true };

@@ -35,6 +35,11 @@ export interface AppState extends Record<string, unknown> {
   dossier: AircraftDossier | null;
   /** Coverage-gap status of the selected aircraft; null while unknown or unavailable. */
   trackStatus: TrackStatus | null;
+  /**
+   * The selected plane is drawn at a guessed gate point (the ref is in neither
+   * the index nor a loaded tile), so the dossier's gate line says so.
+   */
+  gateApproximate: boolean;
   dossierExpanded: boolean;
   planeOffScreen: boolean;
   focusRequest: number;
