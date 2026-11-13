@@ -2,6 +2,7 @@ import type { AppStore } from "../state/appState";
 import type { TrackStatus } from "../types/flight";
 import { isAircraftFavorited, isRouteFavorited } from "../favorites";
 import { h, clear } from "./h";
+import { closeOnEscape, modalOpen } from "./a11y";
 
 // Past this, "last updated" reads as a warning rather than routine network
 // jitter.
@@ -92,7 +93,7 @@ function creditedProvider(status: TrackStatus): ProviderDisplay | null {
 }
 
 /** The dossier's status line for an aircraft that is not live; null when there is nothing to say (LIVE). */
-export function statusLabel(status: TrackStatus): string | null {
+export function statusLabel(status: TrackStatus, approximate = false): string | null {
   const runway = status.landing ? [status.landing.airportIcao, status.landing.runway].filter(Boolean).join(" ") : "";
   switch (status.state) {
     case "COVERAGE_LOST": {
@@ -108,7 +109,9 @@ export function statusLabel(status: TrackStatus): string | null {
       return `Landed (confirmed · ${providerName(status.source)})`;
     case "AT_GATE": {
       const credit = creditedProvider(status);
-      return `At gate${status.gate ? ` ${status.gate}` : ""} (confirmed${credit ? ` · ${credit.name}` : ""})`;
+      // A guess is not the gate: say so on the line that names it.
+      const approx = approximate ? " · approx. position" : "";
+      return `At gate${status.gate ? ` ${status.gate}` : ""} (confirmed${credit ? ` · ${credit.name}` : ""}${approx})`;
     }
     default:
       return null;
@@ -116,8 +119,8 @@ export function statusLabel(status: TrackStatus): string | null {
 }
 
 /** The status line's element, or null when there is no status or the aircraft is live. */
-function statusLine(status: TrackStatus | null): HTMLElement | null {
-  const text = status && statusLabel(status);
+function statusLine(status: TrackStatus | null, approximate = false): HTMLElement | null {
+  const text = status && statusLabel(status, approximate);
   if (!status || !text) return null;
   // The credit is a real link: the provider's name inside the label becomes the anchor.
   const credit = creditedProvider(status);
@@ -187,9 +190,17 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     );
   }
 
+  // Escape closes the open dossier. Skips while a modal overlay is open (the
+  // phone drawers, the resume dialog), so one keypress closes one thing.
+  const detachEscape = closeOnEscape(() => {
+    if (modalOpen()) return;
+    if (store.get("selectedPos")) store.get("closeAircraftPanel")();
+    else if (store.get("airportDossier")) store.get("closeAirportPanel")();
+  });
+
   renderAll();
   const unsubscribeStructural = store.subscribeMany(
-    ["selectedPos", "airportDossier", "dossier", "trackStatus", "dossierExpanded", "planeOffScreen", "airportInfo", "favoriteAircraft", "favoriteRoutes"],
+    ["selectedPos", "airportDossier", "dossier", "trackStatus", "gateApproximate", "dossierExpanded", "planeOffScreen", "airportInfo", "favoriteAircraft", "favoriteRoutes"],
     renderAll,
   );
   const unsubscribeNowMs = store.subscribe("nowMs", updateNowMs);
@@ -197,6 +208,7 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
   return () => {
     unsubscribeStructural();
     unsubscribeNowMs();
+    detachEscape();
     clear(root);
   };
 }
@@ -328,7 +340,7 @@ function renderAircraftPanel(store: AppStore): { panel: HTMLElement; updatedLine
       h("p", { className: "details-panel-favorite-hint" }, favoriteHint),
       h("p", { className: "details-panel-meta details-panel-meta--secondary" }, `ICAO24 ${selectedPos.icao24.toUpperCase()} · last leg traced above`),
       updatedLine,
-      statusLine(status),
+      statusLine(status, store.get("gateApproximate") === true),
       fields,
       h("button", { className: "details-panel-close", onClick: () => store.get("closeAircraftPanel")(), "aria-label": "Close aircraft details" }, "Close"),
     ),

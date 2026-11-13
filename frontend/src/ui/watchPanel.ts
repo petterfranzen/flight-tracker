@@ -4,7 +4,10 @@ import { watchKey, type WatchedFlight } from "../watchlist";
 import { NOTIFY_ENABLED, notificationPermission, requestNotificationPermission, showOsNotification } from "../notify/notifier";
 import { notifyStateFor, setFlightEnabled } from "../notify/state";
 import { h, clear } from "./h";
+import { activateModal, closeOnEscape, isPhone, modalOpen, type ModalHandle } from "./a11y";
+import { closeControlPanel, registerControlPanel, toggleControlPanel } from "./controlStack";
 import "../components/WatchPanel.css";
+import "../components/ControlPanel.css";
 
 const timeOf = (iso: string | null): string =>
   iso ? new Date(iso).toLocaleTimeString("sv-SE", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Stockholm" }) : "–";
@@ -35,6 +38,9 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
   // Set when a watch is added, so the next render brings its row into the
   // panel's own scroll box (the list is chronological: newest is last).
   let pendingScrollKey: string | null = null;
+  // The phone panel is modal like the other three (#183): focus in, Tab
+  // trapped, Escape closes, focus returns to the ✈ button. Desktop is inline.
+  let trap: ModalHandle | null = null;
 
   const today = new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Stockholm" });
   const flightInput = h("input", { type: "text", className: "watch-panel-flight", placeholder: "Flight, e.g. BA778", "aria-label": "Flight number" });
@@ -51,10 +57,13 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
       (watched.length ? `<span class="watch-panel-count" aria-hidden="true">${watched.length}</span>` : "");
     toggle.setAttribute("aria-label", `Watch flights${watched.length ? `, ${watched.length} watched` : ""}`);
     toggle.setAttribute("aria-expanded", String(open));
+    content.classList.toggle("control-panel--open", open);
     content.hidden = !open;
+    syncModal();
     if (!open) return;
     clear(dyn);
-    if (message) dyn.appendChild(h("p", { className: "watch-panel-message" }, message));
+    // role=status => polite announcement of "Searching…", "No matching flights…", a search error.
+    if (message) dyn.appendChild(h("p", { className: "watch-panel-message", role: "status" }, message));
 
     if (results.length) {
       const list = h("ul", { className: "watch-panel-results" });
@@ -218,7 +227,7 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
   // not leave the user staring at the list.
   function goto(w: WatchedFlight): void {
     store.get("goToWatched")(w);
-    if (window.matchMedia("(max-width: 768px)").matches) setOpen(false);
+    if (window.matchMedia("(max-width: 768px)").matches) closeControlPanel("watch");
   }
 
   const form = h(
@@ -228,8 +237,9 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     h("button", { type: "submit", className: "watch-panel-search" }, "Search"),
   );
   const dyn = h("div"); // everything below the form, rebuilt on each render (the form keeps focus)
-  const toggle = h("button", { type: "button", className: "watch-panel-toggle", onClick: () => setOpen(!open) });
-  const content = h("div", { className: "watch-panel-content" }, form, dyn);
+  const toggle = h("button", { type: "button", className: "watch-panel-toggle control-stack-button", onClick: () => toggleControlPanel("watch") });
+  const closeButton = h("button", { type: "button", className: "watch-panel-close control-panel-close", onClick: () => closeControlPanel("watch") }, "Close watch ✕");
+  const content = h("div", { className: "watch-panel-content control-panel" }, closeButton, form, dyn);
   const container = h("div", { className: "watch-panel" }, toggle, content);
   root.appendChild(container);
 
@@ -238,15 +248,49 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     render();
   }
 
+  /** See flightSearch.ts's syncModal — same modal-on-phone treatment. */
+  function syncModal(): void {
+    const modal = open && isPhone();
+    if (modal && !trap) {
+      content.setAttribute("role", "dialog");
+      content.setAttribute("aria-modal", "true");
+      content.setAttribute("aria-label", "Watch flights");
+      trap = activateModal(content, { onEscape: () => closeControlPanel("watch"), returnTo: toggle });
+    } else if (!modal && trap) {
+      trap.release();
+      trap = null;
+      content.removeAttribute("role");
+      content.removeAttribute("aria-modal");
+      content.removeAttribute("aria-label");
+    }
+  }
+
   const unsubscribe = store.subscribeMany(["watchedFlights", "watchedStatus"], () => {
     watched = store.get("watchedFlights");
     status = store.get("watchedStatus");
     render();
   });
 
+  // Escape closes the open panel (not a modal — Tab is not trapped). Skips
+  // while a modal overlay is open, so one keypress does not close both.
+  const detachEscape = closeOnEscape(() => {
+    if (modalOpen()) return;
+    if (open) closeControlPanel("watch");
+  });
+
   render();
+  const unregister = registerControlPanel("watch", {
+    panel: content,
+    button: toggle,
+    open: () => setOpen(true),
+    close: () => setOpen(false),
+  });
   return () => {
+    unregister();
+    trap?.release();
+    trap = null;
     unsubscribe();
+    detachEscape();
     container.remove();
   };
 }

@@ -1,7 +1,7 @@
 import type { GeoJSONSource } from "maplibre-gl";
 import type { FlightMap } from "./map";
 import { PLANES_LAYER } from "./planes";
-import { ROUTE_LAYER_ID } from "./route";
+import { ROUTE_BOTTOM_LAYER_ID, ROUTE_LAYER_ID } from "./route";
 import type { TrackStatus } from "../types/flight";
 
 const UNCERTAINTY_FALLBACK_COLOR = "#ff5ed8"; // --color-uncertainty in FlightMap.css, if it can't be read
@@ -85,7 +85,7 @@ export function createUncertaintyLayer(map: FlightMap): UncertaintyLayerHandle {
     if (added) return;
     const color = getComputedStyle(map.getContainer()).getPropertyValue("--color-uncertainty").trim() || UNCERTAINTY_FALLBACK_COLOR;
     map.gl.addSource(UNCERTAINTY_SOURCE_ID, { type: "geojson", data: latest });
-    const before = map.gl.getLayer(ROUTE_LAYER_ID) ? ROUTE_LAYER_ID : map.gl.getLayer(PLANES_LAYER) ? PLANES_LAYER : undefined;
+    const before = [ROUTE_BOTTOM_LAYER_ID, ROUTE_LAYER_ID, PLANES_LAYER].find((id) => map.gl.getLayer(id));
     map.gl.addLayer({ id: UNCERTAINTY_FILL_LAYER_ID, type: "fill", source: UNCERTAINTY_SOURCE_ID, paint: { "fill-color": color, "fill-opacity": 0.14 } }, before);
     map.gl.addLayer(
       {

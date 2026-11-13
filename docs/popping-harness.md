@@ -146,16 +146,18 @@ measured on the merged #150 fix with
 
 The idle scenario's drawn set is steady in some runs and churns a little on the
 overview refresh in others. Re-measured on `main` (#175), sandbox, 12 runs
-(`--workers=1` and `--workers=2`, repeated; a further run failed on a locator timeout and printed no
-summary): vanished/appeared 0/0 (4 runs), 0/2 (2), 1/3 (3), 4/4 (2), 10/22 (1);
-backwards 0 and worst back 0.0000 in every run. The earlier "9 vanished,
-20 appeared" was one churny run like the 10/22 one, not the typical case: QA's
-0/0 is within the normal range. The churn is not the pop; the pop is a plane
-moving *against its own track*, and the count for it is 0. The #150 run also reproduced the four `BUDGET` baselines
-within their headroom (vanished 4/3/0/1, appeared 1/1/1/1, backwards 0
-throughout, the selected plane 2 steps at 0.0045°): the counts move a little
-with timing, the no-backwards claim does not. CI is the authority for the
-repeated run.
+(`--workers=1` and `--workers=2`, repeated; a further run failed on a locator
+timeout and printed no summary): vanished/appeared 0/0 (4 runs), 0/2 (2), 1/3
+(3), 4/4 (2), 10/22 (1); backwards 0 and worst back 0.0000 in every run. The
+earlier "9 vanished, 20 appeared" was one churny run like the 10/22 one, not
+the typical case: the 0/0 seen in the #170/#171 QA run. The churn is not the
+pop; the pop is a plane moving *against its own track*, and the count for it is
+0.
+
+The #150 run also reproduced the four `BUDGET` baselines within their headroom
+(vanished 4/3/0/1, appeared 1/1/1/1, backwards 0 throughout, the selected plane
+2 steps at 0.0045°): the counts move a little with timing, the no-backwards
+claim does not. CI is the authority for the repeated run.
 
 ### A server that dead-reckons
 
@@ -197,6 +199,14 @@ drawn count every 250 ms of app time after a zoom to z8 and after returning to a
 cached view, and counts steps of three planes or more: before the fix 7-8 per
 view (55 -> 60 -> 66 -> 72 -> 76 -> 83 -> 88 -> 94 -> 95), after it 2 (the
 snapshot, then one batch).
+
+The two boot tests pin the other side of the guard: the hold arms only for a
+*view change* whose snapshot carries a real set (>= 5 planes), never at boot. An
+**empty** opening snapshot and a **full** one (>= 5 planes) both draw the frames
+that follow at once, not after the 4-12 s fill window. The held frames and their
+release timer are dropped by the next snapshot, by a view change, and by a feed
+reconnect (`clearArrivals`), so a timer never outlives the view or the connection
+that armed it.
 
 ## Adding a scenario
 
