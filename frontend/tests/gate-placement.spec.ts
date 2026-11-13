@@ -345,6 +345,7 @@ test.describe("confirmed gate on the map", () => {
       lastReportMs: last,
       history: [position(last)],
       status: atGate(last, { gate: "87", terminal: "2", landing: landingAt("ESSA", last) }),
+      live: { state: "AT_GATE" },
       gateMinZoom: 99, // no gate point in any tile: only the index can answer
     });
 
@@ -377,6 +378,7 @@ test.describe("confirmed gate on the map", () => {
         landing: landingAt("ESSA", last),
         confirmedAt: iso(last - 30 * 60_000),
       }),
+      live: { state: "AT_GATE" },
       gateMinZoom: 99,
     };
     await open(page, opts);
@@ -416,7 +418,7 @@ test.describe("confirmed gate on the map", () => {
     await open(page, {
       lastReportMs: last,
       history: [position(last, { latitude: at.lat, longitude: at.lon })],
-      live: { latitude: at.lat, longitude: at.lon },
+      live: { latitude: at.lat, longitude: at.lon, state: "AT_GATE" },
       status: atGate(last, {
         state: "LANDED_CONFIRMED",
         lastSeenLat: at.lat,
@@ -642,7 +644,7 @@ test.describe("gate index: a gate resolves with no gate tile loaded", () => {
     await open(page, {
       lastReportMs: last,
       history: [position(last, { latitude: at.lat, longitude: at.lon })],
-      live: { latitude: at.lat, longitude: at.lon },
+      live: { latitude: at.lat, longitude: at.lon, state: "AT_GATE" },
       status: atGate(last, { lastSeenLat: at.lat, lastSeenLon: at.lon, landing: landingAt("ESSA", last) }),
       view: { ...at, zoom },
       gateMinZoom,
@@ -686,7 +688,7 @@ test.describe("gate index: a gate resolves with no gate tile loaded", () => {
     await open(page, {
       lastReportMs: last,
       history: [position(last, { latitude: stand.lat, longitude: stand.lon })],
-      live: { latitude: stand.lat, longitude: stand.lon },
+      live: { latitude: stand.lat, longitude: stand.lon, state: "AT_GATE" },
       status: atGate(last, { gate: gateRef, lastSeenLat: stand.lat, lastSeenLon: stand.lon, landing: landingAt("ESSA", last) }),
       view: { ...stand, zoom: 12 },
       gateMinZoom: 99,
