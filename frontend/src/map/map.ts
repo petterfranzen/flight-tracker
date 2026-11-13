@@ -2,6 +2,8 @@ import { LngLat, Map as MaplibreMap, MercatorCoordinate, type MapEventType } fro
 import type { Bounds } from "../types/flight";
 import { basemapOptions, whenBasemapReady } from "./maplibreBasemap";
 import { minZoomFor, WORLD_BOUNDS } from "./zoomLimits";
+import { distanceM, geometryPoint } from "./gatePlacement";
+import { gateFromIndex } from "./gateIndex";
 
 // Zoom a selection's flyTo treats as "close enough" to stop zooming
 // further in.
@@ -32,6 +34,17 @@ const ZOOM_OFFSET = 1;
 const toGl = (zoom: number): number => zoom - ZOOM_OFFSET;
 const fromGl = (zoom: number): number => zoom + ZOOM_OFFSET;
 const TILE_PX = 256;
+
+/**
+ * Whether the user has asked for reduced motion. Every camera move below is
+ * an animation (easeTo/flyTo/panTo); with this set each becomes an instant
+ * jump to the same final camera, so a selection or a zoom still lands where
+ * it should but nothing slides across the screen. Read per call, so a change
+ * to the OS setting takes effect on the next move.
+ */
+function reducedMotion(): boolean {
+  return typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
 
 /** The app's furthest zoom-in (the old raster layer's maxZoom). */
 export const MAX_ZOOM = 18;
@@ -79,6 +92,8 @@ export interface RenderedPlane {
   size: number;
   selected: boolean;
   dimmed: boolean;
+  /** A watched flight's plane: drawn distinct from ordinary traffic and exempt from declutter and the cap. */
+  watched: boolean;
   /** The callsign chip shown next to it (the selected plane only), else null. */
   label: string | null;
   /** It faded in when it arrived (a small batch), rather than just appearing. */
@@ -87,9 +102,36 @@ export interface RenderedPlane {
   drawnSince: number;
 }
 
+/** The "you are here" dot the user-location layer drew (map/userLocation.ts), for tests. */
+export interface RenderedUserLocation {
+  lat: number;
+  lon: number;
+  x: number;
+  y: number;
+}
+
 /** An airport the airport layer drew (ui/defaultAirports.ts), for tests. */
 export interface RenderedAirport {
   code: string;
+  lat: number;
+  lon: number;
+  x: number;
+  y: number;
+}
+
+/** The selected aircraft's trail as it was split for drawing (map/route.ts), for tests. */
+export interface RenderedRoute {
+  /** Solid runs, each [lat, lon] per vertex, splined. */
+  trail: [number, number][][];
+  /** Dashed connectors across data gaps, each its two real endpoints. */
+  gaps: [number, number][][];
+}
+
+/** A watched, not-yet-airborne flight's origin airport, drawn by ui/watchedAirports.ts: its departure point with the scheduled/estimated time. */
+export interface RenderedWatchedAirport {
+  /** Origin IATA code. */
+  code: string;
+  flightNumber: string;
   lat: number;
   lon: number;
   x: number;
@@ -111,6 +153,20 @@ export class FlightMap {
   renderedPlanes: () => RenderedPlane[] = () => [];
   /** Test hook: every airport drawn in view. Set by ui/defaultAirports.ts. */
   renderedAirports: () => RenderedAirport[] = () => [];
+  /** Test hook: the trail's solid runs and gap segments. Set by map/route.ts. */
+  renderedRoute: () => RenderedRoute = () => ({ trail: [], gaps: [] });
+  /** Test hook: every watched origin airport drawn in view. Set by ui/watchedAirports.ts. */
+  renderedWatchedAirports: () => RenderedWatchedAirport[] = () => [];
+  /** Test hook: the user's own location dot drawn in view, or null. Set by map/userLocation.ts. */
+  renderedUserLocation: () => RenderedUserLocation | null = () => null;
+
+  /**
+   * Test hook (tests/helpers.ts declutterSpacing): the values `main.ts`'s
+   * renderAircraftLayer last passed to the declutter picker (map/declutter.ts)
+   * — the overlap box and the memory key — plus the widening (`memory.spacing`)
+   * that render left in force. `null` until the first render.
+   */
+  declutterSpacing: { box: number; key: string; spacing: number } | null = null;
 
   constructor(gl: MaplibreMap) {
     this.gl = gl;
@@ -241,26 +297,73 @@ export class FlightMap {
   /** Moves the view. Instant unless `animate` (a short ease). */
   setView([lat, lon]: [number, number], zoom: number, opts: { animate?: boolean } = {}): void {
     const camera = { center: [lon, lat] as [number, number], zoom: toGl(zoom) };
-    if (opts.animate) this.gl.easeTo({ ...camera, duration: 250 });
+    if (opts.animate && !reducedMotion()) this.gl.easeTo({ ...camera, duration: 250 });
     else this.gl.jumpTo(camera);
   }
 
   /** Zooms about the centre. Animated unless `animate: false`, like a button zoom. */
   setZoom(zoom: number, opts: { animate?: boolean } = {}): void {
-    if (opts.animate === false) this.gl.jumpTo({ zoom: toGl(zoom) });
+    if (opts.animate === false || reducedMotion()) this.gl.jumpTo({ zoom: toGl(zoom) });
     else this.gl.easeTo({ zoom: toGl(zoom), duration: 250 });
   }
 
   flyTo([lat, lon]: [number, number], zoom: number, durationMs: number): void {
-    this.gl.flyTo({ center: [lon, lat], zoom: toGl(zoom), duration: durationMs });
+    // Reduced motion: no flight, the same camera in one jump.
+    if (reducedMotion()) this.gl.jumpTo({ center: [lon, lat], zoom: toGl(zoom) });
+    else this.gl.flyTo({ center: [lon, lat], zoom: toGl(zoom), duration: durationMs });
   }
 
   panTo([lat, lon]: [number, number], durationMs: number): void {
-    this.gl.panTo([lon, lat], { duration: durationMs });
+    if (reducedMotion()) this.gl.jumpTo({ center: [lon, lat] });
+    else this.gl.panTo([lon, lat], { duration: durationMs });
   }
 
   isMoving(): boolean {
     return this.gl.isMoving();
+  }
+
+  /**
+   * Calls `fn` when the user starts moving the map (drag, wheel, pinch, keys, buttons):
+   * MapLibre marks those moves with the DOM event that caused them. Camera moves the app
+   * makes itself (flyTo, jumpTo) carry none and do not count.
+   */
+  onUserMoveStart(fn: () => void): void {
+    this.gl.on("movestart", (e) => {
+      if ((e as { originalEvent?: unknown }).originalEvent) fn();
+    });
+  }
+
+  /**
+   * The coordinate of gate `ref` at airport `icao`, or null.
+   *
+   * The static OSM index (gateIndex.ts) answers at any zoom and needs no tile,
+   * so a gate resolves even when the view is zoomed out; it holds several
+   * coordinates per ref and answers with the one nearest `near`. Until its
+   * chunk has loaded, and when it does not carry the ref, the basemap's own
+   * `aeroway` gate points are searched as a fallback (nearest `near`): those
+   * ship only in the zoom-14 tiles, so that path needs the view at the airport
+   * (app zoom 15+) and callers retry on `sourcedata`.
+   */
+  findGate(ref: string, near: LatLon, icao?: string | null): LatLon | null {
+    const indexed = gateFromIndex(icao, ref, near);
+    if (indexed) return indexed;
+    const want = ref.trim().toUpperCase();
+    let best: { p: LatLon; d: number } | null = null;
+    let features: ReturnType<MaplibreMap["querySourceFeatures"]> = [];
+    try {
+      if (!this.gl.getSource("openmaptiles")) return null;
+      features = this.gl.querySourceFeatures("openmaptiles", { sourceLayer: "aeroway", filter: ["==", ["get", "class"], "gate"] });
+    } catch {
+      return null; // the source is mid-update; the next sourcedata asks again
+    }
+    for (const f of features) {
+      if (String(f.properties?.ref ?? "").trim().toUpperCase() !== want) continue;
+      const p = geometryPoint(f.geometry);
+      if (!p) continue;
+      const d = distanceM(near, p);
+      if (!best || d < best.d) best = { p, d };
+    }
+    return best ? best.p : null;
   }
 
   /** Re-reads the container's size, if it changed since the map last measured it. */

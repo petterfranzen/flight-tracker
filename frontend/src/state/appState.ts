@@ -1,5 +1,7 @@
 import type { AircraftDossier, AirportInfo, AirportSelection, LiveMarker, SelectedPosition, TrackStatus } from "../types/flight";
 import type { FavoriteAircraft, FavoriteRoute } from "../favorites";
+import type { WatchedFlight } from "../watchlist";
+import type { ScheduledFlight } from "../api/flightApi";
 import type { Store } from "./store";
 
 /**
@@ -33,6 +35,11 @@ export interface AppState extends Record<string, unknown> {
   dossier: AircraftDossier | null;
   /** Coverage-gap status of the selected aircraft; null while unknown or unavailable. */
   trackStatus: TrackStatus | null;
+  /**
+   * The selected plane is drawn at a guessed gate point (the ref is in neither
+   * the index nor a loaded tile), so the dossier's gate line says so.
+   */
+  gateApproximate: boolean;
   dossierExpanded: boolean;
   planeOffScreen: boolean;
   focusRequest: number;
@@ -43,6 +50,14 @@ export interface AppState extends Record<string, unknown> {
 
   favoriteRoutes: FavoriteRoute[];
   favoriteAircraft: FavoriteAircraft[];
+
+  /** Watched flights (localStorage, like favorites) and the last schedule row seen for each, keyed by watchKey. */
+  watchedFlights: WatchedFlight[];
+  watchedStatus: Record<string, ScheduledFlight | null>;
+  /** Set while a watched flight has just gone airborne; the toast offers to go to it. */
+  departureToast: WatchedFlight | null;
+  /** General watched-flight event banner (#82): take-off or landing, with Go to. */
+  watchNotice: { flight: WatchedFlight; text: string; kind: "takeoff" | "landed" } | null;
 
   selectAircraft: (p: LiveMarker) => void;
   selectAirport: (ap: AirportSelection) => void;
@@ -55,6 +70,16 @@ export interface AppState extends Record<string, unknown> {
   removeFavoriteAircraft: (entry: FavoriteAircraft) => void;
   removeFavoriteRoute: (route: FavoriteRoute) => void;
   resumeTracking: () => void;
+  /** Hide the resume dialog without resuming (Escape / dismiss). */
+  dismissResumeDialog: () => void;
+
+  /** Watched-flight actions, set once at boot like the others. */
+  watchFlight: (w: WatchedFlight) => void;
+  unwatchFlight: (w: WatchedFlight) => void;
+  /** Select the watched flight's plane and fly to it (no-op until it is airborne). */
+  goToWatched: (w: WatchedFlight) => void;
+  dismissDepartureToast: () => void;
+  dismissWatchNotice: () => void;
 }
 
 export type AppStore = Store<AppState>;

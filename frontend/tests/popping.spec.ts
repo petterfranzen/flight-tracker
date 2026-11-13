@@ -15,6 +15,7 @@ import {
   startReplay,
   wheelZoom,
 } from "./popping/replay";
+import { waitForMapReady } from "./helpers";
 
 // Popping, measured. Every scenario replays the same recorded fixture set
 // (tests/fixtures/popping/recording.json — see scripts/record-popping-fixtures.ts)
@@ -373,6 +374,130 @@ test.describe("popping @scenario", () => {
     const backwards = h.steps.reduce((a, s) => a + s.backwards.length, 0);
     const worstBackDeg = Math.max(0, ...h.steps.flatMap((s) => s.backwards.map((b) => b.backDeg)));
     expect(backwards, `${backwards} plane(s) moved backwards while the view was idle (worst ${worstBackDeg.toFixed(4)} deg)`).toBe(0);
+    expect(h.pageErrors, "page errors").toEqual([]);
+  });
+
+  // #151: a settled view shows its full plane set in one update. The server
+  // learns a newly watched area over time (`ramp`): /live answers with part of
+  // it and the rest follows, report by report, as WebSocket frames. Drawing each
+  // frame's new aircraft the moment it lands made the set grow plane by plane
+  // for seconds with nobody touching the map (14 -> 22 at z8, 39 -> 54 back on a
+  // cached view). The drawn count is sampled every 250 ms of app time after the
+  // view settles: it may step up by whole groups of planes at most twice (the snapshot,
+  // then one batch of everything that followed) and never down by a group.
+  test("a settled view fills in one update, not plane by plane", async ({ page }, testInfo) => {
+    test.setTimeout(240_000);
+    const h = await startReplay(page, testInfo, { ramp: { startFrac: 0.5, perTick: 0.2 } });
+    await boot(page);
+    // The app's clock only moves when the test moves it (no real sleeps): each
+    // sample is 250 ms of app time, and a tick's frames are pushed before its first.
+    const pauseClock = async () => page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1_000);
+    const countsAfter = async (rounds: number): Promise<number[]> => {
+      const counts: number[] = [];
+      for (let r = 0; r < rounds; r++) {
+        h.advance(); // one recorded tick: its frames are pushed
+        for (let i = 0; i < 8; i++) {
+          await page.clock.runFor(250);
+          counts.push((await h.drawn()).length);
+        }
+      }
+      return counts;
+    };
+    /** Lets the view's /live response land and be drawn (the first sample is its set, not a fill step). */
+    const landed = async (min: number) =>
+      expect
+        .poll(async () => { await page.clock.runFor(250); return (await h.drawn()).length; }, { timeout: 20_000, intervals: [50] })
+        .toBeGreaterThanOrEqual(min);
+    // A fill is a step of several planes at once; a plane or two drifting in or
+    // out of the declutter between ticks is the popping budget's business above.
+    const FILL_STEP = 3;
+    const updates = (c: number[]): number => c.filter((n, i) => i > 0 && n - c[i - 1] >= FILL_STEP).length;
+    const drops = (c: number[]): number => c.filter((n, i) => i > 0 && c[i - 1] - n >= FILL_STEP).length;
+
+    await jumpTo(page, CENTRE.lat, CENTRE.lon, 7);
+    await pauseClock();
+    await page.clock.runFor(1500);
+    h.restartRamp();
+    await jumpTo(page, CENTRE.lat, CENTRE.lon, 8); // 7 -> 8: the individual-marker view of an area not watched yet
+    await landed(30);
+    const zoomIn = await countsAfter(9);
+
+    await drag(page, -500, 0); // away, so the first view is only in the cache
+    await page.clock.runFor(1500);
+    h.restartRamp();
+    await drag(page, 500, 0); // and back: the cached set first, then the refresh
+    await landed(30);
+    const back = await countsAfter(9);
+
+    // eslint-disable-next-line no-console
+    console.log(`\n[popping] settled fill\n  zoom in : ${zoomIn.join(",")}\n  back    : ${back.join(",")}\n  updates ${updates(zoomIn)} / ${updates(back)}, drops ${drops(zoomIn)} / ${drops(back)}\n`);
+    expect(updates(zoomIn), `zoom in: the set changed in ${updates(zoomIn)} updates after settling`).toBeLessThanOrEqual(2);
+    expect(updates(back), `back: the set changed in ${updates(back)} updates after settling`).toBeLessThanOrEqual(2);
+    expect(drops(zoomIn) + drops(back), "the set shrank while the view was still").toBe(0);
+    expect(h.pageErrors, "page errors").toEqual([]);
+  });
+
+  // The opening view is never held (#151 review). The server knows nothing at
+  // first (an empty /live), then everything: the planes the frames bring must
+  // be drawn at once, not after the fill window a view change opens.
+  test("an empty snapshot at boot does not hold the planes that follow", async ({ page }, testInfo) => {
+    test.setTimeout(120_000);
+    const h = await startReplay(page, testInfo, { ramp: { startFrac: 0, perTick: 1 } });
+    await page.goto("/");
+    await expect(page.locator('.map-container[data-ready="true"]')).toBeVisible({ timeout: 60_000 });
+    await jumpTo(page, CENTRE.lat, CENTRE.lon, 8); // the individual-marker view, empty for now
+    await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1_000);
+    await page.clock.runFor(1_000);
+    expect((await h.drawn()).length, "nothing is known yet").toBe(0);
+    const t0 = await page.evaluate(() => Date.now());
+    h.advance(); // the server now knows everything: frames for the whole view
+    await expect
+      .poll(async () => { await page.clock.runFor(250); return (await h.drawn()).length; }, { timeout: 20_000, intervals: [50], message: "the frames' planes are drawn" })
+      .toBeGreaterThanOrEqual(30);
+    // ... within a couple of seconds of app time, far under the hold's 4 to 12 s.
+    expect((await page.evaluate(() => Date.now())) - t0, "drawn without waiting out a hold").toBeLessThan(3_000);
+    expect(h.pageErrors, "page errors").toEqual([]);
+  });
+
+  // A *full* opening snapshot (#151 review, the other half of the test above):
+  // boot where the first /live snapshot already carries a real set — at least the
+  // hold's own minimum of 5 planes — and the rest of the area still follows as
+  // WebSocket frames. The hold reads `liveSnapshotSeen` and `viewChanged`, and at
+  // boot neither is a view change that landed a set, so it must not arm: the
+  // frames' planes are drawn at once, not held for the fill window (4 to 12 s).
+  test("a boot snapshot with five or more planes draws the frames that follow at once", async ({ page }, testInfo) => {
+    test.setTimeout(240_000);
+    // The server knows a real slice of the area from the first snapshot (>= 5),
+    // then the rest of the fleet as the ticks go on.
+    const h = await startReplay(page, testInfo, { ramp: { startFrac: 0.1, perTick: 1 } });
+    await page.goto("/");
+    await waitForMapReady(page, 60_000);
+    await jumpTo(page, CENTRE.lat, CENTRE.lon, 8); // the individual-marker view, partly known for now
+    // Headroom on the pause target: the page clock keeps advancing until the
+    // pause lands, and under contention it can pass a 1 s target between the
+    // read and the pause ("Cannot fast-forward to the past"). 5 s is still
+    // under the first periodic timer (the 10 s overview refresh), so the jump
+    // fires nothing but the 250 ms viewport debounce.
+    await page.clock.pauseAt(await page.evaluate(() => Date.now() + 5_000));
+    await page.clock.runFor(1_000);
+    await expect
+      .poll(async () => { await page.clock.runFor(250); return (await h.drawn()).length; }, { timeout: 20_000, intervals: [50], message: "the opening snapshot draws its planes" })
+      .toBeGreaterThanOrEqual(5);
+    const snapshotDrawn = (await h.drawn()).length;
+    const t0 = await page.evaluate(() => Date.now());
+    h.advance(); // the server now knows the whole view: frames for the rest of it
+    await expect
+      .poll(async () => { await page.clock.runFor(250); return (await h.drawn()).length; }, { timeout: 20_000, intervals: [50], message: "the frames' planes are drawn" })
+      .toBeGreaterThanOrEqual(30);
+    const filled = (await h.drawn()).length;
+    const waitedMs = (await page.evaluate(() => Date.now())) - t0;
+    // The frames really did add planes the snapshot did not carry: without this
+    // the timing check below could pass on a set the snapshot already drew whole.
+    expect(filled, "the frames added the planes the snapshot did not have").toBeGreaterThan(snapshotDrawn);
+    // eslint-disable-next-line no-console
+    console.log(`\n[popping] boot snapshot\n  snapshot drew ${snapshotDrawn}, frames drew the rest to ${filled} after ${waitedMs} ms app time\n`);
+    // ... within a couple of seconds of app time, far under the hold's 4 to 12 s.
+    expect(waitedMs, "drawn without waiting out a hold").toBeLessThan(3_000);
     expect(h.pageErrors, "page errors").toEqual([]);
   });
 });

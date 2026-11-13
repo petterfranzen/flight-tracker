@@ -3,6 +3,8 @@ import type { FlightMap, MapHit, Point, RenderedPlane } from "./map";
 import type { LiveMarker, SelectedPosition } from "../types/flight";
 import { canvas, cssToken, drawLabel, measureLabel, serveImages, withAlpha, type DrawnImage, type LabelStyle } from "./glImages";
 import { isSmallScreen } from "./screen";
+import { perf } from "./perf";
+import { glidedPoint, glidePending, glideRequested, recordFix, type Track } from "./glide";
 
 // Planes are drawn by the map itself: a GeoJSON source and symbol layers,
 // one feature per drawn plane, rotated to its heading on the GPU. Which
@@ -87,6 +89,7 @@ const labelTranslate = (mobile: boolean) => byZoom((size) => [size / 2 + 4, 0], 
 interface PlaneColors {
   marker: string;
   selected: string;
+  watched: string;
   outline: string;
   shadow: string;
 }
@@ -159,6 +162,8 @@ export interface PlaneLayerUpdate {
   selectedPos: SelectedPosition | null;
   /** icao24s of unselected aircraft to draw dimmed (reports older than 2 h). Never applied to the selected one. */
   dimmed?: ReadonlySet<string>;
+  /** icao24s of unselected aircraft that are a watched flight: drawn in the watched colour, above ordinary traffic. */
+  watched?: ReadonlySet<string>;
 }
 
 export interface PlaneLayerHandle {
@@ -170,22 +175,26 @@ export interface PlaneLayerHandle {
 const MAX_FADE_IN_BATCH = 40;
 const FADE_IN_MS = 220;
 
+// How often the glide re-sends the drawn planes while something is moving.
+const GLIDE_TICK_MS = 100;
+
 interface PlaneProps {
   id: string;
   cs: string;
   known: boolean;
   rot: number;
   dimmed: boolean;
+  watched: boolean;
   entering: boolean;
-  /** Draw order: dimmed ghosts under live traffic. */
+  /** Draw order: dimmed ghosts under live traffic, a watched flight's plane above it. */
   sort: number;
 }
 
 const displayCallsign = (p: LiveMarker): string => p.callsign?.trim() || p.icao24.toUpperCase();
 
-function props(p: LiveMarker, dimmed: boolean, entering: boolean): PlaneProps {
+function props(p: LiveMarker, dimmed: boolean, entering: boolean, watched = false): PlaneProps {
   const known = p.headingDeg != null;
-  return { id: p.icao24, cs: displayCallsign(p), known, rot: known ? (p.headingDeg as number) : 0, dimmed, entering, sort: dimmed ? 0 : 1 };
+  return { id: p.icao24, cs: displayCallsign(p), known, rot: known ? (p.headingDeg as number) : 0, dimmed, watched, entering, sort: dimmed ? 0 : watched ? 2 : 1 };
 }
 
 function feature(p: LiveMarker, properties: object): GeoJSON.Feature<GeoJSON.Point> {
@@ -217,11 +226,21 @@ export function createPlaneLayer(map: FlightMap, onSelect: (p: LiveMarker) => vo
   const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
   const mobileQuery = window.matchMedia("(max-width: 768px)");
 
+  // ---- glide between reports (map/glide.ts) ----
+  // Off unless the URL asks for it. Per drawn aircraft: the last two reports,
+  // and the point last sent to the map (the never-backwards floor). Only the
+  // unselected planes glide; the selected one has its own estimate path.
+  const glideEnabled = glideRequested(window.location.search);
+  const glideTracks = new Map<string, Track>();
+  const glideFloor = new Map<string, { lat: number; lon: number }>();
+  let glideTimer: ReturnType<typeof setTimeout> | null = null;
+
   map.whenStyleReady(() => {
     if (added || destroyed) return;
     const colors: PlaneColors = {
       marker: cssToken("--color-marker", "#3ce0ff"),
       selected: cssToken("--color-marker-selected", "#ffb63c"),
+      watched: cssToken("--color-marker-watched", "#22d3a6"),
       outline: cssToken("--color-plane-outline", "rgba(0, 0, 0, 0.7)"),
       shadow: cssToken("--color-plane-shadow", "rgba(0, 0, 0, 0.6)"),
     };
@@ -231,6 +250,8 @@ export function createPlaneLayer(map: FlightMap, onSelect: (p: LiveMarker) => vo
     add("plane", drawPlane(colors.marker, colors, false));
     add("plane-selected", drawPlane(colors.selected, colors, false));
     add("plane-unknown", drawPlane(colors.marker, colors, true));
+    add("plane-watched", drawPlane(colors.watched, colors, false));
+    add("plane-watched-unknown", drawPlane(colors.watched, colors, true));
     add("plane-halo", drawHalo(cssToken("--color-marker-halo", "#4db2ff")));
 
     const labelStyle: LabelStyle = {
@@ -260,7 +281,12 @@ export function createPlaneLayer(map: FlightMap, onSelect: (p: LiveMarker) => vo
     const planeLayout = (selected: boolean) => ({
       "icon-image": (selected
         ? ["case", ["get", "known"], "plane-selected", "plane-unknown"]
-        : ["case", ["get", "known"], "plane", "plane-unknown"]) as ExpressionSpecification,
+        : [
+            "case",
+            ["get", "known"],
+            ["case", ["get", "watched"], "plane-watched", "plane"],
+            ["case", ["get", "watched"], "plane-watched-unknown", "plane-unknown"],
+          ]) as ExpressionSpecification,
       "icon-rotate": ["get", "rot"] as ExpressionSpecification,
       "icon-rotation-alignment": "map" as const,
       "icon-size": iconSize(mobile, selected),
@@ -314,7 +340,10 @@ export function createPlaneLayer(map: FlightMap, onSelect: (p: LiveMarker) => vo
 
   function setUnselected(features: GeoJSON.Feature[]): void {
     unselectedData = features;
-    if (added) (gl.getSource(PLANES_SOURCE) as GeoJSONSource).setData({ type: "FeatureCollection", features });
+    if (added) {
+      perf.setData.planes++;
+      (gl.getSource(PLANES_SOURCE) as GeoJSONSource).setData({ type: "FeatureCollection", features });
+    }
   }
 
   // ---- fade-in ----
@@ -360,7 +389,7 @@ export function createPlaneLayer(map: FlightMap, onSelect: (p: LiveMarker) => vo
     setUnselected(unselectedData.map((f) => ((f.properties as PlaneProps).entering ? { ...f, properties: { ...f.properties, entering: false } } : f)));
   }
 
-  function update({ unselected, selectedPos, dimmed }: PlaneLayerUpdate): void {
+  function update({ unselected, selectedPos, dimmed, watched }: PlaneLayerUpdate): void {
     // Arrivals: not drawn last time (selected or not). A one-shot fade-in for
     // a few aircraft appearing; a zoom or a fetch that replaces most of the
     // view just appears.
@@ -380,13 +409,25 @@ export function createPlaneLayer(map: FlightMap, onSelect: (p: LiveMarker) => vo
 
     const nextKey = new Map<string, string>();
     const features: GeoJSON.Feature[] = [];
+    const glideNow = glideEnabled ? Date.now() : 0;
     let changed = nextEntering.size !== entering.size || [...nextEntering].some((id) => !entering.has(id));
     for (const p of unselected) {
-      const pr = props(p, dimmed?.has(p.icao24) ?? false, nextEntering.has(p.icao24));
-      const key = `${p.latitude},${p.longitude},${pr.rot},${pr.known},${pr.cs},${pr.dimmed}`;
+      // Where it is drawn: its own report, or - with the glide on - a point
+      // along the track its last two reports imply (never behind the last one
+      // drawn). The fix is recorded here, on every update, so a report's move
+      // is picked up whichever source delivered it.
+      let pos: { lat: number; lon: number } = { lat: p.latitude, lon: p.longitude };
+      if (glideEnabled) {
+        const track = recordFix(glideTracks.get(p.icao24), p);
+        glideTracks.set(p.icao24, track);
+        pos = glidedPoint(pos, track, glideNow, glideFloor.get(p.icao24) ?? null);
+        glideFloor.set(p.icao24, pos);
+      }
+      const pr = props(p, dimmed?.has(p.icao24) ?? false, nextEntering.has(p.icao24), watched?.has(p.icao24) ?? false);
+      const key = `${pos.lat},${pos.lon},${pr.rot},${pr.known},${pr.cs},${pr.dimmed},${pr.watched}`;
       nextKey.set(p.icao24, key);
       if (unselectedKey.get(p.icao24) !== key) changed = true;
-      features.push(feature(p, pr));
+      features.push(feature({ ...p, latitude: pos.lat, longitude: pos.lon }, pr));
     }
     if (nextKey.size !== unselectedKey.size) changed = true;
     unselectedKey = nextKey;
@@ -397,7 +438,10 @@ export function createPlaneLayer(map: FlightMap, onSelect: (p: LiveMarker) => vo
     if (sKey !== selectedKey) {
       selectedKey = sKey;
       selectedData = selectedPos ? [feature(selectedPos, props(selectedPos, false, false))] : [];
-      if (added) (gl.getSource(SELECTED_SOURCE) as GeoJSONSource).setData({ type: "FeatureCollection", features: selectedData });
+      if (added) {
+        perf.setData.selected++;
+        (gl.getSource(SELECTED_SOURCE) as GeoJSONSource).setData({ type: "FeatureCollection", features: selectedData });
+      }
     }
 
     const drawn = new Map<string, LiveMarker>();
@@ -413,7 +457,61 @@ export function createPlaneLayer(map: FlightMap, onSelect: (p: LiveMarker) => vo
     latest.clear();
     for (const [id, p] of drawn) latest.set(id, p);
 
+    if (glideEnabled) {
+      for (const id of glideTracks.keys()) if (!drawn.has(id)) glideTracks.delete(id);
+      for (const id of glideFloor.keys()) if (!drawn.has(id)) glideFloor.delete(id);
+    }
+
     if (fade && entering.size > 0) fadeIn();
+    scheduleGlide();
+  }
+
+  // ---- glide ticker ----
+  // Moves the planes already drawn along their tracks between reports: on a
+  // timer, only the drawn set (the view plus its margin - never a plane the map
+  // is not drawing), and only re-sending the source when a position actually
+  // changed. It stops once every track is past its clamp and starts again on
+  // the next update, so an idle map (no reports, nothing gliding) costs
+  // nothing.
+  function scheduleGlide(): void {
+    if (!glideEnabled || glideTimer != null || glideTracks.size === 0) return;
+    glideTimer = setTimeout(glideTick, GLIDE_TICK_MS);
+  }
+
+  function glideTick(): void {
+    glideTimer = null;
+    if (!glideEnabled || destroyed || !added) return;
+    const now = Date.now();
+    const t0 = performance.now();
+    let changed = false;
+    const next = unselectedData.map((f): GeoJSON.Feature => {
+      const id = (f.properties as PlaneProps).id;
+      const track = glideTracks.get(id);
+      if (!track) return f;
+      const [lon, lat] = (f.geometry as GeoJSON.Point).coordinates;
+      const pos = glidedPoint({ lat, lon }, track, now, glideFloor.get(id) ?? null);
+      if (pos.lat === lat && pos.lon === lon) return f;
+      changed = true;
+      glideFloor.set(id, pos);
+      return { ...f, geometry: { type: "Point", coordinates: [pos.lon, pos.lat] } };
+    });
+    if (changed) {
+      const ms = performance.now() - t0;
+      perf.glide.calls++;
+      perf.glide.totalMs += ms;
+      perf.glide.lastMs = ms;
+      if (ms > perf.glide.maxMs) perf.glide.maxMs = ms;
+      setUnselected(next);
+    }
+    // Anything still inside its clamp window keeps the ticker alive.
+    let pending = false;
+    for (const track of glideTracks.values()) {
+      if (glidePending(track, now)) {
+        pending = true;
+        break;
+      }
+    }
+    if (pending) scheduleGlide();
   }
 
   // ---- hit testing and the test hook ----
@@ -470,6 +568,7 @@ export function createPlaneLayer(map: FlightMap, onSelect: (p: LiveMarker) => vo
         size: planeIconSize(zoom, mobile, selected),
         selected,
         dimmed: !selected && pr.dimmed,
+        watched: !selected && pr.watched,
         label: selected ? pr.cs : null,
         fadedIn: fadedIn.has(pr.id),
         drawnSince: drawnSince.get(pr.id) ?? 0,
@@ -481,6 +580,10 @@ export function createPlaneLayer(map: FlightMap, onSelect: (p: LiveMarker) => vo
   function destroy(): void {
     destroyed = true;
     stopFade();
+    if (glideTimer) clearTimeout(glideTimer);
+    glideTimer = null;
+    glideTracks.clear();
+    glideFloor.clear();
     mobileQuery.removeEventListener("change", applyScreenSize);
     if (added && gl.getStyle()) {
       for (const id of [LABEL_LAYER, SELECTED_LAYER, HALO_LAYER, ENTERING_LAYER, PLANES_LAYER]) gl.removeLayer(id);

@@ -185,11 +185,11 @@ function readCpuSeconds(pid) {
 
 // ------------------------------------------------------------ HTTP utils
 
-async function fetchJson(url, timeoutMs = 3000) {
+async function fetchJson(url, timeoutMs = 3000, init = {}) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const res = await fetch(url, { signal: ctrl.signal });
+    const res = await fetch(url, { signal: ctrl.signal, ...init });
     const text = await res.text();
     let body = null;
     try {
@@ -529,7 +529,12 @@ async function main() {
     beginSampling(appPid);
 
     // Reopen the poll window and report the viewport exactly as the map does.
-    await fetchJson(`${baseUrl}/api/agents/restart`, 5000);
+    // The endpoint is POST-only (GET is 405), so the restart must send POST.
+    const restart = await fetchJson(`${baseUrl}/api/agents/restart`, 5000, { method: "POST" });
+    if (restart.status < 200 || restart.status >= 300) {
+      throw new Error(`POST /api/agents/restart returned HTTP ${restart.status}; the poll window never reopened`);
+    }
+    log(`poll window reopened via POST /api/agents/restart (HTTP ${restart.status})`);
     const v = cfg.view;
     const live = await fetchJson(
       `${baseUrl}/api/flights/live?latMin=${v.latMin}&latMax=${v.latMax}&lonMin=${v.lonMin}&lonMax=${v.lonMax}`,

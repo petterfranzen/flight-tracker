@@ -81,46 +81,13 @@
     margin-right: 0;
   }
 
-  /* Covered by the full-screen body when open (next rule) — hidden
-     outright rather than left to rely on stacking order alone, so it's
-     also out of the keyboard tab order while the sheet is open. */
-  .map-legend:has(.map-legend-body--open) .map-legend-fab {
-    display: none;
-  }
+  /* The panel is the shared .control-panel beside the stack
+     (ControlPanel.css); the FAB stays visible and in place while it is open. */
 
-  .map-legend-body {
-    display: none;
-  }
-
-  .map-legend-body--open {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    position: fixed;
-    inset: 0;
-    /* Above the map's own control corners (the scale bar, the
-       attribution), same reasoning as FlightSearch's
-       identical rule. */
-    z-index: 1001;
-    padding: 16px;
-    padding-top: max(16px, env(safe-area-inset-top));
-    padding-bottom: max(16px, env(safe-area-inset-bottom, 0px));
-    overflow-y: auto;
-    background: var(--color-bg);
-  }
-
-  .map-legend-body-close {
-    display: block;
-    align-self: flex-end;
-    background: none;
-    border: none;
-    color: var(--color-text-muted);
-    font: inherit;
-    font-size: 14px;
-    font-weight: 600;
-    padding: 8px;
-    cursor: pointer;
-  }
+  /* The legend is a swatch key, not a control — but its rows are still on a
+     phone's own hit map, so the house minimum applies to each one too. */
+  .map-legend-list { gap: 0; }
+  .map-legend-row { min-height: 44px; }
 
   /* Redundant once the FAB opens straight to this content and the close
      button above can dismiss it again — this toggle's only reachable
@@ -161,6 +128,10 @@
   flex: none;
   border: 1.5px solid var(--color-marker);
   background: transparent;
+}
+
+.map-legend-swatch--watched {
+  border-color: var(--color-marker-watched);
 }
 
 .map-legend-swatch--selected {

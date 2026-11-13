@@ -9,6 +9,17 @@ into the same jar. `README.md` covers the architecture.
 - **`flight_position` is append-only.** Never update rows. The only delete
   is the 72h retention prune in `PositionRetentionService`. `UsageService`
   (`/api/usage`) derives distance and airborne hours from the full history.
+- **Migrations are additive and backward-compatible for one release.**
+  `backend/src/main/resources/schema.sql` runs at startup
+  (`spring.sql.init.mode: always`) and there are no down-migrations: a
+  rollback lands the previous jar on the already-migrated SQLite file. So add
+  nullable columns or new tables; never drop, rename or retype a column, and
+  never add a `NOT NULL` column without a `DEFAULT`, within the rollback
+  window — the old jar would keep failing its INSERTs while `/api/health`
+  (`SELECT 1`) still reports healthy. `SchemaMigrationGuardTest` fails the
+  build on any of those; a deliberate exception needs an
+  `-- additive-migrations: allow <reason>` comment on the line immediately
+  above (or inline with) the statement.
 - **New position sources implement `FlightDataAgent`**
   (`backend/src/main/java/com/flighttracker/service/agent/`) as a
   `@Component`. `AgentOrchestrator` gets every one injected, so don't wire

@@ -57,11 +57,14 @@ export async function startHarness(page: Page, testInfo: TestInfo): Promise<Harn
     async step(name, fn) {
       stepNo++;
       if (fn) await fn();
+      // The health check waits for the state it asserts (expect.poll), so no
+      // fixed sleep precedes the assertion any more; the settle below only
+      // paces the screenshot, which is taken after the check.
+      await checkHealth(page, h, name);
       await settle(page);
       const file = testInfo.outputPath(`${String(stepNo).padStart(2, "0")}-${name.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}.png`);
       await page.screenshot({ path: file });
       await testInfo.attach(`step ${stepNo}: ${name}`, { path: file, contentType: "image/png" });
-      await checkHealth(page, h, name);
     },
   };
 
@@ -242,7 +245,8 @@ export async function routeExtentPx(page: Page): Promise<{ width: number; height
     const map = document.querySelector(".map-container")._flightMap;
     const data = await map.gl.getSource("flight-route").getData();
     const size = map.getSize();
-    const pts = data.geometry.coordinates.map(([lon, lat]) => map.project(lat, lon)).filter((p) => p.x >= 0 && p.y >= 0 && p.x <= size.x && p.y <= size.y);
+    const coords = (data.features || []).flatMap((f) => (f.geometry && f.geometry.coordinates) || []);
+    const pts = coords.map(([lon, lat]) => map.project(lat, lon)).filter((p) => p.x >= 0 && p.y >= 0 && p.x <= size.x && p.y <= size.y);
     if (pts.length === 0) return { width: 0, height: 0 };
     const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
     return { width: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys) };
@@ -343,21 +347,33 @@ export async function checkHealth(page: Page, h: Harness, step: string): Promise
       .toBe("ok");
   }
 
-  const now = Date.now();
-  const wrong: string[] = [];
-  const zoomedOut = (await mapEval<number>(page, "return map.getZoom();")) < OVERVIEW_ZOOM_BELOW;
-  for (const m of await planeMarkers(page)) {
-    const a = h.world.byCallsign(m.callsign);
-    if (!a) {
-      wrong.push(`${m.callsign}: not an aircraft in the world`);
-      continue;
-    }
-    const truth = h.world.positionAt(a, now);
-    const off = Math.hypot(m.lat - truth.lat, m.lon - truth.lon);
-    const tolerance = zoomedOut ? SPEED_DEG_PER_S * OVERVIEW_MAX_LAG_S : POSITION_TOLERANCE_DEG;
-    if (off > tolerance) wrong.push(`${m.callsign} drawn ${off.toFixed(4)}° from its true position (${(off / SPEED_DEG_PER_S).toFixed(0)}s stale)`);
-  }
-  expect(wrong, `[${step}] plane markers not at their true positions`).toEqual([]);
+  // Wait for the state this asserts instead of sampling once after a fixed
+  // sleep: the world moves in real time, so on a busy runner a marker can
+  // still be showing its previous push when the step is read. The poll
+  // retries until every drawn marker is back inside tolerance (it reads
+  // renderedPlanes() each time) and reports what it last saw if it expires.
+  await expect
+    .poll(
+      async () => {
+        const zoomedOut = (await mapEval<number>(page, "return map.getZoom();")) < OVERVIEW_ZOOM_BELOW;
+        const tolerance = zoomedOut ? SPEED_DEG_PER_S * OVERVIEW_MAX_LAG_S : POSITION_TOLERANCE_DEG;
+        const now = Date.now();
+        const wrong: string[] = [];
+        for (const m of await planeMarkers(page)) {
+          const a = h.world.byCallsign(m.callsign);
+          if (!a) {
+            wrong.push(`${m.callsign}: not an aircraft in the world`);
+            continue;
+          }
+          const truth = h.world.positionAt(a, now);
+          const off = Math.hypot(m.lat - truth.lat, m.lon - truth.lon);
+          if (off > tolerance) wrong.push(`${m.callsign} drawn ${off.toFixed(4)}° from its true position (${(off / SPEED_DEG_PER_S).toFixed(0)}s stale)`);
+        }
+        return wrong;
+      },
+      { message: `[${step}] plane markers not at their true positions`, timeout: 10_000, intervals: [250] },
+    )
+    .toEqual([]);
   expect(h.pageErrors, `[${step}] page errors`).toEqual([]);
 }
 
@@ -365,8 +381,20 @@ export async function checkHealth(page: Page, h: Harness, step: string): Promise
 export async function expectCentredOn(page: Page, h: Harness, callsign: string, step: string): Promise<void> {
   const a = h.world.byCallsign(callsign)!;
   await expect(page.locator(".details-panel-meta")).toContainText(`ICAO24 ${a.icao24.toUpperCase()}`);
-  const truth = h.world.positionAt(a);
-  const c = await centre(page);
-  const off = Math.hypot(c.lat - truth.lat, c.lon - truth.lon);
-  expect(off, `[${step}] map centred ${off.toFixed(4)}° (${(off / SPEED_DEG_PER_S).toFixed(0)}s of flight) from ${callsign}'s true position`).toBeLessThan(POSITION_TOLERANCE_DEG);
+  // The map eases to the plane and the plane keeps flying: poll until the
+  // centre is within tolerance of the plane's *current* true position.
+  await expect
+    .poll(
+      async () => {
+        const truth = h.world.positionAt(a);
+        const c = await centre(page);
+        return Math.hypot(c.lat - truth.lat, c.lon - truth.lon);
+      },
+      {
+        message: `[${step}] map not centred on ${callsign}'s true position (tolerance ${POSITION_TOLERANCE_DEG}°)`,
+        timeout: 10_000,
+        intervals: [250],
+      },
+    )
+    .toBeLessThan(POSITION_TOLERANCE_DEG);
 }

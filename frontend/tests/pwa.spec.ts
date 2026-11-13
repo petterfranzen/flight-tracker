@@ -47,7 +47,13 @@ test.describe("PWA installability", () => {
     await expect(page.locator('link[rel="manifest"]')).toHaveAttribute("href", "/manifest.json");
     await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute("content", "#050608");
     await expect(page.locator('meta[name="apple-mobile-web-app-capable"]')).toHaveAttribute("content", "yes");
-    await expect(page.locator('meta[name="apple-mobile-web-app-status-bar-style"]')).toHaveAttribute("content", "black-translucent");
+    // black-translucent (restored, section9-hq#287) lets the map run edge to
+    // edge under the translucent iOS status bar; the status-bar scrim it draws
+    // is cleared by the top-pinned chrome (see installed-app-top.spec.ts).
+    await expect(page.locator('meta[name="apple-mobile-web-app-status-bar-style"]')).toHaveAttribute(
+      "content",
+      "black-translucent",
+    );
     await expect(page.locator('link[rel="apple-touch-icon"]')).toHaveAttribute("href", "/icons/apple-touch-icon-180.png");
 
     const viewport = await page.locator('meta[name="viewport"]').getAttribute("content");

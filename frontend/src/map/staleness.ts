@@ -1,4 +1,5 @@
 import type { LiveMarker } from "../types/flight";
+import { observedAtMs } from "./reportOrder";
 
 // The server keeps landed aircraft visible for 24 h and silent airborne ones for 12 h (LiveVisibilityWindows),
 // and a parked plane often stops reporting. So the map can show positions that
@@ -47,7 +48,12 @@ export function findShadowedIds(list: LiveMarker[]): Set<string> {
 
   // Newest first, so a marker only ever has to be compared with markers
   // already known to be newer than it.
-  const byFreshness = [...list].sort((a, b) => (a.observedAt < b.observedAt ? 1 : a.observedAt > b.observedAt ? -1 : 0));
+  // `|| 0` keeps the order defined when a report has no parseable
+  // `observedAt` (observedAtMs -> NaN): the two compare equal and the
+  // stable sort leaves the input order, instead of leaning on a NaN.
+  const byFreshness = [...list].sort(
+    (a, b) => (observedAtMs(b.observedAt) - observedAtMs(a.observedAt)) || 0,
+  );
   for (const m of byFreshness) {
     const row = Math.floor(m.latitude / cellLat);
     const col = Math.floor(m.longitude / cellLon);
@@ -74,7 +80,7 @@ export function findShadowedIds(list: LiveMarker[]): Set<string> {
 export function agedIds(list: LiveMarker[], nowMs: number): Set<string> {
   const aged = new Set<string>();
   for (const p of list) {
-    if (nowMs - Date.parse(p.observedAt) > DIM_AFTER_MS) aged.add(p.icao24);
+    if (nowMs - observedAtMs(p.observedAt) > DIM_AFTER_MS) aged.add(p.icao24);
   }
   return aged;
 }
@@ -86,5 +92,5 @@ export function agedIds(list: LiveMarker[], nowMs: number): Set<string> {
  * progress. A marker without `onGround` is taken to be airborne.
  */
 export function isActiveTraffic(p: LiveMarker, nowMs: number): boolean {
-  return p.onGround !== true && nowMs - Date.parse(p.observedAt) <= DIM_AFTER_MS;
+  return p.onGround !== true && nowMs - observedAtMs(p.observedAt) <= DIM_AFTER_MS;
 }

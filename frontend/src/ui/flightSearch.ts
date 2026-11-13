@@ -1,8 +1,12 @@
 import type { AppStore } from "../state/appState";
 import type { FlightPosition } from "../types/flight";
-import { searchFlights, searchFlightsByAirport } from "../api/flightApi";
+import { searchFlights, searchFlightsByAirport, type ScheduledFlight } from "../api/flightApi";
+import { watchKey, watchedMatchesQuery, type WatchedFlight } from "../watchlist";
 import { h, clear } from "./h";
+import { activateModal, isPhone, type ModalHandle } from "./a11y";
+import { closeControlPanel, registerControlPanel, toggleControlPanel } from "./controlStack";
 import "../components/FlightSearch.css";
+import "../components/ControlPanel.css";
 
 const DEBOUNCE_MS = 250;
 
@@ -38,7 +42,7 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     routeResults = [];
     routeOpen = false;
     routeActiveIndex = -1;
-    mobilePanelOpen = false;
+    closeControlPanel("search");
     input.value = "";
     airportInput.value = "";
     renderAll();
@@ -63,6 +67,17 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
   let routeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   let mobilePanelOpen = false;
+  // The phone overlay is modal: focus is trapped in it and returned to the FAB
+  // on close (see a11y.ts). Null while the panel is closed or on desktop.
+  let trap: ModalHandle | null = null;
+
+  // --- watched flights: chips under the box, and listed first in the results ---
+  let watched: WatchedFlight[] = store.get("watchedFlights");
+  let watchedStatus: Record<string, ScheduledFlight | null> = store.get("watchedStatus");
+
+  function goToWatched(w: WatchedFlight): void {
+    store.get("goToWatched")(w);
+  }
 
   function runQuery(): void {
     if (debounceTimer) clearTimeout(debounceTimer);
@@ -152,8 +167,7 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
   });
   input.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
-      open = false;
-      mobilePanelOpen = false;
+      closeControlPanel("search");
       renderAll();
       return;
     }
@@ -195,8 +209,7 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
   });
   airportInput.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
-      routeOpen = false;
-      mobilePanelOpen = false;
+      closeControlPanel("search");
       renderAll();
       return;
     }
@@ -218,26 +231,28 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
 
   const airportPanel = h("div", { className: "flight-search-airport" }, airportInput);
 
+  // A compact watched list, reachable without opening the whole Watch panel:
+  // one chip per watched flight, under the search box.
+  const chips = h("div", { className: "flight-search-watched" });
+  const watchedList = h("ul", { className: "flight-search-results flight-search-results--watched", role: "listbox", id: "flight-search-watched-listbox" });
+
   const fab = h(
     "button",
     {
       type: "button",
-      className: "flight-search-fab",
+      className: "flight-search-fab control-stack-button",
       "aria-controls": "flight-search-panel",
-      onClick: () => {
-        mobilePanelOpen = !mobilePanelOpen;
-        renderAll();
-      },
+      onClick: () => toggleControlPanel("search"),
     },
     searchIconSvg(),
   );
   const panelClose = h(
     "button",
-    { type: "button", className: "flight-search-panel-close", onClick: () => { mobilePanelOpen = false; renderAll(); } },
+    { type: "button", className: "flight-search-panel-close control-panel-close", onClick: () => closeControlPanel("search") },
     "Close search ✕",
   );
   const eyebrow = h("span", { className: "flight-search-eyebrow" }, "Query // Flight No.");
-  const panel = h("div", { id: "flight-search-panel", className: "flight-search-panel" }, panelClose, eyebrow, input, airportPanel);
+  const panel = h("div", { id: "flight-search-panel", className: "flight-search-panel control-panel" }, panelClose, eyebrow, input, chips, watchedList, airportPanel);
   const container = h("div", { className: "flight-search" }, fab, panel);
 
   function setActiveRow(listEl: HTMLElement, activeIdx: number): void {
@@ -284,13 +299,70 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     return li;
   }
 
+  /** Watched flights matching the typed query, by IATA number (SK528) or ICAO callsign (SAS528). */
+  function watchedMatches(q: string): { w: WatchedFlight; row: ScheduledFlight | null }[] {
+    return watched
+      .map((w) => ({ w, row: watchedStatus[watchKey(w)] ?? null }))
+      .filter(({ w, row }) => watchedMatchesQuery(w, row, q));
+  }
+
+  function renderWatchedChips(): void {
+    clear(chips);
+    for (const w of watched) {
+      const row = watchedStatus[watchKey(w)] ?? null;
+      const airborne = !!(row?.airborne && row.icao24);
+      chips.appendChild(
+        h(
+          "button",
+          {
+            type: "button",
+            className: `flight-search-chip${airborne ? " flight-search-chip--airborne" : ""}`,
+            title: airborne ? `Go to ${w.flightNumber}` : `${w.flightNumber} · not airborne yet`,
+            onClick: () => goToWatched(w),
+          },
+          h("span", { className: "flight-search-chip-dot", "aria-hidden": "true" }),
+          w.flightNumber,
+        ),
+      );
+    }
+    chips.hidden = watched.length === 0;
+  }
+
+  function renderWatchedRows(): void {
+    clear(watchedList);
+    const q = query.trim();
+    const matches = open && q ? watchedMatches(q) : [];
+    for (const { w, row } of matches) {
+      const airborne = !!(row?.airborne && row.icao24);
+      watchedList.appendChild(
+        h(
+          "li",
+          {
+            className: `flight-search-option flight-search-option--watched${airborne ? " flight-search-option--airborne" : ""}`,
+            role: "option",
+            "aria-selected": "false",
+            onMousedown: (e: MouseEvent) => e.preventDefault(),
+            onClick: () => {
+              if (airborne) goToWatched(w);
+            },
+          },
+          h("span", { className: "flight-search-callsign" }, w.flightNumber),
+          h("span", { className: "flight-search-watched-status" }, airborne ? `${w.label} · airborne` : `${w.label} · not airborne yet`),
+        ),
+      );
+    }
+    watchedList.hidden = matches.length === 0;
+  }
+
   function renderResults(): void {
     const showDropdown = open && query.trim().length > 0;
+    renderWatchedRows();
     clear(resultsList);
     if (showDropdown) {
       if (!resultsList.parentElement) panel.insertBefore(resultsList, airportPanel);
-      if (loading && results.length === 0) resultsList.append(h("li", { className: "flight-search-status" }, "Searching…"));
-      else if (!loading && results.length === 0) resultsList.append(h("li", { className: "flight-search-status" }, "No matching flights"));
+      // A watched match is a result too: don't say "none" when one is listed.
+      if (loading && results.length === 0) resultsList.append(h("li", { className: "flight-search-status", role: "status" }, "Searching…"));
+      else if (!loading && results.length === 0 && watchedList.hidden) resultsList.append(h("li", { className: "flight-search-status", role: "status" }, "No matching flights"));
       results.forEach((p, i) => resultsList.append(resultRow(p, i, i === activeIndex, "flight-search-option", choose)));
     } else if (resultsList.parentElement) {
       resultsList.remove();
@@ -305,8 +377,8 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     clear(routeResultsList);
     if (showDropdown) {
       if (!routeResultsList.parentElement) airportPanel.appendChild(routeResultsList);
-      if (routeLoading && routeResults.length === 0) routeResultsList.append(h("li", { className: "flight-search-status" }, "Searching…"));
-      else if (!routeLoading && routeResults.length === 0) routeResultsList.append(h("li", { className: "flight-search-status" }, "No matching flights"));
+      if (routeLoading && routeResults.length === 0) routeResultsList.append(h("li", { className: "flight-search-status", role: "status" }, "Searching…"));
+      else if (!routeLoading && routeResults.length === 0) routeResultsList.append(h("li", { className: "flight-search-status", role: "status" }, "No matching flights"));
       routeResults.forEach((p, i) => routeResultsList.append(resultRow(p, i, i === routeActiveIndex, "flight-search-route-option", choose)));
     } else if (routeResultsList.parentElement) {
       routeResultsList.remove();
@@ -316,32 +388,99 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     else airportInput.removeAttribute("aria-activedescendant");
   }
 
+  /** The one place the phone panel's open state is written: it must go through
+   * the shared stack so another panel never stays open underneath. */
+  function setOpen(next: boolean): void {
+    mobilePanelOpen = next;
+    if (!next) {
+      open = false;
+      routeOpen = false;
+    }
+    renderAll();
+  }
+
+  function closeMobilePanel(): void {
+    closeControlPanel("search");
+  }
+
+  /**
+   * Keeps the focus trap in step with the panel's own open state: the phone
+   * overlay is modal (Tab stays inside, Escape closes, focus returns to the
+   * FAB), the desktop dropdown is not. Called from renderAll, so every path
+   * that opens or closes the panel (the FAB, the close button, a selection,
+   * Escape, a tap outside) goes through here.
+   */
+  function syncModal(): void {
+    const modal = mobilePanelOpen && isPhone();
+    if (modal && !trap) {
+      // A full-screen overlay is a modal dialog to assistive tech; on desktop
+      // the same element is an inline dropdown and carries neither attribute.
+      panel.setAttribute("role", "dialog");
+      panel.setAttribute("aria-modal", "true");
+      panel.setAttribute("aria-label", "Search flights");
+      trap = activateModal(panel, { onEscape: closeMobilePanel, returnTo: fab });
+    } else if (!modal && trap) {
+      trap.release();
+      trap = null;
+      panel.removeAttribute("role");
+      panel.removeAttribute("aria-modal");
+      panel.removeAttribute("aria-label");
+    }
+  }
+
   function renderAll(): void {
+    panel.classList.toggle("control-panel--open", mobilePanelOpen);
     panel.classList.toggle("flight-search-panel--open", mobilePanelOpen);
     fab.setAttribute("aria-expanded", String(mobilePanelOpen));
     fab.setAttribute("aria-label", mobilePanelOpen ? "Close search" : "Search flights");
     if (input.value !== query) input.value = query;
     if (airportInput.value !== airportQuery) airportInput.value = airportQuery;
+    renderWatchedChips();
     renderResults();
     renderRouteResults();
+    syncModal();
   }
   renderAll();
 
   function handlePointerDown(e: PointerEvent): void {
-    if (!container.contains(e.target as Node)) {
+    if (container.contains(e.target as Node)) return;
+    // The map (or another stack button): close the phone panel through the
+    // shared stack, and drop the desktop dropdown on the same tap.
+    if (mobilePanelOpen) {
+      closeControlPanel("search");
+      return;
+    }
+    if (open || routeOpen) {
       open = false;
       routeOpen = false;
-      mobilePanelOpen = false;
       renderAll();
     }
   }
   document.addEventListener("pointerdown", handlePointerDown);
 
+  // A watch added/removed, or a status refresh from the background poll:
+  // re-render the chips and the matching rows.
+  const unsubscribeWatched = store.subscribeMany(["watchedFlights", "watchedStatus"], () => {
+    watched = store.get("watchedFlights");
+    watchedStatus = store.get("watchedStatus");
+    renderAll();
+  });
+
   root.appendChild(container);
+  const unregister = registerControlPanel("search", {
+    panel,
+    button: fab,
+    open: () => setOpen(true),
+    close: () => setOpen(false),
+  });
   return () => {
+    unregister();
+    unsubscribeWatched();
     document.removeEventListener("pointerdown", handlePointerDown);
     if (debounceTimer) clearTimeout(debounceTimer);
     if (routeDebounceTimer) clearTimeout(routeDebounceTimer);
+    trap?.release();
+    trap = null;
     container.remove();
   };
 }

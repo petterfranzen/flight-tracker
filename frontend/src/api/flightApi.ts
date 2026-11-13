@@ -237,12 +237,21 @@ export function liveFeedUrl(loc: Pick<Location, "href" | "protocol"> = location)
  * backoff (see the constants above). Never touches /api/agents/restart:
  * reopening the poll window is a page-load / Resume-button decision only.
  */
-export function subscribeLiveFeed(onPosition: (p: FlightPosition) => void): () => void {
+export interface LiveFeedOptions {
+  /**
+   * Called when the feed reconnects after a drop (not the first connect), so a
+   * caller can drop the state it held between the two connections.
+   */
+  onReconnect?: () => void;
+}
+
+export function subscribeLiveFeed(onPosition: (p: FlightPosition) => void, options: LiveFeedOptions = {}): () => void {
   let socket: WebSocket | null = null;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let stableTimer: ReturnType<typeof setTimeout> | null = null;
   let backoffMs = WS_RECONNECT_MIN_MS;
   let stopped = false;
+  let connected = false;
 
   function connect(): void {
     reconnectTimer = null;
@@ -261,6 +270,8 @@ export function subscribeLiveFeed(onPosition: (p: FlightPosition) => void): () =
     // close the *new* connection).
     ws.onopen = () => {
       if (ws !== socket) return;
+      if (connected) options.onReconnect?.();
+      connected = true;
       stableTimer = setTimeout(() => {
         backoffMs = WS_RECONNECT_MIN_MS;
       }, WS_STABLE_AFTER_MS);
@@ -351,12 +362,31 @@ export interface ScheduledFlight {
   airborne: boolean;
 }
 
-/** Search the schedule by `flight` (BA778) or by `from`/`to` (comma-separated IATA codes); throws with the server's reason. */
-export async function searchSchedule(p: { flight?: string; from?: string; to?: string; airport?: string; date?: string }): Promise<ScheduledFlight[]> {
+/** The board's own health for one search, from the X-Schedule-Status header. */
+export type ScheduleStatus = "ok" | "stale" | "incomplete";
+
+export interface ScheduleSearchResult {
+  rows: ScheduledFlight[];
+  status: ScheduleStatus;
+}
+
+/**
+ * Search the schedule by `flight` (BA778) or by `from`/`to` (comma-separated
+ * IATA codes) and keep the board's health header. A failed board must never
+ * raise a notification (#82 design §3), so the detector reads `status`.
+ */
+export async function searchScheduleWithStatus(p: { flight?: string; from?: string; to?: string; airport?: string; date?: string }): Promise<ScheduleSearchResult> {
   const qs = new URLSearchParams();
   for (const [k, v] of Object.entries(p)) if (v) qs.set(k, v);
   const res = await fetch(`/api/schedule/search?${qs}`);
   if (res.status === 503) throw new Error("Schedules are not available (no Swedavia key)");
   if (!res.ok) throw new Error(`Search failed (${res.status})`);
-  return res.json();
+  const header = res.headers.get("X-Schedule-Status");
+  const status: ScheduleStatus = header === "stale" || header === "incomplete" ? header : "ok";
+  return { rows: await res.json(), status };
+}
+
+/** Search the schedule by `flight` (BA778) or by `from`/`to` (comma-separated IATA codes); throws with the server's reason. */
+export async function searchSchedule(p: { flight?: string; from?: string; to?: string; airport?: string; date?: string }): Promise<ScheduledFlight[]> {
+  return (await searchScheduleWithStatus(p)).rows;
 }

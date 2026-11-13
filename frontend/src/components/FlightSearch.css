@@ -96,9 +96,9 @@
 
 /* Mobile layout (see MOBILE_BREAKPOINT_PX in FlightMap.tsx for why this is
    the same literal, not a shared constant) — hide-by-default/reveal-on-
-   demand: the search UI collapses to a floating button that expands into a
-   full-screen overlay, instead of two boxes permanently sitting over the
-   map. Desktop is untouched: .flight-search-panel carries no styling
+   demand: the search UI collapses to a floating button that opens the shared
+   anchored panel beside the stack (ControlPanel.css), never a full-screen
+   sheet. Desktop is untouched: .flight-search-panel carries no styling
    outside this media query, so on desktop it's an unstyled wrapper div and
    every child renders exactly as it did before this was introduced. */
 @media (max-width: 768px) {
@@ -132,45 +132,11 @@
     height: 22px;
   }
 
-  /* Covered by the full-screen panel when open (next rule) — hidden
-     outright rather than left to rely on stacking order alone, so it's
-     also out of the keyboard tab order while the sheet is open. */
-  .flight-search:has(.flight-search-panel--open) .flight-search-fab {
-    display: none;
-  }
-
+  /* With the panel open the FAB stays visible and in place: the panel is
+     the shared .control-panel beside the stack (ControlPanel.css), never a
+     full-screen sheet, so there is nothing to cover the button with. */
   .flight-search-panel {
-    display: none;
-  }
-
-  .flight-search-panel--open {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    position: fixed;
-    inset: 0;
-    /* Above the map's own control corners (MapLibre's
-       .maplibregl-ctrl-* layer) — otherwise the scale bar control paints
-       through this "full-screen" overlay regardless of DOM order. */
-    z-index: 1001;
-    padding: 16px;
-    padding-top: max(16px, env(safe-area-inset-top));
-    padding-bottom: max(16px, env(safe-area-inset-bottom, 0px));
-    overflow-y: auto;
-    background: var(--color-bg);
-  }
-
-  .flight-search-panel-close {
-    display: block;
-    align-self: flex-end;
-    background: none;
-    border: none;
-    color: var(--color-text-muted);
-    font: inherit;
-    font-size: 14px;
-    font-weight: 600;
-    padding: 8px;
-    cursor: pointer;
+    min-width: 0;
   }
 }
 
@@ -183,3 +149,51 @@
    this element's display:none above) — default theme's plain
    placeholder text already says what the field is for, so this only
    ever shows up for cyberpunk theme's own labeled-field look. */
+
+/* Compact watched list, under the search box: one chip per watched flight. */
+.flight-search-watched {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+.flight-search-watched[hidden] { display: none; }
+
+.flight-search-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 2px 8px;
+  background: none;
+  color: var(--color-text);
+  border: 1px solid var(--color-panel-border);
+  border-radius: 999px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.flight-search-chip:hover { background: var(--color-panel-border); }
+.flight-search-chip-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--color-text-muted); }
+.flight-search-chip--airborne { border-color: var(--color-marker-watched); color: var(--color-marker-watched); }
+.flight-search-chip--airborne .flight-search-chip-dot { background: var(--color-marker-watched); }
+
+/* Watched flights listed first in the results, including ones not airborne yet. */
+.flight-search-results[hidden] { display: none; }
+.flight-search-results--watched { margin-bottom: 4px; }
+.flight-search-option--watched { cursor: default; }
+.flight-search-option--watched .flight-search-callsign { color: var(--color-marker-watched); }
+.flight-search-option--airborne { cursor: pointer; }
+.flight-search-watched-status { color: var(--color-text-muted); font-size: 11px; text-align: right; }
+
+@media (max-width: 768px) {
+  /* 44px tap targets for the chips, the house minimum (glyph stays small). */
+  .flight-search-chip { min-height: 44px; }
+  /* The text fields are targets too — at 16px text plus 10px padding they land
+     around 39px, a shade under the house minimum. */
+  .flight-search-input { min-height: 44px; }
+  /* ...and for the result/watch rows and the overlay's close button, which are
+     otherwise sized by their 13px text. */
+  .flight-search-option { min-height: 44px; }
+  .flight-search-panel-close { min-height: 44px; min-width: 44px; }
+}

@@ -121,4 +121,11 @@
     width: calc(100vw - 32px);
     max-width: calc(100vw - 32px);
   }
+
+  /* On a phone both controls get a real 44x44 box rather than the desktop
+     ::after padding, so the target is 44px in its own right (and measures as
+     such). The pill is full-width here, so the taller action button costs
+     nothing. */
+  .install-banner-action { min-height: 44px; }
+  .install-banner-dismiss { width: 44px; height: 44px; }
 }
