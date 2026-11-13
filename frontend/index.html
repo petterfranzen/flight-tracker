@@ -7,11 +7,17 @@
          env(safe-area-inset-*) padding in the CSS. -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <!-- PWA colours are the cyberpunk tokens in src/components/FlightMap.css
-         (:root[data-theme="cyberpunk"]): --color-bg #050608. Keep them in step. -->
+         (:root[data-theme="cyberpunk"]): --color-bg #050608. Keep them in step.
+         black-translucent (restored, section9-hq#287) lets the map paint edge
+         to edge under the translucent iOS status bar; iOS 26.1+ then draws its
+         dark scrim over that strip. That is fine so long as nothing active sits
+         in it: every control and text panel pinned to the top clears the scrim
+         via --safe-top (env(safe-area-inset-top) + 20px) in FlightMap.css and
+         ControlPanel.css. See tests/installed-app-top.spec.ts. -->
     <meta name="theme-color" content="#050608" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Skygrid" />
     <link rel="manifest" href="/manifest.json" />
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon-180.png" />

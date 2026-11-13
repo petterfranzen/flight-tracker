@@ -24,18 +24,23 @@ import {
   type ScheduledFlight,
 } from "./api/flightApi";
 import { NOTIFY_ENABLED, notificationPermission, showOsNotification } from "./notify/notifier";
-import { loadNotifyState, saveNotifyState, pruneNotifyState, emptyState, forgetFlight } from "./notify/state";
+import { loadNotifyState, saveNotifyState, pruneNotifyState, emptyState, forgetFlight, startHourlyPrune } from "./notify/state";
 import { chooseChannel, observeFlight } from "./notify/detect";
+import { commitNotifyPoll, type NotifyOutcome } from "./notify/poll";
+import { applyStandaloneViewport } from "./ui/standaloneViewport";
 import { boundsFromMap, createFollowSelected, createMap, DEFAULT_VIEW, GPUInitializationError } from "./map/map";
 import { createPlaneLayer, planeBoxSize } from "./map/planes";
 import { declutterCellDeg, newDeclutterMemory, pickNonOverlapping, spacingKey, spacingLevel, type Candidate } from "./map/declutter";
+import { perf, resetPerf } from "./map/perf";
 import { isSmallScreen } from "./map/screen";
 import { pickInitialView } from "./map/initialView";
 import { getMockPlaneCount } from "./api/mockFleet";
 import { agedIds, findShadowedIds, isActiveTraffic, OVERLAP_MIN_ZOOM } from "./map/staleness";
 import { newerReport, notOlderReport, sameReport } from "./map/reportOrder";
-import { createRouteLayer } from "./map/route";
-import { confirmedGate, displayedPosition, gateDisplay, trailFor, type GateDisplay } from "./map/gatePlacement";
+import { createRouteLayer, type RoutePoint } from "./map/route";
+import { lastContinuousRun, TRAIL_FALLBACK_WINDOW_MS } from "./map/trailWindow";
+import { confirmedGate, displayedPosition, gateDisplay, trailPointsFor, GATE_MAX_DISTANCE_M, type GateDisplay } from "./map/gatePlacement";
+import { loadGateIndex, nearestGateOrStandFromIndex, nearestStandFromIndex } from "./map/gateIndex";
 import { createUncertaintyLayer } from "./map/uncertainty";
 import { keepCellWinners } from "./map/cellWinners";
 import { snapBounds, ViewCache, type CachedView } from "./map/viewCache";
@@ -47,6 +52,7 @@ import * as favoritesPanel from "./ui/favoritesPanel";
 import * as watchPanel from "./ui/watchPanel";
 import * as watchToast from "./ui/watchToast";
 import * as legend from "./ui/legend";
+import * as locate from "./ui/locate";
 import * as installPrompt from "./ui/installPrompt";
 import * as dossierPanel from "./ui/dossierPanel";
 import * as bootScreen from "./ui/bootScreen";
@@ -67,12 +73,18 @@ const COVERAGE_LOST_REFETCH_MS = 15_000;
 // (LANDED_CONFIRMED) the gate may follow, at any time.
 const LANDED_REFETCH_MS = 60_000;
 const FETCH_STOP_MS = 5 * 60_000;
-// Gates are in the basemap's zoom-14 tiles, which load from this app zoom (map.findGate).
-// From here a view that shows the plane has those tiles loaded or loading, so a gate that
-// is still missing is not in the map and moving the camera would not find it.
+// The static OSM gate index (gateIndex.ts) resolves a gate at any zoom, so the one-time
+// fly-to is only for an airport it does not carry: the basemap's own gate points (the
+// fallback in map.findGate) live in the zoom-14 tiles, which load from this app zoom. From
+// here a view that shows the plane has those tiles loaded or loading, so a gate that is
+// still missing is not in the map and moving the camera would not find it.
 const GATE_TILE_ZOOM = 15;
 // Where the one-time fly-to to a confirmed gate goes.
 const GATE_LOOKUP_ZOOM = 16;
+// A provider ref the index does not carry, on a plane on the ground: snap to a
+// stand this close to the last report (a parked plane is within a few metres of
+// its stand; a taxiing one is not).
+const STAND_SNAP_M = 60;
 const DIALOG_STOP_MS = 5 * 60_000;
 
 // Below this zoom the map asks the server for a thinned-out set (one plane per
@@ -250,7 +262,11 @@ function boot(): void {
   const bootScreenRoot = h("div");
   const dockRoot = h("div");
   const leftOverlayStack = h("div", { className: "left-overlay-stack" });
-  const trackedChipRoot = h("div");
+  // A stable polite live region for the Active/Seen counts: aria-live lives on
+  // this wrapper (created once) rather than on .tracked-chip, which
+  // renderTrackedChip rebuilds on every change — a live region that is itself
+  // replaced each tick is not reliably announced.
+  const trackedChipRoot = h("div", { "aria-live": "polite", "aria-atomic": "true" });
   const resumeDialogRoot = h("div");
   const watchToastRoot = h("div");
   const mapRoot = h("div");
@@ -263,6 +279,8 @@ function boot(): void {
   // Home Screen hint on iOS. It hides itself when already standalone and
   // remembers a dismissal. See ui/installPrompt.ts.
   installPrompt.mount(appShell);
+  // Installed iOS app: mark standalone for the WebKit 301108 workaround; ?vpdebug readout.
+  applyStandaloneViewport();
 
   // Minimal worker (#85 reuses #82's decision; one worker, not two). It
   // caches nothing — its header says why — so a deploy can never be kept
@@ -290,6 +308,7 @@ function boot(): void {
 
     selectedId: null,
     selectedPos: null,
+    gateApproximate: false,
     selectedPosFresh: false,
     dossier: null,
     trackStatus: null,
@@ -324,6 +343,7 @@ function boot(): void {
     removeFavoriteAircraft: () => {},
     removeFavoriteRoute: () => {},
     resumeTracking: () => {},
+    dismissResumeDialog: () => {},
 
     watchFlight: () => {},
     unwatchFlight: () => {},
@@ -332,6 +352,9 @@ function boot(): void {
     dismissWatchNotice: () => {},
   };
   const store = new Store<AppState>(state);
+  // Test seam for the performance profile (src/map/perf.ts).
+  window.__flightPerf = perf;
+  window.__flightPerfReset = resetPerf;
 
   // ---- local mutable state (the original's useRef/useState-outside-store) ----
   // Only ever holds the aircraft in the current individual-marker viewport
@@ -387,11 +410,14 @@ function boot(): void {
   const pendingWs = new Map<string, FlightPosition>();
   let wsFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
-  let route: [number, number][] = [];
+  let route: RoutePoint[] = [];
   let lastRouteObservedAt: string | null = null;
   let routePoints: { lat: number; lon: number; observedAt: string }[] = [];
   let legStartAt: string | null = null;
   let selectionEffectSeq = 0;
+  // Whether this selection's own history has landed: until it has, there is no
+  // trail to draw — no tip-only stub, and no untrimmed 6 h track.
+  let trailReady = false;
 
   let nowMsTimer: ReturnType<typeof setInterval> | null = null;
   let priorityPollTimer: ReturnType<typeof setInterval> | null = null;
@@ -409,24 +435,53 @@ function boot(): void {
   // selected from an older list) wait until the marker gets there: drawn
   // straight away, they ran the trail ahead of the plane.
   function drawRoute(): void {
+    // Nothing of a fresh selection is drawn before its own history lands
+    // (onSelectedIdChanged): a lone dead-reckoned tip then, or even a moment
+    // of the untrimmed 6 h track, is a trail that corrects itself in front of
+    // the user — the ghost trail this selection is meant to prevent.
+    if (!trailReady) {
+      route = [];
+      routeLayer.update(route);
+      return;
+    }
     const pos = store.get("selectedPos");
     const tip = pos && pos.icao24 === store.get("selectedId") ? pos : null;
-    route = trailFor(routePoints, tip, currentGateDisplay(), Date.now());
+    // With each report's time, so the trail layer can break the line across a
+    // real gap in the feed (map/route.ts), instead of dashing the whole path.
+    route = trailPointsFor(routePoints, tip, currentGateDisplay(), Date.now()).map(
+      (p): RoutePoint => ({ lat: p.lat, lon: p.lon, observedAtMs: Date.parse(p.observedAt) }),
+    );
     routeLayer.update(route);
   }
 
   // ---- confirmed gate ----
   // A plane whose gate a provider confirmed is drawn at the gate once its last
-  // report is old (map/gatePlacement.ts). The gate's coordinate is the gate's
-  // own point in the basemap's vector tiles (aeroway class "gate", by ref),
-  // which are loaded only while the view is at the airport: it is looked up
-  // when the status arrives and again whenever tiles load, until found.
+  // report is old (map/gatePlacement.ts). The gate's coordinate comes from the
+  // static OSM index (gateIndex.ts), keyed by the landing airport, so it needs
+  // no tile and resolves at any zoom; the basemap's own vector-tile gate points
+  // are the fallback (map.ts findGate), looked up again whenever tiles load.
   let gatePoint: { icao24: string; gate: string; lat: number; lon: number } | null = null;
+  // A guessed point for a gate the index and the tiles cannot place.
+  // Deliberately not `gatePoint`: it never blocks a real gate, the tile lookup
+  // or the one-time fly-to, and it is dropped the moment one of those answers.
+  //  - `approximate: false`: a plane on the ground at the airport parked at a
+  //    stand within STAND_SNAP_M. The label stays the provider's own ref: the
+  //    dossier shows that ref, and a guessed stand name would contradict it.
+  //  - `approximate: true`: the provider named a gate the index does not carry
+  //    (87, F58 and F62 at ARN are in neither OSM's gate layer nor the index),
+  //    so the nearest indexed gate or stand within GATE_MAX_DISTANCE_M stands
+  //    in for it and the label says "Gate <ref>".
+  let fallbackPoint: { icao24: string; lat: number; lon: number; approximate: boolean } | null = null;
   function currentGateDisplay(): GateDisplay | null {
     const pos = store.get("selectedPos");
     const status = store.get("trackStatus");
     const gate = confirmedGate(pos, status);
-    const point = gate && gatePoint && gatePoint.icao24 === pos?.icao24 && gatePoint.gate === gate ? gatePoint : null;
+    const point =
+      gate && gatePoint && gatePoint.icao24 === pos?.icao24 && gatePoint.gate === gate
+        ? gatePoint
+        : fallbackPoint && fallbackPoint.icao24 === pos?.icao24
+          ? fallbackPoint
+          : null;
     return gateDisplay(pos, status, Date.now(), point);
   }
   // Once per selection, if the gate's tile is not loaded: go where it is. Never against
@@ -434,15 +489,18 @@ function boot(): void {
   let gateZoomDone = false;
   let userMovedMap = false; // set by the map's user-move listener (below, once `map` exists)
   function onGateStatus(status: TrackStatus | null): void {
-    resolveGate();
-    const pos = store.get("selectedPos");
-    const gate = confirmedGate(pos, status);
-    if (gate && status && !gateZoomDone && !(gatePoint && gatePoint.gate === gate && gatePoint.icao24 === pos?.icao24)) {
-      gateZoomDone = true;
-      flyToGate(store.get("selectedId"), status.lastSeenLat, status.lastSeenLon);
-    }
-    renderAircraftLayer(); // the status can also stop qualifying (a gate that changed)
-    drawRoute();
+    // The index chunk may still be in flight, so decide the fly-to only after
+    // the lookup has had its answer: an index hit must never drag the camera in.
+    void resolveGate().then(() => {
+      const pos = store.get("selectedPos");
+      const gate = confirmedGate(pos, status);
+      if (gate && status && !gateZoomDone && !(gatePoint && gatePoint.gate === gate && gatePoint.icao24 === pos?.icao24)) {
+        gateZoomDone = true;
+        flyToGate(store.get("selectedId"), status.lastSeenLat, status.lastSeenLon);
+      }
+      renderAircraftLayer(); // the status can also stop qualifying (a gate that changed)
+      drawRoute();
+    });
   }
   // The selection's own camera move is usually still running when the status arrives: wait
   // for it to end, then decide. Whatever the user did meanwhile (or the gate resolving) wins.
@@ -461,19 +519,62 @@ function boot(): void {
     if (map.getZoom() >= GATE_TILE_ZOOM && map.contains(lat, lon)) return;
     map.flyTo([lat, lon], GATE_LOOKUP_ZOOM, 800);
   }
-  function resolveGate(): void {
+  /**
+   * The dossier's gate line says when the marker is at a guess rather than the
+   * gate itself. Set wherever the display can change; the store set is a no-op
+   * unless it flips, so the panel is not rebuilt on every tile event.
+   */
+  function syncGateApproximate(): void {
+    const approximate = currentGateDisplay()?.approximate === true;
+    if (store.get("gateApproximate") !== approximate) store.set("gateApproximate", approximate);
+  }
+  async function resolveGate(): Promise<void> {
+    await loadGateIndex(); // a no-op once the chunk has landed
     const pos = store.get("selectedPos");
     const status = store.get("trackStatus");
     const gate = confirmedGate(pos, status);
-    if (!pos || !status || !gate) return;
-    if (gatePoint && gatePoint.icao24 === pos.icao24 && gatePoint.gate === gate) return;
-    const found = map.findGate(gate, { lat: status.lastSeenLat, lon: status.lastSeenLon });
-    if (!found) return;
-    gatePoint = { icao24: pos.icao24, gate, lat: found.lat, lon: found.lon };
+    if (!pos || !status || !gate) {
+      // The status stopped qualifying (the plane moved on, the provider dropped
+      // the gate): a guess from before is no longer about this plane.
+      fallbackPoint = null;
+      syncGateApproximate();
+      return;
+    }
+    if (!(gatePoint && gatePoint.icao24 === pos.icao24 && gatePoint.gate === gate)) {
+      const near = { lat: status.lastSeenLat, lon: status.lastSeenLon };
+      const icao = status.landing?.airportIcao;
+      const found = map.findGate(gate, near, icao);
+      if (found) {
+        gatePoint = { icao24: pos.icao24, gate, lat: found.lat, lon: found.lon };
+        fallbackPoint = null;
+      } else {
+        // The ref is in neither the index nor a loaded tile. Two guesses, both
+        // dropped the moment a real gate answers:
+        //  - an on-ground plane may be parked at a stand within STAND_SNAP_M (the
+        //    label stays the provider's ref). The index needs no tile, so this
+        //    does not wait for the view to reach the airport;
+        //  - otherwise the plane is somewhere in the airport's terminal area, so
+        //    the nearest indexed gate or stand within GATE_MAX_DISTANCE_M stands
+        //    in for the unmapped gate, labelled "Gate <ref>".
+        // Re-guessed on every resolve, never once per selection: a plane that
+        // taxis after the first status moves to another stand, and the marker
+        // must follow it. Both lookups are in-memory scans of the loaded index.
+        const stand = pos.onGround === true ? nearestStandFromIndex(icao, near, STAND_SNAP_M) : null;
+        const area = stand ? null : nearestGateOrStandFromIndex(icao, near, GATE_MAX_DISTANCE_M);
+        if (stand) fallbackPoint = { icao24: pos.icao24, lat: stand.lat, lon: stand.lon, approximate: false };
+        else if (area) fallbackPoint = { icao24: pos.icao24, lat: area.lat, lon: area.lon, approximate: true };
+        else fallbackPoint = null;
+      }
+    }
+    syncGateApproximate();
     renderAircraftLayer();
     drawRoute();
   }
   function appendRoutePoint(p: LiveMarker): void {
+    // The trail starts with this selection's own history: appended to an empty
+    // route first, a live report drew a single-point trail that then jumped
+    // when the real track arrived.
+    if (!trailReady) return;
     if (lastRouteObservedAt == null || newerReport(p.observedAt, lastRouteObservedAt)) {
       // A new real report: it joins the trail.
       lastRouteObservedAt = p.observedAt;
@@ -489,6 +590,7 @@ function boot(): void {
   // Which planes were drawn last time, so a pan keeps them (see pickNonOverlapping).
   const declutterMemory = newDeclutterMemory();
   function renderAircraftLayer(): void {
+    const t0 = performance.now();
     const selectedId = store.get("selectedId");
     const reportedPos = store.get("selectedPos");
     // At its confirmed gate, not at its last (old) report: a display state only.
@@ -514,16 +616,20 @@ function boot(): void {
     // An aircraft with a newer one on top of it is a ghost: not drawn at all
     // (see map/staleness.ts). Only where 20 m is visible. A watched plane is
     // never a ghost.
+    const shadowStart = performance.now();
     const shadowed = zoom >= OVERLAP_MIN_ZOOM ? findShadowedIds(inView) : null;
     const candidates = shadowed && shadowed.size > 0 ? inView.filter((p) => !shadowed.has(p.icao24) || watchedIds.has(p.icao24)) : inView;
+    perf.parts.shadowed += performance.now() - shadowStart;
 
     // Where two planes' icons would overlap, only the first discovered is
     // drawn; the selected one is always drawn and hides whatever is under it.
+    const projectStart = performance.now();
     const points: Candidate[] = candidates.map((p) => {
       const pt = map.project(p.latitude, p.longitude);
       return { icao24: p.icao24, x: pt.x, y: pt.y, active: isActiveTraffic(p, nowMs) };
     });
     const fixed = selectedPos ? [map.project(selectedPos.latitude, selectedPos.longitude)] : [];
+    perf.parts.project += performance.now() - projectStart;
     // Watched planes are placed like the selected one: nothing is drawn over
     // them, and they are kept whatever the spacing does.
     for (const p of candidates) if (watchedIds.has(p.icao24)) fixed.push(map.project(p.latitude, p.longitude));
@@ -535,17 +641,27 @@ function boot(): void {
     // against the other, and the source is part of the key so the 7.5-8.0
     // overview band does not hand its spacing to the live source above it.
     const maxDrawn = isSmallScreen() ? MAX_DRAWN_MARKERS_SMALL_SCREEN : MAX_DRAWN_MARKERS;
-    const keep = pickNonOverlapping(
-      points,
-      fixed,
-      planeBoxSize(spacingLevel(zoom)),
-      maxDrawn,
-      declutterMemory,
-      spacingKey(useOverview ? "overview" : "live", zoom, maxDrawn),
-    );
+    // The box and the key both come from the whole level (spacingLevel); the key
+    // also names the source actually being picked. Test hook: tests read what
+    // this render used (tests/helpers.ts declutterSpacing) -- the wiring itself
+    // is what those specs guard, so a reverted call site fails them.
+    const spacingBox = planeBoxSize(spacingLevel(zoom));
+    const spacingKeyFor = spacingKey(useOverview ? "overview" : "live", zoom, maxDrawn);
+    const declutterStart = performance.now();
+    const keep = pickNonOverlapping(points, fixed, spacingBox, maxDrawn, declutterMemory, spacingKeyFor);
+    map.declutterSpacing = { box: spacingBox, key: spacingKeyFor, spacing: declutterMemory.spacing };
+    const declutterMs = performance.now() - declutterStart;
+    perf.parts.declutter += declutterMs;
+    perf.declutter.calls++;
+    perf.declutter.totalMs += declutterMs;
+    perf.declutter.lastMs = declutterMs;
+    if (declutterMs > perf.declutter.maxMs) perf.declutter.maxMs = declutterMs;
     // A watched plane is always drawn: exempt from the marker cap and declutter.
+    const filterStart = performance.now();
     const drawn = candidates.filter((p) => keep.has(p.icao24) || watchedIds.has(p.icao24));
+    perf.parts.filter += performance.now() - filterStart;
 
+    const updateStart = performance.now();
     planeLayer.update({
       unselected: drawn,
       selectedPos,
@@ -553,6 +669,13 @@ function boot(): void {
       dimmed: agedIds(drawn, nowMs),
       watched: watchedIds,
     });
+    perf.parts.update += performance.now() - updateStart;
+
+    const renderMs = performance.now() - t0;
+    perf.render.calls++;
+    perf.render.totalMs += renderMs;
+    perf.render.lastMs = renderMs;
+    if (renderMs > perf.render.maxMs) perf.render.maxMs = renderMs;
   }
 
   // ---- fetch lifecycle ----
@@ -561,9 +684,7 @@ function boot(): void {
     // superseded. It opens the fill window only for a view change that lands a
     // real set; the opening view, and an empty or sparse snapshot, never hold
     // anything back.
-    arrivals.clear();
-    if (arrivalTimer) clearTimeout(arrivalTimer);
-    arrivalTimer = null;
+    clearArrivals();
     fillUntil = liveSnapshotSeen && viewChanged && list.length >= FILL_MIN_SNAPSHOT ? Date.now() + FILL_SETTLE_MS : 0;
     liveSnapshotSeen = true;
     viewChanged = false;
@@ -758,6 +879,9 @@ function boot(): void {
     store.set("zoom", nextZoom);
     if ((nextZoom < CLUSTER_FETCH_MAX_ZOOM) !== wasZoomedOut) lastAppliedView = null;
     viewChanged = true;
+    // Frames held for the view we just left are stale: drop them and their timer
+    // rather than let them release into the new view (see clearArrivals).
+    clearArrivals();
     renderAircraftLayer(); // icon sizes and what overlaps change with the zoom: redraw now, independent of the fetch below
     // A view we've seen recently is drawn right away, before the debounce.
     applyCachedView(Date.now());
@@ -803,6 +927,15 @@ function boot(): void {
     arrivals.set(p.icao24, { p, asOf: at });
     if (arrivalTimer) clearTimeout(arrivalTimer);
     arrivalTimer = setTimeout(releaseArrivals, Math.max(0, Math.min(at + FILL_QUIET_MS, firstArrivalAt + FILL_MAX_MS) - at));
+  }
+  // Held frames and their release timer belong to one view of one feed: the next
+  // snapshot, a view change, or a feed teardown (reconnect) drops them, so a timer
+  // never outlives the view or the connection that armed it.
+  function clearArrivals(): void {
+    arrivals.clear();
+    if (arrivalTimer) clearTimeout(arrivalTimer);
+    arrivalTimer = null;
+    firstArrivalAt = 0;
   }
   function releaseArrivals(): void {
     arrivalTimer = null;
@@ -1019,6 +1152,10 @@ function boot(): void {
     nowMsTimer = setInterval(() => store.set("nowMs", Date.now()), 1_000);
   }
 
+  // How long a selection waits for the dossier's leg start before drawing the
+  // fallback window instead. The dossier normally answers well inside this.
+  const LEG_START_WAIT_MS = 1_500;
+
   function onSelectedIdChanged(): void {
     const seq = ++selectionEffectSeq;
     stopPriorityPoll();
@@ -1028,12 +1165,14 @@ function boot(): void {
     // Cleared unconditionally: switching directly from aircraft A to B
     // never passes through "selected = null".
     gatePoint = null;
+    fallbackPoint = null;
     gateZoomDone = false;
     userMovedMap = false;
     route = [];
     lastRouteObservedAt = null;
     routePoints = [];
     legStartAt = null;
+    trailReady = false;
     routeLayer.update(route);
 
     const selectedId = store.get("selectedId");
@@ -1046,35 +1185,66 @@ function boot(): void {
     startNowMsTicker();
     startPriorityPoll(selectedId);
 
-    const to = new Date().toISOString();
-    const from = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString(); // last 6h of history
-    fetchHistory(selectedId, from, to).then((track) => {
+    store.set("dossier", null); // clear the previous aircraft's fields while the new lookup is in flight
+    // A dossier that fails simply means no leg start: the fallback below draws
+    // the last continuous run instead. The selection (the marker, the panel)
+    // is never held up by it.
+    const dossier = fetchAircraftDossier(selectedId).catch(() => null);
+
+    // The dossier's leg start is where this selection's trail begins. Wait for
+    // it before asking for any history at all: a history that lands first
+    // carries every earlier leg of the same airframe (an out-and-back, a
+    // turnaround), and drawing that is the long, complex trail that then snaps
+    // short. Also the guard the history fetch used to need has moved here: a
+    // superseded selection never reaches the fetch.
+    const legStart = Promise.race([
+      dossier.then((d) => d?.legStartAt ?? null),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), LEG_START_WAIT_MS)),
+    ]);
+
+    dossier.then((d) => {
       if (seq !== selectionEffectSeq) return; // superseded by a newer selection
-      const filtered = legStartAt ? track.filter((p) => notOlderReport(p.observedAt, legStartAt!)) : track;
-      if (filtered.length > 0) lastRouteObservedAt = filtered[filtered.length - 1].observedAt;
-      routePoints = filtered.map((p) => ({ lat: p.latitude, lon: p.longitude, observedAt: p.observedAt }));
-      drawRoute();
-      const currentSelectedPos = store.get("selectedPos");
-      if (currentSelectedPos) appendRoutePoint(currentSelectedPos);
+      store.set("dossier", d);
+      const start = d?.legStartAt ?? null;
+      // A dossier slower than the wait above still trims what was drawn.
+      if (start && start !== legStartAt) {
+        legStartAt = start;
+        const trimmed = routePoints.filter((pt) => notOlderReport(pt.observedAt, start));
+        if (trimmed.length !== routePoints.length) {
+          routePoints = trimmed;
+          drawRoute();
+        }
+      }
     });
 
-    store.set("dossier", null); // clear the previous aircraft's fields while the new lookup is in flight
-    fetchAircraftDossier(selectedId)
-      .then((d) => {
-        if (seq !== selectionEffectSeq) return;
-        store.set("dossier", d);
-        legStartAt = d?.legStartAt ?? null;
-        if (legStartAt) {
-          const trimmed = routePoints.filter((pt) => notOlderReport(pt.observedAt, legStartAt!));
-          if (trimmed.length !== routePoints.length) {
-            routePoints = trimmed;
-            drawRoute();
-          }
-        }
-      })
-      .catch(() => {
-        if (seq === selectionEffectSeq) store.set("dossier", null);
-      });
+    legStart.then((start) => {
+      if (seq !== selectionEffectSeq) return; // superseded by a newer selection
+      legStartAt = start ?? legStartAt;
+      // With a leg start, ask for that leg alone: a smaller payload than 6 h,
+      // and nothing left to trim. Without one — the dossier failed, or was too
+      // slow to wait on — a short window instead of 6 h, and of that only the
+      // last continuous run of reports.
+      const to = new Date().toISOString();
+      const from = start ?? new Date(Date.now() - TRAIL_FALLBACK_WINDOW_MS).toISOString();
+      fetchHistory(selectedId, from, to)
+        .then((track) => {
+          if (seq !== selectionEffectSeq) return; // superseded by a newer selection
+          const points = start ? track.filter((p) => notOlderReport(p.observedAt, start)) : lastContinuousRun(track);
+          if (points.length > 0) lastRouteObservedAt = points[points.length - 1].observedAt;
+          routePoints = points.map((p) => ({ lat: p.latitude, lon: p.longitude, observedAt: p.observedAt }));
+          trailReady = true; // from here the trail is this selection's own leg
+          drawRoute();
+          const currentSelectedPos = store.get("selectedPos");
+          if (currentSelectedPos) appendRoutePoint(currentSelectedPos);
+        })
+        .catch(() => {
+          if (seq !== selectionEffectSeq) return;
+          // No history: an empty trail, which the live reports (the priority
+          // poll, the push feed) then build from here — never a 6 h guess.
+          trailReady = true;
+          drawRoute();
+        });
+    });
   }
 
   // ---- selection actions ----
@@ -1215,22 +1385,32 @@ function boot(): void {
 
     if (NOTIFY_ENABLED) {
       const notifyMap = loadNotifyState();
+      const poll: NotifyOutcome[] = [];
       for (const sample of notifySamples) {
         const position = sample.row.icao24 ? positionsNow.get(sample.row.icao24) ?? null : null;
         const prior = notifyMap[sample.key] ?? emptyState();
-        const { state: next, event } = observeFlight(prior, { ...sample, position, nowMs: Date.now() });
-        notifyMap[sample.key] = next;
-        if (!event) continue;
-        const flight = list.find((x) => watchKey(x) === sample.key);
-        if (!flight) continue;
-        const channel = chooseChannel({ hidden: document.hidden, enabled: next.enabled, permission: notificationPermission() });
-        if (channel === "os") {
-          void showOsNotification(event.title, event.text, { key: event.key, kind: event.kind });
-        } else {
-          store.set("watchNotice", { flight, text: event.text, kind: event.kind });
-        }
+        const { state, event } = observeFlight(prior, { ...sample, position, nowMs: Date.now() });
+        poll.push({ key: sample.key, state, event });
       }
-      saveNotifyState(pruneNotifyState(notifyMap));
+      // The state is persisted per flight, before its event is announced, so
+      // the record never depends on the banner drawing (commitNotifyPoll).
+      commitNotifyPoll({
+        poll,
+        map: notifyMap,
+        save: (map) => saveNotifyState(pruneNotifyState(map)),
+        announce: (outcome) => {
+          const { event } = outcome;
+          if (!event) return;
+          const flight = list.find((x) => watchKey(x) === outcome.key);
+          if (!flight) return;
+          const channel = chooseChannel({ hidden: document.hidden, enabled: outcome.state.enabled, permission: notificationPermission() });
+          if (channel === "os") {
+            void showOsNotification(event.title, event.text, { key: event.key, kind: event.kind });
+          } else {
+            store.set("watchNotice", { flight, text: event.text, kind: event.kind });
+          }
+        },
+      });
     } else if (departed.length > 0) {
       store.set("departureToast", departed[0]);
     }
@@ -1360,6 +1540,7 @@ function boot(): void {
   store.set("removeFavoriteAircraft", removeFavoriteAircraft);
   store.set("removeFavoriteRoute", removeFavoriteRoute);
   store.set("resumeTracking", startCycle);
+  store.set("dismissResumeDialog", () => store.set("showResumeDialog", false));
   store.set("watchFlight", watchFlight);
   store.set("unwatchFlight", unwatchFlight);
   store.set("goToWatched", goToWatched);
@@ -1376,6 +1557,9 @@ function boot(): void {
   favoritesPanel.mount(leftOverlayStack, store);
   watchPanel.mount(leftOverlayStack, store);
   legend.mount(leftOverlayStack); // no store slots — its open/closed state is purely local (see ui/legend.ts)
+  // "Go to my location" (section9-hq#263): asks the browser, flies the map
+  // there and marks it with a GL dot. Nothing leaves the page.
+  locate.mount(leftOverlayStack, map);
   bootScreen.mount(bootScreenRoot, store);
   resumeDialog.mount(resumeDialogRoot, store);
   dossierPanel.mount(dossierRoot, store);
@@ -1446,6 +1630,10 @@ function boot(): void {
   store.subscribe("selectedId", onSelectedIdChanged);
   store.subscribe("selectedPos", drawRoute); // the trail ends at the marker, wherever it moves
   map.on("sourcedata", resolveGate); // the gate's tile may arrive after the status
+
+  // The gate index is a chunk of its own (gateIndex.ts): start fetching it with
+  // the app, and answer whatever the selection asked for while it was in flight.
+  void loadGateIndex().then(() => resolveGate());
   onSelectedIdChanged(); // selectedId starts null — harmless initial reset
 
   // ---- mount-only effects ----
@@ -1463,14 +1651,17 @@ function boot(): void {
     .then((n) => store.set("seenCount", n))
     .catch(() => {});
 
-  subscribeLiveFeed(onLivePush);
+  // A reconnect is this feed's teardown: held frames are dropped so the next
+  // snapshot is the source of truth again (see clearArrivals).
+  subscribeLiveFeed(onLivePush, { onReconnect: clearArrivals });
 
   restartFetchCycleTimers(); // generation 0
   startWatchPoll(); // watched flights, independently of the Watch panel
   if (NOTIFY_ENABLED) {
     // #82 design §2: prune expired notification state on load and once an hour.
-    saveNotifyState(pruneNotifyState(loadNotifyState()));
-    setInterval(() => saveNotifyState(pruneNotifyState(loadNotifyState())), 60 * 60 * 1000);
+    // The disposer runs on pagehide so the interval is cleared when the page
+    // goes away instead of staying alive behind it.
+    window.addEventListener("pagehide", startHourlyPrune(), { once: true });
   }
 
   // Opening view: move the map to where the traffic is, at a zoom that draws
