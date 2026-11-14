@@ -13,6 +13,9 @@ import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.HttpStatusEntryPoint;
 import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
+import org.springframework.security.oauth2.client.userinfo.OAuth2UserRequest;
+import org.springframework.security.oauth2.client.userinfo.OAuth2UserService;
+import org.springframework.security.oauth2.core.user.OAuth2User;
 import org.springframework.security.web.csrf.CookieCsrfTokenRepository;
 import org.springframework.security.web.firewall.DefaultHttpFirewall;
 
@@ -35,7 +38,7 @@ import org.springframework.security.web.firewall.DefaultHttpFirewall;
  *       {@code /api/profile/**} authenticated, a session only when something
  *       asks for one ({@code IF_REQUIRED}), CSRF on but scoped so the existing
  *       anonymous {@code POST /api/agents/restart} is untouched, Google + GitHub
- *       from the registrations in {@code application.yml}.</li>
+ *       from the env-supplied registrations in {@link OAuthClientConfig}.</li>
  *   <li><b>Flag off</b> (the production default) — a no-op chain that permits
  *       everything and creates no session, which also stops Spring Boot's own
  *       deny-all default chain from ever being built. An anonymous visit is
@@ -92,7 +95,10 @@ public class ProfileSecurityConfig {
     @Bean
     @ConditionalOnProperty(prefix = "flighttracker.profile", name = "enabled", havingValue = "true")
     SecurityFilterChain profileSecurityFilterChain(
-            HttpSecurity http, ObjectProvider<ClientRegistrationRepository> registrations) throws Exception {
+            HttpSecurity http,
+            ObjectProvider<ClientRegistrationRepository> registrations,
+            ObjectProvider<OAuth2UserService<OAuth2UserRequest, OAuth2User>> oauth2UserService)
+            throws Exception {
         http
                 // CSRF on, but SCOPED to the profile write API. A blanket CSRF config
                 // silently changes every other anonymous POST: the blackbox suite caught
@@ -122,7 +128,15 @@ public class ProfileSecurityConfig {
         // client-id and secret supplied there is no ClientRegistrationRepository bean, so
         // the login filter is simply not installed — no sign-in offered, not a broken app.
         if (registrations.getIfAvailable() != null) {
-            http.oauth2Login(Customizer.withDefaults());
+            OAuth2UserService<OAuth2UserRequest, OAuth2User> idOnly = oauth2UserService.getIfAvailable();
+            if (idOnly != null) {
+                // GitHub is plain OAuth2 and its /user returns a login, a name, an avatar
+                // and an email even at no scope; keep only the account id (design §1.5).
+                // Google is OIDC and reads its id_token, so this never runs for it.
+                http.oauth2Login(oauth2 -> oauth2.userInfoEndpoint(userInfo -> userInfo.userService(idOnly)));
+            } else {
+                http.oauth2Login(Customizer.withDefaults());
+            }
         }
         return http.build();
     }
