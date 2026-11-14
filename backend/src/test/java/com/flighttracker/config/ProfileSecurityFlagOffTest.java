@@ -65,7 +65,7 @@ class ProfileSecurityFlagOffTest {
     @EnableAutoConfiguration(exclude = DataSourceAutoConfiguration.class)
     @EnableConfigurationProperties(ProfileProperties.class)
     @Import({ProfileSecurityConfig.class, SecurityHeadersFilter.class,
-            ProfileController.class, HealthController.class})
+            ProfileController.class, HealthController.class, ClockConfig.class})
     static class MinimalApp {
 
         /** A throwaway SQLite file: enough for HealthController's SELECT 1, nothing else. */
