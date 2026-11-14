@@ -500,6 +500,8 @@ function boot(): void {
         flyToGate(store.get("selectedId"), status.lastSeenLat, status.lastSeenLon);
       }
       renderAircraftLayer(); // the status can also stop qualifying (a gate that changed)
+      // ...and it can move the marker to its gate: bring it back if that left the view.
+      keepSelectedInView(store.get("selectedId"));
       drawRoute();
     });
   }
@@ -519,6 +521,41 @@ function boot(): void {
     // the basemap, and no camera move can change that.
     if (map.getZoom() >= GATE_TILE_ZOOM && map.contains(lat, lon)) return;
     map.flyTo([lat, lon], GATE_LOOKUP_ZOOM, 800);
+  }
+  // The status moves the marker from its last report to its gate, which can put it
+  // outside the view the selection just flew to (the two are not the same point).
+  // Bring the camera to the drawn point so the selected plane is on screen — a pan,
+  // not a fly, so the zoom the selection chose is kept.
+  //
+  // Only when a gate display actually applies: without one the marker is where its
+  // last report says, and an ordinary position tick must not recentre the map (see
+  // createFollowSelected). And only once per selection or gate change: the status
+  // is refreshed every 15 s while coverage is lost and every 60 s for a landed
+  // plane, and none of those later polls may move the camera again. Never against
+  // the user: not after they moved the map, nor for a selection that changed while
+  // the map was still moving.
+  let gatePanKey: string | null = null; // "<selectedId>|<gate>" already brought into view
+  function keepSelectedInView(selectedId: string | null): void {
+    if (map.isMoving()) {
+      const retry = () => {
+        map.off("moveend", retry);
+        keepSelectedInView(selectedId);
+      };
+      map.on("moveend", retry);
+      return;
+    }
+    // The id is the caller's, not a fresh read: `selectedId` here is what this call
+    // was made for, so the comparison can actually fail while the map was moving.
+    if (store.get("selectedId") !== selectedId || userMovedMap || !selectedId) return;
+    const gate = currentGateDisplay();
+    if (!gate) return; // no gate display: nothing moved the marker, so nothing to bring back
+    const key = `${selectedId}|${gate.gate}`;
+    if (gatePanKey === key) return; // already handled for this selection and gate
+    const pos = store.get("selectedPos");
+    if (!pos) return;
+    gatePanKey = key;
+    const drawn = displayedPosition(pos, gate);
+    if (!map.contains(drawn.latitude, drawn.longitude)) map.panTo([drawn.latitude, drawn.longitude], 500);
   }
   /**
    * The dossier's gate line says when the marker is at a guess rather than the
@@ -1176,6 +1213,7 @@ function boot(): void {
     gatePoint = null;
     fallbackPoint = null;
     gateZoomDone = false;
+    gatePanKey = null;
     userMovedMap = false;
     route = [];
     lastRouteObservedAt = null;
@@ -1621,12 +1659,17 @@ function boot(): void {
   // ---- follow-selected wiring ----
   function syncFollowSelected(): void {
     const selectedPos = store.get("selectedPos");
+    // The map draws the plane at its confirmed gate when it has one (see
+    // renderAircraftLayer below), so the camera must follow the drawn point, not
+    // the raw report: centring on the report leaves the marker off screen the
+    // moment the status moves it to the gate.
+    const drawn = selectedPos ? displayedPosition(selectedPos, currentGateDisplay()) : null;
     followSelected.update({
       selectedId: store.get("selectedId"),
       positionId: selectedPos?.icao24 ?? null,
       positionFresh: store.get("selectedPosFresh"),
-      lat: selectedPos?.latitude ?? null,
-      lon: selectedPos?.longitude ?? null,
+      lat: drawn?.latitude ?? null,
+      lon: drawn?.longitude ?? null,
       onGround: selectedPos?.onGround ?? null,
       velocityMs: selectedPos?.velocityMs ?? null,
       sheetExpanded: store.get("dossierExpanded"),
