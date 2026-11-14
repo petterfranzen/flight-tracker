@@ -6,6 +6,7 @@ import com.flighttracker.repository.AircraftRepository;
 import com.flighttracker.repository.FlightPositionRepository;
 import com.flighttracker.repository.WatchedFlightRepository;
 import com.flighttracker.service.agent.PositionRetentionService;
+import com.flighttracker.service.confirmation.ConfirmationStore;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -81,7 +82,7 @@ class SqlitePersistenceIntegrationTest {
 
         AircraftRepository aircraftRepository = new AircraftRepository(jdbcClient, clock);
         FlightPositionRepository positionRepository = new FlightPositionRepository(jdbcClient, clock);
-        LiveStateStore liveStateStore = new LiveStateStore(jdbcTemplate, clock);
+        LiveStateStore liveStateStore = new LiveStateStore(jdbcTemplate, clock, new ConfirmationStore(120, 5000));
 
         // --- insert ---
         aircraftRepository.insertIfAbsent("abc123");
@@ -152,7 +153,7 @@ class SqlitePersistenceIntegrationTest {
         Clock clock = Clock.fixed(t0, ZoneOffset.UTC);
         AircraftRepository aircraftRepository = new AircraftRepository(jdbcClient, clock);
         FlightPositionRepository positions = new FlightPositionRepository(jdbcClient, clock);
-        LiveStateStore store = new LiveStateStore(jdbcTemplate, clock);
+        LiveStateStore store = new LiveStateStore(jdbcTemplate, clock, new ConfirmationStore(120, 5000));
 
         // (icao24, minutes before "now", on the ground?) in time order per aircraft.
         Object[][] reports = {
