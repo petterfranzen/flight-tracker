@@ -35,7 +35,7 @@ import org.springframework.security.web.firewall.DefaultHttpFirewall;
  *       {@code /api/profile/**} authenticated, a session only when something
  *       asks for one ({@code IF_REQUIRED}), CSRF on but scoped so the existing
  *       anonymous {@code POST /api/agents/restart} is untouched, Google + GitHub
- *       from the registrations in {@code application.yml}.</li>
+ *       from the env-supplied registrations in {@link OAuthClientConfig}.</li>
  *   <li><b>Flag off</b> (the production default) — a no-op chain that permits
  *       everything and creates no session, which also stops Spring Boot's own
  *       deny-all default chain from ever being built. An anonymous visit is
