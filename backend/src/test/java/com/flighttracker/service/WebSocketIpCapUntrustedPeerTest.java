@@ -3,6 +3,7 @@ package com.flighttracker.service;
 import com.flighttracker.config.WebSocketConfig;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import com.flighttracker.config.ProfileSecurityConfig;
 import org.springframework.boot.SpringBootConfiguration;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration;
@@ -43,7 +44,8 @@ class WebSocketIpCapUntrustedPeerTest {
 
     @SpringBootConfiguration
     @EnableAutoConfiguration(exclude = DataSourceAutoConfiguration.class)
-    @Import({WebSocketConfig.class, LiveFeedBroadcaster.class, ViewportService.class, ClientIpResolver.class})
+    @Import({WebSocketConfig.class, LiveFeedBroadcaster.class, ViewportService.class, ClientIpResolver.class,
+            ProfileSecurityConfig.class})
     static class App {
         @Bean
         ObjectMapper objectMapper() {
