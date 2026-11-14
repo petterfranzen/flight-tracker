@@ -12,9 +12,10 @@ spring:
   # Optional social login registrations are NOT declared here on purpose: Spring Boot
   # refuses to start with a registration whose client-id is empty, so an unset provider
   # must be absent rather than blank. With flighttracker.profile.enabled on, a provider
-  # is registered only when its id and secret are supplied (via the standard
-  # spring.security.oauth2.client.* properties / env); none supplied is simply "no
-  # sign-in available", not a broken app. See config/ProfileSecurityConfig.
+  # is registered only when its id and secret are supplied under flighttracker.oauth.*
+  # below; none supplied is simply "no sign-in available", not a broken app. The
+  # registrations themselves are assembled in config/OAuthClientConfig. See also
+  # config/ProfileSecurityConfig.
   lifecycle:
     # Per shutdown phase, and two phases can each use it in full (the
     # scheduler draining in-flight @Scheduled runs, then the web server
@@ -122,6 +123,10 @@ flighttracker:
   # Turn it on only after the OAuth client secrets live on the VM (§4, §7).
   profile:
     enabled: ${FLIGHTTRACKER_PROFILE_ENABLED:false}
+    # The public https base URL the app is reached at, used to build the OAuth2
+    # redirect URI: the provider rejects an http callback, and behind Cloudflare the
+    # app itself only ever sees http (TLS terminates at the edge). No trailing slash.
+    public-base-url: ${FLIGHTTRACKER_PUBLIC_BASE_URL:}
   # OAuth client registrations for optional social login (design: section9-hq #84,
   # step 3a). Only the *names* are here, like every other credential in this file:
   # the client id and secret come from the VM's /etc/flight-tracker/env

@@ -1,6 +1,7 @@
 package com.flighttracker.config;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.util.StringUtils;
 
 /**
  * The env-supplied OAuth client registrations for optional social login
@@ -70,7 +71,21 @@ public class OAuthClientProperties {
          * credential.
          */
         public boolean configured() {
-            return !clientId.isBlank() && !clientSecret.isBlank();
+            return configured(clientId, clientSecret);
+        }
+
+        /**
+         * The one predicate behind {@link #configured()} and the
+         * {@code OAuthClientConfiguredCondition} that gates the registration bean: a
+         * provider is usable only when <b>both</b> halves are present and not blank.
+         * Whitespace-only counts as absent, so the condition and the registration set can
+         * never disagree — the bean is built exactly when a provider is supplied, and a
+         * whitespace-only value leaves the provider off instead of building an empty
+         * repository and failing startup. The values are compared as plain strings, never
+         * inlined into a SpEL literal, so a quote in a secret cannot break the check.
+         */
+        static boolean configured(String clientId, String clientSecret) {
+            return StringUtils.hasText(clientId) && StringUtils.hasText(clientSecret);
         }
 
         public String getClientId() {

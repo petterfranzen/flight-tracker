@@ -13,6 +13,9 @@ import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.HttpStatusEntryPoint;
 import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
+import org.springframework.security.oauth2.client.userinfo.OAuth2UserRequest;
+import org.springframework.security.oauth2.client.userinfo.OAuth2UserService;
+import org.springframework.security.oauth2.core.user.OAuth2User;
 import org.springframework.security.web.csrf.CookieCsrfTokenRepository;
 import org.springframework.security.web.firewall.DefaultHttpFirewall;
 
@@ -92,7 +95,10 @@ public class ProfileSecurityConfig {
     @Bean
     @ConditionalOnProperty(prefix = "flighttracker.profile", name = "enabled", havingValue = "true")
     SecurityFilterChain profileSecurityFilterChain(
-            HttpSecurity http, ObjectProvider<ClientRegistrationRepository> registrations) throws Exception {
+            HttpSecurity http,
+            ObjectProvider<ClientRegistrationRepository> registrations,
+            ObjectProvider<OAuth2UserService<OAuth2UserRequest, OAuth2User>> oauth2UserService)
+            throws Exception {
         http
                 // CSRF on, but SCOPED to the profile write API. A blanket CSRF config
                 // silently changes every other anonymous POST: the blackbox suite caught
@@ -122,7 +128,15 @@ public class ProfileSecurityConfig {
         // client-id and secret supplied there is no ClientRegistrationRepository bean, so
         // the login filter is simply not installed — no sign-in offered, not a broken app.
         if (registrations.getIfAvailable() != null) {
-            http.oauth2Login(Customizer.withDefaults());
+            OAuth2UserService<OAuth2UserRequest, OAuth2User> idOnly = oauth2UserService.getIfAvailable();
+            if (idOnly != null) {
+                // GitHub is plain OAuth2 and its /user returns a login, a name, an avatar
+                // and an email even at no scope; keep only the account id (design §1.5).
+                // Google is OIDC and reads its id_token, so this never runs for it.
+                http.oauth2Login(oauth2 -> oauth2.userInfoEndpoint(userInfo -> userInfo.userService(idOnly)));
+            } else {
+                http.oauth2Login(Customizer.withDefaults());
+            }
         }
         return http.build();
     }
