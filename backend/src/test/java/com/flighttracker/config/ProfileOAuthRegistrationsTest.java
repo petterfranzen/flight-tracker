@@ -1,10 +1,16 @@
 package com.flighttracker.config;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.context.ApplicationContextInitializer;
+import org.springframework.context.ConfigurableApplicationContext;
+import org.springframework.core.env.MapPropertySource;
 import org.springframework.boot.test.context.ConfigDataApplicationContextInitializer;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.security.oauth2.client.registration.ClientRegistration;
 import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
+
+import java.util.HashMap;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -130,5 +136,85 @@ class ProfileOAuthRegistrationsTest {
                     assertThat(provider.getJwkSetUri()).isEqualTo("http://localhost:9/jwks");
                     assertThat(provider.getIssuerUri()).isEqualTo("http://localhost:9");
                 });
+    }
+
+    @Test
+    void theRedirectUriIsBuiltFromTheConfiguredPublicBaseUrl() {
+        // TLS terminates at Cloudflare, so the app only ever sees http: without a public
+        // base URL the callback would be http and the provider would reject it.
+        runner.withPropertyValues(
+                        "flighttracker.oauth.google.client-id=google-id",
+                        "flighttracker.oauth.google.client-secret=google-secret",
+                        "flighttracker.oauth.github.client-id=github-id",
+                        "flighttracker.oauth.github.client-secret=github-secret",
+                        "flighttracker.profile.public-base-url=https://flight.pastabake.cloud")
+                .run(context -> {
+                    ClientRegistrationRepository registrations =
+                            context.getBean(ClientRegistrationRepository.class);
+                    assertThat(registrations.findByRegistrationId("google").getRedirectUri())
+                            .isEqualTo("https://flight.pastabake.cloud/login/oauth2/code/google");
+                    assertThat(registrations.findByRegistrationId("github").getRedirectUri())
+                            .isEqualTo("https://flight.pastabake.cloud/login/oauth2/code/github");
+                });
+    }
+
+    @Test
+    void theRedirectUriToleratesATrailingSlashOnTheBaseUrl() {
+        runner.withPropertyValues(
+                        "flighttracker.oauth.google.client-id=google-id",
+                        "flighttracker.oauth.google.client-secret=google-secret",
+                        "flighttracker.profile.public-base-url=https://flight.pastabake.cloud/")
+                .run(context -> assertThat(context.getBean(ClientRegistrationRepository.class)
+                        .findByRegistrationId("google").getRedirectUri())
+                        .isEqualTo("https://flight.pastabake.cloud/login/oauth2/code/google"));
+    }
+
+    @Test
+    void theRedirectUriFallsBackToSpringsPlaceholderWithNoPublicBaseUrl() {
+        runner.withPropertyValues(
+                        "flighttracker.oauth.google.client-id=google-id",
+                        "flighttracker.oauth.google.client-secret=google-secret",
+                        "flighttracker.profile.public-base-url=")
+                .run(context -> assertThat(context.getBean(ClientRegistrationRepository.class)
+                        .findByRegistrationId("google").getRedirectUri())
+                        .isEqualTo("{baseUrl}/login/oauth2/code/{registrationId}"));
+    }
+
+    @Test
+    void aWhitespaceOnlyCredentialLeavesTheProviderOff() {
+        // A whitespace-only value is what a person can paste into the env file by mistake.
+        // The old SpEL gate compared against '' — so it counted "   " as a credential,
+        // built an empty registration set and the context died with "registrations cannot
+        // be empty". The condition now evaluates the same isBlank predicate the assembly
+        // uses, so the provider is simply absent. A property source is used rather than
+        // withPropertyValues() so the whitespace survives verbatim.
+        runner.withInitializer((ApplicationContextInitializer<ConfigurableApplicationContext>) context -> {
+                    Map<String, Object> whitespace = new HashMap<>();
+                    whitespace.put("flighttracker.oauth.google.client-id", "   ");
+                    whitespace.put("flighttracker.oauth.google.client-secret", "test-secret");
+                    whitespace.put("flighttracker.oauth.github.client-id", "");
+                    whitespace.put("flighttracker.oauth.github.client-secret", "");
+                    context.getEnvironment().getPropertySources()
+                            .addFirst(new MapPropertySource("whitespace-credential", whitespace));
+                })
+                .run(context -> assertThat(context)
+                        .as("a whitespace-only client id is not a credential")
+                        .doesNotHaveBean(ClientRegistrationRepository.class));
+    }
+
+    @Test
+    void aSecretContainingAnApostropheDoesNotBreakTheGate() {
+        // The old @ConditionalOnExpression inlined the secret into a SpEL string literal,
+        // so a quote in it was a parse error that failed startup. The gate reads plain
+        // strings now and is not quote-sensitive.
+        runner.withPropertyValues(
+                        "flighttracker.oauth.google.client-id=an-id",
+                        "flighttracker.oauth.google.client-secret=ab'cd",
+                        "flighttracker.oauth.github.client-id=",
+                        "flighttracker.oauth.github.client-secret=")
+                .run(context -> assertThat(context.getBean(ClientRegistrationRepository.class)
+                        .findByRegistrationId("google"))
+                        .as("a quote in a secret is just a character")
+                        .isNotNull());
     }
 }

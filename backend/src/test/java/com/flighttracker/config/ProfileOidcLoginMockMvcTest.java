@@ -16,6 +16,7 @@ import org.springframework.security.oauth2.client.registration.ClientRegistratio
 import org.springframework.test.web.servlet.MockMvc;
 
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.oidcLogin;
+import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.startsWith;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
@@ -40,7 +41,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
                 "flighttracker.profile.enabled=true",
                 "server.servlet.session.cookie.secure=false",
                 "flighttracker.oauth.google.client-id=test-client-id",
-                "flighttracker.oauth.google.client-secret=test-client-secret"
+                "flighttracker.oauth.google.client-secret=test-client-secret",
+                "flighttracker.oauth.github.client-id=test-github-id",
+                "flighttracker.oauth.github.client-secret=test-github-secret",
+                "flighttracker.profile.public-base-url=https://flight.pastabake.cloud"
         })
 @AutoConfigureMockMvc
 class ProfileOidcLoginMockMvcTest {
@@ -89,5 +93,25 @@ class ProfileOidcLoginMockMvcTest {
                 .andExpect(status().is3xxRedirection())
                 .andExpect(header().string("Location",
                         startsWith("https://accounts.google.com/o/oauth2/v2/auth")));
+    }
+
+    @Test
+    void theGoogleAuthorizeRedirectCarriesTheHttpsCallbackUri() throws Exception {
+        // Behind Cloudflare the app only sees http, so the callback must come from the
+        // configured public base URL — an http redirect_uri is rejected by the provider.
+        mvc.perform(get("/oauth2/authorization/" + OAuthClientConfig.GOOGLE_REGISTRATION_ID))
+                .andExpect(status().is3xxRedirection())
+                .andExpect(header().string("Location",
+                        containsString("redirect_uri=https://flight.pastabake.cloud/login/oauth2/code/google")));
+    }
+
+    @Test
+    void theGithubAuthorizeRedirectCarriesTheHttpsCallbackUri() throws Exception {
+        mvc.perform(get("/oauth2/authorization/" + OAuthClientConfig.GITHUB_REGISTRATION_ID))
+                .andExpect(status().is3xxRedirection())
+                .andExpect(header().string("Location",
+                        startsWith("https://github.com/login/oauth/authorize")))
+                .andExpect(header().string("Location",
+                        containsString("redirect_uri=https://flight.pastabake.cloud/login/oauth2/code/github")));
     }
 }
