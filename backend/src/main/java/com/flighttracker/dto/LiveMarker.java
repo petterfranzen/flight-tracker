@@ -1,5 +1,7 @@
 package com.flighttracker.dto;
 
+import com.flighttracker.service.coverage.TrackState;
+
 import java.time.Instant;
 
 /**
@@ -29,4 +31,16 @@ public interface LiveMarker {
     double getLongitude();
     Double getHeadingDeg();
     boolean isOnGround();
+
+    /**
+     * Where the aircraft stands in the coverage-gap lifecycle, derived from
+     * the live row alone (on ground, or the estimator's gap state) — the
+     * same rule TrackStatus.from(LiveAircraft) applies without a provider
+     * confirmation. Carried on the bulk snapshot so the map can tell a
+     * silent, landed aircraft from live traffic for every plane it draws,
+     * not only the selected one (which still gets the full status, gate and
+     * confirmation included, from /{icao24}/status). Additive field: the
+     * WebSocket frame (LiveFrame) is deliberately unchanged.
+     */
+    TrackState getState();
 }

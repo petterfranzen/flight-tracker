@@ -36,6 +36,7 @@ import { isSmallScreen } from "./map/screen";
 import { pickInitialView } from "./map/initialView";
 import { getMockPlaneCount } from "./api/mockFleet";
 import { agedIds, findShadowedIds, isActiveTraffic, OVERLAP_MIN_ZOOM } from "./map/staleness";
+import { hiddenLandedIds } from "./map/landed";
 import { newerReport, notOlderReport, sameReport } from "./map/reportOrder";
 import { createRouteLayer, type RoutePoint } from "./map/route";
 import { lastContinuousRun, TRAIL_FALLBACK_WINDOW_MS } from "./map/trailWindow";
@@ -653,9 +654,17 @@ function boot(): void {
     // An aircraft with a newer one on top of it is a ghost: not drawn at all
     // (see map/staleness.ts). Only where 20 m is visible. A watched plane is
     // never a ghost.
+    // A plane that landed (or went quiet on the ground) and has not reported
+    // since is dropped: it is drawn at its last report, which for one that
+    // left coverage on the ground is the runway end, hours ago (see
+    // map/landed.ts). A plane a provider put at a gate is kept (its gate is
+    // known, and the gate display draws it there once selected), and a watched
+    // plane is kept regardless.
+    const hidden = hiddenLandedIds(inView, nowMs);
+    const shown = hidden.size > 0 ? inView.filter((p) => !hidden.has(p.icao24) || watchedIds.has(p.icao24)) : inView;
     const shadowStart = performance.now();
-    const shadowed = zoom >= OVERLAP_MIN_ZOOM ? findShadowedIds(inView) : null;
-    const candidates = shadowed && shadowed.size > 0 ? inView.filter((p) => !shadowed.has(p.icao24) || watchedIds.has(p.icao24)) : inView;
+    const shadowed = zoom >= OVERLAP_MIN_ZOOM ? findShadowedIds(shown) : null;
+    const candidates = shadowed && shadowed.size > 0 ? shown.filter((p) => !shadowed.has(p.icao24) || watchedIds.has(p.icao24)) : shown;
     perf.parts.shadowed += performance.now() - shadowStart;
 
     // Where two planes' icons would overlap, only the first discovered is

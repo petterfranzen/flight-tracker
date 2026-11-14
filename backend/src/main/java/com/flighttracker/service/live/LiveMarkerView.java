@@ -1,6 +1,7 @@
 package com.flighttracker.service.live;
 
 import com.flighttracker.dto.LiveMarker;
+import com.flighttracker.service.coverage.TrackState;
 
 import java.time.Instant;
 
@@ -22,9 +23,11 @@ final class LiveMarkerView implements LiveMarker {
     private final double longitude;
     private final Double headingDeg;
     private final boolean onGround;
+    private final TrackState state;
 
     LiveMarkerView(String icao24, String callsign, Instant observedAt,
-                   double latitude, double longitude, Double headingDeg, boolean onGround) {
+                   double latitude, double longitude, Double headingDeg, boolean onGround,
+                   TrackState state) {
         this.icao24 = icao24;
         this.callsign = callsign;
         this.observedAt = observedAt;
@@ -32,6 +35,7 @@ final class LiveMarkerView implements LiveMarker {
         this.longitude = longitude;
         this.headingDeg = headingDeg;
         this.onGround = onGround;
+        this.state = state;
     }
 
     @Override
@@ -54,4 +58,7 @@ final class LiveMarkerView implements LiveMarker {
 
     @Override
     public boolean isOnGround() { return onGround; }
+
+    @Override
+    public TrackState getState() { return state; }
 }

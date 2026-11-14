@@ -7,7 +7,10 @@ import com.flighttracker.dto.LiveOverview;
 import com.flighttracker.model.FlightPosition;
 import com.flighttracker.repository.Timestamps;
 import com.flighttracker.service.LiveVisibilityWindows;
+import com.flighttracker.service.confirmation.Confirmation;
+import com.flighttracker.service.confirmation.ConfirmationStore;
 import com.flighttracker.service.coverage.GapEstimate;
+import com.flighttracker.service.coverage.TrackState;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -70,10 +73,12 @@ public class LiveStateStore {
     private final AtomicLong idSequence = new AtomicLong();
     private final JdbcTemplate jdbcTemplate;
     private final Clock clock;
+    private final ConfirmationStore confirmationStore;
 
-    public LiveStateStore(JdbcTemplate jdbcTemplate, Clock clock) {
+    public LiveStateStore(JdbcTemplate jdbcTemplate, Clock clock, ConfirmationStore confirmationStore) {
         this.jdbcTemplate = jdbcTemplate;
         this.clock = clock;
+        this.confirmationStore = confirmationStore;
     }
 
     /**
@@ -281,6 +286,28 @@ public class LiveStateStore {
         return out;
     }
 
+    /**
+     * The aircraft's track state, the same mapping TrackStatus.from(LiveAircraft,
+     * confirmation) uses — a provider confirmation included, from the in-memory
+     * {@link ConfirmationStore} (one map lookup, no I/O). Cheap enough to stamp on
+     * every marker of the bulk snapshot.
+     *
+     * <p>The confirmed states are what the map's landed-display rule needs to see:
+     * an aircraft a provider has put at a gate is stamped {@code AT_GATE}, so the
+     * map keeps it on the map (its gate is known; the gate display draws it there
+     * once selected) even though its last report is old. Without that layer an
+     * on-ground aircraft reads {@code ON_GROUND}, which the rule hides.
+     */
+    private TrackState stateOf(LiveAircraft a) {
+        Optional<Confirmation> confirmation = confirmationStore.forAircraft(a);
+        if (confirmation.isPresent()) {
+            return confirmation.get().gateAt() != null ? TrackState.AT_GATE : TrackState.LANDED_CONFIRMED;
+        }
+        if (a.onGround()) return TrackState.ON_GROUND;
+        GapEstimate gap = a.gap();
+        return gap == null ? TrackState.LIVE : gap.state();
+    }
+
     private static boolean isLive(LiveAircraft a, Instant staleAirborneCutoff, Instant landedCutoff) {
         return (!a.onGround() && a.observedAt().isAfter(staleAirborneCutoff))
                 || (a.onGround() && a.landedSince() != null && a.landedSince().isAfter(landedCutoff));
@@ -304,7 +331,7 @@ public class LiveStateStore {
             if (!isLive(a, staleAirborneCutoff, landedCutoff)) continue;
             if (bounds != null && !bounds.contains(a.displayLatitude(), a.displayLongitude())) continue;
             out.add(new LiveMarkerView(a.icao24(), a.callsign(), a.observedAt(),
-                    a.displayLatitude(), a.displayLongitude(), a.headingDeg(), a.onGround()));
+                    a.displayLatitude(), a.displayLongitude(), a.headingDeg(), a.onGround(), stateOf(a)));
         }
         return out;
     }
@@ -437,7 +464,7 @@ public class LiveStateStore {
             if (planes.size() < maxPlanes && taken < perCell) {
                 perCellTaken.put(cell, taken + 1);
                 planes.add(new LiveMarkerView(a.icao24(), a.callsign(), a.observedAt(),
-                        a.displayLatitude(), a.displayLongitude(), a.headingDeg(), a.onGround()));
+                        a.displayLatitude(), a.displayLongitude(), a.headingDeg(), a.onGround(), stateOf(a)));
             } else {
                 rest.add(a);
             }
@@ -467,7 +494,7 @@ public class LiveStateStore {
             String cell = Math.floor(a.displayLatitude() / cellDeg) + "," + Math.floor(a.displayLongitude() / cellDeg);
             if (!taken.add(cell)) continue;
             planes.add(new LiveMarkerView(a.icao24(), a.callsign(), a.observedAt(),
-                    a.displayLatitude(), a.displayLongitude(), a.headingDeg(), a.onGround()));
+                    a.displayLatitude(), a.displayLongitude(), a.headingDeg(), a.onGround(), stateOf(a)));
         }
         return new LiveOverview(planes, List.of());
     }
