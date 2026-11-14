@@ -52,6 +52,65 @@ export function isRouteGap(a: RoutePoint, b: RoutePoint, maxSeconds = ROUTE_GAP_
   return distanceKm(a, b) > maxKm;
 }
 
+// Centripetal Catmull-Rom (alpha = 0.5). The uniform spline (alpha = 0)
+// overshoots and can loop back on itself where the reports are unevenly
+// spaced or the turn is sharp — exactly the hook at the end of a runway
+// exit, where a sparse report or two sits either side of a hard turn.
+// Centripetal parameterisation (Yuksel et al., "On the Parameterization of
+// Catmull-Rom Curves") has no cusps or self-intersections and stays closer to
+// the control points at a sharp turn, at the cost of the knots no longer
+// being the integer index.
+//
+// Parameterisation alone does not guarantee it stays inside the track: an
+// unevenly spaced 90° turn still bulges past the corner report. So each
+// smoothed point is also clamped to the bounding box of the four reports the
+// segment is built from — the trail can never hook outside where the plane
+// actually was. On a gentle trail nothing is clamped; only a hard turn is.
+const ROUTE_ALPHA = 0.5;
+// A zero-length knot step (two identical reports) would divide by zero; a
+// tiny floor keeps the parameterisation monotone instead.
+const KNOT_EPS = 1e-9;
+
+type Point = [number, number];
+
+function knotStep(a: Point, b: Point): number {
+  return Math.pow(Math.max(Math.hypot(b[0] - a[0], b[1] - a[1]), KNOT_EPS), ROUTE_ALPHA);
+}
+
+function lerpPoint(a: Point, b: Point, t: number): Point {
+  return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+}
+
+/** `p` clamped into the bounding box of `points` (no overshoot outside the reports). */
+function clampToBox(p: Point, points: Point[]): Point {
+  let latMin = Infinity;
+  let latMax = -Infinity;
+  let lonMin = Infinity;
+  let lonMax = -Infinity;
+  for (const [lat, lon] of points) {
+    latMin = Math.min(latMin, lat);
+    latMax = Math.max(latMax, lat);
+    lonMin = Math.min(lonMin, lon);
+    lonMax = Math.max(lonMax, lon);
+  }
+  return [Math.min(latMax, Math.max(latMin, p[0])), Math.min(lonMax, Math.max(lonMin, p[1]))];
+}
+
+/** The centripetal Catmull-Rom point at parameter t in [0,1] between p1 and p2, clamped to the four control points' box. */
+function catmullRomPoint(p0: Point, p1: Point, p2: Point, p3: Point, t: number): Point {
+  const t0 = 0;
+  const t1 = t0 + knotStep(p0, p1);
+  const t2 = t1 + knotStep(p1, p2);
+  const t3 = t2 + knotStep(p2, p3);
+  const tt = t1 + (t2 - t1) * t;
+  const a1 = lerpPoint(p0, p1, (tt - t0) / (t1 - t0));
+  const a2 = lerpPoint(p1, p2, (tt - t1) / (t2 - t1));
+  const a3 = lerpPoint(p2, p3, (tt - t2) / (t3 - t2));
+  const b1 = lerpPoint(a1, a2, (tt - t0) / (t2 - t0));
+  const b2 = lerpPoint(a2, a3, (tt - t1) / (t3 - t1));
+  return clampToBox(lerpPoint(b1, b2, (tt - t1) / (t2 - t1)), [p0, p1, p2, p3]);
+}
+
 /**
  * Catmull-Rom spline through `points`, passing exactly through every real
  * report — this is about rendering the straight-segment jaggedness between
@@ -59,24 +118,17 @@ export function isRouteGap(a: RoutePoint, b: RoutePoint, maxSeconds = ROUTE_GAP_
  * of the data itself. Falls back to the original points untouched below 3
  * of them, where a spline segment isn't well-defined anyway.
  */
-export function smoothRoute(points: [number, number][]): [number, number][] {
+export function smoothRoute(points: Point[]): Point[] {
   if (points.length < 3) return points;
   const at = (i: number) => points[Math.max(0, Math.min(points.length - 1, i))];
-  const result: [number, number][] = [];
+  const result: Point[] = [];
   for (let i = 0; i < points.length - 1; i++) {
-    const [lat0, lon0] = at(i - 1);
-    const [lat1, lon1] = at(i);
-    const [lat2, lon2] = at(i + 1);
-    const [lat3, lon3] = at(i + 2);
+    const p0 = at(i - 1);
+    const p1 = at(i);
+    const p2 = at(i + 1);
+    const p3 = at(i + 2);
     for (let s = 0; s < ROUTE_SPLINE_SEGMENTS; s++) {
-      const t = s / ROUTE_SPLINE_SEGMENTS;
-      const t2 = t * t;
-      const t3 = t2 * t;
-      const lat =
-        0.5 * (2 * lat1 + (-lat0 + lat2) * t + (2 * lat0 - 5 * lat1 + 4 * lat2 - lat3) * t2 + (-lat0 + 3 * lat1 - 3 * lat2 + lat3) * t3);
-      const lon =
-        0.5 * (2 * lon1 + (-lon0 + lon2) * t + (2 * lon0 - 5 * lon1 + 4 * lon2 - lon3) * t2 + (-lon0 + 3 * lon1 - 3 * lon2 + lon3) * t3);
-      result.push([lat, lon]);
+      result.push(catmullRomPoint(p0, p1, p2, p3, s / ROUTE_SPLINE_SEGMENTS));
     }
   }
   result.push(points[points.length - 1]);

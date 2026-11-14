@@ -62,6 +62,15 @@ export interface LiveMarker {
   headingDeg: number | null;
   /** Sent by the bulk /live response (LiveMarker.java); absent on markers built from older or partial sources. */
   onGround?: boolean;
+  /**
+   * Where the aircraft stands in the coverage-gap lifecycle, from the live
+   * snapshot (LiveMarker.java's state, derived from the live row: on ground,
+   * or the estimator's gap state). Lets the map apply the landed-display rule
+   * to every drawn plane, not only the selected one. Absent on markers built
+   * from partial sources (e.g. a WebSocket frame, whose wire format is
+   * unchanged) — map/landed.ts falls back to onGround there.
+   */
+  state?: TrackState;
 }
 
 /**

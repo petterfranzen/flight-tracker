@@ -108,7 +108,11 @@ const selectedPlane = async (page: Page) => (await renderedPlanes(page)).find((p
 /** The gate-placement harness, on ESSA: the plane is selected with its report at the runway end. */
 async function open(page: Page, opts: { lastReportMs: number; status: TrackStatus; holdStatus?: Promise<void> }) {
   await mockFlightApi(page);
-  const live = position(opts.lastReportMs);
+  // #180's landed-display rule hides an on-ground marker older than LANDED_HIDE_MS
+  // unless it carries `state` (map/landed.ts). Both tests here are the case the rule
+  // keeps: a provider has confirmed the gate, so the backend stamps AT_GATE
+  // (LiveStateStore.stateOf) and the marker stays drawn however old its last report.
+  const live = position(opts.lastReportMs, { state: "AT_GATE" });
   await page.route("**/api/flights/live*", (r) => r.fulfill({ json: [live] }));
   await page.route(`**/api/flights/${ICAO}/live*`, (r) => r.fulfill({ json: live }));
   await page.route(`**/api/flights/${ICAO}/history*`, (r) => r.fulfill({ json: [live] }));
@@ -181,7 +185,10 @@ test.describe("selecting a plane centres on the drawn point", () => {
   });
 
   test("no gate: a position tick moving the plane off screen does not pan the map", async ({ page }) => {
-    const last = Date.now() - HOUR;
+    // No gate, so nothing keeps an old marker drawn: this plane is on the ground and
+    // still reporting (a fresh report well inside LANDED_HIDE_MS), which is exactly the
+    // on-ground case #180's rule keeps — the counterpart to the AT_GATE tests above.
+    const last = Date.now() - 60_000;
     // ~6 km east of the view centre: outside the 390 px viewport at zoom 12 (its half
     // width is ~3.8 km), inside the margin the marker is still drawn in.
     const drift = { lat: RUNWAY_END.lat, lon: RUNWAY_END.lon + 0.11 };
