@@ -122,6 +122,31 @@ flighttracker:
   # Turn it on only after the OAuth client secrets live on the VM (§4, §7).
   profile:
     enabled: ${FLIGHTTRACKER_PROFILE_ENABLED:false}
+  # OAuth client registrations for optional social login (design: section9-hq #84,
+  # step 3a). Only the *names* are here, like every other credential in this file:
+  # the client id and secret come from the VM's /etc/flight-tracker/env
+  # (deploy/hetzner/env.example). A provider with no client id *and* secret is
+  # simply off — its registration is never built and its sign-in option never
+  # appears (design §4). The *-uri values default to the real provider endpoints
+  # and are overridable so the blackbox suite can point a registration at its
+  # local fake OIDC provider. The registrations themselves are assembled in
+  # config/OAuthClientConfig, deliberately not under
+  # spring.security.oauth2.client.registration.* (Boot refuses to start on an
+  # empty client-id, so an unset provider must be absent, not blank).
+  oauth:
+    google:
+      client-id: ${GOOGLE_CLIENT_ID:}
+      client-secret: ${GOOGLE_CLIENT_SECRET:}
+      authorization-uri: ${GOOGLE_AUTHORIZATION_URI:https://accounts.google.com/o/oauth2/v2/auth}
+      token-uri: ${GOOGLE_TOKEN_URI:https://oauth2.googleapis.com/token}
+      jwk-set-uri: ${GOOGLE_JWK_SET_URI:https://www.googleapis.com/oauth2/v3/certs}
+      issuer-uri: ${GOOGLE_ISSUER_URI:https://accounts.google.com}
+    github:
+      client-id: ${GITHUB_CLIENT_ID:}
+      client-secret: ${GITHUB_CLIENT_SECRET:}
+      authorization-uri: ${GITHUB_AUTHORIZATION_URI:https://github.com/login/oauth/authorize}
+      token-uri: ${GITHUB_TOKEN_URI:https://github.com/login/oauth/access_token}
+      user-info-uri: ${GITHUB_USER_INFO_URI:https://api.github.com/user}
   # Training data for a learned landing model (TrainingDataService): one row per
   # coverage gap near the ground or near a landing candidate, captured once the
   # gap has lasted capture-delay-seconds and labelled when the aircraft reports
