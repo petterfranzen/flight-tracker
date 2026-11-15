@@ -106,6 +106,25 @@ class ProfileOidcLoginMockMvcTest {
     }
 
     @Test
+    void forwardedHeadersDoNotChangeTheHttpsCallback() throws Exception {
+        // Cloudflare terminates TLS and forwards the request over plain http with the
+        // X-Forwarded-* headers set. The callback URI is built from
+        // flighttracker.profile.public-base-url, never from the request, so a spoofed or
+        // even a genuine "proto=http" header must not pull the redirect back to http (the
+        // provider would reject it) or move it to the forwarded host.
+        mvc.perform(get("/oauth2/authorization/" + OAuthClientConfig.GOOGLE_REGISTRATION_ID)
+                        .header("X-Forwarded-Proto", "http")
+                        .header("X-Forwarded-Host", "attacker.example")
+                        .header("X-Forwarded-Port", "80")
+                        .header("Forwarded", "proto=http;host=attacker.example"))
+                .andExpect(status().is3xxRedirection())
+                .andExpect(header().string("Location",
+                        startsWith("https://accounts.google.com/o/oauth2/v2/auth")))
+                .andExpect(header().string("Location",
+                        containsString("redirect_uri=https://flight.pastabake.cloud/login/oauth2/code/google")));
+    }
+
+    @Test
     void theGithubAuthorizeRedirectCarriesTheHttpsCallbackUri() throws Exception {
         mvc.perform(get("/oauth2/authorization/" + OAuthClientConfig.GITHUB_REGISTRATION_ID))
                 .andExpect(status().is3xxRedirection())
