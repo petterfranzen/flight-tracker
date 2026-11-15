@@ -2,6 +2,7 @@ package com.flighttracker.config;
 
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpStatus;
@@ -18,6 +19,8 @@ import org.springframework.security.oauth2.client.userinfo.OAuth2UserService;
 import org.springframework.security.oauth2.core.user.OAuth2User;
 import org.springframework.security.web.csrf.CookieCsrfTokenRepository;
 import org.springframework.security.web.firewall.DefaultHttpFirewall;
+
+import java.time.Clock;
 
 /**
  * The one thing optional social login changes in the request pipeline
@@ -61,8 +64,8 @@ import org.springframework.security.web.firewall.DefaultHttpFirewall;
  *       below. Set {@code loginPage}/{@code failureHandler} explicitly.</li>
  *   <li>No test drives a WebSocket handshake or an {@code Origin} rejection
  *       with the flag on.</li>
- *   <li>{@link #isProfileWrite} uses {@code startsWith("/api/profile")}, so a
- *       write to {@code /api/profileX} is token-checked too. Harmless, but use
+ *   <li>{@link #isCsrfProtectedWrite} uses {@code startsWith("/api/profile")}, so
+ *       a write to {@code /api/profileX} is token-checked too. Harmless, but use
  *       the same matcher as the authorize rule.</li>
  *   <li>Cross-PR: the service worker (#182) answers every same-origin
  *       navigation from its cached {@code index.html} except {@code /api} and
@@ -77,19 +80,28 @@ public class ProfileSecurityConfig {
     /** The only paths that require a session; everything else permits anonymous use. */
     static final String PROFILE_PATHS = "/api/profile/**";
 
-    /** The profile write API CSRF is scoped to; nothing else is ever token-checked. */
+    /** The profile write API CSRF is scoped to; nothing outside it and sign-out is ever token-checked. */
     static final String PROFILE_PREFIX = "/api/profile";
 
+    /** Sign-out (step 3b-1): a state-changing POST that must carry a token like a profile write. */
+    static final String LOGOUT_PATH = "/api/auth/logout";
+
     /**
-     * True only for a state-changing request the profile API owns. A safe method is
-     * never token-checked (so a GET /api/profile still reads), and no other path is
-     * touched, so CSRF on cannot 403 an endpoint that works today.
+     * True only for a state-changing request the feature owns: a profile write, or
+     * {@code POST /api/auth/logout}. A safe method is never token-checked (so a
+     * {@code GET /api/profile} still reads), and no other path is touched, so CSRF
+     * on cannot 403 an endpoint that works today (notably {@code POST /api/health},
+     * which must keep its 405 rather than become a 403).
      */
-    static boolean isProfileWrite(jakarta.servlet.http.HttpServletRequest request) {
+    static boolean isCsrfProtectedWrite(jakarta.servlet.http.HttpServletRequest request) {
         String method = request.getMethod();
         boolean unsafe = "POST".equals(method) || "PUT".equals(method)
                 || "DELETE".equals(method) || "PATCH".equals(method);
-        return unsafe && request.getRequestURI() != null && request.getRequestURI().startsWith(PROFILE_PREFIX);
+        if (!unsafe) {
+            return false;
+        }
+        String uri = request.getRequestURI();
+        return uri != null && (uri.startsWith(PROFILE_PREFIX) || LOGOUT_PATH.equals(uri));
     }
 
     @Bean
@@ -111,7 +123,7 @@ public class ProfileSecurityConfig {
                 .csrf(csrf -> csrf
                         .csrfTokenRepository(CookieCsrfTokenRepository.withHttpOnlyFalse())
                         .spa()
-                        .requireCsrfProtectionMatcher(ProfileSecurityConfig::isProfileWrite))
+                        .requireCsrfProtectionMatcher(ProfileSecurityConfig::isCsrfProtectedWrite))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(PROFILE_PATHS).authenticated()
                         .anyRequest().permitAll())
@@ -121,8 +133,9 @@ public class ProfileSecurityConfig {
                 // No login page and no redirect for the API: an anonymous profile read is a
                 // plain 401 (design §5, account enumeration).
                 .exceptionHandling(entry -> entry.authenticationEntryPoint(new HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED)))
-                // The API logout (POST /api/auth/logout) is a later step; don't add Spring's
-                // own GET /logout page in the meantime.
+                // Sign-out is the app's own POST /api/auth/logout (AuthController); Spring
+                // Security's LogoutFilter and its generated GET /logout page stay off, so no
+                // extra unauthenticated route appears.
                 .logout(AbstractHttpConfigurer::disable);
         // A provider is "off" when no registration exists for it (design §4/§7): with no
         // client-id and secret supplied there is no ClientRegistrationRepository bean, so
@@ -139,6 +152,26 @@ public class ProfileSecurityConfig {
             }
         }
         return http.build();
+    }
+
+    /**
+     * The absolute session cap (step 3b-1): a session older than
+     * {@link AbsoluteSessionFilter#ABSOLUTE_SESSION_CAP} is invalidated on the next
+     * request, whatever its idle time. Ordered ahead of Spring Security's own filter
+     * chain (registered at order {@code -100}) so an expired session cannot
+     * authenticate the request that discovers it. Only installed with the flag on;
+     * the {@link Clock} is taken from the context when present and from the system
+     * clock otherwise, so a minimal test context needs no clock bean.
+     */
+    @Bean
+    @ConditionalOnProperty(prefix = "flighttracker.profile", name = "enabled", havingValue = "true")
+    FilterRegistrationBean<AbsoluteSessionFilter> absoluteSessionFilter(ObjectProvider<Clock> clock) {
+        AbsoluteSessionFilter filter = new AbsoluteSessionFilter(
+                AbsoluteSessionFilter.ABSOLUTE_SESSION_CAP, clock.getIfAvailable(Clock::systemUTC));
+        FilterRegistrationBean<AbsoluteSessionFilter> registration = new FilterRegistrationBean<>(filter);
+        registration.addUrlPatterns("/*");
+        registration.setOrder(-110);
+        return registration;
     }
 
     @Bean

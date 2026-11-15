@@ -15,13 +15,18 @@ import org.springframework.security.oauth2.client.userinfo.OAuth2UserService;
 import org.springframework.security.oauth2.core.AuthorizationGrantType;
 import org.springframework.security.oauth2.core.ClientAuthenticationMethod;
 import org.springframework.security.oauth2.core.OAuth2AuthenticationException;
+import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.oauth2.core.user.DefaultOAuth2User;
 import org.springframework.security.oauth2.core.user.OAuth2User;
+import org.springframework.security.oauth2.core.user.OAuth2UserAuthority;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * The real Google and GitHub client registrations for optional social login
@@ -184,7 +189,27 @@ public class OAuthClientConfig {
                     .getProviderDetails().getUserInfoEndpoint().getUserNameAttributeName();
             Map<String, Object> idOnly = new HashMap<>();
             idOnly.put(idKey, user.getAttribute(idKey));
-            return new DefaultOAuth2User(user.getAuthorities(), idOnly, idKey);
+            return new DefaultOAuth2User(idOnlyAuthorities(user.getAuthorities(), idOnly), idOnly, idKey);
+        }
+
+        /**
+         * Rebuilds the delegate's authorities so none of them carries the provider's
+         * raw attribute map. {@code DefaultOAuth2UserService} adds an
+         * {@link OAuth2UserAuthority} holding the <em>full</em> GitHub attribute map
+         * (login, name, email), so keeping only the id in the user's own attributes is
+         * not enough on its own — the same values would still ride in the session
+         * inside that authority. Every {@code OAuth2UserAuthority} is rebuilt around
+         * the id-only map; anything else (the scope authorities) is passed through.
+         */
+        private static Set<GrantedAuthority> idOnlyAuthorities(
+                Collection<? extends GrantedAuthority> authorities, Map<String, Object> idOnly) {
+            Set<GrantedAuthority> mapped = new LinkedHashSet<>();
+            for (GrantedAuthority authority : authorities) {
+                mapped.add(authority instanceof OAuth2UserAuthority
+                        ? new OAuth2UserAuthority(idOnly)
+                        : authority);
+            }
+            return mapped;
         }
     }
 }
