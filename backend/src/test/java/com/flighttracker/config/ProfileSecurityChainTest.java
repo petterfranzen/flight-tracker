@@ -182,14 +182,9 @@ class ProfileSecurityChainTest {
                 .noneMatch(cookie -> cookie.startsWith("FT_SESSION="));
     }
 
-    @Test
-    void theFlagOnChainCarriesExactlyOneSetOfTheAppsHeaders() throws Exception {
-        // The app's own SecurityHeadersFilter is the one owner of the response headers.
-        // Spring Security's HeaderWriterFilter, left enabled, adds its own defaults on top
-        // of them (Cache-Control/Pragma/Expires, X-XSS-Protection, a second X-Frame-Options),
-        // so this pins that each app header appears exactly once and none of Spring's do.
-        var headers = send("GET", "/api/flights/live").headers();
-
+    /** The one set of app headers a flag-on response must carry, each exactly once. */
+    private static void assertOneSetOfAppHeaders(HttpResponse<?> response) {
+        var headers = response.headers();
         assertThat(headers.allValues("Content-Security-Policy")).hasSize(1);
         assertThat(headers.allValues("Content-Security-Policy").get(0)).contains(
                 "frame-ancestors 'none'", "script-src 'self'",
@@ -200,10 +195,71 @@ class ProfileSecurityChainTest {
         assertThat(headers.allValues("Referrer-Policy")).containsExactly("strict-origin-when-cross-origin");
         assertThat(headers.allValues("Permissions-Policy")).hasSize(1);
 
-        // Spring Security's own header set must be absent entirely.
-        assertThat(headers.allValues("Cache-Control")).as("Spring's Cache-Control").isEmpty();
+        // Spring Security's header writer stays off: none of its own headers appear.
         assertThat(headers.allValues("Pragma")).as("Spring's Pragma").isEmpty();
         assertThat(headers.allValues("X-XSS-Protection")).as("Spring's X-XSS-Protection").isEmpty();
+    }
+
+    @Test
+    void theFlagOnChainCarriesExactlyOneSetOfTheAppsHeaders() throws Exception {
+        // The app's own SecurityHeadersFilter is the one owner of the response headers.
+        // Spring Security's HeaderWriterFilter, left enabled, adds its own defaults on top
+        // of them (Cache-Control/Pragma/Expires, X-XSS-Protection, a second X-Frame-Options),
+        // so this pins that each app header appears exactly once and none of Spring's do.
+        HttpResponse<String> response = send("GET", "/api/flights/live");
+        assertOneSetOfAppHeaders(response);
+        // The map's data feed is not on the auth surface, so it must not become no-store.
+        assertThat(response.headers().allValues("Cache-Control"))
+                .as("a non-auth path stays cacheable").isEmpty();
+    }
+
+    @Test
+    void theResponsesTheChainWritesItselfCarryOneSetOfTheAppHeaders() throws Exception {
+        // The header filter is ordered ahead of the chain, so the responses the chain writes
+        // itself — not only a 200 that reaches MVC — carry the app headers, CSP included, once.
+        HttpResponse<String> unauthorized = send("GET", "/api/profile");
+        assertThat(unauthorized.statusCode()).isEqualTo(401);
+        assertOneSetOfAppHeaders(unauthorized);
+
+        HttpResponse<String> csrfForbidden = send("POST", "/api/profile");
+        assertThat(csrfForbidden.statusCode()).isEqualTo(403);
+        assertOneSetOfAppHeaders(csrfForbidden);
+
+        HttpResponse<String> authorize = send("GET", "/oauth2/authorization/google");
+        assertThat(authorize.statusCode()).isEqualTo(302);
+        assertOneSetOfAppHeaders(authorize);
+
+        HttpResponse<String> callback = send("GET", "/login/oauth2/code/google");
+        assertThat(callback.statusCode()).isIn(302, 303);
+        assertOneSetOfAppHeaders(callback);
+        // A failed login (no state) redirects to a RELATIVE /?error: the internal host/port
+        // must not reach a Location the browser follows (section9-hq #326, optional item).
+        assertThat(callback.headers().firstValue("Location"))
+                .as("a relative login-failure redirect").hasValue("/?error");
+
+        // The StrictHttpFirewall front-ends the chain, so its 400 is written before any chain
+        // filter runs: only a filter ordered ahead of the chain can cover it.
+        HttpResponse<String> rejected = send("GET", "//api/health");
+        assertThat(rejected.statusCode()).isEqualTo(400);
+        assertOneSetOfAppHeaders(rejected);
+    }
+
+    @Test
+    void theAuthSurfaceIsNoStore() throws Exception {
+        // Spring Security's header writer used to set Cache-Control: no-store on every
+        // response; with it disabled, the flag-on chain re-adds it — and this filter runs
+        // ahead of the chain, so the 401/403/302 the chain writes carry it too.
+        for (String path : new String[] {"/api/profile", "/oauth2/authorization/google",
+                "/login/oauth2/code/google"}) {
+            assertThat(send("GET", path).headers().allValues("Cache-Control"))
+                    .as("Cache-Control on %s", path).containsExactly("no-store");
+        }
+        // The sign-out POST is CSRF-protected (403 without a token) and still no-store.
+        HttpResponse<String> logout = send("POST", "/api/auth/logout");
+        assertThat(logout.statusCode()).isEqualTo(403);
+        assertThat(logout.headers().allValues("Cache-Control")).containsExactly("no-store");
+        // A path outside the auth surface must not become no-store.
+        assertThat(send("GET", "/api/health").headers().allValues("Cache-Control")).isEmpty();
     }
 
     @Test

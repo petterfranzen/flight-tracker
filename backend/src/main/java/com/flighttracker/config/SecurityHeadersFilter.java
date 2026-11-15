@@ -5,6 +5,7 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.Ordered;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
@@ -32,9 +33,33 @@ import java.io.IOException;
  * {@code FLIGHTTRACKER_CSP_REPORT_ONLY}) sends the policy as
  * {@code Content-Security-Policy-Report-Only} instead, as a roll-back that
  * needs no deploy of code.
+ *
+ * <p><b>Cache-Control on the auth surface (flag-on hardening, section9-hq
+ * #326)</b>: while optional social login is on
+ * ({@code flighttracker.profile.enabled=true}) the paths the feature owns —
+ * {@code /api/profile/**}, {@code /api/auth/**} and the two OAuth redirects
+ * ({@code /oauth2/authorization/*}, {@code /login/oauth2/code/*}) — are
+ * {@code no-store}, so no shared cache anywhere between the browser and the app
+ * holds a signed-in response or a redirect that carries a {@code state}. Spring
+ * Security's own header writer used to add this; the flag-on chain disables it
+ * so this filter is the one owner, and the value is set here so it lands on the
+ * 401/403/302 the chain itself writes (the filter runs ahead of the chain on the
+ * flag-on path). The flag-off path is untouched by design: it serves these
+ * paths' 503/404 exactly as before.
+ *
+ * <p><b>Ordering (section9-hq #326)</b>: {@link #ORDER} puts the filter ahead of
+ * Spring Security's chain (registered at {@code -100}), so the headers land on
+ * the responses the chain itself writes — the {@code 401}, the CSRF {@code 403},
+ * the two OAuth {@code 302}s, the StrictHttpFirewall {@code 400} and an
+ * unknown-registration {@code 500} — not only on the ones that reach MVC. With
+ * the flag off the chain writes nothing its container did not already write, so
+ * the served headers are identical.
  */
 @Component
-public class SecurityHeadersFilter extends OncePerRequestFilter {
+public class SecurityHeadersFilter extends OncePerRequestFilter implements Ordered {
+
+    /** Ahead of Spring Security's filter chain, which Boot registers at {@code -100}. */
+    public static final int ORDER = -110;
 
     static final String CSP = String.join("; ",
             "default-src 'self'",
@@ -51,12 +76,35 @@ public class SecurityHeadersFilter extends OncePerRequestFilter {
             "font-src 'self'");
 
     private final String cspHeader;
+    private final boolean noStoreOnAuthPaths;
 
     public SecurityHeadersFilter(
-            @Value("${flighttracker.security.csp-report-only:false}") boolean cspReportOnly) {
+            @Value("${flighttracker.security.csp-report-only:false}") boolean cspReportOnly,
+            @Value("${flighttracker.profile.enabled:false}") boolean profileEnabled) {
         this.cspHeader = cspReportOnly
                 ? "Content-Security-Policy-Report-Only"
                 : "Content-Security-Policy";
+        // Only the flag-on path gains no-store: the auth surface only exists then.
+        this.noStoreOnAuthPaths = profileEnabled;
+    }
+
+    /**
+     * The paths the optional-login feature owns, matched by prefix: the profile
+     * read/write API, the sign-out POST, and the two OAuth redirects the browser
+     * is sent through. Kept in step with {@code ProfileSecurityConfig}'s path
+     * constants by {@code ProfileSecurityChainTest}.
+     */
+    static boolean isNoStorePath(String uri) {
+        return uri != null
+                && (uri.startsWith("/api/profile")
+                        || uri.startsWith("/api/auth")
+                        || uri.startsWith("/oauth2/authorization/")
+                        || uri.startsWith("/login/oauth2/code/"));
+    }
+
+    @Override
+    public int getOrder() {
+        return ORDER;
     }
 
     @Override
@@ -69,6 +117,9 @@ public class SecurityHeadersFilter extends OncePerRequestFilter {
         // Legacy twin of frame-ancestors 'none'.
         response.setHeader("X-Frame-Options", "DENY");
         response.setHeader(cspHeader, CSP);
+        if (noStoreOnAuthPaths && isNoStorePath(request.getRequestURI())) {
+            response.setHeader("Cache-Control", "no-store");
+        }
         chain.doFilter(request, response);
     }
 }

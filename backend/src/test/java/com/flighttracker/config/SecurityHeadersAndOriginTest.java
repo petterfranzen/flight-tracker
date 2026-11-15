@@ -142,7 +142,7 @@ class SecurityHeadersAndOriginTest {
     @Test
     void reportOnlySwitchMovesTheCspHeader() throws Exception {
         MockHttpServletResponse response = new MockHttpServletResponse();
-        new SecurityHeadersFilter(true).doFilter(new MockHttpServletRequest("GET", "/"), response,
+        new SecurityHeadersFilter(true, false).doFilter(new MockHttpServletRequest("GET", "/"), response,
                 new MockFilterChain());
         assertThat(response.getHeader("Content-Security-Policy")).isNull();
         assertThat(response.getHeader("Content-Security-Policy-Report-Only")).isEqualTo(SecurityHeadersFilter.CSP);

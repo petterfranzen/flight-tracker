@@ -16,6 +16,7 @@ import org.springframework.security.oauth2.client.registration.ClientRegistratio
 import org.springframework.security.oauth2.client.userinfo.OAuth2UserRequest;
 import org.springframework.security.oauth2.client.userinfo.OAuth2UserService;
 import org.springframework.security.oauth2.core.user.OAuth2User;
+import org.springframework.security.web.authentication.SimpleUrlAuthenticationFailureHandler;
 import org.springframework.security.web.csrf.CookieCsrfTokenRepository;
 import org.springframework.security.web.firewall.DefaultHttpFirewall;
 import org.springframework.util.AntPathMatcher;
@@ -58,11 +59,28 @@ import java.util.List;
  *       owns every header (CSP included) exactly as it does with the flag off,
  *       and nothing adds a second {@code Cache-Control}, {@code Pragma},
  *       {@code X-XSS-Protection} or {@code X-Frame-Options} on top.</li>
+ *   <li>The header filter is ordered <em>ahead</em> of the chain
+ *       ({@link SecurityHeadersFilter#ORDER}, before Spring Security's
+ *       {@code -100}), so the responses the chain itself writes — the 401, the
+ *       CSRF 403, the {@code /oauth2/authorization/*} and
+ *       {@code /login/oauth2/code/*} 302s, the StrictHttpFirewall 400 and an
+ *       unknown-registration 500 — carry the app headers too.
+ *       {@link SecurityHeadersFilter} also re-adds {@code Cache-Control:
+ *       no-store} on the feature's own paths ({@code /api/profile/**},
+ *       {@code /api/auth/**}, the two OAuth redirects), the value Spring's header
+ *       writer used to supply. The ordering change is only observable with the
+ *       flag on: it covers responses the chain writes itself, and the flag-off
+ *       chain writes none that its container did not already write with the app
+ *       headers present.</li>
  *   <li>No generated {@code GET /login} page: {@code oauth2Login} is told the
  *       login page is {@link #LOGIN_PAGE} ({@code /}, the SPA, which offers
  *       sign-in itself), which stops Spring installing its default page and its
  *       {@code /login?error} redirect. An anonymous profile read is still a
  *       plain 401.</li>
+ *   <li>A failed login redirects to a <b>relative</b> {@code /?error} instead of
+ *       the default absolute {@code http://<Host>/?error}, so the internal
+ *       host/port does not reach a {@code Location} header the browser follows
+ *       (section9-hq #326, optional).</li>
  *   <li>The CSRF matcher is the authorize matcher: both rules are built from
  *       {@link #AUTHENTICATED_PATHS} and {@link #CSRF_PROTECTED_PATHS}, so a
  *       write to {@code /api/profileX} is no longer token-checked.</li>
@@ -180,19 +198,41 @@ public class ProfileSecurityConfig {
         // the login filter is simply not installed — no sign-in offered, not a broken app.
         if (registrations.getIfAvailable() != null) {
             OAuth2UserService<OAuth2UserRequest, OAuth2User> idOnly = oauth2UserService.getIfAvailable();
+            SimpleUrlAuthenticationFailureHandler loginFailure = loginFailureRedirect();
             if (idOnly != null) {
                 // GitHub is plain OAuth2 and its /user returns a login, a name, an avatar
                 // and an email even at no scope; keep only the account id (design §1.5).
                 // Google is OIDC and reads its id_token, so this never runs for it.
                 http.oauth2Login(oauth2 -> oauth2
                         .loginPage(LOGIN_PAGE)
+                        .failureHandler(loginFailure)
                         .userInfoEndpoint(userInfo -> userInfo.userService(idOnly)));
             } else {
                 // No user service supplied (a test context): still no generated login page.
-                http.oauth2Login(oauth2 -> oauth2.loginPage(LOGIN_PAGE));
+                http.oauth2Login(oauth2 -> oauth2
+                        .loginPage(LOGIN_PAGE)
+                        .failureHandler(loginFailure));
             }
         }
         return http.build();
+    }
+
+    /**
+     * A failed login (a callback with no {@code state}, a provider that refused the code)
+     * sends the browser back to the SPA's sign-in with {@code ?error}, as a <b>relative</b>
+     * {@code Location}. The default handler redirects to the absolute
+     * {@code http://<Host>/?error}, which leaks the internal host/port in a header the browser
+     * then follows; a root-relative {@code /?error} is all the SPA needs. The status is a plain
+     * {@code 302}, the same the default strategy writes.
+     */
+    private static SimpleUrlAuthenticationFailureHandler loginFailureRedirect() {
+        SimpleUrlAuthenticationFailureHandler failure =
+                new SimpleUrlAuthenticationFailureHandler(LOGIN_PAGE + "?error");
+        failure.setRedirectStrategy((request, response, url) -> {
+            response.setStatus(HttpStatus.FOUND.value());
+            response.setHeader(org.springframework.http.HttpHeaders.LOCATION, url);
+        });
+        return failure;
     }
 
     /**
