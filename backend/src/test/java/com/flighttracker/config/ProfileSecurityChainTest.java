@@ -8,7 +8,14 @@ import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
+import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.security.oauth2.client.registration.ClientRegistration;
+import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
+import org.springframework.security.oauth2.client.registration.InMemoryClientRegistrationRepository;
+import org.springframework.security.oauth2.core.AuthorizationGrantType;
+import org.springframework.security.oauth2.core.ClientAuthenticationMethod;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -57,8 +64,30 @@ class ProfileSecurityChainTest {
     @SpringBootConfiguration
     @EnableAutoConfiguration(exclude = DataSourceAutoConfiguration.class)
     @EnableConfigurationProperties(ProfileProperties.class)
-    @Import({ProfileSecurityConfig.class, ProfileController.class})
+    @Import({ProfileSecurityConfig.class, ProfileController.class, SecurityHeadersFilter.class})
     static class MinimalApp {
+
+        /**
+         * A registration is all {@code oauth2Login} needs to be installed, and it must be
+         * installed for the {@code /login} assertion below to mean anything: the generated
+         * login page only exists once {@code oauth2Login} is configured. The real provider
+         * registrations are pinned in {@link ProfileOAuthRegistrationsTest}; this one is a
+         * stand-in so the chain is exercised in its flag-on, login-enabled shape.
+         */
+        @Bean
+        ClientRegistrationRepository clientRegistrationRepository() {
+            ClientRegistration google = ClientRegistration.withRegistrationId("google")
+                    .clientId("test-client-id")
+                    .clientSecret("test-client-secret")
+                    .clientAuthenticationMethod(ClientAuthenticationMethod.CLIENT_SECRET_BASIC)
+                    .authorizationGrantType(AuthorizationGrantType.AUTHORIZATION_CODE)
+                    .redirectUri("https://flight.pastabake.cloud/login/oauth2/code/google")
+                    .scope("openid")
+                    .authorizationUri("https://accounts.google.com/o/oauth2/v2/auth")
+                    .tokenUri("https://oauth2.googleapis.com/token")
+                    .build();
+            return new InMemoryClientRegistrationRepository(google);
+        }
 
         /** Stand-ins for the real anonymous endpoints; only the paths matter here. */
         @RestController
@@ -151,5 +180,74 @@ class ProfileSecurityChainTest {
         assertThat(send("GET", "/api/flights/live").headers().allValues("Set-Cookie"))
                 .as("an anonymous read must not create a session")
                 .noneMatch(cookie -> cookie.startsWith("FT_SESSION="));
+    }
+
+    @Test
+    void theFlagOnChainCarriesExactlyOneSetOfTheAppsHeaders() throws Exception {
+        // The app's own SecurityHeadersFilter is the one owner of the response headers.
+        // Spring Security's HeaderWriterFilter, left enabled, adds its own defaults on top
+        // of them (Cache-Control/Pragma/Expires, X-XSS-Protection, a second X-Frame-Options),
+        // so this pins that each app header appears exactly once and none of Spring's do.
+        var headers = send("GET", "/api/flights/live").headers();
+
+        assertThat(headers.allValues("Content-Security-Policy")).hasSize(1);
+        assertThat(headers.allValues("Content-Security-Policy").get(0)).contains(
+                "frame-ancestors 'none'", "script-src 'self'",
+                "connect-src 'self' https://tiles.openfreemap.org",
+                "default-src 'self'");
+        assertThat(headers.allValues("X-Content-Type-Options")).containsExactly("nosniff");
+        assertThat(headers.allValues("X-Frame-Options")).containsExactly("DENY");
+        assertThat(headers.allValues("Referrer-Policy")).containsExactly("strict-origin-when-cross-origin");
+        assertThat(headers.allValues("Permissions-Policy")).hasSize(1);
+
+        // Spring Security's own header set must be absent entirely.
+        assertThat(headers.allValues("Cache-Control")).as("Spring's Cache-Control").isEmpty();
+        assertThat(headers.allValues("Pragma")).as("Spring's Pragma").isEmpty();
+        assertThat(headers.allValues("X-XSS-Protection")).as("Spring's X-XSS-Protection").isEmpty();
+    }
+
+    @Test
+    void thereIsNoGeneratedLoginPage() throws Exception {
+        // No server-rendered login page: the chain names the login page as the SPA root, and
+        // Spring's default login page generator must not answer /login (measured: this
+        // oauth2Login-only chain in Security 7.1 carries no DefaultLoginPageGeneratingFilter,
+        // so the explicit page is belt-and-braces against a framework or config change).
+        // /login therefore has no server-side handler at all: a 404 here, or a redirect to SPA.
+        HttpResponse<String> response = send("GET", "/login");
+        assertThat(response.statusCode())
+                .as("GET /login must not serve a generated page")
+                .isIn(301, 302, 303, 307, 308, 404);
+        assertThat(response.body()).doesNotContain("<form", "Sign in");
+        response.headers().firstValue("Location").ifPresent(location -> assertThat(location).isEqualTo("/"));
+    }
+
+    @Test
+    void theCsrfMatcherIsTheAuthorizeMatcherPlusSignOut() {
+        // One source of truth: the CSRF rule guards writes on exactly the paths the authorize
+        // rule protects, plus the sign-out POST — and nothing else.
+        assertThat(ProfileSecurityConfig.CSRF_PROTECTED_PATHS)
+                .containsAll(ProfileSecurityConfig.AUTHENTICATED_PATHS)
+                .contains(ProfileSecurityConfig.LOGOUT_PATH)
+                .hasSize(ProfileSecurityConfig.AUTHENTICATED_PATHS.size() + 1);
+
+        assertThat(csrfProtects("POST", "/api/profile")).as("the profile write API").isTrue();
+        assertThat(csrfProtects("POST", "/api/profile/favorites")).as("under the API").isTrue();
+        assertThat(csrfProtects("POST", "/api/auth/logout")).as("sign-out").isTrue();
+        // The old matcher was startsWith("/api/profile"), which token-checked this too.
+        assertThat(csrfProtects("POST", "/api/profileX")).as("outside the API pattern").isFalse();
+        assertThat(csrfProtects("GET", "/api/profile")).as("a safe read is never token-checked").isFalse();
+        assertThat(csrfProtects("POST", "/api/health")).as("POST /api/health keeps its 405").isFalse();
+        assertThat(csrfProtects("POST", "/api/agents/restart")).as("the existing anonymous POST").isFalse();
+    }
+
+    private static boolean csrfProtects(String method, String uri) {
+        return ProfileSecurityConfig.isCsrfProtectedWrite(new MockHttpServletRequest(method, uri));
+    }
+
+    @Test
+    void aWriteOutsideTheAuthorizePatternIsNotCsrf403() throws Exception {
+        // Behavioural twin of the matcher check above: before the fix this path matched the
+        // string prefix and was a 403; now CSRF does not touch it and it falls through to MVC.
+        assertThat(send("POST", "/api/profileX").statusCode()).isNotEqualTo(403);
     }
 }
