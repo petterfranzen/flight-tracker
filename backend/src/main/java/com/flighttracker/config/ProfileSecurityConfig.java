@@ -6,7 +6,6 @@ import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpStatus;
-import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.configuration.WebSecurityCustomizer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
@@ -17,10 +16,13 @@ import org.springframework.security.oauth2.client.registration.ClientRegistratio
 import org.springframework.security.oauth2.client.userinfo.OAuth2UserRequest;
 import org.springframework.security.oauth2.client.userinfo.OAuth2UserService;
 import org.springframework.security.oauth2.core.user.OAuth2User;
+import org.springframework.security.web.authentication.SimpleUrlAuthenticationFailureHandler;
 import org.springframework.security.web.csrf.CookieCsrfTokenRepository;
 import org.springframework.security.web.firewall.DefaultHttpFirewall;
+import org.springframework.util.AntPathMatcher;
 
 import java.time.Clock;
+import java.util.List;
 
 /**
  * The one thing optional social login changes in the request pipeline
@@ -48,25 +50,47 @@ import java.time.Clock;
  *       unchanged: no cookie, no 401, nothing.</li>
  * </ul>
  *
- * <p><b>TODO before the flag is ever turned on</b> (the reviewer's should-fix
- * list for the flag-on path; none of it is a defect while the flag is off):
+ * <p><b>Flag-on hardening (step 3b-2, section9-hq #324)</b> — the reviewer's
+ * should-fix list for the flag-on path, now applied:
  *
  * <ul>
- *   <li>Flag on, {@code .headers()} is left at Spring Security's defaults while
- *       the app's own {@link SecurityHeadersFilter} owns headers, so responses
- *       can get a second/duplicate {@code X-Frame-Options},
- *       {@code X-Content-Type-Options}, HSTS and {@code Cache-Control} set.
- *       Decide one owner and pin the response headers (CSP included) with the
- *       flag on.</li>
- *   <li>{@code oauth2Login(Customizer.withDefaults())} also installs Spring
- *       Security's generated {@code GET /login} page and {@code /login?error}
- *       redirect, which contradicts the "no login page, plain 401" comment
- *       below. Set {@code loginPage}/{@code failureHandler} explicitly.</li>
+ *   <li>One owner for the response headers: the flag-on chain disables Spring
+ *       Security's header writer, so the app's own {@link SecurityHeadersFilter}
+ *       owns every header (CSP included) exactly as it does with the flag off,
+ *       and nothing adds a second {@code Cache-Control}, {@code Pragma},
+ *       {@code X-XSS-Protection} or {@code X-Frame-Options} on top.</li>
+ *   <li>The header filter is ordered <em>ahead</em> of the chain
+ *       ({@link SecurityHeadersFilter#ORDER}, before Spring Security's
+ *       {@code -100}), so the responses the chain itself writes — the 401, the
+ *       CSRF 403, the {@code /oauth2/authorization/*} and
+ *       {@code /login/oauth2/code/*} 302s, the StrictHttpFirewall 400 and an
+ *       unknown-registration 500 — carry the app headers too.
+ *       {@link SecurityHeadersFilter} also re-adds {@code Cache-Control:
+ *       no-store} on the feature's own paths ({@code /api/profile/**},
+ *       {@code /api/auth/**}, the two OAuth redirects), the value Spring's header
+ *       writer used to supply. The ordering change is only observable with the
+ *       flag on: it covers responses the chain writes itself, and the flag-off
+ *       chain writes none that its container did not already write with the app
+ *       headers present.</li>
+ *   <li>No generated {@code GET /login} page: {@code oauth2Login} is told the
+ *       login page is {@link #LOGIN_PAGE} ({@code /}, the SPA, which offers
+ *       sign-in itself), which stops Spring installing its default page and its
+ *       {@code /login?error} redirect. An anonymous profile read is still a
+ *       plain 401.</li>
+ *   <li>A failed login redirects to a <b>relative</b> {@code /?error} instead of
+ *       the default absolute {@code http://<Host>/?error}, so the internal
+ *       host/port does not reach a {@code Location} header the browser follows
+ *       (section9-hq #326, optional).</li>
+ *   <li>The CSRF matcher is the authorize matcher: both rules are built from
+ *       {@link #AUTHENTICATED_PATHS} and {@link #CSRF_PROTECTED_PATHS}, so a
+ *       write to {@code /api/profileX} is no longer token-checked.</li>
+ * </ul>
+ *
+ * <p><b>Still open before the flag is enabled</b> (not part of this slice):
+ *
+ * <ul>
  *   <li>No test drives a WebSocket handshake or an {@code Origin} rejection
  *       with the flag on.</li>
- *   <li>{@link #isCsrfProtectedWrite} uses {@code startsWith("/api/profile")}, so
- *       a write to {@code /api/profileX} is token-checked too. Harmless, but use
- *       the same matcher as the authorize rule.</li>
  *   <li>Cross-PR: the service worker (#182) answers every same-origin
  *       navigation from its cached {@code index.html} except {@code /api} and
  *       {@code /ws}; {@code /oauth2/authorization/*} and
@@ -80,11 +104,35 @@ public class ProfileSecurityConfig {
     /** The only paths that require a session; everything else permits anonymous use. */
     static final String PROFILE_PATHS = "/api/profile/**";
 
-    /** The profile write API CSRF is scoped to; nothing outside it and sign-out is ever token-checked. */
-    static final String PROFILE_PREFIX = "/api/profile";
-
     /** Sign-out (step 3b-1): a state-changing POST that must carry a token like a profile write. */
     static final String LOGOUT_PATH = "/api/auth/logout";
+
+    /**
+     * The single source of truth for "requires a session": the set the authorize rule
+     * protects, and the set its tests read back, so the CSRF rule cannot silently drift
+     * from it. Adding a path here adds it to both rules.
+     */
+    static final List<String> AUTHENTICATED_PATHS = List.of(PROFILE_PATHS);
+
+    /**
+     * The paths CSRF guards a state-changing request on: exactly the authorize set, plus
+     * the sign-out POST (step 3b-1). Nothing else is ever token-checked, so CSRF on cannot
+     * 403 an endpoint that works today (notably {@code POST /api/health}, which keeps its
+     * 405 rather than becoming a 403).
+     */
+    static final List<String> CSRF_PROTECTED_PATHS = List.of(PROFILE_PATHS, LOGOUT_PATH);
+
+    /**
+     * The URL Spring Security is told the login page lives at. There is no server-rendered
+     * login page (design §5: account enumeration) — {@code /} is the SPA, which offers
+     * sign-in itself — and naming any URL here stops {@code oauth2Login} from installing
+     * its generated {@code GET /login} page. Unauthenticated API calls are the plain 401
+     * below, never a redirect.
+     */
+    static final String LOGIN_PAGE = "/";
+
+    /** Path-pattern semantics, the same the authorize rule's string patterns are matched with. */
+    private static final AntPathMatcher PATH_MATCHER = new AntPathMatcher();
 
     /**
      * True only for a state-changing request the feature owns: a profile write, or
@@ -101,7 +149,10 @@ public class ProfileSecurityConfig {
             return false;
         }
         String uri = request.getRequestURI();
-        return uri != null && (uri.startsWith(PROFILE_PREFIX) || LOGOUT_PATH.equals(uri));
+        // The same path patterns the authorize rule protects — a write to /api/profileX is
+        // no longer token-checked — plus the sign-out POST.
+        return uri != null && CSRF_PROTECTED_PATHS.stream()
+                .anyMatch(pattern -> PATH_MATCHER.match(pattern, uri));
     }
 
     @Bean
@@ -112,6 +163,11 @@ public class ProfileSecurityConfig {
             ObjectProvider<OAuth2UserService<OAuth2UserRequest, OAuth2User>> oauth2UserService)
             throws Exception {
         http
+                // One owner for the response headers: the app's own SecurityHeadersFilter.
+                // Spring Security's header writer would otherwise add its defaults on top
+                // of that (Cache-Control, Pragma, Expires, X-XSS-Protection, and a second
+                // X-Frame-Options), so the chain leaves every header to the app filter.
+                .headers(AbstractHttpConfigurer::disable)
                 // CSRF on, but SCOPED to the profile write API. A blanket CSRF config
                 // silently changes every other anonymous POST: the blackbox suite caught
                 // `POST /api/health` flipping from 405 (method not allowed) to 403, which
@@ -125,7 +181,7 @@ public class ProfileSecurityConfig {
                         .spa()
                         .requireCsrfProtectionMatcher(ProfileSecurityConfig::isCsrfProtectedWrite))
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers(PROFILE_PATHS).authenticated()
+                        .requestMatchers(AUTHENTICATED_PATHS.toArray(String[]::new)).authenticated()
                         .anyRequest().permitAll())
                 // A session is created only when the login flow (or a profile write) asks
                 // for one, so a map-only visit still sets no cookie at all.
@@ -142,16 +198,41 @@ public class ProfileSecurityConfig {
         // the login filter is simply not installed — no sign-in offered, not a broken app.
         if (registrations.getIfAvailable() != null) {
             OAuth2UserService<OAuth2UserRequest, OAuth2User> idOnly = oauth2UserService.getIfAvailable();
+            SimpleUrlAuthenticationFailureHandler loginFailure = loginFailureRedirect();
             if (idOnly != null) {
                 // GitHub is plain OAuth2 and its /user returns a login, a name, an avatar
                 // and an email even at no scope; keep only the account id (design §1.5).
                 // Google is OIDC and reads its id_token, so this never runs for it.
-                http.oauth2Login(oauth2 -> oauth2.userInfoEndpoint(userInfo -> userInfo.userService(idOnly)));
+                http.oauth2Login(oauth2 -> oauth2
+                        .loginPage(LOGIN_PAGE)
+                        .failureHandler(loginFailure)
+                        .userInfoEndpoint(userInfo -> userInfo.userService(idOnly)));
             } else {
-                http.oauth2Login(Customizer.withDefaults());
+                // No user service supplied (a test context): still no generated login page.
+                http.oauth2Login(oauth2 -> oauth2
+                        .loginPage(LOGIN_PAGE)
+                        .failureHandler(loginFailure));
             }
         }
         return http.build();
+    }
+
+    /**
+     * A failed login (a callback with no {@code state}, a provider that refused the code)
+     * sends the browser back to the SPA's sign-in with {@code ?error}, as a <b>relative</b>
+     * {@code Location}. The default handler redirects to the absolute
+     * {@code http://<Host>/?error}, which leaks the internal host/port in a header the browser
+     * then follows; a root-relative {@code /?error} is all the SPA needs. The status is a plain
+     * {@code 302}, the same the default strategy writes.
+     */
+    private static SimpleUrlAuthenticationFailureHandler loginFailureRedirect() {
+        SimpleUrlAuthenticationFailureHandler failure =
+                new SimpleUrlAuthenticationFailureHandler(LOGIN_PAGE + "?error");
+        failure.setRedirectStrategy((request, response, url) -> {
+            response.setStatus(HttpStatus.FOUND.value());
+            response.setHeader(org.springframework.http.HttpHeaders.LOCATION, url);
+        });
+        return failure;
     }
 
     /**
