@@ -15,6 +15,8 @@ Layout on the box:
 /etc/flight-tracker/env                  OPENSKY_CLIENT_ID/SECRET (root:flighttracker, 0640)
 /etc/systemd/system/flight-tracker.service
 /var/lib/flight-tracker/                 StateDirectory: flighttracker.db (+ -wal/-shm)
+/usr/local/sbin/cloudflared-patch.sh     patch rule: upgrade cloudflared only once its release is 24 h old
+/var/lib/flight-tracker-cloudflared/     StateDirectory: cloudflared-candidate (version + when it was first seen)
 ```
 
 All commands below assume you're SSHed in as `petter` (full sudo). The
@@ -141,28 +143,42 @@ What keeps the live box patched, and what doesn't:
 | What | How it's updated |
 |---|---|
 | Ubuntu packages, including the Java runtime | `unattended-upgrades`, nightly, from Ubuntu's security archives. |
-| **cloudflared** | `unattended-upgrades` too, but only with `/etc/apt/apt.conf.d/52unattended-upgrades-local`, because Cloudflare's apt repo is not on Ubuntu's default allowlist. A server built from `cloud-init.yaml` has it. The original VM needs the one-time step below. |
-| Restarts after an upgrade | `/usr/local/sbin/restart-if-upgraded` (an apt hook) restarts `cloudflared` or `flight-tracker` only when its binary changed after it started. Kernel and libc updates reboot at 04:30. |
+| **cloudflared** | `flight-tracker-cloudflared-patch.timer` runs `/usr/local/sbin/cloudflared-patch.sh` hourly, and it installs a Cloudflare release only once that release is 24 h old, so a bad release is caught before it reaches the box. `unattended-upgrades` is told to leave `cloudflared` alone (`/etc/apt/apt.conf.d/52unattended-upgrades-local` blacklists it), so the script is the only thing that upgrades the tunnel. A server built from `cloud-init.yaml` has all of it; the original VM needs the one-time step below. |
+| Restarts after an upgrade | `/usr/local/sbin/restart-if-upgraded` (an apt hook) restarts `cloudflared` or `flight-tracker` only when its binary changed after it started — this is what bounces the tunnel after `cloudflared-patch.sh` installs a release. Kernel and libc updates reboot at 04:30. |
 | The app's own dependencies (Maven, npm, GitHub Actions) | Dependabot opens grouped PRs (`.github/dependabot.yml`). CI tests them; merging deploys. |
 
-### One-time: patch cloudflared now and turn on its auto-updates (existing VM)
+### One-time: hold cloudflared to the 24 h patch rule (existing VM)
 
-`cloud-init.yaml` only runs when a server is created, so the VM that already exists needs these once. SSH in as `petter`, then:
+`cloud-init.yaml` only runs when a server is created, so the VM that already
+exists needs these once. SSH in as `petter` from a checkout of this repo, then:
 
 ```bash
-# 1. Patch cloudflared right now. Restarting it drops the tunnel for a few seconds.
-sudo apt-get update
-sudo apt-get install --only-upgrade -y cloudflared
-cloudflared --version
-sudo systemctl restart cloudflared
+# 1. Install the patch script and its systemd units (deploy/hetzner/).
+sudo install -m 0755 cloudflared-patch.sh /usr/local/sbin/cloudflared-patch.sh
+sudo install -m 0644 cloudflared-patch.service /etc/systemd/system/flight-tracker-cloudflared-patch.service
+sudo install -m 0644 cloudflared-patch.timer   /etc/systemd/system/flight-tracker-cloudflared-patch.timer
 
-# 2. Install the auto-update config and the restart hook from this repo
-#    (deploy/hetzner/unattended-upgrades-local.conf and restart-if-upgraded).
+# 2. Take cloudflared off unattended-upgrades and refresh the restart hook.
 sudo install -m 0644 unattended-upgrades-local.conf /etc/apt/apt.conf.d/52unattended-upgrades-local
 sudo install -m 0755 restart-if-upgraded /usr/local/sbin/restart-if-upgraded
 
-# 3. Check that cloudflared is now on the allowlist (it should appear in "Allowed origins").
-sudo unattended-upgrade --dry-run -d 2>&1 | grep -E "Allowed origins|cloudflared" | head -3
+# 3. Start the timer that enforces the hold.
+sudo systemctl daemon-reload
+sudo systemctl enable --now flight-tracker-cloudflared-patch.timer
+
+# 4. Check it: installed version, the candidate, and how long it has been held.
+sudo /usr/local/sbin/cloudflared-patch.sh --status
 ```
 
-To copy the two files over, run `scp` from a checkout, or paste their contents into `sudo tee`.
+The first run records whatever apt currently offers and upgrades nothing until
+that candidate is 24 h old, so the existing allowlist step (an
+`Unattended-Upgrade::Origins-Pattern` for Cloudflare's repo) is gone: with the
+origin removed and `cloudflared` blacklisted, the timer is the only thing that
+upgrades the tunnel. Nothing is restarted by hand — when the script does install
+a release, apt's `DPkg::Post-Invoke` hook (`restart-if-upgraded`) restarts
+`cloudflared` because its binary is newer than the running process.
+
+For a major CVE (CVSS 7+ or CISA KEV), lift the hold with
+`sudo /usr/local/sbin/cloudflared-patch.sh --now`, inside the 72 h bound.
+
+To copy the files over, run `scp` from a checkout, or paste their contents into `sudo tee`.

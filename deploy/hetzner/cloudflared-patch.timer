@@ -1,0 +1,9 @@
+[Unit]
+Description=Flight tracker patch rule: check cloudflared for an aged release, hourly
+
+[Timer]
+OnBootSec=15min
+OnUnitInactiveSec=1h
+
+[Install]
+WantedBy=timers.target
