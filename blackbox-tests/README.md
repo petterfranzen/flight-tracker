@@ -97,6 +97,27 @@ API, WebSocket and SPA on the same port either way.
   token, verifies the `id_token` with `node:crypto`, and checks that a defect
   mode and a tampered PKCE verifier are rejected. The provider is the JS twin
   of `backend/src/test/java/com/flighttracker/config/FakeOidcProvider.java`.
+- `social-login.test.js` — optional social login (`flighttracker.profile.enabled=true`)
+  over HTTP alone: the happy-path round trip through the fake provider, sign-out
+  (`POST /api/auth/logout` is a 403 without the CSRF token the SPA echoes back and
+  a 204 that clears the session with it), and every rejected login its own case
+  (tampered `state`, wrong nonce, issuer, audience, expired token, unknown signing
+  key) landing on the same relative `/?error` redirect with nobody signed in. It
+  also pins `POST /api/health` at 405 on the flag-on chain, so the scoped CSRF rule
+  cannot leak onto a route the feature does not own.
+
+## The social-login tests
+
+`social-login.test.js` never uses `BASE_URL`. It starts its **own** jar
+(`support/login-app.js`) with the profile flag on and its Google registration
+pointed at the suite's hermetic **fake OIDC provider** (`support/fake-oidc.js`),
+which mints `id_token`s with a throwaway keypair on loopback — no Google, no npm
+dependency, and the shared jar on 8080 is left alone. The fake's `mode` (and its
+request log) is reset between cases, and one jar is booted once for the whole
+file, so a run costs a single boot rather than one per case. It needs a jar of
+*this* tree — `$FT_JAR`, `dist/flight-tracker.jar` (what CI downloads) or
+`backend/target/flight-tracker.jar`; without one the file **skips with a reason**
+locally, and **fails on CI**, where a missing artifact is the bug.
 
 ## What this suite deliberately does not do
 
