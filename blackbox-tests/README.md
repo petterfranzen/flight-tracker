@@ -90,6 +90,13 @@ API, WebSocket and SPA on the same port either way.
   `FlightPosition` shape. Traffic is real and external (OpenSky), so this
   suite treats "no frame within the wait window" as inconclusive rather
   than a failure — see the comment in that file.
+- `fake-oidc.test.js` — the self-test for `support/fake-oidc.js`, the hermetic
+  fake OIDC provider the social-login black-box tests drive a real login
+  through. Unlike the rest of this folder it needs **no jar and no `BASE_URL`**:
+  it stands the provider up on loopback, walks discovery → JWKS → authorize →
+  token, verifies the `id_token` with `node:crypto`, and checks that a defect
+  mode and a tampered PKCE verifier are rejected. The provider is the JS twin
+  of `backend/src/test/java/com/flighttracker/config/FakeOidcProvider.java`.
 
 ## What this suite deliberately does not do
 
