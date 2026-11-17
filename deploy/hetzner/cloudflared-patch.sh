@@ -16,7 +16,7 @@
 #   cloudflared-patch.sh --status   print installed, candidate and age
 #
 # Exit: 0 = up to date, holding, or applied; 1 = apt could not be read or the
-# upgrade failed.
+# upgrade failed; 2 = bad usage.
 set -euo pipefail
 
 PKG=cloudflared
@@ -53,11 +53,18 @@ age_of_candidate() {
   [ -f "$STAMP" ] || return 0
   local ver at
   read -r ver at <"$STAMP" || true
-  [ "${ver:-}" = "$candidate" ] && [ -n "${at:-}" ] && echo "$(( now - at ))"
+  # A stamp for a version apt no longer offers is a superseded candidate, not
+  # an error. Returning non-zero here would, under `set -e`, kill the caller
+  # before it re-stamps the new candidate, so the hold would wedge forever.
+  if [ "${ver:-}" = "$candidate" ] && [ -n "${at:-}" ]; then
+    echo "$(( now - at ))"
+  fi
+  return 0
 }
 
 if [ "$candidate" = "${installed:-}" ]; then
-  [ "$status" = 1 ] || rm -f "$STAMP"
+  # Only a real run clears the stamp; --status and --dry-run change nothing.
+  if [ "$status" = 0 ] && [ "$dry" = 0 ]; then rm -f "$STAMP"; fi
   echo "cloudflared-patch: up to date ($installed)"
   exit 0
 fi
@@ -75,8 +82,11 @@ fi
 if [ "$force" = 0 ]; then
   age=$(age_of_candidate)
   if [ -z "${age:-}" ]; then
-    install -d -m 0755 "$STATE_DIR"
-    printf '%s %s\n' "$candidate" "$now" >"$STAMP"
+    # --dry-run only reports the action; it must not start the 24 h clock.
+    if [ "$dry" = 0 ]; then
+      install -d -m 0755 "$STATE_DIR"
+      printf '%s %s\n' "$candidate" "$now" >"$STAMP"
+    fi
     echo "cloudflared-patch: $candidate is new; holding it for $(( DELAY / 3600 )) h"
     exit 0
   fi

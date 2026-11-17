@@ -150,7 +150,11 @@ What keeps the live box patched, and what doesn't:
 ### One-time: hold cloudflared to the 24 h patch rule (existing VM)
 
 `cloud-init.yaml` only runs when a server is created, so the VM that already
-exists needs these once. SSH in as `petter` from a checkout of this repo, then:
+exists needs these once. From a checkout of this repo, in `deploy/hetzner/`,
+copy the four files this change adds to the box — `cloudflared-patch.sh`,
+`cloudflared-patch.service`, `cloudflared-patch.timer` and
+`unattended-upgrades-local.conf` — along with the `restart-if-upgraded` the
+block refreshes, then as `petter` on the box:
 
 ```bash
 # 1. Install the patch script and its systemd units (deploy/hetzner/).
