@@ -5,14 +5,9 @@ import { watchKey, watchedMatchesQuery, type WatchedFlight } from "../watchlist"
 import { h, clear } from "./h";
 import { activateModal, isPhone, type ModalHandle } from "./a11y";
 import { closeControlPanel, registerControlPanel, toggleControlPanel } from "./controlStack";
+import { SearchBox } from "./searchBox";
 import "../components/FlightSearch.css";
 import "../components/ControlPanel.css";
-
-const DEBOUNCE_MS = 250;
-
-function resultLabel(p: FlightPosition): string {
-  return p.callsign?.trim() || p.icao24.toUpperCase();
-}
 
 function searchIconSvg(): SVGElement {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -24,6 +19,44 @@ function searchIconSvg(): SVGElement {
   return svg;
 }
 
+/** A watched flight's schedule row says it is in the air, on a known aircraft. */
+function isAirborne(row: ScheduledFlight | null): boolean {
+  return !!(row?.airborne && row.icao24);
+}
+
+/** One chip of the compact watched list under the search box. */
+function watchedChip(w: WatchedFlight, airborne: boolean, onClick: () => void): HTMLElement {
+  return h(
+    "button",
+    {
+      type: "button",
+      className: `flight-search-chip${airborne ? " flight-search-chip--airborne" : ""}`,
+      title: airborne ? `Go to ${w.flightNumber}` : `${w.flightNumber} · not airborne yet`,
+      onClick,
+    },
+    h("span", { className: "flight-search-chip-dot", "aria-hidden": "true" }),
+    w.flightNumber,
+  );
+}
+
+/** A watched flight listed first in the results; `onClick` is only set while it is airborne. */
+function watchedRow(w: WatchedFlight, airborne: boolean, onClick: () => void): HTMLElement {
+  return h(
+    "li",
+    {
+      className: `flight-search-option flight-search-option--watched${airborne ? " flight-search-option--airborne" : ""}`,
+      role: "option",
+      "aria-selected": "false",
+      onMousedown: (e: MouseEvent) => e.preventDefault(),
+      onClick,
+    },
+    h("span", { className: "flight-search-callsign" }, w.flightNumber),
+    h("span", { className: "flight-search-watched-status" }, airborne ? `${w.label} · airborne` : `${w.label} · not airborne yet`),
+  );
+}
+
+const PANEL_MODAL_ATTRS: Record<string, string> = { role: "dialog", "aria-modal": "true", "aria-label": "Search flights" };
+
 /**
  * Two independent search modes sharing one component: the flight-number/
  * callsign box and, right under it, an airport box (both always visible).
@@ -34,37 +67,18 @@ function searchIconSvg(): SVGElement {
 export function mount(root: HTMLElement, store: AppStore): () => void {
   function choose(p: FlightPosition): void {
     store.get("selectAircraft")(p);
-    query = "";
-    results = [];
-    open = false;
-    activeIndex = -1;
-    airportQuery = "";
-    routeResults = [];
-    routeOpen = false;
-    routeActiveIndex = -1;
+    flightBox.reset();
+    airportBox.reset();
     closeControlPanel("search");
     input.value = "";
     airportInput.value = "";
     renderAll();
   }
 
-  // --- primary callsign search state ---
-  let query = "";
-  let results: FlightPosition[] = [];
-  let open = false;
-  let loading = false;
-  let activeIndex = -1;
-  let requestSeq = 0;
-  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-
-  // --- airport search state ---
-  let airportQuery = "";
-  let routeResults: FlightPosition[] = [];
-  let routeOpen = false;
-  let routeLoading = false;
-  let routeActiveIndex = -1;
-  let routeRequestSeq = 0;
-  let routeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  function onEscape(): void {
+    closeControlPanel("search");
+    renderAll();
+  }
 
   let mobilePanelOpen = false;
   // The phone overlay is modal: focus is trapped in it and returned to the FAB
@@ -79,155 +93,49 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     store.get("goToWatched")(w);
   }
 
-  function runQuery(): void {
-    if (debounceTimer) clearTimeout(debounceTimer);
-    const trimmed = query.trim();
-    if (trimmed.length === 0) {
-      requestSeq++;
-      results = [];
-      loading = false;
-      renderResults();
-      return;
-    }
-    const seq = ++requestSeq;
-    loading = true;
-    renderResults();
-    debounceTimer = setTimeout(() => {
-      searchFlights(trimmed)
-        .then((list) => {
-          if (seq !== requestSeq) return;
-          results = list;
-          activeIndex = list.length > 0 ? 0 : -1;
-        })
-        .catch(() => {
-          if (seq !== requestSeq) return;
-          results = [];
-          activeIndex = -1;
-        })
-        .finally(() => {
-          if (seq === requestSeq) loading = false;
-          renderResults();
-        });
-    }, DEBOUNCE_MS);
-  }
-
-  function runRouteQuery(): void {
-    if (routeDebounceTimer) clearTimeout(routeDebounceTimer);
-    const trimmed = airportQuery.trim();
-    if (trimmed.length === 0) {
-      routeRequestSeq++;
-      routeResults = [];
-      routeLoading = false;
-      renderRouteResults();
-      return;
-    }
-    const seq = ++routeRequestSeq;
-    routeLoading = true;
-    renderRouteResults();
-    routeDebounceTimer = setTimeout(() => {
-      searchFlightsByAirport(trimmed)
-        .then((list) => {
-          if (seq !== routeRequestSeq) return;
-          routeResults = list;
-          routeActiveIndex = list.length > 0 ? 0 : -1;
-        })
-        .catch(() => {
-          if (seq !== routeRequestSeq) return;
-          routeResults = [];
-          routeActiveIndex = -1;
-        })
-        .finally(() => {
-          if (seq === routeRequestSeq) routeLoading = false;
-          renderRouteResults();
-        });
-    }, DEBOUNCE_MS);
-  }
-
   // --- DOM ---
-  const resultsList = h("ul", { className: "flight-search-results", role: "listbox", id: "flight-search-listbox" });
-  const input = h("input", {
-    type: "text",
-    inputMode: "search",
-    className: "flight-search-input",
-    placeholder: "Search by flight number…",
-    role: "combobox",
-    "aria-controls": "flight-search-listbox",
-    "aria-autocomplete": "list",
-    "aria-label": "Search for a flight by number",
-  }) as HTMLInputElement;
-  input.addEventListener("input", () => {
-    query = input.value;
-    open = true;
-    runQuery();
-    renderResults();
+  // The primary flight-number/callsign box.
+  const flightBox = new SearchBox({
+    inputAttrs: {
+      type: "text",
+      inputMode: "search",
+      className: "flight-search-input",
+      placeholder: "Search by flight number…",
+      role: "combobox",
+      "aria-controls": "flight-search-listbox",
+      "aria-autocomplete": "list",
+      "aria-label": "Search for a flight by number",
+    },
+    listboxId: "flight-search-listbox",
+    optionIdPrefix: "flight-search-option",
+    search: searchFlights,
+    attach: (list) => panel.insertBefore(list, airportPanel),
+    onChoose: choose,
+    onEscape,
+    beforeRender: renderWatchedRows,
+    hasOtherMatches: () => !watchedList.hidden,
   });
-  input.addEventListener("focus", () => {
-    open = true;
-    renderResults();
-  });
-  input.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") {
-      closeControlPanel("search");
-      renderAll();
-      return;
-    }
-    if (!open || results.length === 0) return;
-    if (e.key === "ArrowDown") {
-      e.preventDefault();
-      activeIndex = (activeIndex + 1) % results.length;
-      renderResults();
-    } else if (e.key === "ArrowUp") {
-      e.preventDefault();
-      activeIndex = (activeIndex - 1 + results.length) % results.length;
-      renderResults();
-    } else if (e.key === "Enter") {
-      e.preventDefault();
-      const pick = results[activeIndex] ?? results[0];
-      if (pick) choose(pick);
-    }
-  });
+  const input = flightBox.input;
 
-  const routeResultsList = h("ul", { className: "flight-search-results", role: "listbox", id: "flight-search-route-listbox" });
-  const airportInput = h("input", {
-    type: "text",
-    className: "flight-search-input flight-search-airport-input",
-    placeholder: "Search by airport…",
-    role: "combobox",
-    "aria-controls": "flight-search-route-listbox",
-    "aria-autocomplete": "list",
-    "aria-label": "Search by origin or destination airport (name, IATA or ICAO code)",
-  }) as HTMLInputElement;
-  airportInput.addEventListener("input", () => {
-    airportQuery = airportInput.value;
-    routeOpen = true;
-    runRouteQuery();
-    renderRouteResults();
+  // The airport box.
+  const airportBox = new SearchBox({
+    inputAttrs: {
+      type: "text",
+      className: "flight-search-input flight-search-airport-input",
+      placeholder: "Search by airport…",
+      role: "combobox",
+      "aria-controls": "flight-search-route-listbox",
+      "aria-autocomplete": "list",
+      "aria-label": "Search by origin or destination airport (name, IATA or ICAO code)",
+    },
+    listboxId: "flight-search-route-listbox",
+    optionIdPrefix: "flight-search-route-option",
+    search: searchFlightsByAirport,
+    attach: (list) => airportPanel.appendChild(list),
+    onChoose: choose,
+    onEscape,
   });
-  airportInput.addEventListener("focus", () => {
-    routeOpen = true;
-    renderRouteResults();
-  });
-  airportInput.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") {
-      closeControlPanel("search");
-      renderAll();
-      return;
-    }
-    if (!routeOpen || routeResults.length === 0) return;
-    if (e.key === "ArrowDown") {
-      e.preventDefault();
-      routeActiveIndex = (routeActiveIndex + 1) % routeResults.length;
-      renderRouteResults();
-    } else if (e.key === "ArrowUp") {
-      e.preventDefault();
-      routeActiveIndex = (routeActiveIndex - 1 + routeResults.length) % routeResults.length;
-      renderRouteResults();
-    } else if (e.key === "Enter") {
-      e.preventDefault();
-      const pick = routeResults[routeActiveIndex] ?? routeResults[0];
-      if (pick) choose(pick);
-    }
-  });
+  const airportInput = airportBox.input;
 
   const airportPanel = h("div", { className: "flight-search-airport" }, airportInput);
 
@@ -255,50 +163,6 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
   const panel = h("div", { id: "flight-search-panel", className: "flight-search-panel control-panel" }, panelClose, eyebrow, input, chips, watchedList, airportPanel);
   const container = h("div", { className: "flight-search" }, fab, panel);
 
-  function setActiveRow(listEl: HTMLElement, activeIdx: number): void {
-    Array.from(listEl.children).forEach((child, i) => {
-      const isActive = i === activeIdx;
-      child.classList.toggle("flight-search-option--active", isActive);
-      child.setAttribute("aria-selected", String(isActive));
-    });
-  }
-
-  function resultRow(p: FlightPosition, i: number, active: boolean, idPrefix: string, onChoose: (p: FlightPosition) => void): HTMLElement {
-    const li = h(
-      "li",
-      {
-        id: `${idPrefix}-${i}`,
-        role: "option",
-        "aria-selected": String(active),
-        className: `flight-search-option${active ? " flight-search-option--active" : ""}`,
-        // Updates only the active/aria-selected state on the existing rows
-        // (no rebuild): a hover is exactly the moment Playwright's own
-        // click() sequence is mid-flight (it hovers before it clicks), and
-        // replacing the list's DOM nodes out from under a real, in-flight
-        // pointer sequence loses the click entirely — confirmed live (a
-        // synthetic in-page click always reached `choose`; a real
-        // Playwright `.click()` on this same element never did, until this
-        // handler stopped rebuilding the list on every hover).
-        onMouseenter: () => {
-          if (idPrefix === "flight-search-option") {
-            activeIndex = i;
-            setActiveRow(resultsList, i);
-            input.setAttribute("aria-activedescendant", `flight-search-option-${i}`);
-          } else {
-            routeActiveIndex = i;
-            setActiveRow(routeResultsList, i);
-            airportInput.setAttribute("aria-activedescendant", `flight-search-route-option-${i}`);
-          }
-        },
-        onMousedown: (e: MouseEvent) => e.preventDefault(),
-        onClick: () => onChoose(p),
-      },
-      h("span", { className: "flight-search-callsign" }, resultLabel(p)),
-      h("span", { className: "flight-search-icao" }, p.icao24.toUpperCase()),
-    );
-    return li;
-  }
-
   /** Watched flights matching the typed query, by IATA number (SK528) or ICAO callsign (SAS528). */
   function watchedMatches(q: string): { w: WatchedFlight; row: ScheduledFlight | null }[] {
     return watched
@@ -309,93 +173,36 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
   function renderWatchedChips(): void {
     clear(chips);
     for (const w of watched) {
-      const row = watchedStatus[watchKey(w)] ?? null;
-      const airborne = !!(row?.airborne && row.icao24);
-      chips.appendChild(
-        h(
-          "button",
-          {
-            type: "button",
-            className: `flight-search-chip${airborne ? " flight-search-chip--airborne" : ""}`,
-            title: airborne ? `Go to ${w.flightNumber}` : `${w.flightNumber} · not airborne yet`,
-            onClick: () => goToWatched(w),
-          },
-          h("span", { className: "flight-search-chip-dot", "aria-hidden": "true" }),
-          w.flightNumber,
-        ),
-      );
+      chips.appendChild(watchedChip(w, isAirborne(watchedStatus[watchKey(w)] ?? null), () => goToWatched(w)));
     }
     chips.hidden = watched.length === 0;
   }
 
   function renderWatchedRows(): void {
     clear(watchedList);
-    const q = query.trim();
-    const matches = open && q ? watchedMatches(q) : [];
+    const q = flightBox.query.trim();
+    const matches = flightBox.open && q ? watchedMatches(q) : [];
     for (const { w, row } of matches) {
-      const airborne = !!(row?.airborne && row.icao24);
+      const airborne = isAirborne(row);
       watchedList.appendChild(
-        h(
-          "li",
-          {
-            className: `flight-search-option flight-search-option--watched${airborne ? " flight-search-option--airborne" : ""}`,
-            role: "option",
-            "aria-selected": "false",
-            onMousedown: (e: MouseEvent) => e.preventDefault(),
-            onClick: () => {
-              if (airborne) goToWatched(w);
-            },
-          },
-          h("span", { className: "flight-search-callsign" }, w.flightNumber),
-          h("span", { className: "flight-search-watched-status" }, airborne ? `${w.label} · airborne` : `${w.label} · not airborne yet`),
-        ),
+        watchedRow(w, airborne, () => {
+          if (airborne) goToWatched(w);
+        }),
       );
     }
     watchedList.hidden = matches.length === 0;
   }
 
-  function renderResults(): void {
-    const showDropdown = open && query.trim().length > 0;
-    renderWatchedRows();
-    clear(resultsList);
-    if (showDropdown) {
-      if (!resultsList.parentElement) panel.insertBefore(resultsList, airportPanel);
-      // A watched match is a result too: don't say "none" when one is listed.
-      if (loading && results.length === 0) resultsList.append(h("li", { className: "flight-search-status", role: "status" }, "Searching…"));
-      else if (!loading && results.length === 0 && watchedList.hidden) resultsList.append(h("li", { className: "flight-search-status", role: "status" }, "No matching flights"));
-      results.forEach((p, i) => resultsList.append(resultRow(p, i, i === activeIndex, "flight-search-option", choose)));
-    } else if (resultsList.parentElement) {
-      resultsList.remove();
-    }
-    input.setAttribute("aria-expanded", String(showDropdown));
-    if (activeIndex >= 0 && showDropdown) input.setAttribute("aria-activedescendant", `flight-search-option-${activeIndex}`);
-    else input.removeAttribute("aria-activedescendant");
-  }
-
-  function renderRouteResults(): void {
-    const showDropdown = routeOpen && airportQuery.trim().length > 0;
-    clear(routeResultsList);
-    if (showDropdown) {
-      if (!routeResultsList.parentElement) airportPanel.appendChild(routeResultsList);
-      if (routeLoading && routeResults.length === 0) routeResultsList.append(h("li", { className: "flight-search-status", role: "status" }, "Searching…"));
-      else if (!routeLoading && routeResults.length === 0) routeResultsList.append(h("li", { className: "flight-search-status", role: "status" }, "No matching flights"));
-      routeResults.forEach((p, i) => routeResultsList.append(resultRow(p, i, i === routeActiveIndex, "flight-search-route-option", choose)));
-    } else if (routeResultsList.parentElement) {
-      routeResultsList.remove();
-    }
-    airportInput.setAttribute("aria-expanded", String(showDropdown));
-    if (routeActiveIndex >= 0 && showDropdown) airportInput.setAttribute("aria-activedescendant", `flight-search-route-option-${routeActiveIndex}`);
-    else airportInput.removeAttribute("aria-activedescendant");
+  function closeDropdowns(): void {
+    flightBox.open = false;
+    airportBox.open = false;
   }
 
   /** The one place the phone panel's open state is written: it must go through
    * the shared stack so another panel never stays open underneath. */
   function setOpen(next: boolean): void {
     mobilePanelOpen = next;
-    if (!next) {
-      open = false;
-      routeOpen = false;
-    }
+    if (!next) closeDropdowns();
     renderAll();
   }
 
@@ -415,16 +222,12 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     if (modal && !trap) {
       // A full-screen overlay is a modal dialog to assistive tech; on desktop
       // the same element is an inline dropdown and carries neither attribute.
-      panel.setAttribute("role", "dialog");
-      panel.setAttribute("aria-modal", "true");
-      panel.setAttribute("aria-label", "Search flights");
+      for (const [name, value] of Object.entries(PANEL_MODAL_ATTRS)) panel.setAttribute(name, value);
       trap = activateModal(panel, { onEscape: closeMobilePanel, returnTo: fab });
     } else if (!modal && trap) {
       trap.release();
       trap = null;
-      panel.removeAttribute("role");
-      panel.removeAttribute("aria-modal");
-      panel.removeAttribute("aria-label");
+      for (const name of Object.keys(PANEL_MODAL_ATTRS)) panel.removeAttribute(name);
     }
   }
 
@@ -433,11 +236,11 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     panel.classList.toggle("flight-search-panel--open", mobilePanelOpen);
     fab.setAttribute("aria-expanded", String(mobilePanelOpen));
     fab.setAttribute("aria-label", mobilePanelOpen ? "Close search" : "Search flights");
-    if (input.value !== query) input.value = query;
-    if (airportInput.value !== airportQuery) airportInput.value = airportQuery;
+    flightBox.syncInput();
+    airportBox.syncInput();
     renderWatchedChips();
-    renderResults();
-    renderRouteResults();
+    flightBox.render();
+    airportBox.render();
     syncModal();
   }
   renderAll();
@@ -450,9 +253,8 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
       closeControlPanel("search");
       return;
     }
-    if (open || routeOpen) {
-      open = false;
-      routeOpen = false;
+    if (flightBox.open || airportBox.open) {
+      closeDropdowns();
       renderAll();
     }
   }
@@ -477,8 +279,8 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     unregister();
     unsubscribeWatched();
     document.removeEventListener("pointerdown", handlePointerDown);
-    if (debounceTimer) clearTimeout(debounceTimer);
-    if (routeDebounceTimer) clearTimeout(routeDebounceTimer);
+    flightBox.dispose();
+    airportBox.dispose();
     trap?.release();
     trap = null;
     container.remove();

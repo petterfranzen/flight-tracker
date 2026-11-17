@@ -201,6 +201,85 @@ function feature(p: LiveMarker, properties: object): GeoJSON.Feature<GeoJSON.Poi
   return { type: "Feature", properties, geometry: { type: "Point", coordinates: [p.longitude, p.latitude] } };
 }
 
+type LatLon = { lat: number; lon: number };
+
+/** Everything that decides how an unselected plane is drawn: a change in it is a reason to re-send the source. */
+function drawKey(pos: LatLon, pr: PlaneProps): string {
+  return `${pos.lat},${pos.lon},${pr.rot},${pr.known},${pr.cs},${pr.dimmed},${pr.watched}`;
+}
+
+function selectedDrawKey(p: SelectedPosition | null): string {
+  return p ? `${p.icao24},${p.latitude},${p.longitude},${p.headingDeg},${displayCallsign(p)}` : "";
+}
+
+function sameMembers(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
+  return a.size === b.size && [...a].every((id) => b.has(id));
+}
+
+/**
+ * The planes to draw in the entering (fading) layer. A new batch replaces
+ * one still fading in (that one is shown in full); without a new batch the
+ * current one carries on. A dimmed plane has an opacity of its own, so it
+ * never fades.
+ */
+function nextEnteringSet(candidates: LiveMarker[], dimmed: ReadonlySet<string> | undefined): Set<string> {
+  const next = new Set<string>();
+  for (const p of candidates) {
+    if (!dimmed?.has(p.icao24)) next.add(p.icao24);
+  }
+  return next;
+}
+
+interface UnselectedFeatures {
+  features: GeoJSON.Feature[];
+  keys: Map<string, string>;
+  /** Some plane's draw key differs from `prevKeys`, or the number of planes does. */
+  changed: boolean;
+}
+
+/** The unselected source's features, each at the point `place` gives it, and whether they differ from what `prevKeys` drew. */
+function unselectedFeatures(
+  { unselected, dimmed, watched }: PlaneLayerUpdate,
+  entering: ReadonlySet<string>,
+  prevKeys: ReadonlyMap<string, string>,
+  place: (p: LiveMarker) => LatLon,
+): UnselectedFeatures {
+  const keys = new Map<string, string>();
+  const features: GeoJSON.Feature[] = [];
+  let changed = false;
+  for (const p of unselected) {
+    const pos = place(p);
+    const pr = props(p, dimmed?.has(p.icao24) ?? false, entering.has(p.icao24), watched?.has(p.icao24) ?? false);
+    const key = drawKey(pos, pr);
+    keys.set(p.icao24, key);
+    if (prevKeys.get(p.icao24) !== key) changed = true;
+    features.push(feature({ ...p, latitude: pos.lat, longitude: pos.lon }, pr));
+  }
+  return { features, keys, changed: changed || keys.size !== prevKeys.size };
+}
+
+/** Everything drawn, by icao24; the selected plane wins over an unselected one of the same id. */
+function drawnPlanes(unselected: LiveMarker[], selectedPos: SelectedPosition | null): Map<string, LiveMarker> {
+  const drawn = new Map<string, LiveMarker>();
+  for (const p of unselected) drawn.set(p.icao24, p);
+  if (selectedPos) drawn.set(selectedPos.icao24, selectedPos);
+  return drawn;
+}
+
+/** Forgets per-plane state of planes no longer drawn. */
+function dropUndrawn(state: { keys(): Iterable<string>; delete(id: string): boolean }, drawn: ReadonlyMap<string, unknown>): void {
+  for (const id of [...state.keys()]) {
+    if (!drawn.has(id)) state.delete(id);
+  }
+}
+
+function recordGlidePerf(ms: number): void {
+  perf.glide.calls++;
+  perf.glide.totalMs += ms;
+  perf.glide.lastMs = ms;
+  if (ms > perf.glide.maxMs) perf.glide.maxMs = ms;
+}
+
 /**
  * Draws the planes main.ts picks: unselected ones in one source (re-sent
  * with setData only when something drawn changed, never per frame), the
@@ -389,80 +468,83 @@ export function createPlaneLayer(map: FlightMap, onSelect: (p: LiveMarker) => vo
     setUnselected(unselectedData.map((f) => ((f.properties as PlaneProps).entering ? { ...f, properties: { ...f.properties, entering: false } } : f)));
   }
 
-  function update({ unselected, selectedPos, dimmed, watched }: PlaneLayerUpdate): void {
-    // Arrivals: not drawn last time (selected or not). A one-shot fade-in for
-    // a few aircraft appearing; a zoom or a fetch that replaces most of the
-    // view just appears.
+  /**
+   * Arrivals: not drawn last time (selected or not). A one-shot fade-in for
+   * a few aircraft appearing; a zoom or a fetch that replaces most of the
+   * view just appears. Returns the batch to fade in, or null for no fade.
+   */
+  function markArrivals(unselected: LiveMarker[]): LiveMarker[] | null {
     const arriving = unselected.filter((p) => !latest.has(p.icao24));
-    const fade = arriving.length > 0 && arriving.length <= MAX_FADE_IN_BATCH && !reducedMotion.matches;
+    const small = arriving.length > 0 && arriving.length <= MAX_FADE_IN_BATCH;
+    const fade = small && !reducedMotion.matches;
     for (const p of arriving) {
       if (fade) fadedIn.add(p.icao24);
       else fadedIn.delete(p.icao24);
     }
-    // A new batch replaces one still fading in (that one is shown in full).
-    // A dimmed plane has an opacity of its own, so it never fades.
-    const nextEntering = new Set<string>();
-    if (fade) stopFade();
-    for (const p of fade ? arriving : unselected) {
-      if ((fade || entering.has(p.icao24)) && !dimmed?.has(p.icao24)) nextEntering.add(p.icao24);
-    }
+    return fade ? arriving : null;
+  }
 
-    const nextKey = new Map<string, string>();
-    const features: GeoJSON.Feature[] = [];
+  /**
+   * Where a plane is drawn: its own report, or - with the glide on - a point
+   * along the track its last two reports imply (never behind the last one
+   * drawn). The fix is recorded here, on every update, so a report's move
+   * is picked up whichever source delivered it.
+   */
+  function place(p: LiveMarker, glideNow: number): LatLon {
+    const reported: LatLon = { lat: p.latitude, lon: p.longitude };
+    if (!glideEnabled) return reported;
+    const track = recordFix(glideTracks.get(p.icao24), p);
+    glideTracks.set(p.icao24, track);
+    const pos = glidedPoint(reported, track, glideNow, glideFloor.get(p.icao24) ?? null);
+    glideFloor.set(p.icao24, pos);
+    return pos;
+  }
+
+  /** Re-sends the unselected source only when a drawn plane or the entering set changed. */
+  function updateUnselected(params: PlaneLayerUpdate, nextEntering: Set<string>): void {
     const glideNow = glideEnabled ? Date.now() : 0;
-    let changed = nextEntering.size !== entering.size || [...nextEntering].some((id) => !entering.has(id));
-    for (const p of unselected) {
-      // Where it is drawn: its own report, or - with the glide on - a point
-      // along the track its last two reports imply (never behind the last one
-      // drawn). The fix is recorded here, on every update, so a report's move
-      // is picked up whichever source delivered it.
-      let pos: { lat: number; lon: number } = { lat: p.latitude, lon: p.longitude };
-      if (glideEnabled) {
-        const track = recordFix(glideTracks.get(p.icao24), p);
-        glideTracks.set(p.icao24, track);
-        pos = glidedPoint(pos, track, glideNow, glideFloor.get(p.icao24) ?? null);
-        glideFloor.set(p.icao24, pos);
-      }
-      const pr = props(p, dimmed?.has(p.icao24) ?? false, nextEntering.has(p.icao24), watched?.has(p.icao24) ?? false);
-      const key = `${pos.lat},${pos.lon},${pr.rot},${pr.known},${pr.cs},${pr.dimmed},${pr.watched}`;
-      nextKey.set(p.icao24, key);
-      if (unselectedKey.get(p.icao24) !== key) changed = true;
-      features.push(feature({ ...p, latitude: pos.lat, longitude: pos.lon }, pr));
-    }
-    if (nextKey.size !== unselectedKey.size) changed = true;
-    unselectedKey = nextKey;
+    const next = unselectedFeatures(params, nextEntering, unselectedKey, (p) => place(p, glideNow));
+    const changed = next.changed || !sameMembers(nextEntering, entering);
+    unselectedKey = next.keys;
     entering = nextEntering;
-    if (changed) setUnselected(features);
+    if (changed) setUnselected(next.features);
+  }
 
-    const sKey = selectedPos ? `${selectedPos.icao24},${selectedPos.latitude},${selectedPos.longitude},${selectedPos.headingDeg},${displayCallsign(selectedPos)}` : "";
-    if (sKey !== selectedKey) {
-      selectedKey = sKey;
-      selectedData = selectedPos ? [feature(selectedPos, props(selectedPos, false, false))] : [];
-      if (added) {
-        perf.setData.selected++;
-        (gl.getSource(SELECTED_SOURCE) as GeoJSONSource).setData({ type: "FeatureCollection", features: selectedData });
-      }
-    }
+  function updateSelected(selectedPos: SelectedPosition | null): void {
+    const sKey = selectedDrawKey(selectedPos);
+    if (sKey === selectedKey) return;
+    selectedKey = sKey;
+    selectedData = selectedPos ? [feature(selectedPos, props(selectedPos, false, false))] : [];
+    if (!added) return;
+    perf.setData.selected++;
+    (gl.getSource(SELECTED_SOURCE) as GeoJSONSource).setData({ type: "FeatureCollection", features: selectedData });
+  }
 
-    const drawn = new Map<string, LiveMarker>();
-    for (const p of unselected) drawn.set(p.icao24, p);
-    if (selectedPos) {
-      if (!latest.has(selectedPos.icao24)) fadedIn.delete(selectedPos.icao24);
-      drawn.set(selectedPos.icao24, selectedPos);
-    }
-    for (const id of fadedIn) if (!drawn.has(id)) fadedIn.delete(id);
+  /** Brings the per-plane bookkeeping (latest, fadedIn, drawnSince, the glide state) in step with what is now drawn. */
+  function rememberDrawn(unselected: LiveMarker[], selectedPos: SelectedPosition | null): void {
+    const drawn = drawnPlanes(unselected, selectedPos);
+    if (selectedPos && !latest.has(selectedPos.icao24)) fadedIn.delete(selectedPos.icao24);
+    dropUndrawn(fadedIn, drawn);
     const now = performance.now();
-    for (const id of drawn.keys()) if (!latest.has(id)) drawnSince.set(id, now);
-    for (const id of drawnSince.keys()) if (!drawn.has(id)) drawnSince.delete(id);
+    for (const id of drawn.keys()) {
+      if (!latest.has(id)) drawnSince.set(id, now);
+    }
+    dropUndrawn(drawnSince, drawn);
     latest.clear();
     for (const [id, p] of drawn) latest.set(id, p);
+    dropUndrawn(glideTracks, drawn);
+    dropUndrawn(glideFloor, drawn);
+  }
 
-    if (glideEnabled) {
-      for (const id of glideTracks.keys()) if (!drawn.has(id)) glideTracks.delete(id);
-      for (const id of glideFloor.keys()) if (!drawn.has(id)) glideFloor.delete(id);
-    }
-
-    if (fade && entering.size > 0) fadeIn();
+  function update(params: PlaneLayerUpdate): void {
+    const { unselected, selectedPos, dimmed } = params;
+    const fadeBatch = markArrivals(unselected);
+    if (fadeBatch) stopFade();
+    const nextEntering = nextEnteringSet(fadeBatch ?? unselected.filter((p) => entering.has(p.icao24)), dimmed);
+    updateUnselected(params, nextEntering);
+    updateSelected(selectedPos);
+    rememberDrawn(unselected, selectedPos);
+    if (fadeBatch && entering.size > 0) fadeIn();
     scheduleGlide();
   }
 
@@ -474,44 +556,44 @@ export function createPlaneLayer(map: FlightMap, onSelect: (p: LiveMarker) => vo
   // the next update, so an idle map (no reports, nothing gliding) costs
   // nothing.
   function scheduleGlide(): void {
-    if (!glideEnabled || glideTimer != null || glideTracks.size === 0) return;
+    const nothingToGlide = !glideEnabled || glideTracks.size === 0;
+    if (nothingToGlide || glideTimer != null) return;
     glideTimer = setTimeout(glideTick, GLIDE_TICK_MS);
+  }
+
+  /** The feature moved along its track to `now`, or the same object when it has not moved. */
+  function glidedFeature(f: GeoJSON.Feature, now: number): GeoJSON.Feature {
+    const id = (f.properties as PlaneProps).id;
+    const track = glideTracks.get(id);
+    if (!track) return f;
+    const [lon, lat] = (f.geometry as GeoJSON.Point).coordinates;
+    const pos = glidedPoint({ lat, lon }, track, now, glideFloor.get(id) ?? null);
+    if (pos.lat === lat && pos.lon === lon) return f;
+    glideFloor.set(id, pos);
+    return { ...f, geometry: { type: "Point", coordinates: [pos.lon, pos.lat] } };
+  }
+
+  /** Anything still inside its clamp window keeps the ticker alive. */
+  function glidePendingAt(now: number): boolean {
+    for (const track of glideTracks.values()) {
+      if (glidePending(track, now)) return true;
+    }
+    return false;
   }
 
   function glideTick(): void {
     glideTimer = null;
-    if (!glideEnabled || destroyed || !added) return;
+    const stopped = destroyed || !added;
+    if (!glideEnabled || stopped) return;
     const now = Date.now();
     const t0 = performance.now();
-    let changed = false;
-    const next = unselectedData.map((f): GeoJSON.Feature => {
-      const id = (f.properties as PlaneProps).id;
-      const track = glideTracks.get(id);
-      if (!track) return f;
-      const [lon, lat] = (f.geometry as GeoJSON.Point).coordinates;
-      const pos = glidedPoint({ lat, lon }, track, now, glideFloor.get(id) ?? null);
-      if (pos.lat === lat && pos.lon === lon) return f;
-      changed = true;
-      glideFloor.set(id, pos);
-      return { ...f, geometry: { type: "Point", coordinates: [pos.lon, pos.lat] } };
-    });
-    if (changed) {
-      const ms = performance.now() - t0;
-      perf.glide.calls++;
-      perf.glide.totalMs += ms;
-      perf.glide.lastMs = ms;
-      if (ms > perf.glide.maxMs) perf.glide.maxMs = ms;
+    const next = unselectedData.map((f) => glidedFeature(f, now));
+    const ms = performance.now() - t0;
+    if (next.some((f, i) => f !== unselectedData[i])) {
+      recordGlidePerf(ms);
       setUnselected(next);
     }
-    // Anything still inside its clamp window keeps the ticker alive.
-    let pending = false;
-    for (const track of glideTracks.values()) {
-      if (glidePending(track, now)) {
-        pending = true;
-        break;
-      }
-    }
-    if (pending) scheduleGlide();
+    if (glidePendingAt(now)) scheduleGlide();
   }
 
   // ---- hit testing and the test hook ----
