@@ -1,12 +1,9 @@
 package com.flighttracker.service.confirmation;
 
-import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.ObjectMapper;
 import com.flighttracker.observability.PhaseLogger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
@@ -24,16 +21,13 @@ import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
-import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
-import java.util.regex.Matcher;
+import java.util.Set;
 import java.util.regex.Pattern;
 
 /**
@@ -100,14 +94,17 @@ public class AeroDataBoxArrivalProvider implements ArrivalConfirmationProvider {
     static final Duration DEFAULT_NOT_FOUND_RECHECK = Duration.ofHours(3);
 
     private static final Pattern SAFE_PARAM = Pattern.compile("[A-Za-z0-9]+");
-    private static final Pattern TIME = Pattern.compile(
-            "(\\d{4}-\\d{2}-\\d{2})[ T](\\d{2}:\\d{2}(?::\\d{2}(?:\\.\\d+)?)?)\\s*(Z|z|[+-]\\d{2}(?::?\\d{2})?)?");
+    private static final List<Class<? extends Throwable>> NEVER_SENT =
+            List.of(ConnectException.class, UnknownHostException.class, NoRouteToHostException.class);
+    private static final Set<Integer> NO_SUCH_FLIGHT = Set.of(400, 404, 422);
 
     /** One HTTP exchange, read out before the connection closes. */
     private record Http(int status, String retryAfter, String body) { }
 
+    /** One lookup: the query and the search parameter its callsign became. */
+    private record Request(ArrivalQuery query, String param) { }
+
     private final RestClient client;
-    private final ObjectMapper mapper = new ObjectMapper();
     private final Clock clock;
     private final PhaseLogger phases;
     private final boolean flag;
@@ -123,44 +120,29 @@ public class AeroDataBoxArrivalProvider implements ArrivalConfirmationProvider {
     private volatile Instant lockedUntil = Instant.EPOCH;
 
     @Autowired
-    public AeroDataBoxArrivalProvider(Clock clock,
-                                      PhaseLogger phases,
-                                      @Value("${flighttracker.confirmation.aerodatabox.enabled:true}") boolean enabled,
-                                      @Value("${flighttracker.confirmation.aerodatabox.api-key:}") String apiKey,
-                                      @Value("${flighttracker.confirmation.aerodatabox.base-url:https://aerodatabox.p.rapidapi.com}") String baseUrl,
-                                      @Value("${flighttracker.confirmation.aerodatabox.host:aerodatabox.p.rapidapi.com}") String host,
-                                      @Value("${flighttracker.confirmation.aerodatabox.search-by:Number}") String searchBy,
-                                      @Value("${flighttracker.confirmation.aerodatabox.record-training-labels:false}") boolean recordTrainingLabels,
-                                      @Value("${flighttracker.confirmation.aerodatabox.found-recheck-minutes:30}") long foundRecheckMinutes,
-                                      @Value("${flighttracker.confirmation.aerodatabox.not-found-recheck-minutes:180}") long notFoundRecheckMinutes,
-                                      @Value("${flighttracker.confirmation.aerodatabox.gate-wait-minutes:0}") long gateWaitMinutes) {
-        this(clock, phases, enabled, apiKey, baseUrl, host, searchBy, recordTrainingLabels,
-                Duration.ofMinutes(foundRecheckMinutes), Duration.ofMinutes(notFoundRecheckMinutes),
-                Duration.ofMinutes(gateWaitMinutes), defaultBuilder());
+    public AeroDataBoxArrivalProvider(Clock clock, PhaseLogger phases, AeroDataBoxSettings settings) {
+        this(clock, phases, settings, defaultBuilder());
     }
 
     /** For tests: a builder that may already be bound to a mock server, and the default recheck intervals. */
     AeroDataBoxArrivalProvider(Clock clock, PhaseLogger phases, boolean enabled, String apiKey, String baseUrl,
                                String host, String searchBy, boolean recordTrainingLabels, RestClient.Builder builder) {
-        this(clock, phases, enabled, apiKey, baseUrl, host, searchBy, recordTrainingLabels,
-                DEFAULT_FOUND_RECHECK, DEFAULT_NOT_FOUND_RECHECK, Duration.ZERO, builder);
+        this(clock, phases, new AeroDataBoxSettings(enabled, apiKey, baseUrl, host, searchBy, recordTrainingLabels,
+                DEFAULT_FOUND_RECHECK.toMinutes(), DEFAULT_NOT_FOUND_RECHECK.toMinutes(), 0), builder);
     }
 
-    AeroDataBoxArrivalProvider(Clock clock, PhaseLogger phases, boolean enabled, String apiKey, String baseUrl,
-                               String host, String searchBy, boolean recordTrainingLabels,
-                               Duration foundRecheck, Duration notFoundRecheck, Duration gateWait,
-                               RestClient.Builder builder) {
+    AeroDataBoxArrivalProvider(Clock clock, PhaseLogger phases, AeroDataBoxSettings settings, RestClient.Builder builder) {
         this.clock = clock;
         this.phases = phases;
-        this.flag = enabled;
-        this.apiKey = apiKey == null ? "" : apiKey.trim();
-        this.host = host;
-        this.searchBy = normalizeSearchBy(searchBy);
-        this.recordTrainingLabels = recordTrainingLabels;
-        this.foundRecheck = foundRecheck;
-        this.notFoundRecheck = notFoundRecheck;
-        this.gateWait = gateWait;
-        this.client = builder.baseUrl(baseUrl).build();
+        this.flag = settings.enabled();
+        this.apiKey = settings.apiKey() == null ? "" : settings.apiKey().trim();
+        this.host = settings.host();
+        this.searchBy = settings.searchByOrDefault();
+        this.recordTrainingLabels = settings.recordTrainingLabels();
+        this.foundRecheck = settings.foundRecheck();
+        this.notFoundRecheck = settings.notFoundRecheck();
+        this.gateWait = settings.gateWait();
+        this.client = builder.baseUrl(settings.baseUrl()).build();
         if (flag && this.apiKey.isEmpty()) {
             log.info("AeroDataBox arrival confirmation is disabled: no AERODATABOX_API_KEY configured");
         }
@@ -171,12 +153,6 @@ public class AeroDataBoxArrivalProvider implements ArrivalConfirmationProvider {
         requestFactory.setConnectTimeout(5_000);
         requestFactory.setReadTimeout(10_000);
         return RestClient.builder().requestFactory(requestFactory);
-    }
-
-    /** {@code Number} or {@code CallSign}; anything else (a typo) falls back to {@code Number}. */
-    private static String normalizeSearchBy(String value) {
-        if (value != null && value.trim().equalsIgnoreCase("CallSign")) return "CallSign";
-        return "Number";
     }
 
     @Override
@@ -199,7 +175,7 @@ public class AeroDataBoxArrivalProvider implements ArrivalConfirmationProvider {
     /** The key is present and accepted, and the callsign can be sent as a search parameter. */
     @Override
     public boolean accepts(ArrivalQuery query) {
-        return enabled() && searchParam(query.callsign()) != null;
+        return enabled() && searchParam(query) != null;
     }
 
     /** The gate time rarely moves quickly and a lookup costs two units of a small quota. */
@@ -235,12 +211,13 @@ public class AeroDataBoxArrivalProvider implements ArrivalConfirmationProvider {
     @Override
     public LookupResult lookup(ArrivalQuery query) {
         if (!enabled()) return LookupResult.failed();
-        String param = searchParam(query.callsign());
+        String param = searchParam(query);
         if (param == null) return LookupResult.notFound();
+        Request request = new Request(query, param);
 
         Http http;
         try {
-            http = get(param);
+            http = get(request);
         } catch (RuntimeException e) {
             // Timeouts, DNS, resets: a connection that never produced an answer.
             log.debug("AeroDataBox {} failed: {}", param, e.toString());
@@ -248,30 +225,42 @@ public class AeroDataBoxArrivalProvider implements ArrivalConfirmationProvider {
             // A refused or unresolvable connection never reached the API, so it used no quota.
             return neverSent(e) ? LookupResult.failed().withCost(0) : LookupResult.failed();
         }
-        return interpret(http, query, param);
+        return interpret(http, request);
     }
 
     /** True when the cause chain says the request was never sent: no route, refused, unresolvable or a connect timeout. */
     static boolean neverSent(Throwable e) {
-        for (Throwable t = e; t != null; t = t.getCause() == t ? null : t.getCause()) {
-            if (t instanceof ConnectException || t instanceof UnknownHostException || t instanceof NoRouteToHostException) return true;
-            if (t instanceof SocketTimeoutException && t.getMessage() != null
-                    && t.getMessage().toLowerCase(Locale.ROOT).startsWith("connect")) return true;
+        for (Throwable t = e; t != null; t = nextCause(t)) {
+            if (isConnectFailure(t)) return true;
         }
         return false;
     }
 
-    /** The callsign trimmed, spaces removed, upper case; null when it is empty, has odd characters or is too long. */
-    static String searchParam(String callsign) {
-        if (callsign == null) return null;
-        String s = callsign.replaceAll("\\s+", "").toUpperCase(Locale.ROOT);
-        if (s.isEmpty() || s.length() > MAX_PARAM_LENGTH || !SAFE_PARAM.matcher(s).matches()) return null;
-        return s;
+    /** The cause, or null at the end of the chain (including a throwable that is its own cause). */
+    private static Throwable nextCause(Throwable t) {
+        return t.getCause() == t ? null : t.getCause();
     }
 
-    private Http get(String param) {
+    private static boolean isConnectFailure(Throwable t) {
+        if (NEVER_SENT.stream().anyMatch(type -> type.isInstance(t))) return true;
+        return t instanceof SocketTimeoutException && isConnectPhase(t);
+    }
+
+    private static boolean isConnectPhase(Throwable t) {
+        return t.getMessage() != null && t.getMessage().toLowerCase(Locale.ROOT).startsWith("connect");
+    }
+
+    /** The query's callsign trimmed, spaces removed, upper case; null when it is empty, has odd characters or is too long. */
+    static String searchParam(ArrivalQuery query) {
+        String callsign = query.callsign();
+        if (callsign == null) return null;
+        String s = callsign.replaceAll("\\s+", "").toUpperCase(Locale.ROOT);
+        return s.length() <= MAX_PARAM_LENGTH && SAFE_PARAM.matcher(s).matches() ? s : null;
+    }
+
+    private Http get(Request request) {
         return client.get()
-                .uri("/flights/{searchBy}/{param}?withAircraftImage=false&withLocation=false", searchBy, param)
+                .uri("/flights/{searchBy}/{param}?withAircraftImage=false&withLocation=false", searchBy, request.param())
                 .header(KEY_HEADER, apiKey)
                 .header(HOST_HEADER, host)
                 .header(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE)
@@ -287,38 +276,14 @@ public class AeroDataBoxArrivalProvider implements ArrivalConfirmationProvider {
                 });
     }
 
-    private LookupResult interpret(Http http, ArrivalQuery query, String param) {
+    private LookupResult interpret(Http http, Request request) {
+        String param = request.param();
         int status = http.status();
         if (status == 204) return LookupResult.notFound();
-        if (status >= 200 && status < 300) {
-            if (http.body() == null) {
-                // The answer arrived but its body could not be read: unknown, not "no flight".
-                log.warn("AeroDataBox {} answered {} but the body could not be read", param, status);
-                phases.degraded("AeroDataBox answered with an unreadable body");
-                return LookupResult.failed();
-            }
-            try {
-                return select(parse(http.body()), query);
-            } catch (RuntimeException e) {
-                log.warn("AeroDataBox {} answered with a body that could not be read: {}", param, e.toString());
-                phases.degraded("AeroDataBox answered with an unreadable body");
-                return LookupResult.failed();
-            }
-        }
-        if (status == 429) {
-            Duration wait = retryAfter(http.retryAfter());
-            phases.degraded("AeroDataBox rate-limited us (429), backing off " + wait.toSeconds() + "s");
-            return LookupResult.throttled(wait);
-        }
-        if (status == 401 || status == 403) {
-            lockedUntil = clock.instant().atZone(ZoneOffset.UTC).toLocalDate().plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant();
-            String detail = "AeroDataBox rejected the API key (" + status + "); off until " + lockedUntil
-                    + " (check AERODATABOX_API_KEY, or the monthly quota may be spent)";
-            log.warn(detail);
-            phases.degraded(detail);
-            return LookupResult.failed();
-        }
-        if (status == 400 || status == 404 || status == 422) {
+        if (status >= 200 && status < 300) return interpretBody(http, request);
+        if (status == 429) return throttled(http);
+        if (status == 401 || status == 403) return keyRejected(http);
+        if (NO_SUCH_FLIGHT.contains(status)) {
             // The API does not know this flight number (or cannot take it): a stable answer, so cacheable.
             log.warn("AeroDataBox {} answered {}, treated as no such flight", param, status);
             return LookupResult.notFound();
@@ -328,8 +293,42 @@ public class AeroDataBoxArrivalProvider implements ArrivalConfirmationProvider {
         return LookupResult.failed();
     }
 
+    private LookupResult interpretBody(Http http, Request request) {
+        String param = request.param();
+        if (http.body() == null) {
+            // The answer arrived but its body could not be read: unknown, not "no flight".
+            log.warn("AeroDataBox {} answered {} but the body could not be read", param, http.status());
+            phases.degraded("AeroDataBox answered with an unreadable body");
+            return LookupResult.failed();
+        }
+        try {
+            return AeroDataBoxResponse.select(AeroDataBoxResponse.parse(http.body()), request.query());
+        } catch (RuntimeException e) {
+            log.warn("AeroDataBox {} answered with a body that could not be read: {}", param, e.toString());
+            phases.degraded("AeroDataBox answered with an unreadable body");
+            return LookupResult.failed();
+        }
+    }
+
+    private LookupResult throttled(Http http) {
+        Duration wait = retryAfter(http);
+        phases.degraded("AeroDataBox rate-limited us (429), backing off " + wait.toSeconds() + "s");
+        return LookupResult.throttled(wait);
+    }
+
+    /** A rejected key switches the provider off until the next UTC midnight. */
+    private LookupResult keyRejected(Http http) {
+        lockedUntil = clock.instant().atZone(ZoneOffset.UTC).toLocalDate().plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant();
+        String detail = "AeroDataBox rejected the API key (" + http.status() + "); off until " + lockedUntil
+                + " (check AERODATABOX_API_KEY, or the monthly quota may be spent)";
+        log.warn(detail);
+        phases.degraded(detail);
+        return LookupResult.failed();
+    }
+
     /** Retry-After as seconds or an HTTP date; anything else (or absent, or not positive) is 60 s. */
-    private Duration retryAfter(String header) {
+    private Duration retryAfter(Http http) {
+        String header = http.retryAfter();
         if (header == null || header.isBlank()) return DEFAULT_RETRY_AFTER;
         String value = header.trim();
         try {
@@ -346,123 +345,8 @@ public class AeroDataBoxArrivalProvider implements ArrivalConfirmationProvider {
         }
     }
 
-    // ---- parsing and choosing
-
-    /** One element of the response array, reduced to what the mapping needs. */
-    record Leg(String status, String codeshareStatus, String modeS, String arrivalIcao,
-               Instant scheduled, Instant revised, Instant runway, String gate, String terminal) {
-
-        /** The best time the entry has, for matching it to the expected arrival. */
-        Instant bestTime() {
-            return runway != null ? runway : revised != null ? revised : scheduled;
-        }
-    }
-
-    /** Tolerant: unknown fields are ignored, every field may be absent or null; an object is read as a one-element array. */
-    List<Leg> parse(String body) {
-        if (body == null || body.isBlank()) return List.of();
-        JsonNode root = mapper.readTree(body);
-        List<JsonNode> nodes = new ArrayList<>();
-        if (root.isArray()) root.forEach(nodes::add);
-        else if (root.isObject()) nodes.add(root);
-        List<Leg> out = new ArrayList<>();
-        for (JsonNode n : nodes) {
-            JsonNode arrival = n.path("arrival");
-            out.add(new Leg(
-                    text(n.path("status")),
-                    text(n.path("codeshareStatus")),
-                    text(n.path("aircraft").path("modeS")),
-                    text(arrival.path("airport").path("icao")),
-                    time(arrival.path("scheduledTime")),
-                    time(arrival.path("revisedTime")),
-                    time(arrival.path("runwayTime")),
-                    text(arrival.path("gate")),
-                    text(arrival.path("terminal"))));
-        }
-        return out;
-    }
-
-    LookupResult select(List<Leg> legs, ArrivalQuery query) {
-        String airport = query.arrivalAirportIcao() == null ? null : query.arrivalAirportIcao().trim().toUpperCase(Locale.ROOT);
-        Instant expected = query.expectedArrivalAt();
-        Duration window = Duration.ofHours(MAX_TIME_OFFSET_HOURS);
-
-        List<Leg> fit = legs.stream()
-                .filter(l -> airport == null || airport.equalsIgnoreCase(l.arrivalIcao()))
-                .filter(l -> l.modeS() == null || query.icao24() == null || l.modeS().equalsIgnoreCase(query.icao24().trim()))
-                .filter(l -> expected == null || l.bestTime() == null || distance(l, expected).compareTo(window) <= 0)
-                .toList();
-        if (fit.isEmpty()) return LookupResult.notFound();
-        // The nearest in time wins; the operator rank only separates entries close to it.
-        Duration nearest = fit.stream().map(l -> distance(l, expected)).min(Comparator.naturalOrder()).orElseThrow();
-        Duration tie = nearest.plusHours(TIE_BREAK_HOURS);
-        Leg best = fit.stream()
-                .filter(l -> distance(l, expected).compareTo(tie) <= 0)
-                .min(Comparator.comparingInt((Leg l) -> codeshareRank(l.codeshareStatus()))
-                        .thenComparing(l -> distance(l, expected)))
-                .orElseThrow();
-        return LookupResult.found(info(best, airport));
-    }
-
-    private static Duration distance(Leg leg, Instant expected) {
-        if (expected == null || leg.bestTime() == null) return expected == null ? Duration.ZERO : Duration.ofDays(3650);
-        return Duration.between(leg.bestTime(), expected).abs();
-    }
-
-    /** IsOperator first, then Unknown (or absent), then the codeshares. */
-    private static int codeshareRank(String status) {
-        if (status == null) return 1;
-        String s = status.toLowerCase(Locale.ROOT);
-        if (s.equals("isoperator")) return 0;
-        if (s.equals("unknown")) return 1;
-        return 2;
-    }
-
-    private static ArrivalInfo info(Leg leg, String queryAirport) {
-        Instant on = null;
-        Instant in = null;
-        if ("arrived".equalsIgnoreCase(leg.status())) {
-            on = leg.runway() != null ? leg.runway() : leg.revised();
-            if (leg.runway() != null && leg.revised() != null && leg.revised().isAfter(leg.runway())) {
-                in = leg.revised();
-            }
-        }
-        String airport = leg.arrivalIcao() != null ? leg.arrivalIcao().toUpperCase(Locale.ROOT) : queryAirport;
-        return new ArrivalInfo(null, null, on, in, leg.gate(), leg.terminal(), airport);
-    }
-
-    private static String text(JsonNode node) {
-        if (node == null || node.isMissingNode() || node.isNull()) return null;
-        String s = node.asText().trim();
-        return s.isEmpty() ? null : s;
-    }
-
-    /** The {@code utc} member of a time object such as {@code {"utc": "2025-01-12 05:09Z", "local": "..."}}. */
-    private static Instant time(JsonNode node) {
-        return parseTime(text(node.path("utc")));
-    }
-
-    /**
-     * AeroDataBox times are {@code yyyy-MM-dd HH:mm} followed by {@code Z} or {@code +HH:mm}. Also accepts
-     * ISO with a {@code T}, optional seconds, an offset without a colon and no offset at all (then UTC:
-     * the fields are named utc). Null for anything else.
-     */
+    /** See {@link AeroDataBoxResponse#parseTime}. */
     static Instant parseTime(String value) {
-        if (value == null) return null;
-        Matcher m = TIME.matcher(value.trim());
-        if (!m.matches()) return null;
-        String time = m.group(2).length() == 5 ? m.group(2) + ":00" : m.group(2);
-        String zone = m.group(3);
-        if (zone == null || zone.equalsIgnoreCase("Z")) {
-            zone = "Z";
-        } else {
-            String digits = zone.substring(1).replace(":", "");
-            zone = zone.charAt(0) + digits.substring(0, 2) + ":" + (digits.length() > 2 ? digits.substring(2) : "00");
-        }
-        try {
-            return OffsetDateTime.parse(m.group(1) + "T" + time + zone).toInstant();
-        } catch (DateTimeParseException e) {
-            return null;
-        }
+        return AeroDataBoxResponse.parseTime(value);
     }
 }
