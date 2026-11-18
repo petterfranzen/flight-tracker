@@ -32,6 +32,13 @@ record AeroDataBoxSettings(
         return Duration.ofMinutes(notFoundRecheckMinutes);
     }
 
+    /** Never print the API key: a record's default toString would. */
+    @Override
+    public String toString() {
+        return "AeroDataBoxSettings[enabled=" + enabled + ", apiKey=" + (apiKey == null || apiKey.isBlank() ? "<unset>" : "<redacted>")
+                + ", baseUrl=" + baseUrl + ", host=" + host + ", searchBy=" + searchBy + "]";
+    }
+
     Duration gateWait() {
         return Duration.ofMinutes(gateWaitMinutes);
     }
