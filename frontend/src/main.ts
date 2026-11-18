@@ -2,8 +2,7 @@ import { Store } from "./state/store";
 import { createInitialState } from "./state/initialState";
 import type { AppState } from "./state/appState";
 import { h, clear } from "./ui/h";
-import type { FavoriteAircraft, FavoriteRoute } from "./favorites";
-import { loadFavoriteAircraft, loadFavoriteRoutes, toggleFavoriteAircraft, toggleFavoriteRoute } from "./favorites";
+import { toggleFavoriteAircraft, toggleFavoriteRoute } from "./favorites";
 import { loadWatched, saveWatched, watchKey, type WatchedFlight } from "./watchlist";
 import type { AirportSelection, Bounds, FlightPosition, LiveMarker, LiveOverview, SelectedPosition, TrackStatus } from "./types/flight";
 import {
@@ -61,6 +60,8 @@ import * as dossierPanel from "./ui/dossierPanel";
 import * as bootScreen from "./ui/bootScreen";
 import * as resumeDialog from "./ui/resumeDialog";
 import * as webglNotice from "./ui/webglNotice";
+import { createTrackedChip } from "./ui/trackedChip";
+import { createFavoriteActions } from "./ui/favoriteActions";
 // Self-hosted cyberpunk face (latin subset).
 import "@fontsource/jetbrains-mono/latin-500.css";
 import "@fontsource/jetbrains-mono/latin-600.css";
@@ -1379,40 +1380,11 @@ function boot(): void {
   }
 
   // ---- favorites ----
-  function toggleAircraftFavorite(): void {
-    const selectedPos = store.get("selectedPos");
-    if (!selectedPos) return;
-    const dossier = store.get("dossier");
-    store.set(
-      "favoriteAircraft",
-      toggleFavoriteAircraft(store.get("favoriteAircraft"), {
-        icao24: selectedPos.icao24,
-        registration: dossier?.registration ?? null,
-        callsign: selectedPos.callsign,
-      }),
-    );
-  }
-  function toggleRouteFavorite(): void {
-    const dossier = store.get("dossier");
-    if (!dossier?.originAirport || !dossier?.destinationAirport) return;
-    store.set(
-      "favoriteRoutes",
-      toggleFavoriteRoute(store.get("favoriteRoutes"), {
-        origin: dossier.originAirport,
-        originName: dossier.originAirportName,
-        originIata: dossier.originAirportIata,
-        destination: dossier.destinationAirport,
-        destinationName: dossier.destinationAirportName,
-        destinationIata: dossier.destinationAirportIata,
-      }),
-    );
-  }
-  function removeFavoriteAircraft(entry: FavoriteAircraft): void {
-    store.set("favoriteAircraft", toggleFavoriteAircraft(store.get("favoriteAircraft"), entry));
-  }
-  function removeFavoriteRoute(favRoute: FavoriteRoute): void {
-    store.set("favoriteRoutes", toggleFavoriteRoute(store.get("favoriteRoutes"), favRoute));
-  }
+  const favoriteActions = createFavoriteActions({
+    store,
+    toggleFavoriteAircraft,
+    toggleFavoriteRoute,
+  });
 
   // ---- map + layers ----
   // Layer order on the map, bottom to top: basemap, airports, the trail,
@@ -1436,10 +1408,10 @@ function boot(): void {
   store.set("closeAirportPanel", closeAirportPanel);
   store.set("toggleDossierExpanded", toggleDossierExpanded);
   store.set("requestFocusPlane", requestFocusPlane);
-  store.set("toggleAircraftFavorite", toggleAircraftFavorite);
-  store.set("toggleRouteFavorite", toggleRouteFavorite);
-  store.set("removeFavoriteAircraft", removeFavoriteAircraft);
-  store.set("removeFavoriteRoute", removeFavoriteRoute);
+  store.set("toggleAircraftFavorite", favoriteActions.toggleAircraftFavorite);
+  store.set("toggleRouteFavorite", favoriteActions.toggleRouteFavorite);
+  store.set("removeFavoriteAircraft", favoriteActions.removeFavoriteAircraft);
+  store.set("removeFavoriteRoute", favoriteActions.removeFavoriteRoute);
   store.set("resumeTracking", startCycle);
   store.set("dismissResumeDialog", () => store.set("showResumeDialog", false));
   store.set("watchFlight", watchFlight);
@@ -1481,34 +1453,8 @@ function boot(): void {
   syncDock();
 
   // Tracked-chip: inline (not a separate component in the original either).
-  function renderTrackedChip(): void {
-    clear(trackedChipRoot);
-    trackedChipRoot.appendChild(
-      h(
-        "div",
-        { className: "tracked-chip" },
-        h("span", { className: "tracked-chip-dot", "aria-hidden": "true" }),
-        h(
-          "div",
-          { className: "tracked-chip-rows" },
-          h(
-            "div",
-            { className: "tracked-chip-row tracked-chip-row--active" },
-            h("span", { className: "tracked-chip-label" }, "Active"),
-            h("span", { className: "tracked-chip-value" }, store.get("trackedCount").toLocaleString()),
-          ),
-          h(
-            "div",
-            { className: "tracked-chip-row tracked-chip-row--seen" },
-            h("span", { className: "tracked-chip-label" }, "Seen"),
-            h("span", { className: "tracked-chip-value tracked-chip-value--seen" }, store.get("seenCount").toLocaleString()),
-          ),
-        ),
-      ),
-    );
-  }
-  renderTrackedChip();
-  store.subscribeMany(["trackedCount", "seenCount"], renderTrackedChip);
+  const trackedChip = createTrackedChip({ root: trackedChipRoot, store });
+  trackedChip.mount();
 
   // ---- follow-selected wiring ----
   function syncFollowSelected(): void {
