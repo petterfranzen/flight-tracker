@@ -14,7 +14,6 @@ import com.flighttracker.service.enrichment.AircraftEnrichmentService;
 import com.flighttracker.service.enrichment.AirportLookupService;
 import com.flighttracker.service.coverage.TrackState;
 import com.flighttracker.service.enrichment.Route;
-import com.flighttracker.service.live.LiveAircraft;
 import com.flighttracker.service.live.LiveStateStore;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -25,10 +24,10 @@ import org.springframework.web.bind.annotation.RestController;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.ZoneOffset;
-import java.time.format.DateTimeFormatter;
+import java.util.EnumSet;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.Set;
 
 @RestController
 @RequestMapping("/api/aircraft")
@@ -91,12 +90,6 @@ public class AircraftController {
         return icao24.trim().toLowerCase(Locale.ROOT);
     }
 
-    // Below this, dividing distance by groundspeed stops being a
-    // meaningful ETA and starts being a wild guess — taxiing speed, a
-    // momentary lull in a stale/glitchy report, etc. Comfortably below
-    // any real cruise or approach speed.
-    private static final double MIN_ETA_GROUNDSPEED_MS = 20;
-
     // How far back FlightPhaseClassifier's "earlier" altitude reference
     // point looks — long enough that normal report-to-report jitter
     // averages out (a single ~18s hot-poll tick isn't representative of a
@@ -133,95 +126,29 @@ public class AircraftController {
         Instant now = clock.instant();
         Optional<Instant> legStart = positionRepository.findCurrentLegTakeoffTime(stored.icao24());
         FlightPosition current = liveStateStore.findLatestPosition(stored.icao24()).orElse(null);
-        // The route of *this* flight — by its current callsign, or OpenSky's
-        // record for the current leg — never the stored per-aircraft route,
-        // which was whatever leg the airframe was first enriched on.
-        String callsign = current != null && current.callsign() != null
-                ? current.callsign()
-                : liveStateStore.findLatestCallsign(stored.icao24()).orElse(null);
-        Route route = enrichmentService.routeFor(stored.icao24(), callsign, legStart.orElse(null)).orElse(null);
+        Route route = enrichmentService.routeFor(stored.icao24(), currentCallsign(stored.icao24(), current),
+                legStart.orElse(null)).orElse(null);
         Aircraft a = withRoute(stored, route);
         // `current` is coalesced with the estimate (the ETA calc benefits from
         // the more accurate live position); the coverage-gap state comes from
         // the raw live entry, the same TrackStatus /status serves.
-        LiveAircraft live = liveStateStore.get(a.icao24()).orElse(null);
-        TrackStatus status = live == null ? null : TrackStatus.from(live, confirmationStore.forAircraft(live));
-
-        // Skip the lookup entirely when on the ground — FlightPhaseClassifier
-        // only needs the earlier-altitude reference to distinguish
-        // climbing/descending/level, none of which matter once on_ground
-        // makes the phase ON_GROUND outright.
-        //
-        // Anchored to current.observedAt(), not `now`: for a stale
-        // aircraft (the whole point staleExplanation and the presumed-landed
-        // check below exist for) `now` is well past the last real report, so
-        // "now - 3min" is still after that report — the query would just
-        // find that same latest reading again as its own "earlier"
-        // reference, comparing it to itself (delta 0, always reads LEVEL).
-        // Anchoring to when the data actually is makes the window relative
-        // to the aircraft's own timeline instead of the server's.
-        Double earlierAltitudeForPhase = (current != null && !current.onGround())
-                ? legStart.flatMap(ls -> positionRepository.findAltitudeAtOrBefore(
-                        a.icao24(), ls, current.observedAt().minus(PHASE_TREND_WINDOW)))
-                .orElse(null)
-                : null;
-        FlightPhaseClassifier.FlightPhase phase = current == null ? null
-                : FlightPhaseClassifier.classify(current.onGround(), current.altitudeM(), earlierAltitudeForPhase);
-
-        // Flight time stops counting at the last real report once the
-        // aircraft is known (on_ground) or presumed (silent this long while
-        // descending — see LiveVisibilityWindows.PRESUMED_LANDED_SILENCE) to
-        // have landed, rather than running up against `now` indefinitely for
-        // a flight that's actually long over. Still airborne (or too
-        // recently silent to presume anything) keeps counting up to `now`
-        // as before. The coverage-gap estimator's LANDED_INFERRED call is
-        // the primary signal (and ends the flight at its touchdown time);
-        // the silence rule applies to every other state, COVERAGE_LOST included,
-        // so a low-probability descender does not count flight minutes forever.
-        boolean descendingOrLanding = phase == FlightPhaseClassifier.FlightPhase.DESCENDING
-                || phase == FlightPhaseClassifier.FlightPhase.LANDING;
-        boolean providerConfirmed = status != null
-                && (status.state() == TrackState.LANDED_CONFIRMED || status.state() == TrackState.AT_GATE);
-        boolean inferredLanded = providerConfirmed
-                || (status != null && status.state() == TrackState.LANDED_INFERRED);
-        boolean silentWhileDescending = current != null && live != null && !providerConfirmed
-                && silentWhileDescending(status.state(), descendingOrLanding, Duration.between(current.observedAt(), now));
-        boolean presumedLanded = current != null && (phase == FlightPhaseClassifier.FlightPhase.ON_GROUND
-                || inferredLanded || silentWhileDescending);
-        Instant touchdownAt = inferredLanded && status.landing() != null ? status.landing().touchdownAt() : null;
-        Instant flightEnd = !presumedLanded ? now
-                : touchdownAt != null && touchdownAt.isBefore(now) ? touchdownAt
-                : current.observedAt();
-        Long flightMinutes = legStart.map(takeoff -> Duration.between(takeoff, flightEnd).toMinutes())
+        TrackStatus status = liveStateStore.get(a.icao24())
+                .map(live -> TrackStatus.from(live, confirmationStore.forAircraft(live)))
+                .orElse(null);
+        FlightPhaseClassifier.FlightPhase phase = classifyPhase(a.icao24(), current, legStart);
+        LandingAssessment landing = LandingAssessment.assess(current, status, phase, now);
+        Long flightMinutes = legStart.map(takeoff -> Duration.between(takeoff, landing.flightEnd()).toMinutes())
                 .filter(minutes -> minutes <= MAX_PLAUSIBLE_FLIGHT_MINUTES)
                 .orElse(null);
-
-        // No staleness cutoff here: most flights land within their ETA
-        // window regardless of how long ago the last real report came in,
-        // so an old fix is still a reasonable basis for the estimate rather
-        // than a reason to hide it — same call as EstimatedPositionService
-        // dead-reckoning a stale fix forward instead of giving up on it.
-        Long etaMinutes = null;
-        if (current != null && a.destinationAirportLat() != null && a.destinationAirportLon() != null) {
-            if (!current.onGround() && current.velocityMs() != null
-                    && current.velocityMs() >= MIN_ETA_GROUNDSPEED_MS) {
-                double distanceM = haversineMeters(
-                        current.latitude(), current.longitude(),
-                        a.destinationAirportLat(), a.destinationAirportLon());
-                etaMinutes = Math.round(distanceM / current.velocityMs() / 60.0);
-            }
-        }
-
         Double cruisingAltitudeM = legStart.flatMap(ls -> positionRepository.findMaxAltitudeSince(a.icao24(), ls))
                 .orElse(null);
 
         // Only worth spending an OpenSky call on once our own heuristic
         // already presumes landed — see AircraftEnrichmentService.
         // checkLandingIfNeeded for the throttling/caching behind this.
-        Optional<Instant> landingConfirmedAt = presumedLanded && !providerConfirmed
+        Optional<Instant> landingConfirmedAt = landing.worthCheckingLanding()
                 ? enrichmentService.checkLandingIfNeeded(a.icao24(), current.observedAt())
                 : Optional.empty();
-
         String staleExplanation = describeStatus(status, a, landingConfirmedAt.isPresent());
 
         AirportDisplay origin = resolveAirport(a.originAirport(), a.originAirportName());
@@ -231,20 +158,51 @@ public class AircraftController {
                 a.icao24(), a.registration(), a.model(), a.operator(),
                 a.originAirport(), origin.name(), origin.iataCode(),
                 a.destinationAirport(), destination.name(), destination.iataCode(),
-                flightMinutes, etaMinutes, cruisingAltitudeM, phase == null ? null : phase.name(), staleExplanation,
-                legStart.orElse(null));
+                flightMinutes, EtaEstimate.minutes(current, a), cruisingAltitudeM, phase == null ? null : phase.name(),
+                staleExplanation, legStart.orElse(null));
     }
 
-    private static Aircraft withRoute(Aircraft a, Route r) {
+    // The route of *this* flight — by its current callsign, or OpenSky's
+    // record for the current leg — never the stored per-aircraft route,
+    // which was whatever leg the airframe was first enriched on.
+    private String currentCallsign(String icao24, FlightPosition current) {
+        if (current != null && current.callsign() != null) return current.callsign();
+        return liveStateStore.findLatestCallsign(icao24).orElse(null);
+    }
+
+    /**
+     * Skips the earlier-altitude lookup entirely when on the ground —
+     * FlightPhaseClassifier only needs that reference to distinguish
+     * climbing/descending/level, none of which matter once on_ground makes
+     * the phase ON_GROUND outright.
+     *
+     * <p>Anchored to current.observedAt(), not `now`: for a stale aircraft
+     * (the whole point staleExplanation and the presumed-landed check exist
+     * for) `now` is well past the last real report, so "now - 3min" is still
+     * after that report — the query would just find that same latest reading
+     * again as its own "earlier" reference, comparing it to itself (delta 0,
+     * always reads LEVEL). Anchoring to when the data actually is makes the
+     * window relative to the aircraft's own timeline instead of the server's.
+     */
+    private FlightPhaseClassifier.FlightPhase classifyPhase(String icao24, FlightPosition current,
+                                                            Optional<Instant> legStart) {
+        if (current == null) return null;
+        Double earlierAltitude = current.onGround() ? null
+                : legStart.flatMap(ls -> positionRepository.findAltitudeAtOrBefore(
+                        icao24, ls, current.observedAt().minus(PHASE_TREND_WINDOW))).orElse(null);
+        return FlightPhaseClassifier.classify(current.onGround(), current.altitudeM(), earlierAltitude);
+    }
+
+    /** No route known reads as no route at all: every origin/destination field null. */
+    private static final Route NO_ROUTE = new Route(null, null, null, null, null, null, null, null);
+
+    private static Aircraft withRoute(Aircraft a, Route route) {
+        Route r = route == null ? NO_ROUTE : route;
         return new Aircraft(a.icao24(), a.registration(), a.model(), a.operator(),
-                r == null ? null : r.originAirport(),
-                r == null ? null : r.originAirportName(),
-                r == null ? null : r.destinationAirport(),
-                r == null ? null : r.destinationAirportName(),
-                r == null ? null : r.originAirportLat(),
-                r == null ? null : r.originAirportLon(),
-                r == null ? null : r.destinationAirportLat(),
-                r == null ? null : r.destinationAirportLon(),
+                r.originAirport(), r.originAirportName(),
+                r.destinationAirport(), r.destinationAirportName(),
+                r.originAirportLat(), r.originAirportLon(),
+                r.destinationAirportLat(), r.destinationAirportLon(),
                 a.metadataFetchedAt(), a.landingCheckObservedAt(), a.landingConfirmedAt(),
                 a.firstSeenAt(), a.lastSeenAt());
     }
@@ -279,7 +237,9 @@ public class AircraftController {
         return new AirportDisplay(name, iataCode);
     }
 
-    private static final DateTimeFormatter HH_MM_UTC = DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneOffset.UTC);
+    /** States whose label already says where the landing came from. */
+    private static final Set<TrackState> SOURCED_STATES =
+            EnumSet.of(TrackState.ON_GROUND, TrackState.LANDED_CONFIRMED, TrackState.AT_GATE);
 
     /**
      * The dossier's status line (staleExplanation), worded from the same
@@ -293,10 +253,7 @@ public class AircraftController {
      */
     private String describeStatus(TrackStatus status, Aircraft a, boolean landingConfirmed) {
         if (status == null) return null;
-        if (status.state() == TrackState.ON_GROUND || status.state() == TrackState.LANDED_CONFIRMED
-                || status.state() == TrackState.AT_GATE) return statusLabel(status);
-
-        if (landingConfirmed) {
+        if (landingConfirmed && !SOURCED_STATES.contains(status.state())) {
             String dest = a.destinationAirportName() != null ? a.destinationAirportName() : "its destination";
             return String.format("confirmed landed near %s (OpenSky's own flight record shows this leg ended)", dest);
         }
@@ -305,54 +262,11 @@ public class AircraftController {
 
     /** The label table of docs/agents/PROGRESS.md; null for LIVE. */
     static String statusLabel(TrackStatus s) {
-        TrackStatus.Landing landing = s.landing();
-        String where = landing == null ? null
-                : landing.airportIcao() + (landing.runway() == null ? "" : " " + landing.runway());
-        switch (s.state()) {
-            case COVERAGE_LOST: {
-                StringBuilder out = new StringBuilder("Coverage lost");
-                if (s.estimate() != null) out.append(" · est. ±").append(formatRadius(s.estimate().radiusM()));
-                if (where != null) {
-                    out.append(" · landing ");
-                    if (landing.touchdownAt() != null) out.append('~').append(HH_MM_UTC.format(landing.touchdownAt())).append(" UTC ");
-                    out.append(where);
-                }
-                return out.toString();
-            }
-            case LANDED_INFERRED:
-                return String.format(Locale.ROOT, "Landed %d%% (inferred)", Math.round((s.confidence() == null ? 0 : s.confidence()) * 100))
-                        + (where == null ? "" : " · " + where);
-            case ON_GROUND:
-                return "On ground (ADS-B)";
-            case LANDED_CONFIRMED:
-                return "Landed (confirmed · " + providerName(s.source()) + ")";
-            case AT_GATE:
-                return "At gate" + (s.gate() == null ? "" : " " + s.gate()) + " (confirmed)";
-            default:
-                return null;
-        }
+        return TrackStatusLabels.label(s);
     }
 
     /** The provider's display name, as the frontend shows it; an unknown id is shown as it is. */
     static String providerName(String id) {
-        if ("aerodatabox".equals(id)) return "AeroDataBox";
-        if ("swedavia".equals(id)) return "Swedavia";
-        return id;
-    }
-
-    private static String formatRadius(double radiusM) {
-        if (radiusM < 1000) return Math.round(radiusM / 10.0) * 10 + " m";
-        return String.format(Locale.ROOT, radiusM < 10_000 ? "%.1f km" : "%.0f km", radiusM / 1000.0);
-    }
-
-    private static final double EARTH_RADIUS_M = 6_371_000;
-
-    private static double haversineMeters(double lat1, double lon1, double lat2, double lon2) {
-        double dLat = Math.toRadians(lat2 - lat1);
-        double dLon = Math.toRadians(lon2 - lon1);
-        double a = Math.sin(dLat / 2) * Math.sin(dLat / 2)
-                + Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2))
-                * Math.sin(dLon / 2) * Math.sin(dLon / 2);
-        return EARTH_RADIUS_M * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        return TrackStatusLabels.providerName(id);
     }
 }
