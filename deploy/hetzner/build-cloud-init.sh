@@ -59,6 +59,9 @@ file_entry /opt/flight-tracker/bin/deploy.sh 0755;                   indent depl
 file_entry /etc/flight-tracker/env 0640 root:flighttracker defer;    indent env.example
 file_entry /etc/apt/apt.conf.d/52unattended-upgrades-local 0644;    indent unattended-upgrades-local.conf
 file_entry /usr/local/sbin/restart-if-upgraded 0755;                indent restart-if-upgraded
+file_entry /usr/local/sbin/cloudflared-patch.sh 0755;               indent cloudflared-patch.sh
+file_entry /etc/systemd/system/flight-tracker-cloudflared-patch.service 0644; indent cloudflared-patch.service
+file_entry /etc/systemd/system/flight-tracker-cloudflared-patch.timer 0644;   indent cloudflared-patch.timer
 cat <<'EOF'
   - path: /etc/apt/apt.conf.d/20auto-upgrades
     permissions: "0644"
@@ -83,6 +86,9 @@ runcmd:
   - ufw --force enable
   - systemctl daemon-reload
   - systemctl enable flight-tracker
+  # Patch rule: install cloudflared upgrades only once a release is 24 h old
+  # (deploy/hetzner/cloudflared-patch.sh, blacklisted in 52unattended-upgrades-local).
+  - systemctl enable --now flight-tracker-cloudflared-patch.timer
   - systemctl restart ssh
 EOF
 } > cloud-init.yaml

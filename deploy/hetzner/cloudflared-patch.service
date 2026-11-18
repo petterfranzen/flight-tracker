@@ -1,0 +1,15 @@
+[Unit]
+Description=Flight tracker patch rule: upgrade cloudflared only once its release is 24 h old
+Documentation=https://github.com/petterfranzen/flight-tracker/blob/main/deploy/hetzner/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/cloudflared-patch.sh
+TimeoutStartSec=5min
+Nice=10
+# apt and dpkg write across the filesystem, so unlike a read-only unit this one
+# carries no ProtectSystem/ReadOnlyPaths hardening. StateDirectory creates
+# /var/lib/flight-tracker-cloudflared (0755, root-owned) for the first-seen stamp.
+StateDirectory=flight-tracker-cloudflared
