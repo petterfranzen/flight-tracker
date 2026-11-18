@@ -1,8 +1,8 @@
 import { Store } from "./state/store";
+import { createInitialState } from "./state/initialState";
 import type { AppState } from "./state/appState";
 import { h, clear } from "./ui/h";
-import type { FavoriteAircraft, FavoriteRoute } from "./favorites";
-import { loadFavoriteAircraft, loadFavoriteRoutes, toggleFavoriteAircraft, toggleFavoriteRoute } from "./favorites";
+import { toggleFavoriteAircraft, toggleFavoriteRoute } from "./favorites";
 import { loadWatched, saveWatched, watchKey, type WatchedFlight } from "./watchlist";
 import type { AirportSelection, Bounds, FlightPosition, LiveMarker, LiveOverview, SelectedPosition, TrackStatus } from "./types/flight";
 import {
@@ -37,7 +37,8 @@ import { pickInitialView } from "./map/initialView";
 import { getMockPlaneCount } from "./api/mockFleet";
 import { agedIds, findShadowedIds, isActiveTraffic, OVERLAP_MIN_ZOOM } from "./map/staleness";
 import { hiddenLandedIds } from "./map/landed";
-import { newerReport, notOlderReport, sameReport } from "./map/reportOrder";
+import { newerReport, notOlderReport } from "./map/reportOrder";
+import { frameAdvances, inBounds, newerOf, padBounds, stamp, type AsOfMarker, type AsOfOverview } from "./map/asOf";
 import { createRouteLayer, type RoutePoint } from "./map/route";
 import { lastContinuousRun, TRAIL_FALLBACK_WINDOW_MS } from "./map/trailWindow";
 import { confirmedGate, displayedPosition, gateDisplay, trailPointsFor, GATE_MAX_DISTANCE_M, type GateDisplay } from "./map/gatePlacement";
@@ -59,6 +60,8 @@ import * as dossierPanel from "./ui/dossierPanel";
 import * as bootScreen from "./ui/bootScreen";
 import * as resumeDialog from "./ui/resumeDialog";
 import * as webglNotice from "./ui/webglNotice";
+import { createTrackedChip } from "./ui/trackedChip";
+import { createFavoriteActions } from "./ui/favoriteActions";
 // Self-hosted cyberpunk face (latin subset).
 import "@fontsource/jetbrains-mono/latin-500.css";
 import "@fontsource/jetbrains-mono/latin-600.css";
@@ -156,102 +159,6 @@ const FILL_MAX_MS = 12_000;
 // Wide enough that a pan or a one-level zoom-out lands on planes that are already there.
 const RENDER_MARGIN = 0.4;
 
-function padBounds(b: Bounds, fraction: number): Bounds {
-  const dLat = (b.latMax - b.latMin) * fraction;
-  const dLon = (b.lonMax - b.lonMin) * fraction;
-  return { latMin: b.latMin - dLat, latMax: b.latMax + dLat, lonMin: b.lonMin - dLon, lonMax: b.lonMax + dLon };
-}
-
-function inBounds(b: Bounds, lat: number, lon: number): boolean {
-  return lat >= b.latMin && lat <= b.latMax && lon >= b.lonMin && lon <= b.lonMax;
-}
-
-/**
- * A drawn position carries the time its information was produced, `asOf`: a
- * viewport snapshot's fetch time, a WebSocket push's arrival, or — for the
- * selected plane — its estimate's own time.
- *
- * `observedAt` alone cannot order positions. The server serves each plane's
- * dead-reckoned position, so two snapshots of the same last report share
- * `observedAt` with *different* positions, the older snapshot's several
- * seconds behind. Comparing `observedAt` strictly therefore let a cached view
- * drawn during a pan/zoom overwrite the fresher position already on screen:
- * the marker popped backwards along its track and forward again when the
- * response landed (#53 / #97). `asOf` orders them, so a position older than
- * the one drawn never replaces it.
- */
-interface AsOfMarker extends LiveMarker {
-  asOf: number;
-}
-
-/** The overview payload as its view cache holds it: every plane stamped. */
-interface AsOfOverview extends Omit<LiveOverview, "planes"> {
-  planes: AsOfMarker[];
-}
-
-/** A snapshot's markers, stamped with the time it was fetched. */
-function stamp(list: LiveMarker[], asOf: number): AsOfMarker[] {
-  return list.map((p) => ({ ...p, asOf }));
-}
-
-/**
- * Whether `incoming` sits further along the aircraft's own track than `existing`
- * (the sign of the displacement along `existing`'s heading).
- */
-function aheadOf(existing: LiveMarker, incoming: LiveMarker): boolean {
-  const heading = ((existing.headingDeg ?? incoming.headingDeg ?? 0) * Math.PI) / 180;
-  const dx = incoming.longitude - existing.longitude;
-  const dy = incoming.latitude - existing.latitude;
-  return dx * Math.sin(heading) + dy * Math.cos(heading) > 0;
-}
-
-/**
- * The position to draw, given what is already drawn and what a payload says.
- *
- * `asOf` (the time the information was produced) orders payloads of the same
- * report taken at different times, and on a tie the drawn one is kept. But two
- * payloads of the *same report* (`observedAt` naming the same instant, however
- * it is spelled) sit at different points along the track: a snapshot is the
- * report dead-reckoned forward, a raw report is the report itself. For the same
- * report the further-along position is the later information, so it wins and
- * the marker never moves backwards (#150).
- */
-function newerOf(existing: AsOfMarker | undefined, incoming: AsOfMarker): AsOfMarker {
-  if (!existing) return incoming;
-  if (sameReport(existing.observedAt, incoming.observedAt)) return aheadOf(existing, incoming) ? incoming : existing;
-  return existing.asOf >= incoming.asOf ? existing : incoming;
-}
-
-/**
- * Whether a WebSocket frame should move a marker that is already drawn.
- *
- * A LiveFrame carries the aircraft's **raw** last report (LiveFrame.of in the
- * backend, straight off the persisted position), while `/live` and
- * `/live/overview` serve the server's **dead-reckoned** display position: the
- * same report projected forward along its own track by
- * EstimatedPositionService (up to `speed x report age`, and the estimate is
- * refreshed on its own cycle). The two payloads of the *same* report therefore
- * share `observedAt` with positions several km apart.
- *
- * So a frame only moves a marker when it carries a report **strictly newer**
- * than the one already drawn. For the same report the drawn position - a
- * snapshot's dead-reckoned estimate - stands: it is the more current answer to
- * "where is the aircraft now". Applying the frame instead pulled the marker
- * back to the raw report, and the next refresh snapped it forward again: the
- * idle reversion of #150, where frame and refresh disagreed about the same
- * report and each redraw took the other's side.
- *
- * Both comparisons go through `Date.parse` (map/reportOrder.ts): `observedAt`
- * can arrive spelled with an offset, or with or without fractional seconds, and
- * ordering the strings would put two reports in the wrong order.
- *
- * A genuinely new report has a newer `observedAt`, so it still moves the marker
- * immediately.
- */
-function frameAdvances(existing: LiveMarker | undefined, p: FlightPosition): boolean {
-  return existing === undefined || newerReport(p.observedAt, existing.observedAt);
-}
-
 function boot(): void {
   const rootEl = document.getElementById("root");
   if (!rootEl) throw new Error("#root not found");
@@ -299,59 +206,7 @@ function boot(): void {
   );
 
   // ---- store ----
-  const state: AppState = {
-    zoom: 6,
-    trackedCount: 0,
-    seenCount: 0,
-    firstLoadDone: false,
-    basemapReady: false,
-    showResumeDialog: false,
-
-    selectedId: null,
-    selectedPos: null,
-    gateApproximate: false,
-    selectedPosFresh: false,
-    dossier: null,
-    trackStatus: null,
-    dossierExpanded: false,
-    planeOffScreen: false,
-    focusRequest: 0,
-    nowMs: Date.now(),
-
-    airportDossier: null,
-    airportInfo: null,
-
-    favoriteRoutes: loadFavoriteRoutes(),
-    favoriteAircraft: loadFavoriteAircraft(),
-
-    watchedFlights: loadWatched(),
-    watchedStatus: {},
-    departureToast: null,
-    watchNotice: null,
-
-    // Placeholders — replaced with real closures below once every module
-    // they need (map, layers) exists. Never called before that happens:
-    // nothing synchronous between here and the store.set() calls below
-    // reaches user interaction.
-    selectAircraft: () => {},
-    selectAirport: () => {},
-    closeAircraftPanel: () => {},
-    closeAirportPanel: () => {},
-    toggleDossierExpanded: () => {},
-    requestFocusPlane: () => {},
-    toggleAircraftFavorite: () => {},
-    toggleRouteFavorite: () => {},
-    removeFavoriteAircraft: () => {},
-    removeFavoriteRoute: () => {},
-    resumeTracking: () => {},
-    dismissResumeDialog: () => {},
-
-    watchFlight: () => {},
-    unwatchFlight: () => {},
-    goToWatched: () => {},
-    dismissDepartureToast: () => {},
-    dismissWatchNotice: () => {},
-  };
+  const state: AppState = createInitialState();
   const store = new Store<AppState>(state);
   // Test seam for the performance profile (src/map/perf.ts).
   window.__flightPerf = perf;
@@ -1525,40 +1380,11 @@ function boot(): void {
   }
 
   // ---- favorites ----
-  function toggleAircraftFavorite(): void {
-    const selectedPos = store.get("selectedPos");
-    if (!selectedPos) return;
-    const dossier = store.get("dossier");
-    store.set(
-      "favoriteAircraft",
-      toggleFavoriteAircraft(store.get("favoriteAircraft"), {
-        icao24: selectedPos.icao24,
-        registration: dossier?.registration ?? null,
-        callsign: selectedPos.callsign,
-      }),
-    );
-  }
-  function toggleRouteFavorite(): void {
-    const dossier = store.get("dossier");
-    if (!dossier?.originAirport || !dossier?.destinationAirport) return;
-    store.set(
-      "favoriteRoutes",
-      toggleFavoriteRoute(store.get("favoriteRoutes"), {
-        origin: dossier.originAirport,
-        originName: dossier.originAirportName,
-        originIata: dossier.originAirportIata,
-        destination: dossier.destinationAirport,
-        destinationName: dossier.destinationAirportName,
-        destinationIata: dossier.destinationAirportIata,
-      }),
-    );
-  }
-  function removeFavoriteAircraft(entry: FavoriteAircraft): void {
-    store.set("favoriteAircraft", toggleFavoriteAircraft(store.get("favoriteAircraft"), entry));
-  }
-  function removeFavoriteRoute(favRoute: FavoriteRoute): void {
-    store.set("favoriteRoutes", toggleFavoriteRoute(store.get("favoriteRoutes"), favRoute));
-  }
+  const favoriteActions = createFavoriteActions({
+    store,
+    toggleFavoriteAircraft,
+    toggleFavoriteRoute,
+  });
 
   // ---- map + layers ----
   // Layer order on the map, bottom to top: basemap, airports, the trail,
@@ -1582,10 +1408,10 @@ function boot(): void {
   store.set("closeAirportPanel", closeAirportPanel);
   store.set("toggleDossierExpanded", toggleDossierExpanded);
   store.set("requestFocusPlane", requestFocusPlane);
-  store.set("toggleAircraftFavorite", toggleAircraftFavorite);
-  store.set("toggleRouteFavorite", toggleRouteFavorite);
-  store.set("removeFavoriteAircraft", removeFavoriteAircraft);
-  store.set("removeFavoriteRoute", removeFavoriteRoute);
+  store.set("toggleAircraftFavorite", favoriteActions.toggleAircraftFavorite);
+  store.set("toggleRouteFavorite", favoriteActions.toggleRouteFavorite);
+  store.set("removeFavoriteAircraft", favoriteActions.removeFavoriteAircraft);
+  store.set("removeFavoriteRoute", favoriteActions.removeFavoriteRoute);
   store.set("resumeTracking", startCycle);
   store.set("dismissResumeDialog", () => store.set("showResumeDialog", false));
   store.set("watchFlight", watchFlight);
@@ -1627,34 +1453,8 @@ function boot(): void {
   syncDock();
 
   // Tracked-chip: inline (not a separate component in the original either).
-  function renderTrackedChip(): void {
-    clear(trackedChipRoot);
-    trackedChipRoot.appendChild(
-      h(
-        "div",
-        { className: "tracked-chip" },
-        h("span", { className: "tracked-chip-dot", "aria-hidden": "true" }),
-        h(
-          "div",
-          { className: "tracked-chip-rows" },
-          h(
-            "div",
-            { className: "tracked-chip-row tracked-chip-row--active" },
-            h("span", { className: "tracked-chip-label" }, "Active"),
-            h("span", { className: "tracked-chip-value" }, store.get("trackedCount").toLocaleString()),
-          ),
-          h(
-            "div",
-            { className: "tracked-chip-row tracked-chip-row--seen" },
-            h("span", { className: "tracked-chip-label" }, "Seen"),
-            h("span", { className: "tracked-chip-value tracked-chip-value--seen" }, store.get("seenCount").toLocaleString()),
-          ),
-        ),
-      ),
-    );
-  }
-  renderTrackedChip();
-  store.subscribeMany(["trackedCount", "seenCount"], renderTrackedChip);
+  const trackedChip = createTrackedChip({ root: trackedChipRoot, store });
+  trackedChip.mount();
 
   // ---- follow-selected wiring ----
   function syncFollowSelected(): void {
