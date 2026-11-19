@@ -1,17 +1,84 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type ConsoleMessage, type Page } from "@playwright/test";
 import { LIVE_FIXTURE, freezeClock, mockFlightApi, setMapView, waitForMapReady, waitForPlanes } from "./helpers";
 
 // subscribeLiveFeed (src/api/flightApi.ts): what the browser client does
 // when /ws/live keeps dropping it.
 
+interface LiveLog {
+  connects: number[];
+  closes: { at: number; code: number }[];
+}
+
+/**
+ * Init script: wraps WebSocket so the page stamps each /ws/live attempt and
+ * close with its own (frozen) clock, so the delays are exact and a busy
+ * machine cannot stretch them. A handler is added at construction, so it runs
+ * before the app's own onclose.
+ */
+function logLiveSockets(): void {
+  const log: LiveLog = { connects: [], closes: [] };
+  (window as unknown as { __live: LiveLog }).__live = log;
+  const Native = window.WebSocket;
+  const Wrapped = function (this: unknown, url: string | URL, protocols?: string | string[]) {
+    const ws = protocols === undefined ? new Native(url) : new Native(url, protocols);
+    if (String(url).includes("/ws/live")) {
+      log.connects.push(Date.now());
+      ws.addEventListener("close", (e) => log.closes.push({ at: Date.now(), code: e.code }));
+    }
+    return ws;
+  } as unknown as typeof WebSocket;
+  Wrapped.prototype = Native.prototype;
+  Object.assign(Wrapped, { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 });
+  window.WebSocket = Wrapped;
+}
+
+const readLiveLog = (page: Page) => page.evaluate(() => (window as unknown as { __live: LiveLog }).__live);
+
+/** Page errors, and console errors/warnings about the live feed (other noise, e.g. blocked fonts or GL driver notes, is not ours). */
+function recordLiveFeedNoise(page: Page): { pageErrors: string[]; liveFeedLogs: string[] } {
+  const pageErrors: string[] = [];
+  const liveFeedLogs: string[] = [];
+  const isProblem = (m: ConsoleMessage) => m.type() === "error" || m.type() === "warning";
+  page.on("pageerror", (e) => pageErrors.push(e.message));
+  page.on("console", (m) => {
+    if (isProblem(m) && /live feed|websocket|ws\/live|1013/i.test(m.text())) liveFeedLogs.push(m.text());
+  });
+  return { pageErrors, liveFeedLogs };
+}
+
+/** Records every POST to /api/agents/restart (and answers it as the server would). */
+async function recordRestarts(page: Page): Promise<number[]> {
+  const restarts: number[] = [];
+  await page.route("**/api/agents/restart", (route) => {
+    restarts.push(Date.now());
+    return route.fulfill({ json: { active: true, secondsRemaining: 300 } });
+  });
+  return restarts;
+}
+
+/** Attempt k+1 has closed: the retry must not fire before 0.75 * base, and must fire exactly once by 1.25 * base. */
+async function expectOneRetryInJitterWindow(page: Page, k: number, base: number): Promise<void> {
+  // Just short of the earliest the retry may fire: nothing new. The margin
+  // is measured from the close's own stamp on the (frozen) clock, not from
+  // wherever the previous step stopped. The app arms its retry timer when
+  // the close reaches the page - a real-time event, however fast the clock
+  // runs - so virtual time a previous runFor had already advanced past that
+  // instant would otherwise be spent out of this margin and let the retry
+  // fire inside it.
+  const armedAt = (await readLiveLog(page)).closes[k].at;
+  const sinceArmed = await page.evaluate(() => Date.now()) - armedAt;
+  await page.clock.runFor(Math.max(0, base * 0.75 - 50 - sinceArmed));
+  await page.waitForTimeout(100); // before asserting that something did *not* happen
+  expect((await readLiveLog(page)).connects, `no retry before ${0.75 * base - 50} ms`).toHaveLength(k + 1);
+  // Past the latest it may fire: exactly one retry, not a burst.
+  await page.clock.runFor(base * 0.5 + 100);
+  await expect.poll(async () => (await readLiveLog(page)).connects.length, { timeout: 10_000 }).toBe(k + 2);
+}
+
 test.describe("live feed reconnect", () => {
   test("backs off exponentially on repeated drops and never calls /api/agents/restart from a reconnect", async ({ page }) => {
     await mockFlightApi(page);
-    const restarts: number[] = [];
-    await page.route("**/api/agents/restart", (route) => {
-      restarts.push(Date.now());
-      return route.fulfill({ json: { active: true, secondsRemaining: 300 } });
-    });
+    const restarts = await recordRestarts(page);
     const connects: { at: number; url: string }[] = [];
     // Accept the upgrade, then drop it straight away the way a server does
     // when it gives up on a client (1011) — over and over.
@@ -49,64 +116,23 @@ test.describe("live feed reconnect", () => {
       accepted++;
       ws.close({ code: 1013, reason: "try again later" });
     });
-    // The page's own view of each attempt, stamped by its (frozen) clock, so
-    // the delays are exact and a busy machine cannot stretch them. A handler
-    // is added at construction, so it runs before the app's own onclose.
-    await page.addInitScript(() => {
-      const log = { connects: [] as number[], closes: [] as { at: number; code: number }[] };
-      (window as unknown as { __live: typeof log }).__live = log;
-      const Native = window.WebSocket;
-      const Wrapped = function (this: unknown, url: string | URL, protocols?: string | string[]) {
-        const ws = protocols === undefined ? new Native(url) : new Native(url, protocols);
-        if (String(url).includes("/ws/live")) {
-          log.connects.push(Date.now());
-          ws.addEventListener("close", (e) => log.closes.push({ at: Date.now(), code: e.code }));
-        }
-        return ws;
-      } as unknown as typeof WebSocket;
-      Wrapped.prototype = Native.prototype;
-      Object.assign(Wrapped, { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 });
-      window.WebSocket = Wrapped;
-    });
-    const pageErrors: string[] = [];
-    const liveFeedLogs: string[] = []; // other console noise (blocked fonts, GL driver notes) is not ours
-    page.on("pageerror", (e) => pageErrors.push(e.message));
-    page.on("console", (m) => {
-      if ((m.type() === "error" || m.type() === "warning") && /live feed|websocket|ws\/live|1013/i.test(m.text())) liveFeedLogs.push(m.text());
-    });
-    const restarts: number[] = [];
-    await page.route("**/api/agents/restart", (route) => {
-      restarts.push(Date.now());
-      return route.fulfill({ json: { active: true, secondsRemaining: 300 } });
-    });
+    // The page's own view of each attempt, stamped by its (frozen) clock.
+    await page.addInitScript(logLiveSockets);
+    const { pageErrors, liveFeedLogs } = recordLiveFeedNoise(page);
+    const restarts = await recordRestarts(page);
 
     await freezeClock(page);
     await page.goto("/");
     await waitForMapReady(page);
 
-    const live = () =>
-      page.evaluate(() => (window as unknown as { __live: { connects: number[]; closes: { at: number; code: number }[] } }).__live);
+    const live = () => readLiveLog(page);
     // Delays: 1s, 2s, 4s, 8s, 16s, then capped at 30s; each jittered +-25%.
     const bases = [1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000, 30_000];
     for (let k = 0; k < bases.length; k++) {
       // attempt k+1 has been made, and its 1013 close has reached the page
       await expect.poll(async () => (await live()).closes.length, { timeout: 10_000 }).toBe(k + 1);
       expect(accepted).toBe(k + 1);
-      // Just short of the earliest the retry may fire: nothing new. The margin
-      // is measured from the close's own stamp on the (frozen) clock, not from
-      // wherever the previous step stopped. The app arms its retry timer when
-      // the close reaches the page - a real-time event, however fast the clock
-      // runs - so virtual time a previous runFor had already advanced past that
-      // instant would otherwise be spent out of this margin and let the retry
-      // fire inside it.
-      const armedAt = (await live()).closes[k].at;
-      const sinceArmed = await page.evaluate(() => Date.now()) - armedAt;
-      await page.clock.runFor(Math.max(0, bases[k] * 0.75 - 50 - sinceArmed));
-      await page.waitForTimeout(100); // before asserting that something did *not* happen
-      expect((await live()).connects, `no retry before ${0.75 * bases[k] - 50} ms`).toHaveLength(k + 1);
-      // Past the latest it may fire: exactly one retry, not a burst.
-      await page.clock.runFor(bases[k] * 0.5 + 100);
-      await expect.poll(async () => (await live()).connects.length, { timeout: 10_000 }).toBe(k + 2);
+      await expectOneRetryInJitterWindow(page, k, bases[k]);
     }
     await expect.poll(async () => (await live()).closes.length, { timeout: 10_000 }).toBe(bases.length + 1);
 
