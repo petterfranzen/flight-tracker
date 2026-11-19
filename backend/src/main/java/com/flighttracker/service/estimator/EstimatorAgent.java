@@ -177,91 +177,119 @@ public class EstimatorAgent {
         // again until it stops.
         phases.populating("refreshing estimated positions");
 
-        Set<String> alreadyEstimated = liveStateStore.icao24sWithEstimate();
-        Set<String> inGap = new HashSet<>();
-        int snapshotLoads = 0;
-
-        int written = 0;
-        int gapWritten = 0;
-        int failed = 0;
-        String firstFailure = null;
+        Tick tick = new Tick(now, liveStateStore.icao24sWithEstimate());
         for (LiveAircraft a : live) {
-            try {
-                Optional<Route> route = routeService.cached(a.callsign());
-                Double destLat = route.map(Route::destinationAirportLat).orElse(null);
-                Double destLon = route.map(Route::destinationAirportLon).orElse(null);
-
-                if (isInGap(a)) {
-                    inGap.add(a.icao24());
-                    Snapshot snap = snapshots.get(a.icao24());
-                    boolean freshSnapshot = snap == null || !snap.observedAt().equals(a.observedAt());
-                    if (freshSnapshot) {
-                        if (snapshotLoads >= maxSnapshotLoadsPerTick) continue; // next tick; keeps what it shows now
-                        snapshotLoads++;
-                        snap = loadSnapshot(a);
-                        snapshots.put(a.icao24(), snap);
-                    }
-                    GapEstimate gap = gapEstimator.estimate(new GapInput(
-                            snap.recent(),
-                            runwayIndex.near(a.latitude(), a.longitude(), runwayRadiusM),
-                            route.map(Route::destinationAirport).orElse(null),
-                            destLat, destLon, now));
-                    gap = learn(a, snap, route, gap, freshSnapshot);
-                    if (liveStateStore.writeGapEstimate(a.icao24(), a.observedAt(), gap)) {
-                        written++;
-                        gapWritten++;
-                    }
-                    continue;
-                }
-
-                // The raw last report, not the display position: that may
-                // already be last cycle's estimate, and projecting from it
-                // would count the elapsed time twice.
-                FlightPosition p = new FlightPosition(a.icao24(), a.callsign(), a.observedAt(),
-                        a.latitude(), a.longitude(), a.altitudeM(), a.velocityMs(), a.headingDeg(),
-                        a.verticalRateMs(), a.onGround(), a.agentSource());
-                // estimate() returns the exact same reference `p` when it
-                // decided not to project (on ground, no destination, too
-                // slow, too recent) and a new object only when it actually
-                // did — cheap, correct way to tell which happened without
-                // re-deriving the eligibility rules here.
-                FlightPosition estimated = EstimatedPositionService.estimate(p, now, destLat, destLon);
-                boolean projected = estimated != p;
-                if (!projected && !alreadyEstimated.contains(a.icao24())) continue; // null over already-null: nothing to do
-
-                boolean applied = liveStateStore.writeEstimate(a.icao24(), a.observedAt(),
-                        projected ? estimated.latitude() : null,
-                        projected ? estimated.longitude() : null,
-                        projected ? now : null);
-                if (applied) written++;
-            } catch (RuntimeException e) {
-                // One summary line per tick below; the stack of each stays at debug.
-                if (failed++ == 0) firstFailure = a.icao24() + ": " + e;
-                log.debug("Estimating {} failed this cycle", a.icao24(), e);
-            }
+            estimateOne(a, tick);
         }
-        if (failed > 0) {
+        if (tick.failed > 0) {
             log.warn("Estimating failed for {} of {} live aircraft this cycle; first: {}",
-                    failed, live.size(), firstFailure);
+                    tick.failed, live.size(), tick.firstFailure);
         }
-        snapshots.keySet().retainAll(inGap); // no longer in a gap, or evicted
-        training.reconcile(inGap, liveStateStore::get);
+        snapshots.keySet().retainAll(tick.inGap); // no longer in a gap, or evicted
+        training.reconcile(tick.inGap, liveStateStore::get);
         training.flush();
 
         log.debug("estimated positions for {} of {} live aircraft ({} in a coverage gap, {} snapshot loads)",
-                written, live.size(), gapWritten, snapshotLoads);
+                tick.written, live.size(), tick.gapWritten, tick.snapshotLoads);
+    }
+
+    /** One refresh cycle's inputs and running counts. */
+    private static final class Tick {
+        final Instant now;
+        final Set<String> alreadyEstimated;
+        final Set<String> inGap = new HashSet<>();
+        int snapshotLoads;
+        int written;
+        int gapWritten;
+        int failed;
+        String firstFailure;
+
+        Tick(Instant now, Set<String> alreadyEstimated) {
+            this.now = now;
+            this.alreadyEstimated = alreadyEstimated;
+        }
+    }
+
+    /** The aircraft, its route and the snapshot a gap estimate is computed from. */
+    private record GapContext(LiveAircraft aircraft, Optional<Route> route, Snapshot snapshot, boolean freshSnapshot) { }
+
+    private void estimateOne(LiveAircraft a, Tick tick) {
+        try {
+            Optional<Route> route = routeService.cached(a.callsign());
+            if (isInGap(a)) {
+                estimateGap(a, route, tick);
+            } else {
+                deadReckon(a, route, tick);
+            }
+        } catch (RuntimeException e) {
+            // One summary line per tick; the stack of each stays at debug.
+            if (tick.failed++ == 0) tick.firstFailure = a.icao24() + ": " + e;
+            log.debug("Estimating {} failed this cycle", a.icao24(), e);
+        }
+    }
+
+    private void estimateGap(LiveAircraft a, Optional<Route> route, Tick tick) {
+        tick.inGap.add(a.icao24());
+        Snapshot snap = snapshots.get(a.icao24());
+        boolean freshSnapshot = snap == null || !snap.observedAt().equals(a.observedAt());
+        if (freshSnapshot) {
+            if (tick.snapshotLoads >= maxSnapshotLoadsPerTick) return; // next tick; keeps what it shows now
+            tick.snapshotLoads++;
+            snap = loadSnapshot(a);
+            snapshots.put(a.icao24(), snap);
+        }
+        GapEstimate gap = gapEstimator.estimate(new GapInput(
+                snap.recent(),
+                runwayIndex.near(a.latitude(), a.longitude(), runwayRadiusM),
+                route.map(Route::destinationAirport).orElse(null),
+                route.map(Route::destinationAirportLat).orElse(null),
+                route.map(Route::destinationAirportLon).orElse(null),
+                tick.now));
+        gap = learn(new GapContext(a, route, snap, freshSnapshot), gap);
+        if (liveStateStore.writeGapEstimate(a.icao24(), a.observedAt(), gap)) {
+            tick.written++;
+            tick.gapWritten++;
+        }
+    }
+
+    private void deadReckon(LiveAircraft a, Optional<Route> route, Tick tick) {
+        // The raw last report, not the display position: that may
+        // already be last cycle's estimate, and projecting from it
+        // would count the elapsed time twice.
+        FlightPosition p = new FlightPosition(a.icao24(), a.callsign(), a.observedAt(),
+                a.latitude(), a.longitude(), a.altitudeM(), a.velocityMs(), a.headingDeg(),
+                a.verticalRateMs(), a.onGround(), a.agentSource());
+        // estimate() returns the exact same reference `p` when it
+        // decided not to project (on ground, no destination, too
+        // slow, too recent) and a new object only when it actually
+        // did — cheap, correct way to tell which happened without
+        // re-deriving the eligibility rules here.
+        FlightPosition estimated = EstimatedPositionService.estimate(p, tick.now,
+                route.map(Route::destinationAirportLat).orElse(null),
+                route.map(Route::destinationAirportLon).orElse(null));
+        boolean applied = estimated != p
+                ? liveStateStore.writeEstimate(a.icao24(), a.observedAt(), estimated.latitude(), estimated.longitude(), tick.now)
+                : clearEstimate(a, tick);
+        if (applied) tick.written++;
+    }
+
+    /** Clears a stale estimate; null over already-null is skipped (nothing to do). */
+    private boolean clearEstimate(LiveAircraft a, Tick tick) {
+        if (!tick.alreadyEstimated.contains(a.icao24())) return false;
+        return liveStateStore.writeEstimate(a.icao24(), a.observedAt(), null, null, null);
     }
 
     /**
      * Hands the physics answer to the training capture, then lets the
      * landing model replace its probability. Training never breaks the estimate.
      */
-    private GapEstimate learn(LiveAircraft a, Snapshot snap, Optional<Route> route, GapEstimate physics, boolean freshSnapshot) {
+    private GapEstimate learn(GapContext ctx, GapEstimate physics) {
+        LiveAircraft a = ctx.aircraft();
         try {
-            TrackEndFeatures features = TrackEndFeatures.of(a, snap.recent(),
-                    route.map(Route::originAirport).orElse(null),
-                    route.map(Route::destinationAirport).orElse(null), physics);
-            training.onGapEstimate(a, features, freshSnapshot);
+            TrackEndFeatures features = TrackEndFeatures.of(a, ctx.snapshot().recent(),
+                    ctx.route().map(Route::originAirport).orElse(null),
+                    ctx.route().map(Route::destinationAirport).orElse(null), physics);
+            training.onGapEstimate(a, features, ctx.freshSnapshot());
             return landingModel.landingProbability(features).map(physics::withModelProbability).orElse(physics);
         } catch (RuntimeException e) {
             log.warn("Training capture or landing model failed for {}", a.icao24(), e);
