@@ -2,6 +2,8 @@ package com.flighttracker.config;
 
 import com.flighttracker.controller.ProfileController;
 import com.flighttracker.profile.ProfileProperties;
+import com.flighttracker.profile.ProfileReader;
+import com.flighttracker.profile.ProfileSnapshot;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.SpringBootConfiguration;
@@ -9,6 +11,7 @@ import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -18,9 +21,13 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * Design section9-hq #84 step 2(b): drive a real login round-trip against a
@@ -73,6 +80,19 @@ class OidcLoginRoundTripTest {
     @EnableConfigurationProperties(ProfileProperties.class)
     @Import({ProfileSecurityConfig.class, ProfileController.class})
     static class MinimalApp {
+
+        /**
+         * This test is the login round-trip, not the read: the endpoint's own read
+         * against real rows is pinned in {@link ProfileReadMockMvcTest}, so here it
+         * is stubbed, echoing the provider the controller extracted from the session.
+         */
+        @Bean
+        ProfileReader profileReader() {
+            ProfileReader reader = mock(ProfileReader.class);
+            when(reader.read(anyString(), anyString()))
+                    .thenAnswer(call -> new ProfileSnapshot(call.getArgument(0), List.of(), List.of()));
+            return reader;
+        }
     }
 
     @DynamicPropertySource
@@ -116,10 +136,11 @@ class OidcLoginRoundTripTest {
         assertThat(sessionId(sessionAfter)).isNotEqualTo(sessionId(sessionBefore));
         assertThat(sessionAfter).contains("HttpOnly");
 
-        // 4. The session reaches the profile, which reports the provider id only.
+        // 4. The session reaches the profile, which reports the provider id and the
+        //    two lists of step 5a-2 (D4) -- empty here, no profile id, no subject.
         HttpResponse<String> profile = getBody(client, "http://127.0.0.1:" + PORT + "/api/profile", sessionAfter);
         assertThat(profile.statusCode()).isEqualTo(200);
-        assertThat(profile.body()).isEqualTo("{\"provider\":\"fake\"}");
+        assertThat(profile.body()).isEqualTo("{\"provider\":\"fake\",\"favorites\":[],\"watched\":[]}");
     }
 
     private static HttpResponse<String> getBody(HttpClient client, String url, String cookie) throws Exception {
