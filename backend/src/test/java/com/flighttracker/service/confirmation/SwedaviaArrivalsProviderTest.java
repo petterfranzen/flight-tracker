@@ -51,7 +51,7 @@ class SwedaviaArrivalsProviderTest {
     }
 
     private SwedaviaArrivalsProvider provider(boolean enabled, String key, String secondary) {
-        return new SwedaviaArrivalsProvider(clock, new PhaseLogger(), enabled, key, secondary, BASE, builder);
+        return new SwedaviaArrivalsProvider(clock, new PhaseLogger(), new SwedaviaSettings(enabled, key, secondary, BASE), builder);
     }
 
     private SwedaviaArrivalsProvider provider() {
@@ -250,7 +250,8 @@ class SwedaviaArrivalsProviderTest {
     @Test
     void bothKeysRejectedInARow_lockTheProviderOutUntilUtcMidnight() {
         PhaseLogger logger = mock(PhaseLogger.class);
-        SwedaviaArrivalsProvider provider = new SwedaviaArrivalsProvider(clock, logger, true, "primary", "secondary", BASE, builder);
+        SwedaviaArrivalsProvider provider = new SwedaviaArrivalsProvider(clock, logger,
+                new SwedaviaSettings(true, "primary", "secondary", BASE), builder);
         server.expect(once(), requestTo(ARN_TODAY)).andExpect(header("Ocp-Apim-Subscription-Key", "primary"))
                 .andRespond(withStatus(HttpStatus.UNAUTHORIZED));
         server.expect(once(), requestTo(ARN_TODAY)).andExpect(header("Ocp-Apim-Subscription-Key", "secondary"))

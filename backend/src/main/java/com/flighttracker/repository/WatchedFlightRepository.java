@@ -32,6 +32,17 @@ public class WatchedFlightRepository {
         this.clock = clock;
     }
 
+    /** The primary key of one watched flight, bound to a statement's named parameters. */
+    private record Key(String profileId, String flightNumber, String flightDate, String airport) {
+        JdbcClient.StatementSpec bind(JdbcClient.StatementSpec statement) {
+            return statement
+                    .param("profileId", profileId)
+                    .param("flightNumber", flightNumber)
+                    .param("flightDate", flightDate)
+                    .param("airport", airport);
+        }
+    }
+
     private static WatchedFlight mapRow(ResultSet rs, int rowNum) throws SQLException {
         return new WatchedFlight(
                 rs.getString("profile_id"),
@@ -53,15 +64,11 @@ public class WatchedFlightRepository {
     }
 
     public Optional<WatchedFlight> find(String profileId, String flightNumber, String flightDate, String airport) {
-        return jdbcClient.sql("""
+        return new Key(profileId, flightNumber, flightDate, airport).bind(jdbcClient.sql("""
                 SELECT * FROM watched_flight
                 WHERE profile_id = :profileId AND flight_number = :flightNumber
                   AND flight_date = :flightDate AND airport = :airport
-                """)
-                .param("profileId", profileId)
-                .param("flightNumber", flightNumber)
-                .param("flightDate", flightDate)
-                .param("airport", airport)
+                """))
                 .query(WatchedFlightRepository::mapRow)
                 .optional();
     }
@@ -76,7 +83,7 @@ public class WatchedFlightRepository {
      */
     public void upsert(String profileId, String flightNumber, String flightDate, String airport, String label) {
         ProfileLimits.checkWatchedFlight(flightNumber, flightDate, airport, label);
-        int written = jdbcClient.sql("""
+        int written = new Key(profileId, flightNumber, flightDate, airport).bind(jdbcClient.sql("""
                 INSERT INTO watched_flight
                     (profile_id, flight_number, flight_date, airport, label, updated_at)
                 SELECT :profileId, :flightNumber, :flightDate, :airport, :label, :now
@@ -87,11 +94,7 @@ public class WatchedFlightRepository {
                 ON CONFLICT (profile_id, flight_number, flight_date, airport) DO UPDATE SET
                     label = excluded.label,
                     updated_at = excluded.updated_at
-                """)
-                .param("profileId", profileId)
-                .param("flightNumber", flightNumber)
-                .param("flightDate", flightDate)
-                .param("airport", airport)
+                """))
                 .param("label", label)
                 .param("now", clock.millis())
                 .param("max", ProfileLimits.MAX_WATCHED_FLIGHTS_PER_PROFILE)
@@ -104,15 +107,11 @@ public class WatchedFlightRepository {
     }
 
     public int delete(String profileId, String flightNumber, String flightDate, String airport) {
-        return jdbcClient.sql("""
+        return new Key(profileId, flightNumber, flightDate, airport).bind(jdbcClient.sql("""
                 DELETE FROM watched_flight
                 WHERE profile_id = :profileId AND flight_number = :flightNumber
                   AND flight_date = :flightDate AND airport = :airport
-                """)
-                .param("profileId", profileId)
-                .param("flightNumber", flightNumber)
-                .param("flightDate", flightDate)
-                .param("airport", airport)
+                """))
                 .update();
     }
 

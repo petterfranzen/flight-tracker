@@ -1,24 +1,14 @@
 import type { AppStore } from "../state/appState";
 import { searchSchedule, type ScheduledFlight } from "../api/flightApi";
 import { watchKey, type WatchedFlight } from "../watchlist";
-import { NOTIFY_ENABLED, notificationPermission, requestNotificationPermission, showOsNotification } from "../notify/notifier";
-import { notifyStateFor, setFlightEnabled } from "../notify/state";
+import { notificationPermission, requestNotificationPermission } from "../notify/notifier";
+import { setFlightEnabled } from "../notify/state";
 import { h, clear } from "./h";
+import { notifyBlock, renderToggle, rescrollWhenSettled, resultsList, routeOf, searchQuery, watchedRow } from "./watchPanelRows";
 import { activateModal, closeOnEscape, isPhone, modalOpen, type ModalHandle } from "./a11y";
 import { closeControlPanel, registerControlPanel, toggleControlPanel } from "./controlStack";
 import "../components/WatchPanel.css";
 import "../components/ControlPanel.css";
-
-const timeOf = (iso: string | null): string =>
-  iso ? new Date(iso).toLocaleTimeString("sv-SE", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Stockholm" }) : "–";
-
-function describe(f: ScheduledFlight): string {
-  const est = f.estimated && f.estimated !== f.scheduled ? ` → est ${timeOf(f.estimated)}` : "";
-  const gate = f.gate ? ` · gate ${f.gate}` : "";
-  return `${f.direction === "arrivals" ? "arr" : "dep"} ${timeOf(f.scheduled)}${est}${gate} · ${f.status ?? "no status"}`;
-}
-
-const routeOf = (f: ScheduledFlight): string => `${f.departureIata ?? "?"} → ${f.arrivalIata ?? "?"}`;
 
 /**
  * Find a flight before it flies (Swedavia boards, via /api/schedule/search) and
@@ -49,14 +39,7 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
   const dateInput = h("input", { type: "date", className: "watch-panel-date", value: today, "aria-label": "Date" });
 
   function render(): void {
-    // Static markup, the count is a number. The label and chevron show on desktop;
-    // on a phone the button is a round icon like the search and favourites ones.
-    toggle.innerHTML =
-      `<svg class="watch-panel-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 16v-2l-8-5V3.5a1.5 1.5 0 0 0-3 0V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5z"/></svg>` +
-      `<span class="watch-panel-label">Watch${watched.length ? ` (${watched.length})` : ""} ${open ? "\u25b2" : "\u25bc"}</span>` +
-      (watched.length ? `<span class="watch-panel-count" aria-hidden="true">${watched.length}</span>` : "");
-    toggle.setAttribute("aria-label", `Watch flights${watched.length ? `, ${watched.length} watched` : ""}`);
-    toggle.setAttribute("aria-expanded", String(open));
+    renderToggle(toggle, watched.length, open);
     content.classList.toggle("control-panel--open", open);
     content.hidden = !open;
     syncModal();
@@ -64,127 +47,52 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     clear(dyn);
     // role=status => polite announcement of "Searching…", "No matching flights…", a search error.
     if (message) dyn.appendChild(h("p", { className: "watch-panel-message", role: "status" }, message));
-
-    if (results.length) {
-      const list = h("ul", { className: "watch-panel-results" });
-      for (const f of results) {
-        const already = watched.some((w) => watchKey(w) === watchKey({ flightNumber: f.flightNumber, date: dateInput.value, airport: f.airport }));
-        list.appendChild(
-          h("li", { className: "watch-panel-result" },
-            h("span", { className: "watch-panel-name" }, `${f.flightNumber} ${routeOf(f)}`),
-            h("span", { className: "watch-panel-detail" }, describe(f)),
-            h("button", { type: "button", className: "watch-panel-watch", disabled: already, onClick: () => watch(f) }, already ? "Watching" : "Watch"),
-          ),
-        );
-      }
-      dyn.appendChild(list);
-    }
-
-    if (watched.length) {
-      dyn.appendChild(h("div", { className: "watch-panel-heading" }, "Watched flights"));
-      const list = h("ul", { className: "watch-panel-watched" });
-      let scrollTarget: HTMLElement | null = null;
-      for (const w of watched) {
-        const key = watchKey(w);
-        const f = status[key] ?? null;
-        const airborne = !!(f && f.airborne && f.icao24);
-        const notifyOn = NOTIFY_ENABLED && !!notifyStateFor(key).enabled;
-        const bell = NOTIFY_ENABLED
-          ? h(
-              "button",
-              {
-                type: "button",
-                className: `watch-panel-bell${notifyOn ? " watch-panel-bell--on" : ""}`,
-                "aria-label": `Notifications for ${w.flightNumber}`,
-                "aria-expanded": String(notifyOpen === key),
-                onClick: () => {
-                  notifyOpen = notifyOpen === key ? null : key;
-                  render();
-                },
-              },
-              bellIcon(),
-            )
-          : null;
-        const item = h("li", { className: "watch-panel-item" },
-          h("span", { className: "watch-panel-name" }, `${w.flightNumber} ${w.label} - ${w.date}`),
-          h("span", { className: "watch-panel-detail" }, f ? describe(f) : "no data yet"),
-          h("div", { className: "watch-panel-actions" },
-            airborne
-              ? h("button", { type: "button", className: "watch-panel-goto", onClick: () => goto(w) }, "Go to")
-              : h("span", { className: "watch-panel-ground" }, "not airborne yet"),
-            bell,
-            h("button", { type: "button", className: "watch-panel-remove", "aria-label": `Stop watching ${w.flightNumber}`, onClick: () => store.get("unwatchFlight")(w) }, "\u2715"),
-          ),
-          notifyOpen === key ? notifyBlock(w) : null,
-        );
-        if (pendingScrollKey && watchKey(w) === pendingScrollKey) scrollTarget = item;
-        list.appendChild(item);
-      }
-      dyn.appendChild(list);
-      if (scrollTarget) {
-        // "nearest": scrolls the panel's own box, not the page, and does
-        // nothing on desktop where the list already fits.
-        scrollTarget.scrollIntoView({ block: "nearest" });
-        // One scroll is not enough. The row grows a line once the poll fills
-        // its schedule detail (and swaps "not airborne yet" for "Go to"), which
-        // clips the taller row at the panel's edge. Keep the fresh entry pinned
-        // until its status row lands, re-scrolling on that render, then check
-        // once more after the layout settles in case the text wrapped late.
-        if (pendingScrollKey && pendingScrollKey in status) {
-          pendingScrollKey = null;
-          const target = scrollTarget;
-          const box = content;
-          requestAnimationFrame(() => {
-            if (!target.isConnected) return;
-            const itemBox = target.getBoundingClientRect();
-            const panelBox = box.getBoundingClientRect();
-            if (itemBox.bottom > panelBox.bottom + 1 || itemBox.top < panelBox.top - 1) {
-              target.scrollIntoView({ block: "nearest" });
-            }
-          });
-        }
-      }
-    }
+    if (results.length) dyn.appendChild(resultsList({ results, watched, date: dateInput.value, onWatch: watch }));
+    if (watched.length) renderWatched();
   }
 
-  function bellIcon(): HTMLElement {
-    const span = h("span", { className: "watch-panel-bell-icon", "aria-hidden": "true" });
-    span.innerHTML =
-      '<svg viewBox="0 0 24 24"><path d="M12 22a2.2 2.2 0 0 0 2.2-2.2h-4.4A2.2 2.2 0 0 0 12 22zm7-5.2V11a7 7 0 0 0-5.2-6.8V3.5a1.8 1.8 0 0 0-3.6 0v.7A7 7 0 0 0 5 11v5.8L3.5 18v1h17v-1z"/></svg>';
-    return span;
+  function renderWatched(): void {
+    dyn.appendChild(h("div", { className: "watch-panel-heading" }, "Watched flights"));
+    const list = h("ul", { className: "watch-panel-watched" });
+    let scrollTarget: HTMLElement | null = null;
+    for (const w of watched) {
+      const item = watchedItem(w);
+      if (pendingScrollKey && watchKey(w) === pendingScrollKey) scrollTarget = item;
+      list.appendChild(item);
+    }
+    dyn.appendChild(list);
+    if (scrollTarget) scrollToNew(scrollTarget);
   }
 
-  /** The consent copy and the permission states from #82 design §5. */
-  function notifyBlock(w: WatchedFlight): HTMLElement {
+  function watchedItem(w: WatchedFlight): HTMLElement {
     const key = watchKey(w);
-    const perm = notificationPermission();
-    const enabled = !!notifyStateFor(key).enabled;
-    const ios = /iPad|iPhone|iPod/.test(navigator.userAgent);
-    const line =
-      perm === "unsupported"
-        ? "Notifications: not supported here"
-        : perm === "denied"
-          ? "Notifications: blocked in your browser \u2014 the in-app banner still works."
-          : enabled
-            ? "Notifications: on"
-            : "Notifications: not enabled for this flight";
-    const actions: HTMLElement[] = [];
-    if (enabled) {
-      actions.push(h("button", { type: "button", className: "watch-panel-notify-action", onClick: () => { setFlightEnabled(key, false); render(); } }, "Turn off"));
-      if (perm === "granted") {
-        actions.push(h("button", { type: "button", className: "watch-panel-notify-action", onClick: () => { void showOsNotification("Netwatch Skygrid", `Test notification for ${w.flightNumber}.`, { key }); } }, "Send a test notification"));
-      }
-    } else if (perm === "granted" || perm === "default") {
-      actions.push(h("button", { type: "button", className: "watch-panel-notify-action", onClick: () => { void enableNotifications(w); } }, "Notify me"));
+    return watchedRow({
+      w,
+      flight: status[key] ?? null,
+      notifyExpanded: notifyOpen === key,
+      onBell: () => {
+        notifyOpen = notifyOpen === key ? null : key;
+        render();
+      },
+      onGoto: () => goto(w),
+      onRemove: () => store.get("unwatchFlight")(w),
+      notify: () => notifyBlock({ w, rerender: render, enable: (f) => void enableNotifications(f) }),
+    });
+  }
+
+  function scrollToNew(target: HTMLElement): void {
+    // "nearest": scrolls the panel's own box, not the page, and does
+    // nothing on desktop where the list already fits.
+    target.scrollIntoView({ block: "nearest" });
+    // One scroll is not enough. The row grows a line once the poll fills
+    // its schedule detail (and swaps "not airborne yet" for "Go to"), which
+    // clips the taller row at the panel's edge. Keep the fresh entry pinned
+    // until its status row lands, re-scrolling on that render, then check
+    // once more after the layout settles in case the text wrapped late.
+    if (pendingScrollKey && pendingScrollKey in status) {
+      pendingScrollKey = null;
+      rescrollWhenSettled(target, content);
     }
-    return h(
-      "div",
-      { className: "watch-panel-notify" },
-      h("p", { className: "watch-panel-notify-copy" }, "Notifications appear while this site is open \u2014 a background tab is fine, a closed browser is not."),
-      ios ? h("p", { className: "watch-panel-notify-copy" }, "On iPhone, add this site to your Home Screen first.") : null,
-      h("p", { className: "watch-panel-notify-status" }, line),
-      actions.length ? h("div", { className: "watch-panel-notify-actions" }, ...actions) : null,
-    );
   }
 
   /** The bell's "Notify me" click: the only place a permission prompt appears. */
@@ -196,17 +104,15 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
   }
 
   async function search(): Promise<void> {
-    const flight = flightInput.value.trim();
-    const from = fromInput.value.trim();
-    const to = toInput.value.trim();
-    if (!flight && !(from && to)) {
+    const query = searchQuery({ flight: flightInput.value.trim(), from: fromInput.value.trim(), to: toInput.value.trim(), date: dateInput.value });
+    if (!query) {
       message = "Enter a flight number, or both From and To";
       return render();
     }
     message = "Searching\u2026";
     render();
     try {
-      results = await searchSchedule({ flight: flight || undefined, from: flight ? undefined : from, to: flight ? undefined : to, date: dateInput.value });
+      results = await searchSchedule(query);
       message = results.length ? "" : "No matching flights on a Swedavia board";
     } catch (e) {
       results = [];

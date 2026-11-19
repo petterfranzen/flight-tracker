@@ -1,12 +1,9 @@
 package com.flighttracker.service.confirmation;
 
-import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.ObjectMapper;
 import com.flighttracker.observability.PhaseLogger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
@@ -20,15 +17,10 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.time.OffsetDateTime;
 import java.time.ZoneId;
-import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
@@ -86,46 +78,32 @@ public class SwedaviaArrivalsProvider implements AirportArrivalsProvider {
             "ESSA", "ARN", "ESSB", "BMA", "ESGG", "GOT", "ESMS", "MMX", "ESPA", "LLA",
             "ESNU", "UME", "ESNZ", "OSD", "ESSV", "VBY", "ESDF", "RNB", "ESNQ", "KRN");
 
-    private static final List<String> NO_LANDING_STATUSES = List.of("CAN", "DEL", "DIV");
-
     /** One HTTP exchange, read out before the connection closes. */
     private record Http(int status, String retryAfter, String body) { }
 
+    /** One day board to ask for: {@code GET /{iata}/{direction}/{date}}. */
+    private record BoardRequest(String iata, String direction, LocalDate date) { }
+
     private final RestClient client;
-    private final ObjectMapper mapper = new ObjectMapper();
+    private final SwedaviaBoardParser parser = new SwedaviaBoardParser();
     private final Clock clock;
     private final PhaseLogger phases;
-    private final String primaryKey;
-    private final String secondaryKey;
+    private final SwedaviaKeys keys;
     private final boolean flag;
 
-    /** The key to use next: switched on every 401/403, so a rotated-out key is not hammered. */
-    private volatile boolean secondaryPreferred;
-    /** Keys rejected one after the other; any answer that is not a 401/403 resets it. */
-    private volatile int rejectedInARow;
-    /** While the clock is before this, every key was rejected and the provider is off. */
-    private volatile Instant lockedUntil = Instant.EPOCH;
-
     @Autowired
-    public SwedaviaArrivalsProvider(Clock clock,
-                                    PhaseLogger phases,
-                                    @Value("${flighttracker.confirmation.swedavia.enabled:true}") boolean enabled,
-                                    @Value("${flighttracker.confirmation.swedavia.api-key:}") String apiKey,
-                                    @Value("${flighttracker.confirmation.swedavia.api-key-secondary:}") String apiKeySecondary,
-                                    @Value("${flighttracker.confirmation.swedavia.base-url:https://api.swedavia.se/flightinfo/v2}") String baseUrl) {
-        this(clock, phases, enabled, apiKey, apiKeySecondary, baseUrl, defaultBuilder());
+    public SwedaviaArrivalsProvider(Clock clock, PhaseLogger phases, SwedaviaSettings settings) {
+        this(clock, phases, settings, defaultBuilder());
     }
 
     /** For tests: a builder that may already be bound to a mock server. */
-    SwedaviaArrivalsProvider(Clock clock, PhaseLogger phases, boolean enabled, String apiKey, String apiKeySecondary,
-                             String baseUrl, RestClient.Builder builder) {
+    SwedaviaArrivalsProvider(Clock clock, PhaseLogger phases, SwedaviaSettings settings, RestClient.Builder builder) {
         this.clock = clock;
         this.phases = phases;
-        this.flag = enabled;
-        this.primaryKey = apiKey == null ? "" : apiKey.trim();
-        this.secondaryKey = apiKeySecondary == null ? "" : apiKeySecondary.trim();
-        this.client = builder.baseUrl(baseUrl).build();
-        if (flag && !hasKey()) {
+        this.flag = settings.enabled();
+        this.keys = new SwedaviaKeys(settings, clock);
+        this.client = builder.baseUrl(settings.baseUrl()).build();
+        if (flag && !keys.any()) {
             log.info("Swedavia arrival confirmation is disabled: no SWEDAVIA_API_KEY configured");
         }
     }
@@ -137,10 +115,6 @@ public class SwedaviaArrivalsProvider implements AirportArrivalsProvider {
         return RestClient.builder().requestFactory(requestFactory);
     }
 
-    private boolean hasKey() {
-        return !primaryKey.isEmpty() || !secondaryKey.isEmpty();
-    }
-
     @Override
     public String id() {
         return ID;
@@ -149,7 +123,7 @@ public class SwedaviaArrivalsProvider implements AirportArrivalsProvider {
     /** The flag is on, at least one key is configured and the keys have not all just been rejected. */
     @Override
     public boolean enabled() {
-        return flag && hasKey() && !clock.instant().isBefore(lockedUntil);
+        return flag && keys.any() && !keys.lockedOut();
     }
 
     @Override
@@ -165,32 +139,57 @@ public class SwedaviaArrivalsProvider implements AirportArrivalsProvider {
 
     @Override
     public BoardResult fetchArrivals(String arrivalAirportIcao, LocalDate boardDate) {
-        String icao = arrivalAirportIcao == null ? "" : arrivalAirportIcao.trim().toUpperCase(Locale.ROOT);
+        String icao = normalised(arrivalAirportIcao);
         String iata = IATA_BY_ICAO.get(icao);
-        if (iata == null || boardDate == null || !enabled()) return BoardResult.failed().withCost(0);
-
+        if (iata == null || !canAsk(boardDate)) return BoardResult.failed().withCost(0);
         // Outside the window Swedavia answers 400: there is no board, and asking costs quota.
-        LocalDate today = boardDate(clock.instant());
-        if (boardDate.isBefore(today.minusDays(MAX_DAYS_BACK)) || boardDate.isAfter(today.plusDays(MAX_DAYS_AHEAD))) {
-            return BoardResult.notFound().withCost(0);
-        }
+        if (outsideWindow(boardDate)) return BoardResult.notFound().withCost(0);
 
-        String key = preferredKey();
+        BoardRequest request = new BoardRequest(iata, "arrivals", boardDate);
+        Http http = call(request);
+        if (http == null) return BoardResult.failed().withCost(1);
+        return interpret(http, request, icao).withCost(1);
+    }
+
+    private static String normalised(String code) {
+        return code == null ? "" : code.trim().toUpperCase(Locale.ROOT);
+    }
+
+    /** A date is given and the provider is on. */
+    private boolean canAsk(LocalDate date) {
+        return date != null && enabled();
+    }
+
+    /** Outside the API's window it answers 400: there is no board, and asking costs quota. */
+    private boolean outsideWindow(LocalDate date) {
+        LocalDate today = boardDate(clock.instant());
+        return date.isBefore(today.minusDays(MAX_DAYS_BACK)) || date.isAfter(today.plusDays(MAX_DAYS_AHEAD));
+    }
+
+    /**
+     * One request with the preferred key, tracking key rejections. Null when the connection never
+     * produced an answer (timeouts, DNS, resets).
+     */
+    private Http call(BoardRequest request) {
         Http http;
         try {
-            http = get(iata, "arrivals", boardDate, key);
+            http = get(request);
         } catch (RuntimeException e) {
-            // Timeouts, DNS, resets: a connection that never produced an answer.
-            log.debug("Swedavia {} {} failed: {}", iata, boardDate, e.toString());
+            log.debug("Swedavia {} {} failed: {}", request.iata(), request.date(), e.toString());
             phases.degraded("Swedavia FlightInfo unreachable: " + e.getClass().getSimpleName());
-            return BoardResult.failed().withCost(1);
+            return null;
         }
-        if (http.status() == 401 || http.status() == 403) {
-            keyRejected();
-        } else {
-            rejectedInARow = 0;
-        }
-        return interpret(http, iata, boardDate, icao).withCost(1);
+        if (isKeyRejection(http.status())) keyRejected();
+        else keys.accepted();
+        return http;
+    }
+
+    private static boolean isKeyRejection(int status) {
+        return status == 401 || status == 403;
+    }
+
+    private static boolean isSuccess(int status) {
+        return status >= 200 && status < 300;
     }
 
     /** True for the IATA code of one of the ten Swedavia airports. */
@@ -214,54 +213,39 @@ public class SwedaviaArrivalsProvider implements AirportArrivalsProvider {
      * Callers cache, budget and pace; this does not.
      */
     public BoardFetch fetchBoardBody(String iata, String direction, LocalDate date) {
-        if (!servesIata(iata) || date == null || !enabled()) return BoardFetch.none();
-        LocalDate today = boardDate(clock.instant());
-        if (date.isBefore(today.minusDays(MAX_DAYS_BACK)) || date.isAfter(today.plusDays(MAX_DAYS_AHEAD))) {
-            return BoardFetch.none();
-        }
-        Http http;
-        try {
-            http = get(iata.trim().toUpperCase(Locale.ROOT), direction, date, preferredKey());
-        } catch (RuntimeException e) {
-            phases.degraded("Swedavia FlightInfo unreachable: " + e.getClass().getSimpleName());
-            return BoardFetch.failure();
-        }
-        if (http.status() == 401 || http.status() == 403) keyRejected();
-        else rejectedInARow = 0;
-        if (http.status() >= 200 && http.status() < 300 && http.body() != null) return BoardFetch.ok(http.body());
+        if (!boardAskable(iata, date)) return BoardFetch.none();
+        Http http = call(new BoardRequest(normalised(iata), direction, date));
+        if (http == null) return BoardFetch.failure();
+        if (isSuccess(http.status()) && http.body() != null) return BoardFetch.ok(http.body());
         log.warn("Swedavia {} {} {} answered {}", iata, direction, date, http.status());
-        if (http.status() == 429) return BoardFetch.throttled(retryAfter(http.retryAfter()));
+        return failedBoardFetch(http);
+    }
+
+    /** One of the ten airports, a date inside the API's window, and the provider on. */
+    private boolean boardAskable(String iata, LocalDate date) {
+        if (!servesIata(iata) || !canAsk(date)) return false;
+        return !outsideWindow(date);
+    }
+
+    private BoardFetch failedBoardFetch(Http http) {
+        if (http.status() == 429) return BoardFetch.throttled(retryAfter(http));
         return http.status() == 400 ? BoardFetch.none() : BoardFetch.failure();
-    }
-
-    /** The key in use: the preferred one, or the only one configured. */
-    private String preferredKey() {
-        String first = secondaryPreferred ? secondaryKey : primaryKey;
-        String second = secondaryPreferred ? primaryKey : secondaryKey;
-        return first.isEmpty() ? second : first;
-    }
-
-    private int distinctKeys() {
-        if (primaryKey.isEmpty() || secondaryKey.isEmpty() || primaryKey.equals(secondaryKey)) return 1;
-        return 2;
     }
 
     /** Next attempt uses the other key; when all of them have failed in a row, the provider locks until UTC midnight. */
     private void keyRejected() {
-        secondaryPreferred = !secondaryPreferred;
-        if (++rejectedInARow < distinctKeys()) return;
-        rejectedInARow = 0;
-        lockedUntil = clock.instant().atZone(ZoneOffset.UTC).toLocalDate().plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant();
+        Instant lockedUntil = keys.rejected();
+        if (lockedUntil == null) return;
         String detail = "Swedavia FlightInfo rejected every API key; off until " + lockedUntil
                 + " (expired keys, or the quota may be exhausted)";
         log.warn(detail);
         phases.degraded(detail);
     }
 
-    private Http get(String iata, String direction, LocalDate date, String key) {
+    private Http get(BoardRequest request) {
         return client.get()
-                .uri("/{iata}/{direction}/{date}", iata, direction, date.toString())
-                .header(KEY_HEADER, key)
+                .uri("/{iata}/{direction}/{date}", request.iata(), request.direction(), request.date().toString())
+                .header(KEY_HEADER, keys.preferred())
                 .header(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE)
                 .header(HttpHeaders.CACHE_CONTROL, "no-cache")
                 .exchange((req, res) -> {
@@ -276,11 +260,13 @@ public class SwedaviaArrivalsProvider implements AirportArrivalsProvider {
                 });
     }
 
-    private BoardResult interpret(Http http, String iata, LocalDate date, String icao) {
+    private BoardResult interpret(Http http, BoardRequest request, String icao) {
+        String iata = request.iata();
+        LocalDate date = request.date();
         int status = http.status();
-        if (status >= 200 && status < 300) {
+        if (isSuccess(status)) {
             try {
-                return BoardResult.found(parseBoard(http.body(), icao));
+                return BoardResult.found(parser.parseBoard(http.body(), icao));
             } catch (RuntimeException e) {
                 log.warn("Swedavia {} {} answered with a body that could not be read: {}", iata, date, e.toString());
                 phases.degraded("Swedavia FlightInfo answered with an unreadable body");
@@ -292,11 +278,11 @@ public class SwedaviaArrivalsProvider implements AirportArrivalsProvider {
             return BoardResult.notFound();
         }
         if (status == 429) {
-            Duration wait = retryAfter(http.retryAfter());
+            Duration wait = retryAfter(http);
             phases.degraded("Swedavia FlightInfo rate-limited us (429), backing off " + wait.toSeconds() + "s");
             return BoardResult.throttled(wait);
         }
-        if (status == 401 || status == 403) {
+        if (isKeyRejection(status)) {
             log.warn("Swedavia rejected the API key(s) ({}). Check SWEDAVIA_API_KEY and SWEDAVIA_API_KEY_SECONDARY", status);
             phases.degraded("Swedavia FlightInfo rejected the API key (" + status + ")");
             return BoardResult.failed();
@@ -307,7 +293,8 @@ public class SwedaviaArrivalsProvider implements AirportArrivalsProvider {
     }
 
     /** Retry-After as seconds or an HTTP date; anything else (or absent, or not positive) is 60 s. */
-    private Duration retryAfter(String header) {
+    private Duration retryAfter(Http http) {
+        String header = http.retryAfter();
         if (header == null || header.isBlank()) return DEFAULT_RETRY_AFTER;
         String value = header.trim();
         try {
@@ -321,67 +308,6 @@ public class SwedaviaArrivalsProvider implements AirportArrivalsProvider {
             return d.isNegative() || d.isZero() ? DEFAULT_RETRY_AFTER : d;
         } catch (DateTimeParseException e) {
             return DEFAULT_RETRY_AFTER;
-        }
-    }
-
-    // ---- parsing
-
-    /** Tolerant: unknown fields are ignored, every field may be absent or null. */
-    List<BoardEntry> parseBoard(String body, String icao) {
-        if (body == null || body.isBlank()) return List.of();
-        JsonNode flights = mapper.readTree(body).path("flights");
-        if (!flights.isArray()) return List.of();
-        List<BoardEntry> out = new ArrayList<>();
-        for (JsonNode flight : flights) {
-            BoardEntry entry = entry(flight, icao);
-            if (entry != null) out.add(entry);
-        }
-        return out;
-    }
-
-    private BoardEntry entry(JsonNode flight, String icao) {
-        JsonNode leg = flight.path("flightLegIdentifier");
-        String callsign = text(leg.path("callsign"));
-        String registration = text(leg.path("aircraftRegistration"));
-        String flightNumber = text(flight.path("flightId"));
-        if (callsign == null && registration == null) return null; // nothing to match it on
-
-        JsonNode where = flight.path("locationAndStatus");
-        String status = text(where.path("flightLegStatus"));
-        Instant on = instant(flight.path("arrivalTime").path("actualUtc"));
-        Instant in = instant(flight.path("baggage").path("firstBagUtc"));
-        if (status != null && NO_LANDING_STATUSES.contains(status.toUpperCase(Locale.ROOT))) {
-            on = null;
-            in = null;
-        }
-        ArrivalInfo info = new ArrivalInfo(null, null, on, in, text(where.path("gate")), text(where.path("terminal")), icao);
-        return new BoardEntry(callsign, flightNumber, registration, info);
-    }
-
-    private static String text(JsonNode node) {
-        if (node == null || node.isMissingNode() || node.isNull()) return null;
-        String s = node.asText().trim();
-        return s.isEmpty() ? null : s;
-    }
-
-    /** ISO timestamp with {@code Z}, with an offset, or with neither (then UTC: the fields are named Utc). */
-    static Instant instant(JsonNode node) {
-        String s = text(node);
-        if (s == null) return null;
-        try {
-            return Instant.parse(s);
-        } catch (DateTimeParseException ignored) {
-            // next form
-        }
-        try {
-            return OffsetDateTime.parse(s).toInstant();
-        } catch (DateTimeParseException ignored) {
-            // next form
-        }
-        try {
-            return LocalDateTime.parse(s).toInstant(ZoneOffset.UTC);
-        } catch (DateTimeParseException e) {
-            return null;
         }
     }
 }

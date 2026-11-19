@@ -62,8 +62,8 @@ class SwedaviaConfirmationTest {
 
         RestClient.Builder builder = RestClient.builder();
         server = MockRestServiceServer.bindTo(builder).build();
-        provider = new SwedaviaArrivalsProvider(clock, new PhaseLogger(), true, "test-key", "",
-                SwedaviaArrivalsProviderTest.BASE, builder);
+        provider = new SwedaviaArrivalsProvider(clock, new PhaseLogger(),
+                new SwedaviaSettings(true, "test-key", "", SwedaviaArrivalsProviderTest.BASE), builder);
         gateway = new ConfirmationGateway(clock, 30, InMemoryAppState.budgets(clock, 300), 1000, 300, 60, 300, 100);
         service = new ArrivalConfirmationService(List.of(), List.of(provider), aircraftRepository, gateway, store, live,
                 routes, runways, training, clock, 0.5, 120, 300, 45, 15);

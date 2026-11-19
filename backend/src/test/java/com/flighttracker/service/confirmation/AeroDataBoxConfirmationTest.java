@@ -298,8 +298,8 @@ class AeroDataBoxConfirmationTest {
     void anEnabledSwedaviaKeepsAeroDataBoxOutOfSwedishAirportsButNotOutOfTheRest() throws IOException {
         RestClient.Builder swedaviaBuilder = RestClient.builder();
         MockRestServiceServer swedaviaServer = MockRestServiceServer.bindTo(swedaviaBuilder).build();
-        SwedaviaArrivalsProvider swedavia = new SwedaviaArrivalsProvider(clock, new PhaseLogger(), true, "swe-key", "",
-                SwedaviaArrivalsProviderTest.BASE, swedaviaBuilder);
+        SwedaviaArrivalsProvider swedavia = new SwedaviaArrivalsProvider(clock, new PhaseLogger(),
+                new SwedaviaSettings(true, "swe-key", "", SwedaviaArrivalsProviderTest.BASE), swedaviaBuilder);
         swedaviaServer.expect(once(), requestTo(SwedaviaArrivalsProviderTest.ARN_TODAY))
                 .andRespond(withSuccess("{\"flights\":[]}", MediaType.APPLICATION_JSON));
         addInferred("4a1234", "SAS1402", "ESSA", Instant.parse("2026-10-12T06:00:00Z"));
@@ -323,8 +323,8 @@ class AeroDataBoxConfirmationTest {
 
     @Test
     void aSwedaviaWithoutAKeyIsNotInTheWay() throws IOException {
-        SwedaviaArrivalsProvider swedavia = new SwedaviaArrivalsProvider(clock, new PhaseLogger(), true, "", "",
-                SwedaviaArrivalsProviderTest.BASE, RestClient.builder());
+        SwedaviaArrivalsProvider swedavia = new SwedaviaArrivalsProvider(clock, new PhaseLogger(),
+                new SwedaviaSettings(true, "", "", SwedaviaArrivalsProviderTest.BASE), RestClient.builder());
         assertThat(swedavia.enabled()).isFalse();
         LiveAircraft a = addInferred("4a1234", "SAS1402", "ESSA", Instant.parse("2026-10-12T06:00:00Z"));
         server.expect(once(), requestTo(BASE + "/flights/Number/SAS1402?withAircraftImage=false&withLocation=false"))

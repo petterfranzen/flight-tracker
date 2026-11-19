@@ -46,38 +46,56 @@ function focusable(container: HTMLElement): HTMLElement[] {
   return all.filter((el) => el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden");
 }
 
+function activeElement(): HTMLElement | null {
+  return document.activeElement instanceof HTMLElement ? document.activeElement : null;
+}
+
+/** Swallows a key the trap handles itself. */
+function consume(e: KeyboardEvent): void {
+  e.preventDefault();
+  e.stopPropagation();
+}
+
+/**
+ * Where Tab (or Shift+Tab) must wrap to so focus stays in `container`, or null
+ * to let the browser move it: wrapping happens at either end, and from outside.
+ */
+function wrapTarget(container: HTMLElement, items: HTMLElement[], backwards: boolean): HTMLElement | null {
+  const active = activeElement();
+  const inside = active != null && container.contains(active);
+  const edge = backwards ? items[0] : items[items.length - 1];
+  if (inside && active !== edge) return null;
+  return backwards ? items[items.length - 1] : items[0];
+}
+
+function trapTab(container: HTMLElement, e: KeyboardEvent): void {
+  const items = focusable(container);
+  if (items.length === 0) {
+    e.preventDefault();
+    return;
+  }
+  const target = wrapTarget(container, items, e.shiftKey);
+  if (!target) return;
+  e.preventDefault();
+  target.focus();
+}
+
 /**
  * Traps Tab within `container`, calls `onEscape` on Escape, moves focus in on
  * creation and back to `returnTo` on `release`. Only meaningful while the
  * container is the topmost modal overlay.
  */
 export function activateModal(container: HTMLElement, opts: ModalOptions = {}): ModalHandle {
-  const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const previous = activeElement();
   let released = false;
 
   function onKeydown(e: KeyboardEvent): void {
-    if (e.key === "Escape" && opts.onEscape) {
-      e.preventDefault();
-      e.stopPropagation();
-      opts.onEscape();
-      return;
-    }
-    if (e.key !== "Tab") return;
-    const items = focusable(container);
-    if (items.length === 0) {
-      e.preventDefault();
-      return;
-    }
-    const first = items[0];
-    const last = items[items.length - 1];
-    const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const inside = active != null && container.contains(active);
-    if (e.shiftKey && (!inside || active === first)) {
-      e.preventDefault();
-      last.focus();
-    } else if (!e.shiftKey && (!inside || active === last)) {
-      e.preventDefault();
-      first.focus();
+    const onEscape = opts.onEscape;
+    if (e.key === "Escape" && onEscape) {
+      consume(e);
+      onEscape();
+    } else if (e.key === "Tab") {
+      trapTab(container, e);
     }
   }
 
@@ -94,13 +112,17 @@ export function activateModal(container: HTMLElement, opts: ModalOptions = {}): 
       released = true;
       openModals--;
       document.removeEventListener("keydown", onKeydown, true);
-      const back = opts.returnTo ?? previous;
       // Synchronous: callers toggle the panel's own visibility class *before*
       // releasing, so a returnTo the media query had hidden is visible again
       // by the time focus() runs.
-      if (back && back.isConnected && !container.contains(back)) back.focus();
+      returnFocus(container, opts.returnTo ?? previous);
     },
   };
+}
+
+function returnFocus(container: HTMLElement, back: HTMLElement | null): void {
+  if (!back?.isConnected) return;
+  if (!container.contains(back)) back.focus();
 }
 
 /**
@@ -110,8 +132,7 @@ export function activateModal(container: HTMLElement, opts: ModalOptions = {}): 
 export function closeOnEscape(onEscape: () => void): () => void {
   function onKeydown(e: KeyboardEvent): void {
     if (e.key !== "Escape") return;
-    e.preventDefault();
-    e.stopPropagation();
+    consume(e);
     onEscape();
   }
   document.addEventListener("keydown", onKeydown, true);
