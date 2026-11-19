@@ -58,10 +58,15 @@ export function distanceM(a: LatLon, b: LatLon): number {
  * gate and never qualify, and neither does a status with no gate ref.
  */
 export function confirmedGate(pos: SelectedPosition | null, status: TrackStatus | null): string | null {
-  if (!pos || !status || status.icao24 !== pos.icao24) return null;
-  if (status.state !== "AT_GATE" && status.state !== "LANDED_CONFIRMED") return null;
+  if (!status || !isGateArrivalFor(pos, status)) return null;
   const gate = status.gate?.trim();
   return gate ? gate : null;
+}
+
+const GATE_STATES = new Set<TrackStatus["state"]>(["AT_GATE", "LANDED_CONFIRMED"]);
+
+function isGateArrivalFor(pos: SelectedPosition | null, status: TrackStatus): boolean {
+  return pos?.icao24 === status.icao24 && GATE_STATES.has(status.state);
 }
 
 /**
@@ -79,20 +84,39 @@ export function confirmedGate(pos: SelectedPosition | null, status: TrackStatus 
  */
 export function gateDisplay(pos: SelectedPosition | null, status: TrackStatus | null, nowMs: number, gatePoint: GatePoint | null): GateDisplay | null {
   const gate = confirmedGate(pos, status);
-  if (!pos || !status || !gate || !gatePoint) return null;
+  // confirmedGate is non-null only with both pos and status present.
+  if (!gate || !gatePoint) return null;
+  if (!drawnAtGate(pos!, status!, nowMs, gatePoint)) return null;
+  return { lat: gatePoint.lat, lon: gatePoint.lon, gate, approximate: gatePoint.approximate === true };
+}
+
+/** The timing and distance rules of gateDisplay, for a plane with a confirmed gate. */
+function drawnAtGate(pos: SelectedPosition, status: TrackStatus, nowMs: number, gatePoint: GatePoint): boolean {
   const observed = Date.parse(pos.observedAt);
   const stale = nowMs - observed > GATE_STALE_MS;
-  if (status.state === "LANDED_CONFIRMED") {
-    if (!stale) return null;
-  } else {
-    const gateIn = status.confirmedAt ? Date.parse(status.confirmedAt) : NaN;
-    if (Number.isFinite(gateIn) && observed > gateIn + GATE_LATER_MOVEMENT_MS) return null;
-    // A fresh on-ground report is where the plane actually is; a guess may only
-    // stand in when there is nothing better (a stale report, or one in the air).
-    if (!stale && (pos.onGround !== true || gatePoint.approximate === true)) return null;
-  }
-  if (distanceM({ lat: status.lastSeenLat, lon: status.lastSeenLon }, gatePoint) > GATE_MAX_DISTANCE_M) return null;
-  return { lat: gatePoint.lat, lon: gatePoint.lon, gate, approximate: gatePoint.approximate === true };
+  const timingOk = status.state === "LANDED_CONFIRMED" ? stale : atGateTimingOk({ pos, status, observed, stale, gatePoint });
+  const tooFar = distanceM({ lat: status.lastSeenLat, lon: status.lastSeenLon }, gatePoint) > GATE_MAX_DISTANCE_M;
+  return timingOk && !tooFar;
+}
+
+interface AtGateTiming {
+  pos: SelectedPosition;
+  status: TrackStatus;
+  observed: number;
+  stale: boolean;
+  gatePoint: GatePoint;
+}
+
+function atGateTimingOk({ pos, status, observed, stale, gatePoint }: AtGateTiming): boolean {
+  if (isLaterMovement(status, observed)) return false;
+  // A fresh on-ground report is where the plane actually is; a guess may only
+  // stand in when there is nothing better (a stale report, or one in the air).
+  return stale || (pos.onGround === true && gatePoint.approximate !== true);
+}
+
+function isLaterMovement(status: TrackStatus, observed: number): boolean {
+  const gateIn = status.confirmedAt ? Date.parse(status.confirmedAt) : NaN;
+  return Number.isFinite(gateIn) && observed > gateIn + GATE_LATER_MOVEMENT_MS;
 }
 
 /**
@@ -127,30 +151,42 @@ export interface TrailPoint {
  */
 export function trailPointsFor(
   points: TrailPoint[],
-  tip: { latitude: number; longitude: number; observedAt: string } | null,
+  tip: Tip | null,
   display: GateDisplay | null,
   nowMs: number,
 ): TrailPoint[] {
+  const real = realReports(points, tip);
+  if (display) return isOldTip(tip, nowMs) ? [] : real;
+  if (tip && !endsAt(real, tip)) {
+    real.push({ lat: tip.latitude, lon: tip.longitude, observedAt: tip.observedAt });
+  }
+  return real;
+}
+
+type Tip = { latitude: number; longitude: number; observedAt: string };
+
+/** Reports up to the tip's time, oldest first. */
+function realReports(points: TrailPoint[], tip: Tip | null): TrailPoint[] {
   const until = tip ? Date.parse(tip.observedAt) : Infinity;
-  const real = points
+  return points
     .filter((pt) => Date.parse(pt.observedAt) <= until)
     .sort((a, b) => Date.parse(a.observedAt) - Date.parse(b.observedAt));
-  if (display) {
-    const last = tip ? Date.parse(tip.observedAt) : NaN;
-    return Number.isFinite(last) && nowMs - last > GATE_STALE_MS ? [] : real;
-  }
-  const out = real;
-  const end = out[out.length - 1];
-  if (tip && !(end && end.lat === tip.latitude && end.lon === tip.longitude)) {
-    out.push({ lat: tip.latitude, lon: tip.longitude, observedAt: tip.observedAt });
-  }
-  return out;
+}
+
+function isOldTip(tip: Tip | null, nowMs: number): boolean {
+  const last = tip ? Date.parse(tip.observedAt) : NaN;
+  return Number.isFinite(last) && nowMs - last > GATE_STALE_MS;
+}
+
+function endsAt(trail: TrailPoint[], tip: Tip): boolean {
+  const end = trail[trail.length - 1];
+  return end !== undefined && end.lat === tip.latitude && end.lon === tip.longitude;
 }
 
 /** The trail as [lat, lon] vertices, dropping the report times (see trailPointsFor). */
 export function trailFor(
   points: TrailPoint[],
-  tip: { latitude: number; longitude: number; observedAt: string } | null,
+  tip: Tip | null,
   display: GateDisplay | null,
   nowMs: number,
 ): [number, number][] {
@@ -161,6 +197,9 @@ export function trailFor(
 export function geometryPoint(geometry: { type: string; coordinates?: unknown } | null | undefined): LatLon | null {
   let c: unknown = geometry?.coordinates;
   while (Array.isArray(c) && Array.isArray(c[0])) c = c[0];
-  if (!Array.isArray(c) || typeof c[0] !== "number" || typeof c[1] !== "number") return null;
-  return { lat: c[1], lon: c[0] };
+  return isLonLat(c) ? { lat: c[1], lon: c[0] } : null;
+}
+
+function isLonLat(c: unknown): c is [number, number] {
+  return Array.isArray(c) && typeof c[0] === "number" && typeof c[1] === "number";
 }

@@ -35,75 +35,75 @@ function routeOf(row: FlightSample["row"]): string {
  * missing row leaves the state untouched: a failed board never notifies.
  */
 export function observeFlight(state: FlightNotifyState, sample: FlightSample): { state: FlightNotifyState; event: FlightEvent | null } {
-  if (!sample.row) return { state, event: null };
-  if (sample.boardStatus && sample.boardStatus !== "ok") return { state, event: null };
+  const row = readableRow(sample);
+  if (!row) return { state, event: null };
 
-  const row = sample.row;
   const nowAirborne = row.airborne === true;
-  const next: FlightNotifyState = { ...state };
+  const next: FlightNotifyState = {
+    ...state,
+    ...airborneStreak(state, nowAirborne),
+    onGroundStreak: onGroundStreak(state, sample),
+    airborne: nowAirborne,
+    icao24: row.icao24 ?? state.icao24,
+  };
 
-  // --- airborne edge and its two-tick confirmation ---
-  if (nowAirborne) {
-    if (state.airborne === false) {
-      next.airborneStreak = 1;
-      next.edgeFromGround = true;
-    } else if (state.airborne === true) {
-      next.airborneStreak = state.airborneStreak + 1;
-      next.edgeFromGround = state.edgeFromGround;
-    } else {
-      // First observation: no edge, so a flight already in the air is not a take-off.
-      next.airborneStreak = 1;
-      next.edgeFromGround = false;
-    }
-    next.everAirborne = true;
-  } else {
-    next.airborneStreak = 0;
-    next.edgeFromGround = false;
+  if (takeoffDue(next)) {
+    return announce(next, sample, row, { kind: "takeoff", text: `${row.flightNumber} ${routeOf(row)} is airborne.` });
   }
-
-  // --- on-ground streak for landings ---
-  const onGroundNow = sample.position ? sample.position.onGround === true : null;
-  if (onGroundNow === true) next.onGroundStreak = state.onGroundStreak > 0 ? state.onGroundStreak + 1 : 1;
-  else next.onGroundStreak = 0;
-
-  next.airborne = nowAirborne;
-  next.icao24 = row.icao24 ?? state.icao24;
-
-  const keys = next.lastEventKeys;
-
-  if (nowAirborne && next.edgeFromGround && next.airborneStreak >= 2 && !keys.includes("takeoff")) {
-    next.lastEventKeys = [...keys, "takeoff"];
-    next.sentAt = [...next.sentAt, sample.nowMs];
-    return {
-      state: next,
-      event: {
-        key: sample.key,
-        kind: "takeoff",
-        title: row.flightNumber,
-        text: `${row.flightNumber} ${routeOf(row)} is airborne.`,
-        row,
-        nowMs: sample.nowMs,
-      },
-    };
+  if (landingDue(next)) {
+    return announce(next, sample, row, {
+      kind: "landed",
+      text: `${row.flightNumber} landed at ${row.airport}, ${timeLabel(row.actual, sample.nowMs)}.`,
+    });
   }
-
-  if (next.everAirborne && next.onGroundStreak >= 2 && !keys.includes("landed")) {
-    next.lastEventKeys = [...keys, "landed"];
-    next.sentAt = [...next.sentAt, sample.nowMs];
-    return {
-      state: next,
-      event: {
-        key: sample.key,
-        kind: "landed",
-        title: row.flightNumber,
-        text: `${row.flightNumber} landed at ${row.airport}, ${timeLabel(row.actual, sample.nowMs)}.`,
-        row,
-        nowMs: sample.nowMs,
-      },
-    };
-  }
-
   return { state: next, event: null };
+}
+
+type Row = NonNullable<FlightSample["row"]>;
+
+/** The row to read, or null: no row, or the board answered `stale`/`incomplete`. */
+function readableRow(sample: FlightSample): Row | null {
+  if (sample.boardStatus && sample.boardStatus !== "ok") return null;
+  return sample.row ?? null;
+}
+
+type AirborneFields = Pick<FlightNotifyState, "airborneStreak" | "edgeFromGround" | "everAirborne">;
+
+/** The airborne edge and its two-tick confirmation. */
+function airborneStreak(state: FlightNotifyState, nowAirborne: boolean): Partial<AirborneFields> {
+  if (!nowAirborne) return { airborneStreak: 0, edgeFromGround: false };
+  if (state.airborne === false) return { airborneStreak: 1, edgeFromGround: true, everAirborne: true };
+  if (state.airborne === true) return { airborneStreak: state.airborneStreak + 1, edgeFromGround: state.edgeFromGround, everAirborne: true };
+  // First observation: no edge, so a flight already in the air is not a take-off.
+  return { airborneStreak: 1, edgeFromGround: false, everAirborne: true };
+}
+
+/** The on-ground streak for landings. */
+function onGroundStreak(state: FlightNotifyState, sample: FlightSample): number {
+  if (sample.position?.onGround !== true) return 0;
+  return state.onGroundStreak > 0 ? state.onGroundStreak + 1 : 1;
+}
+
+function takeoffDue(next: FlightNotifyState): boolean {
+  const confirmed = next.airborne === true && next.edgeFromGround && next.airborneStreak >= 2;
+  return confirmed && !next.lastEventKeys.includes("takeoff");
+}
+
+function landingDue(next: FlightNotifyState): boolean {
+  const confirmed = next.everAirborne && next.onGroundStreak >= 2;
+  return confirmed && !next.lastEventKeys.includes("landed");
+}
+
+function announce(
+  next: FlightNotifyState,
+  sample: FlightSample,
+  row: Row,
+  event: Pick<FlightEvent, "kind" | "text">,
+): { state: FlightNotifyState; event: FlightEvent } {
+  return {
+    state: { ...next, lastEventKeys: [...next.lastEventKeys, event.kind], sentAt: [...next.sentAt, sample.nowMs] },
+    event: { key: sample.key, kind: event.kind, title: row.flightNumber, text: event.text, row, nowMs: sample.nowMs },
+  };
 }
 
 export type Channel = "banner" | "os" | "none";
@@ -114,6 +114,6 @@ export type Channel = "banner" | "os" | "none";
  * permission the banner is the floor and still carries the event.
  */
 export function chooseChannel(opts: { hidden: boolean; enabled: boolean; permission: NotificationPermission | "unsupported" }): Channel {
-  if (opts.hidden && opts.enabled && opts.permission === "granted") return "os";
-  return "banner";
+  const osAllowed = opts.enabled && opts.permission === "granted";
+  return opts.hidden && osAllowed ? "os" : "banner";
 }
