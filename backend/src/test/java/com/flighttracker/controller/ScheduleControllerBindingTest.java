@@ -13,13 +13,14 @@ import java.util.List;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-/** The /api/schedule/search query parameters bind by name into {@link ScheduleController.SearchParams}. */
+/** The /api/schedule/search parameters bind from the query string only, by their exact names. */
 class ScheduleControllerBindingTest {
 
     private static final LocalDate TODAY = LocalDate.of(2026, 11, 19);
@@ -65,5 +66,29 @@ class ScheduleControllerBindingTest {
     void aMalformedDateIsABadRequest() throws Exception {
         mvc.perform(get("/api/schedule/search").param("flight", "BA778").param("date", "19/11/2026"))
                 .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void aDateHeaderDoesNotSetTheDate() throws Exception {
+        when(schedule.byFlightNumber(eq("BA778"), eq(TODAY), eq(List.of()), any())).thenReturn(List.of());
+
+        mvc.perform(get("/api/schedule/search").param("flight", "BA778")
+                        .header("Date", "Thu, 19 Nov 2026 10:00:00 GMT"))
+                .andExpect(status().isOk());
+        verify(schedule).byFlightNumber(eq("BA778"), eq(TODAY), eq(List.of()), any());
+    }
+
+    @Test
+    void aFlightHeaderIsNotAFlightNumber() throws Exception {
+        mvc.perform(get("/api/schedule/search").header("Flight", "SK1")).andExpect(status().isBadRequest());
+        verify(schedule, never()).byFlightNumber(any(), any(), any(), any());
+    }
+
+    @Test
+    void binderPrefixedAndIndexedNamesAreIgnored() throws Exception {
+        mvc.perform(get("/api/schedule/search").param("!flight", "BA778")).andExpect(status().isBadRequest());
+        mvc.perform(get("/api/schedule/search").param("_flight", "BA778")).andExpect(status().isBadRequest());
+        mvc.perform(get("/api/schedule/search").param("flight[0]", "x")).andExpect(status().isBadRequest());
+        verify(schedule, never()).byFlightNumber(any(), any(), any(), any());
     }
 }
