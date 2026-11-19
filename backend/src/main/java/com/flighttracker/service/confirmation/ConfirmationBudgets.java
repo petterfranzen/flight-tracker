@@ -49,18 +49,16 @@ public class ConfirmationBudgets {
     static final double WARN_FRACTION = 0.8;
 
     private static final class Counter {
-        Integer dailyLimit;
-        Integer monthlyLimit;
-        LocalDate day;
-        int dayUnits;
-        YearMonth month;
-        int monthUnits;
+        final String providerId;
+        final BudgetPeriod<LocalDate> day;
+        final BudgetPeriod<YearMonth> month;
         boolean warned;
-        /** The stored day (or month) could not be read: treated as spent until it rolls over. */
-        boolean dayBlocked;
-        boolean monthBlocked;
-        LocalDate exhaustedLoggedOn;
-        YearMonth monthExhaustedLoggedIn;
+
+        Counter(String providerId, Integer dailyLimit, Integer monthlyLimit) {
+            this.providerId = providerId;
+            day = new BudgetPeriod<>("daily", "00:00 UTC", dailyLimit);
+            month = new BudgetPeriod<>("monthly", "the 1st (UTC)", monthlyLimit);
+        }
     }
 
     private final AppStateRepository appState;
@@ -86,30 +84,20 @@ public class ConfirmationBudgets {
     public synchronized boolean tryCharge(String providerId, int units) {
         Counter c = counter(providerId);
         if (c == null) return false; // the stored count could not be read: fail closed, retry the read next time
-        if (c.dayBlocked || (c.dailyLimit != null && c.dayUnits + units > c.dailyLimit)) {
-            if (!c.day.equals(c.exhaustedLoggedOn)) {
-                c.exhaustedLoggedOn = c.day;
-                exhausted(providerId, c.dayBlocked
-                        ? "its stored daily count is unreadable, so it is treated as spent until 00:00 UTC"
-                        : "its daily budget of " + c.dailyLimit + " units is spent, no more calls until 00:00 UTC");
-            }
-            return false;
-        }
-        if (c.monthBlocked || (c.monthlyLimit != null && c.monthUnits + units > c.monthlyLimit)) {
-            if (!c.month.equals(c.monthExhaustedLoggedIn)) {
-                c.monthExhaustedLoggedIn = c.month;
-                exhausted(providerId, c.monthBlocked
-                        ? "its stored monthly count is unreadable, so it is treated as spent until the 1st (UTC)"
-                        : "its monthly budget of " + c.monthlyLimit + " units is spent, no more calls until the 1st (UTC)");
-            }
-            return false;
-        }
-        add(providerId, c, units);
+        if (refuses(c, c.day, units) || refuses(c, c.month, units)) return false;
+        add(c, units);
         return true;
     }
 
-    private void exhausted(String providerId, String why) {
-        String detail = "Arrival provider " + providerId + " is out of budget: " + why;
+    /** True when {@code period} has no room for {@code units}; logs that once per provider and period. */
+    private boolean refuses(Counter c, BudgetPeriod<?> period, int units) {
+        if (!period.refuses(units)) return false;
+        if (period.firstRefusalThisPeriod()) exhausted(c, period.refusalReason());
+        return true;
+    }
+
+    private void exhausted(Counter c, String why) {
+        String detail = "Arrival provider " + c.providerId + " is out of budget: " + why;
         log.warn(detail); // PhaseLogger prints on a phase change only; this line is always there
         phaseLogger.degraded(detail);
     }
@@ -119,30 +107,34 @@ public class ConfirmationBudgets {
         if (deltaUnits == 0) return;
         Counter c = counter(providerId);
         if (c == null) return;
-        add(providerId, c, deltaUnits);
+        add(c, deltaUnits);
     }
 
     public synchronized int unitsToday(String providerId) {
         Counter c = counter(providerId);
-        return c == null ? 0 : c.dayUnits;
+        return c == null ? 0 : c.day.units;
     }
 
     public synchronized int unitsThisMonth(String providerId) {
         Counter c = counter(providerId);
-        return c == null ? 0 : c.monthUnits;
+        return c == null ? 0 : c.month.units;
     }
 
-    private void add(String providerId, Counter c, int units) {
-        c.dayUnits = Math.max(0, c.dayUnits + units);
-        c.monthUnits = Math.max(0, c.monthUnits + units);
-        persist(providerId, c);
-        if (c.monthlyLimit != null && !c.warned && c.monthUnits >= WARN_FRACTION * c.monthlyLimit) {
+    private void add(Counter c, int units) {
+        c.day.add(units);
+        c.month.add(units);
+        persist(c);
+        if (!c.warned && passedWarnLevel(c.month)) {
             c.warned = true;
-            String detail = "Arrival provider " + providerId + " has used " + c.monthUnits + " of its "
-                    + c.monthlyLimit + " monthly units";
+            String detail = "Arrival provider " + c.providerId + " has used " + c.month.units + " of its "
+                    + c.month.limit + " monthly units";
             log.warn(detail); // PhaseLogger prints on a phase change only; this line is always there
             phaseLogger.degraded(detail);
         }
+    }
+
+    private static boolean passedWarnLevel(BudgetPeriod<YearMonth> month) {
+        return month.limit != null && month.units >= WARN_FRACTION * month.limit;
     }
 
     /**
@@ -154,26 +146,20 @@ public class ConfirmationBudgets {
         LocalDate today = clock.instant().atZone(ZoneOffset.UTC).toLocalDate();
         Counter c = counters.get(providerId);
         if (c == null) {
-            c = new Counter();
-            String prefix = "flighttracker.confirmation.providers." + providerId + ".";
-            c.dailyLimit = env.getProperty(prefix + "daily-budget", Integer.class, defaultDailyBudget);
-            c.monthlyLimit = env.getProperty(prefix + "monthly-budget", Integer.class);
-            if (!load(providerId, c, today)) return null;
+            c = newCounter(providerId);
+            if (!load(c, today)) return null;
             counters.put(providerId, c);
         }
-        if (!today.equals(c.day)) {
-            c.day = today;
-            c.dayUnits = 0;
-            c.dayBlocked = false;
-        }
-        YearMonth thisMonth = YearMonth.from(today);
-        if (!thisMonth.equals(c.month)) {
-            c.month = thisMonth;
-            c.monthUnits = 0;
-            c.monthBlocked = false;
-            c.warned = false;
-        }
+        c.day.rollTo(today);
+        if (c.month.rollTo(YearMonth.from(today))) c.warned = false;
         return c;
+    }
+
+    private Counter newCounter(String providerId) {
+        String prefix = "flighttracker.confirmation.providers." + providerId + ".";
+        return new Counter(providerId,
+                env.getProperty(prefix + "daily-budget", Integer.class, defaultDailyBudget),
+                env.getProperty(prefix + "monthly-budget", Integer.class));
     }
 
     /**
@@ -181,7 +167,8 @@ public class ConfirmationBudgets {
      * cached; fail closed). A value that is there but corrupt or negative blocks the affected period
      * until it rolls over, and is logged once (a loaded counter is cached).
      */
-    private boolean load(String providerId, Counter c, LocalDate today) {
+    private boolean load(Counter c, LocalDate today) {
+        String providerId = c.providerId;
         String value;
         try {
             value = appState.get(KEY_PREFIX + providerId).orElse(null);
@@ -189,62 +176,28 @@ public class ConfirmationBudgets {
             log.warn("Could not read the stored budget of confirmation provider {}; no calls until it can be read", providerId, e);
             return false;
         }
-        if (value == null) return true;
-        String[] parts = value.split("\\|", -1);
-        boolean dayOk = parts.length == 2 && readDay(parts[0], c);
-        boolean monthOk = parts.length == 2 && readMonth(parts[1], c);
-        if (!dayOk) {
-            c.day = today;
-            c.dayUnits = 0;
-            c.dayBlocked = true;
-        }
-        if (!monthOk) {
-            c.month = YearMonth.from(today);
-            c.monthUnits = 0;
-            c.monthBlocked = true;
-        }
-        if (!dayOk || !monthOk) {
+        if (value != null && !readStored(value, c, today)) {
             log.warn("The stored budget of confirmation provider {} is corrupt ({}); treating the unreadable period as spent until it rolls over",
                     providerId, value);
         }
         return true;
     }
 
-    private static boolean readDay(String part, Counter c) {
-        try {
-            String[] day = part.split(":", -1);
-            if (day.length != 2) return false;
-            LocalDate date = LocalDate.parse(day[0]);
-            int units = Integer.parseInt(day[1]);
-            if (units < 0) return false;
-            c.day = date;
-            c.dayUnits = units;
-            return true;
-        } catch (RuntimeException e) {
-            return false;
-        }
+    /** Reads {@code <day>:<units>|<month>:<units>}, blocking each period that is unreadable. False if any was. */
+    private static boolean readStored(String value, Counter c, LocalDate today) {
+        String[] parts = value.split("\\|", -1);
+        boolean dayOk = parts.length == 2 && c.day.read(parts[0], LocalDate::parse);
+        boolean monthOk = parts.length == 2 && c.month.read(parts[1], YearMonth::parse);
+        if (!dayOk) c.day.block(today);
+        if (!monthOk) c.month.block(YearMonth.from(today));
+        return dayOk && monthOk;
     }
 
-    private static boolean readMonth(String part, Counter c) {
+    private void persist(Counter c) {
         try {
-            String[] month = part.split(":", -1);
-            if (month.length != 2) return false;
-            YearMonth ym = YearMonth.parse(month[0]);
-            int units = Integer.parseInt(month[1]);
-            if (units < 0) return false;
-            c.month = ym;
-            c.monthUnits = units;
-            return true;
+            appState.put(KEY_PREFIX + c.providerId, c.day.stored() + "|" + c.month.stored());
         } catch (RuntimeException e) {
-            return false;
-        }
-    }
-
-    private void persist(String providerId, Counter c) {
-        try {
-            appState.put(KEY_PREFIX + providerId, c.day + ":" + c.dayUnits + "|" + c.month + ":" + c.monthUnits);
-        } catch (RuntimeException e) {
-            log.warn("Could not store the budget of confirmation provider {}", providerId, e);
+            log.warn("Could not store the budget of confirmation provider {}", c.providerId, e);
         }
     }
 }
