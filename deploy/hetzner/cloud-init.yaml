@@ -345,11 +345,16 @@ write_files:
     permissions: "0644"
     content: |
       // /etc/apt/apt.conf.d/52unattended-upgrades-local
-      // Ubuntu's unattended-upgrades only installs updates from Ubuntu's own
-      // archives by default. cloudflared comes from Cloudflare's apt repo
-      // (Origin/Label "cloudflared"), so without this it is never patched.
-      Unattended-Upgrade::Origins-Pattern {
-              "origin=cloudflared,label=cloudflared";
+      // Ubuntu's unattended-upgrades installs Ubuntu's own updates by default (see
+      // 50unattended-upgrades); that default list is left alone here. cloudflared
+      // comes from Cloudflare's own apt repo and is held to the house patch rule: a
+      // release is installed only once it is 24 h old, so a bad release is caught
+      // before it reaches this box (Petter, 16 Nov). cloudflared-patch.sh owns
+      // cloudflared upgrades, so unattended-upgrades must not install it.
+      // For a major CVE (CVSS 7+ or CISA KEV) lift the delay with
+      // `sudo /usr/local/sbin/cloudflared-patch.sh --now`, inside the 72 h bound.
+      Unattended-Upgrade::Package-Blacklist {
+              "cloudflared";
       };
       // Updates that need a reboot (kernel, libc) take effect at a quiet hour.
       // The app and the tunnel are systemd units enabled at boot, so the site is
@@ -358,8 +363,9 @@ write_files:
       Unattended-Upgrade::Automatic-Reboot-Time "04:30";
       // A long-running process keeps executing the old binary after its package is
       // upgraded. After each dpkg run, restart the units whose binary is newer than
-      // the running process (see restart-if-upgraded).
-      DPkg::Post-Invoke { "/usr/local/sbin/restart-if-upgraded || true"; };
+      // the running process (see restart-if-upgraded). This is also what restarts
+      // cloudflared after cloudflared-patch.sh upgrades it.
+      DPkg::Post-Invoke { "/usr/local/sbin/restart-if-upgraded || true" };
   - path: /usr/local/sbin/restart-if-upgraded
     permissions: "0755"
     content: |
@@ -387,6 +393,149 @@ write_files:
 
       restart_if_newer cloudflared.service /usr/bin/cloudflared
       restart_if_newer flight-tracker.service /usr/bin/java
+  - path: /usr/local/sbin/cloudflared-patch.sh
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      # Hold cloudflared to the house patch rule (Petter, 16 Nov): a release is
+      # installed only once it is 24 h old, so a bad release is caught before it
+      # reaches this box. cloudflared comes from Cloudflare's own apt repo, so
+      # unattended-upgrades is told to leave it alone (see
+      # /etc/apt/apt.conf.d/52unattended-upgrades-local) and this script is the only
+      # thing that upgrades it. It records the first time it sees a candidate version
+      # and installs that version only once it has been available for
+      # FT_CLOUDFLARED_DELAY_H hours (24 by default). Run by
+      # flight-tracker-cloudflared-patch.timer; safe to re-run.
+      #
+      #   cloudflared-patch.sh            enforce the 24 h delay
+      #   cloudflared-patch.sh --now      install the candidate now: the CVE fast path
+      #                                   (CVSS 7+ or CISA KEV), inside the 72 h bound
+      #   cloudflared-patch.sh --dry-run  decide and print the action, change nothing
+      #   cloudflared-patch.sh --status   print installed, candidate and age
+      #
+      # Exit: 0 = up to date, holding, or applied; 1 = apt could not be read or the
+      # upgrade failed; 2 = bad usage.
+      set -euo pipefail
+
+      PKG=cloudflared
+      DELAY=$(( ${FT_CLOUDFLARED_DELAY_H:-24} * 3600 ))
+      # Its own state directory, not the app's /var/lib/flight-tracker: that one is
+      # flighttracker-owned and 0750 (StateDirectory=flight-tracker), and the
+      # `install -d` below would relax it to 0755.
+      STATE_DIR=${FT_CLOUDFLARED_STATE_DIR:-/var/lib/flight-tracker-cloudflared}
+      STAMP=$STATE_DIR/cloudflared-candidate
+
+      dry=0
+      force=0
+      status=0
+      for arg in "$@"; do
+        case "$arg" in
+          --dry-run) dry=1 ;;
+          --now)     force=1 ;;
+          --status)  status=1 ;;
+          *) echo "usage: cloudflared-patch.sh [--now] [--dry-run] [--status]" >&2; exit 2 ;;
+        esac
+      done
+
+      now=$(date +%s)
+      installed=$(dpkg-query -W -f='${Version}' "$PKG" 2>/dev/null || true)
+      candidate=$(apt-cache policy "$PKG" 2>/dev/null | awk '/Candidate:/{print $2; exit}')
+
+      if [ -z "${candidate:-}" ] || [ "$candidate" = "(none)" ]; then
+        echo "cloudflared-patch: no candidate version from apt for $PKG (repo not configured?)" >&2
+        exit 1
+      fi
+
+      # Seconds since the candidate was first seen, or nothing when it has not been.
+      age_of_candidate() {
+        [ -f "$STAMP" ] || return 0
+        local ver at
+        read -r ver at <"$STAMP" || true
+        # A stamp for a version apt no longer offers is a superseded candidate, not
+        # an error. Returning non-zero here would, under `set -e`, kill the caller
+        # before it re-stamps the new candidate, so the hold would wedge forever.
+        if [ "${ver:-}" = "$candidate" ] && [ -n "${at:-}" ]; then
+          echo "$(( now - at ))"
+        fi
+        return 0
+      }
+
+      if [ "$candidate" = "${installed:-}" ]; then
+        # Only a real run clears the stamp; --status and --dry-run change nothing.
+        if [ "$status" = 0 ] && [ "$dry" = 0 ]; then rm -f "$STAMP"; fi
+        echo "cloudflared-patch: up to date ($installed)"
+        exit 0
+      fi
+
+      if [ "$status" = 1 ]; then
+        age=$(age_of_candidate)
+        if [ -n "${age:-}" ]; then
+          echo "cloudflared-patch: installed ${installed:-none}, candidate $candidate, seen $(( age / 3600 )) h ago"
+        else
+          echo "cloudflared-patch: installed ${installed:-none}, candidate $candidate, not yet seen"
+        fi
+        exit 0
+      fi
+
+      if [ "$force" = 0 ]; then
+        age=$(age_of_candidate)
+        if [ -z "${age:-}" ]; then
+          # --dry-run only reports the action; it must not start the 24 h clock.
+          if [ "$dry" = 0 ]; then
+            install -d -m 0755 "$STATE_DIR"
+            printf '%s %s\n' "$candidate" "$now" >"$STAMP"
+          fi
+          echo "cloudflared-patch: $candidate is new; holding it for $(( DELAY / 3600 )) h"
+          exit 0
+        fi
+        if [ "$age" -lt "$DELAY" ]; then
+          echo "cloudflared-patch: holding $candidate; $(( (DELAY - age + 3599) / 3600 )) h to go"
+          exit 0
+        fi
+      fi
+
+      if [ "$dry" = 1 ]; then
+        echo "cloudflared-patch: would upgrade ${installed:-none} -> $candidate"
+        exit 0
+      fi
+
+      echo "cloudflared-patch: upgrading ${installed:-none} -> $candidate"
+      DEBIAN_FRONTEND=noninteractive apt-get install -y --only-upgrade "$PKG"
+      rm -f "$STAMP"
+      echo "cloudflared-patch: upgraded to $candidate"
+      # The apt-get above fires DPkg::Post-Invoke -> /usr/local/sbin/restart-if-upgraded,
+      # which restarts cloudflared because its binary is now newer than the running
+      # process, so the new release goes live without a second restart here.
+  - path: /etc/systemd/system/flight-tracker-cloudflared-patch.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Flight tracker patch rule: upgrade cloudflared only once its release is 24 h old
+      Documentation=https://github.com/petterfranzen/flight-tracker/blob/main/deploy/hetzner/README.md
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/sbin/cloudflared-patch.sh
+      TimeoutStartSec=5min
+      Nice=10
+      # apt and dpkg write across the filesystem, so unlike a read-only unit this one
+      # carries no ProtectSystem/ReadOnlyPaths hardening. StateDirectory creates
+      # /var/lib/flight-tracker-cloudflared (0755, root-owned) for the first-seen stamp.
+      StateDirectory=flight-tracker-cloudflared
+  - path: /etc/systemd/system/flight-tracker-cloudflared-patch.timer
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Flight tracker patch rule: check cloudflared for an aged release, hourly
+
+      [Timer]
+      OnBootSec=15min
+      OnUnitInactiveSec=1h
+
+      [Install]
+      WantedBy=timers.target
   - path: /etc/apt/apt.conf.d/20auto-upgrades
     permissions: "0644"
     content: |
@@ -410,4 +559,7 @@ runcmd:
   - ufw --force enable
   - systemctl daemon-reload
   - systemctl enable flight-tracker
+  # Patch rule: install cloudflared upgrades only once a release is 24 h old
+  # (deploy/hetzner/cloudflared-patch.sh, blacklisted in 52unattended-upgrades-local).
+  - systemctl enable --now flight-tracker-cloudflared-patch.timer
   - systemctl restart ssh
