@@ -84,12 +84,19 @@ public class FlightController {
         Instant staleAirborneCutoff = now.minus(LiveVisibilityWindows.STALE_AIRBORNE_BOUND);
         Instant landedCutoff = now.minus(LiveVisibilityWindows.LANDED_VISIBILITY);
 
-        if (latMin == null || latMax == null || lonMin == null || lonMax == null) {
+        if (!allPresent(latMin, latMax, lonMin, lonMax)) {
             return liveStateStore.liveMarkers(staleAirborneCutoff, landedCutoff, null);
         }
         Bounds bounds = new Bounds(latMin, latMax, lonMin, lonMax);
         viewportService.report(bounds);
         return liveStateStore.liveMarkers(staleAirborneCutoff, landedCutoff, bounds);
+    }
+
+    private static boolean allPresent(Double... values) {
+        for (Double v : values) {
+            if (v == null) return false;
+        }
+        return true;
     }
 
     /**
@@ -198,13 +205,9 @@ public class FlightController {
                                             @RequestParam double lonMin,
                                             @RequestParam double lonMax,
                                             @RequestParam(defaultValue = "2") double gridDeg) {
-        Instant now = Instant.now();
+        Cutoffs c = Cutoffs.at(Instant.now());
         Bounds bounds = new Bounds(latMin, latMax, lonMin, lonMax);
-        double clampedGridDeg = Math.min(MAX_CLUSTER_GRID_DEG, Math.max(MIN_CLUSTER_GRID_DEG, gridDeg));
-        return liveStateStore.clustered(
-                now.minus(LiveVisibilityWindows.STALE_AIRBORNE_BOUND), now.minus(LiveVisibilityWindows.LANDED_VISIBILITY),
-                now.minus(LiveVisibilityWindows.ACTIVE_TRAFFIC_WINDOW),
-                bounds, clampedGridDeg);
+        return liveStateStore.clustered(c.staleAirborne(), c.landed(), c.active(), bounds, clampGridDeg(gridDeg));
     }
 
     private static final int DEFAULT_OVERVIEW_PLANES = 120;
@@ -234,22 +237,29 @@ public class FlightController {
                                       @RequestParam(defaultValue = "" + DEFAULT_OVERVIEW_PLANES) int limit,
                                       @RequestParam(defaultValue = "" + DEFAULT_OVERVIEW_PER_CELL) int perCell,
                                       @RequestParam(defaultValue = "false") boolean declutter) {
-        Instant now = Instant.now();
+        Cutoffs c = Cutoffs.at(Instant.now());
         Bounds bounds = new Bounds(latMin, latMax, lonMin, lonMax);
-        double clampedGridDeg = Math.min(MAX_CLUSTER_GRID_DEG, Math.max(MIN_CLUSTER_GRID_DEG, gridDeg));
+        double clampedGridDeg = clampGridDeg(gridDeg);
+        int planes = Math.min(MAX_OVERVIEW_PLANES, Math.max(0, limit));
         if (declutter) {
             // No clusters: one plane per cell, first discovered wins (see LiveStateStore.discovered).
-            return liveStateStore.discovered(
-                    now.minus(LiveVisibilityWindows.STALE_AIRBORNE_BOUND), now.minus(LiveVisibilityWindows.LANDED_VISIBILITY),
-                    now.minus(LiveVisibilityWindows.ACTIVE_TRAFFIC_WINDOW),
-                    bounds, clampedGridDeg, Math.min(MAX_OVERVIEW_PLANES, Math.max(0, limit)));
+            return liveStateStore.discovered(c.staleAirborne(), c.landed(), c.active(), bounds, clampedGridDeg, planes);
         }
-        return liveStateStore.overview(
-                now.minus(LiveVisibilityWindows.STALE_AIRBORNE_BOUND), now.minus(LiveVisibilityWindows.LANDED_VISIBILITY),
-                now.minus(LiveVisibilityWindows.ACTIVE_TRAFFIC_WINDOW),
-                bounds, clampedGridDeg,
-                Math.min(MAX_OVERVIEW_PLANES, Math.max(0, limit)),
-                Math.min(MAX_OVERVIEW_PER_CELL, Math.max(1, perCell)));
+        return liveStateStore.overview(c.staleAirborne(), c.landed(), c.active(), bounds, clampedGridDeg,
+                planes, Math.min(MAX_OVERVIEW_PER_CELL, Math.max(1, perCell)));
+    }
+
+    /** The visibility cutoffs the zoomed-out endpoints share, all relative to one {@code now}. */
+    private record Cutoffs(Instant staleAirborne, Instant landed, Instant active) {
+        static Cutoffs at(Instant now) {
+            return new Cutoffs(now.minus(LiveVisibilityWindows.STALE_AIRBORNE_BOUND),
+                    now.minus(LiveVisibilityWindows.LANDED_VISIBILITY),
+                    now.minus(LiveVisibilityWindows.ACTIVE_TRAFFIC_WINDOW));
+        }
+    }
+
+    private static double clampGridDeg(double gridDeg) {
+        return Math.min(MAX_CLUSTER_GRID_DEG, Math.max(MIN_CLUSTER_GRID_DEG, gridDeg));
     }
 
     private static final int SEARCH_RESULT_LIMIT = 8;

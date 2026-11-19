@@ -1,6 +1,37 @@
 import type { AircraftDossier, AirportInfo, AircraftUsage, Bounds, ClusterPoint, FlightPosition, LiveMarker, LiveOverview, PollingStatus, TrackStatus } from "../types/flight";
 import { clusterMockFleet, filterByBounds, getMockFleet, getMockPlaneCount } from "./mockFleet";
 
+export { liveFeedUrl, subscribeLiveFeed, type LiveFeedOptions } from "./liveFeed";
+
+interface JsonRequest {
+  url: string;
+  /** Names the request in the error: "<what> failed: <status>". */
+  what: string;
+  signal?: AbortSignal;
+}
+
+/** GET a JSON endpoint; a non-ok status throws "<what> failed: <status>". */
+async function getJson<T>({ url, what, signal }: JsonRequest): Promise<T> {
+  const res = await fetch(url, signal ? { signal } : undefined);
+  if (!res.ok) throw new Error(`${what} failed: ${res.status}`);
+  return res.json();
+}
+
+/** As getJson, but a 404 (nothing on record) reads as null. */
+async function getJsonOrNull<T>({ url, what }: JsonRequest): Promise<T | null> {
+  const res = await fetch(url);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`${what} failed: ${res.status}`);
+  return res.json();
+}
+
+/** An aircraft's ICAO 24-bit address (hex), as the API paths take it. */
+export type Icao24 = string;
+/** An ISO-8601 instant, as the history and usage endpoints take it. */
+export type IsoInstant = string;
+
+const boundsQuery = (b: Bounds): string => `?latMin=${b.latMin}&latMax=${b.latMax}&lonMin=${b.lonMin}&lonMax=${b.lonMax}`;
+
 /**
  * Individual aircraft inside `bounds` — the map only calls this at or above
  * CLUSTER_FETCH_MAX_ZOOM (see main.ts), always with its current viewport,
@@ -13,10 +44,7 @@ import { clusterMockFleet, filterByBounds, getMockFleet, getMockPlaneCount } fro
 export async function fetchLivePositions(bounds: Bounds, signal?: AbortSignal): Promise<LiveMarker[]> {
   const mockCount = getMockPlaneCount();
   if (mockCount != null) return filterByBounds(getMockFleet(mockCount), bounds);
-  const query = `?latMin=${bounds.latMin}&latMax=${bounds.latMax}&lonMin=${bounds.lonMin}&lonMax=${bounds.lonMax}`;
-  const res = await fetch(`/api/flights/live${query}`, { signal });
-  if (!res.ok) throw new Error(`live fetch failed: ${res.status}`);
-  return res.json();
+  return getJson({ url: `/api/flights/live${boundsQuery(bounds)}`, what: "live fetch", signal });
 }
 
 /**
@@ -28,10 +56,7 @@ export async function fetchLivePositions(bounds: Bounds, signal?: AbortSignal): 
 export async function fetchLiveClusters(bounds: Bounds, gridDeg: number, signal?: AbortSignal): Promise<ClusterPoint[]> {
   const mockCount = getMockPlaneCount();
   if (mockCount != null) return clusterMockFleet(filterByBounds(getMockFleet(mockCount), bounds), gridDeg);
-  const query = `?latMin=${bounds.latMin}&latMax=${bounds.latMax}&lonMin=${bounds.lonMin}&lonMax=${bounds.lonMax}&gridDeg=${gridDeg}`;
-  const res = await fetch(`/api/flights/live/clusters${query}`, { signal });
-  if (!res.ok) throw new Error(`live clusters fetch failed: ${res.status}`);
-  return res.json();
+  return getJson({ url: `/api/flights/live/clusters${boundsQuery(bounds)}&gridDeg=${gridDeg}`, what: "live clusters fetch", signal });
 }
 
 /**
@@ -47,10 +72,8 @@ export async function fetchLiveOverview(bounds: Bounds, cellDeg: number, signal?
   if (mockCount != null) {
     return { planes: filterByBounds(getMockFleet(mockCount), bounds).slice(0, OVERVIEW_PLANES), clusters: [] };
   }
-  const query = `?latMin=${bounds.latMin}&latMax=${bounds.latMax}&lonMin=${bounds.lonMin}&lonMax=${bounds.lonMax}&gridDeg=${cellDeg}&limit=${OVERVIEW_PLANES}&declutter=true`;
-  const res = await fetch(`/api/flights/live/overview${query}`, { signal });
-  if (!res.ok) throw new Error(`live overview fetch failed: ${res.status}`);
-  return res.json();
+  const query = `${boundsQuery(bounds)}&gridDeg=${cellDeg}&limit=${OVERVIEW_PLANES}&declutter=true`;
+  return getJson({ url: `/api/flights/live/overview${query}`, what: "live overview fetch", signal });
 }
 
 /**
@@ -84,9 +107,7 @@ export async function fetchGeo(signal?: AbortSignal): Promise<{ lat: number; lon
 export async function fetchLiveCount(active = true): Promise<number> {
   const mockCount = getMockPlaneCount();
   if (mockCount != null) return mockCount;
-  const res = await fetch(`/api/flights/live/count${active ? "?active=true" : ""}`);
-  if (!res.ok) throw new Error(`live count fetch failed: ${res.status}`);
-  return res.json();
+  return getJson({ url: `/api/flights/live/count${active ? "?active=true" : ""}`, what: "live count fetch" });
 }
 
 /**
@@ -94,9 +115,7 @@ export async function fetchLiveCount(active = true): Promise<number> {
  * (server ranks prefix matches first — see FlightController.search).
  */
 export async function searchFlights(query: string): Promise<FlightPosition[]> {
-  const res = await fetch(`/api/flights/search?q=${encodeURIComponent(query)}`);
-  if (!res.ok) throw new Error(`flight search failed: ${res.status}`);
-  return res.json();
+  return getJson({ url: `/api/flights/search?q=${encodeURIComponent(query)}`, what: "flight search" });
 }
 
 /**
@@ -105,9 +124,7 @@ export async function searchFlights(query: string): Promise<FlightPosition[]> {
  * IATA code, ICAO code, or city — see FlightController.search).
  */
 export async function searchFlightsByAirport(query: string): Promise<FlightPosition[]> {
-  const res = await fetch(`/api/flights/search?airport=${encodeURIComponent(query)}`);
-  if (!res.ok) throw new Error(`flight airport search failed: ${res.status}`);
-  return res.json();
+  return getJson({ url: `/api/flights/search?airport=${encodeURIComponent(query)}`, what: "flight airport search" });
 }
 
 /**
@@ -117,11 +134,8 @@ export async function searchFlightsByAirport(query: string): Promise<FlightPosit
  * than reusing /live. Null on 404 (aircraft has no position on record at
  * all), same convention as fetchAircraftDossier.
  */
-export async function fetchFlightLive(icao24: string): Promise<FlightPosition | null> {
-  const res = await fetch(`/api/flights/${icao24}/live`);
-  if (res.status === 404) return null;
-  if (!res.ok) throw new Error(`flight live fetch failed: ${res.status}`);
-  return res.json();
+export async function fetchFlightLive(icao24: Icao24): Promise<FlightPosition | null> {
+  return getJsonOrNull({ url: `/api/flights/${icao24}/live`, what: "flight live fetch" });
 }
 
 /**
@@ -130,7 +144,7 @@ export async function fetchFlightLive(icao24: string): Promise<FlightPosition | 
  * the live set), and on any failure or in the mock-fleet dev mode: the status
  * is an extra, never a reason to break the selection.
  */
-export async function fetchFlightStatus(icao24: string): Promise<TrackStatus | null> {
+export async function fetchFlightStatus(icao24: Icao24): Promise<TrackStatus | null> {
   if (getMockPlaneCount() != null) return null;
   try {
     const res = await fetch(`/api/flights/${icao24}/status`);
@@ -141,29 +155,20 @@ export async function fetchFlightStatus(icao24: string): Promise<TrackStatus | n
   }
 }
 
-export async function fetchHistory(icao24: string, from: string, to: string): Promise<FlightPosition[]> {
-  const res = await fetch(`/api/flights/${icao24}/history?from=${from}&to=${to}`);
-  if (!res.ok) throw new Error(`history fetch failed: ${res.status}`);
-  return res.json();
+export async function fetchHistory(icao24: Icao24, from: IsoInstant, to: IsoInstant): Promise<FlightPosition[]> {
+  return getJson({ url: `/api/flights/${icao24}/history?from=${from}&to=${to}`, what: "history fetch" });
 }
 
-export async function fetchAircraftDossier(icao24: string): Promise<AircraftDossier | null> {
-  const res = await fetch(`/api/aircraft/${icao24}`);
-  if (res.status === 404) return null;
-  if (!res.ok) throw new Error(`aircraft fetch failed: ${res.status}`);
-  return res.json();
+export async function fetchAircraftDossier(icao24: Icao24): Promise<AircraftDossier | null> {
+  return getJsonOrNull({ url: `/api/aircraft/${icao24}`, what: "aircraft fetch" });
 }
 
-export async function fetchUsage(from: string, to: string): Promise<AircraftUsage[]> {
-  const res = await fetch(`/api/usage?from=${from}&to=${to}`);
-  if (!res.ok) throw new Error(`usage fetch failed: ${res.status}`);
-  return res.json();
+export async function fetchUsage(from: IsoInstant, to: IsoInstant): Promise<AircraftUsage[]> {
+  return getJson({ url: `/api/usage?from=${from}&to=${to}`, what: "usage fetch" });
 }
 
 export async function fetchPollingStatus(): Promise<PollingStatus> {
-  const res = await fetch("/api/agents/status");
-  if (!res.ok) throw new Error(`polling status fetch failed: ${res.status}`);
-  return res.json();
+  return getJson({ url: "/api/agents/status", what: "polling status fetch" });
 }
 
 export interface RestartOutcome {
@@ -195,141 +200,6 @@ export async function restartPolling(): Promise<RestartOutcome> {
   return { status: await res.json(), rateLimited: false, retryAfterSeconds: null };
 }
 
-// Capped exponential backoff for WS reconnects: first retry after 1s,
-// doubling on every further consecutive failure, capped at 30s, with ±25%
-// jitter so a server restart doesn't get every open tab reconnecting in
-// lock-step.
-const WS_RECONNECT_MIN_MS = 1_000;
-const WS_RECONNECT_MAX_MS = 30_000;
-// Backoff only resets once a connection has *stayed* up this long. It used
-// to reset in onopen, so a socket the server accepted (101) and then
-// dropped — e.g. closing it 1011 after its send buffer to us overflowed —
-// reconnected every 1s forever instead of backing off.
-const WS_STABLE_AFTER_MS = 15_000;
-// Close codes where retrying the same request can never succeed (1002
-// protocol error, 1003 unsupported data, 1008 policy violation) — stop
-// instead of hammering the server; a reload starts over.
-const WS_FATAL_CLOSE_CODES = new Set([1002, 1003, 1008]);
-
-function isFlightPosition(data: unknown): data is FlightPosition {
-  if (!data || typeof data !== "object") return false;
-  const p = data as Record<string, unknown>;
-  return typeof p.icao24 === "string" && typeof p.observedAt === "string";
-}
-
-/** Same-origin /ws/live, ws:// or wss:// to match the page (Cloudflare serves https, so wss). */
-export function liveFeedUrl(loc: Pick<Location, "href" | "protocol"> = location): string {
-  const url = new URL("/ws/live", loc.href);
-  url.protocol = loc.protocol === "https:" ? "wss:" : "ws:";
-  return url.toString();
-}
-
-/**
- * Subscribes to the live push feed; returns an unsubscribe function.
- *
- * Keepalive: the backend sends native WS ping frames every 30s, which the
- * browser answers itself — they never reach `onmessage`. A `{"type":"ping"}`
- * text frame (the fallback PLAN.md §6 item 9 mentions) is also tolerated:
- * it isn't a FlightPosition, so it's dropped like any other non-position
- * frame.
- *
- * Reconnects on any unexpected close with capped, jittered exponential
- * backoff (see the constants above). Never touches /api/agents/restart:
- * reopening the poll window is a page-load / Resume-button decision only.
- */
-export interface LiveFeedOptions {
-  /**
-   * Called when the feed reconnects after a drop (not the first connect), so a
-   * caller can drop the state it held between the two connections.
-   */
-  onReconnect?: () => void;
-}
-
-export function subscribeLiveFeed(onPosition: (p: FlightPosition) => void, options: LiveFeedOptions = {}): () => void {
-  let socket: WebSocket | null = null;
-  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  let stableTimer: ReturnType<typeof setTimeout> | null = null;
-  let backoffMs = WS_RECONNECT_MIN_MS;
-  let stopped = false;
-  let connected = false;
-
-  function connect(): void {
-    reconnectTimer = null;
-    if (stopped) return;
-    let ws: WebSocket;
-    try {
-      ws = new WebSocket(liveFeedUrl());
-    } catch {
-      scheduleReconnect();
-      return;
-    }
-    socket = ws;
-    // Every handler below checks `ws === socket`: events from a socket that
-    // has already been replaced must never touch the current one (the old
-    // onerror called `socket?.close()` on the shared variable, which could
-    // close the *new* connection).
-    ws.onopen = () => {
-      if (ws !== socket) return;
-      if (connected) options.onReconnect?.();
-      connected = true;
-      stableTimer = setTimeout(() => {
-        backoffMs = WS_RECONNECT_MIN_MS;
-      }, WS_STABLE_AFTER_MS);
-    };
-    ws.onmessage = (event) => {
-      if (ws !== socket || typeof event.data !== "string") return;
-      let data: unknown;
-      try {
-        data = JSON.parse(event.data);
-      } catch {
-        return; // ignore malformed frame
-      }
-      if (isFlightPosition(data)) onPosition(data);
-    };
-    // onerror is always followed by onclose; reconnect is handled there, once.
-    ws.onerror = () => {};
-    ws.onclose = (event) => {
-      if (ws !== socket) return;
-      socket = null;
-      if (stableTimer) clearTimeout(stableTimer);
-      stableTimer = null;
-      if (stopped) return;
-      if (WS_FATAL_CLOSE_CODES.has(event.code)) {
-        console.warn(`live feed closed with ${event.code} (${event.reason || "no reason"}) — not reconnecting`);
-        return;
-      }
-      scheduleReconnect();
-    };
-  }
-
-  function scheduleReconnect(): void {
-    if (stopped || reconnectTimer) return;
-    const delay = Math.round(backoffMs * (0.75 + Math.random() * 0.5));
-    backoffMs = Math.min(WS_RECONNECT_MAX_MS, backoffMs * 2);
-    reconnectTimer = setTimeout(connect, delay);
-  }
-
-  // Back online after a network drop: don't sit out the rest of a 30s backoff.
-  function onOnline(): void {
-    if (stopped || socket) return;
-    if (reconnectTimer) clearTimeout(reconnectTimer);
-    reconnectTimer = null;
-    backoffMs = WS_RECONNECT_MIN_MS;
-    connect();
-  }
-  window.addEventListener("online", onOnline);
-
-  connect();
-  return () => {
-    stopped = true;
-    window.removeEventListener("online", onOnline);
-    if (reconnectTimer) clearTimeout(reconnectTimer);
-    if (stableTimer) clearTimeout(stableTimer);
-    socket?.close(1000);
-    socket = null;
-  };
-}
-
 /**
  * Static name/municipality/country for the airport dossier panel — see
  * AirportController.info. Null on 404 (a code the bundled AIRPORTS data
@@ -337,10 +207,7 @@ export function subscribeLiveFeed(onPosition: (p: FlightPosition) => void, optio
  * fetchAircraftDossier.
  */
 export async function fetchAirportInfo(code: string): Promise<AirportInfo | null> {
-  const res = await fetch(`/api/airports/info?code=${encodeURIComponent(code)}`);
-  if (res.status === 404) return null;
-  if (!res.ok) throw new Error(`airport info fetch failed: ${res.status}`);
-  return res.json();
+  return getJsonOrNull({ url: `/api/airports/info?code=${encodeURIComponent(code)}`, what: "airport info fetch" });
 }
 
 /** One row of a Swedavia board (ScheduleController); `icao24` is set once the flight is airborne in live state. */
@@ -365,6 +232,15 @@ export interface ScheduledFlight {
 /** The board's own health for one search, from the X-Schedule-Status header. */
 export type ScheduleStatus = "ok" | "stale" | "incomplete";
 
+/** /api/schedule/search parameters: `flight` (BA778), or `from`/`to` (comma-separated IATA codes); unset ones are left out. */
+export interface ScheduleQuery {
+  flight?: string;
+  from?: string;
+  to?: string;
+  airport?: string;
+  date?: string;
+}
+
 export interface ScheduleSearchResult {
   rows: ScheduledFlight[];
   status: ScheduleStatus;
@@ -375,18 +251,29 @@ export interface ScheduleSearchResult {
  * IATA codes) and keep the board's health header. A failed board must never
  * raise a notification (#82 design §3), so the detector reads `status`.
  */
-export async function searchScheduleWithStatus(p: { flight?: string; from?: string; to?: string; airport?: string; date?: string }): Promise<ScheduleSearchResult> {
-  const qs = new URLSearchParams();
-  for (const [k, v] of Object.entries(p)) if (v) qs.set(k, v);
-  const res = await fetch(`/api/schedule/search?${qs}`);
+export async function searchScheduleWithStatus(p: ScheduleQuery): Promise<ScheduleSearchResult> {
+  const res = await fetch(`/api/schedule/search?${scheduleParams(p)}`);
   if (res.status === 503) throw new Error("Schedules are not available (no Swedavia key)");
   if (!res.ok) throw new Error(`Search failed (${res.status})`);
-  const header = res.headers.get("X-Schedule-Status");
-  const status: ScheduleStatus = header === "stale" || header === "incomplete" ? header : "ok";
-  return { rows: await res.json(), status };
+  return { rows: await res.json(), status: scheduleStatus(res.headers) };
+}
+
+/** The query's set fields only, in the order given. */
+function scheduleParams(p: ScheduleQuery): URLSearchParams {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(p)) {
+    if (v) qs.set(k, v);
+  }
+  return qs;
+}
+
+/** The board's health from the X-Schedule-Status header; anything else reads as "ok". */
+function scheduleStatus(headers: Headers): ScheduleStatus {
+  const header = headers.get("X-Schedule-Status");
+  return header === "stale" || header === "incomplete" ? header : "ok";
 }
 
 /** Search the schedule by `flight` (BA778) or by `from`/`to` (comma-separated IATA codes); throws with the server's reason. */
-export async function searchSchedule(p: { flight?: string; from?: string; to?: string; airport?: string; date?: string }): Promise<ScheduledFlight[]> {
+export async function searchSchedule(p: ScheduleQuery): Promise<ScheduledFlight[]> {
   return (await searchScheduleWithStatus(p)).rows;
 }

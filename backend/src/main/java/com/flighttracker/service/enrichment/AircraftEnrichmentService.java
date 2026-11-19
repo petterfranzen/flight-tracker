@@ -1,7 +1,6 @@
 package com.flighttracker.service.enrichment;
 
 import com.flighttracker.model.Aircraft;
-import com.flighttracker.model.Airport;
 import com.flighttracker.repository.AircraftRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -11,9 +10,7 @@ import org.springframework.stereotype.Service;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Fills in the dossier fields (aircraft type/registration/operator,
@@ -50,20 +47,14 @@ public class AircraftEnrichmentService {
     private final AircraftRepository aircraftRepository;
     private final AdsbdbClient adsbdbClient;
     private final OpenSkyFlightsClient flightsClient;
-    private final AirportLookupService airportLookupService;
     private final CallsignRouteService callsignRoutes;
     private final Clock clock;
 
     // After an OpenSky fallback lookup for a leg comes back empty, don't ask
-    // again for this long: the flight usually only appears in OpenSky's
-    // historical data once it has landed, and the endpoint costs credits.
-    static final Duration FALLBACK_RETRY_AFTER_MISS = Duration.ofMinutes(30);
+    // again for this long (see LegRouteFallback).
+    static final Duration FALLBACK_RETRY_AFTER_MISS = LegRouteFallback.RETRY_AFTER_MISS;
 
-    /** OpenSky fallback result for one aircraft's leg — in memory only. */
-    private record FallbackEntry(Instant legStart, Route route, Instant fetchedAt) {
-    }
-
-    private final Map<String, FallbackEntry> fallbackRoutes = new ConcurrentHashMap<>();
+    private final LegRouteFallback fallbackRoutes;
 
     public AircraftEnrichmentService(AircraftRepository aircraftRepository,
                                       AdsbdbClient adsbdbClient,
@@ -74,19 +65,40 @@ public class AircraftEnrichmentService {
         this.aircraftRepository = aircraftRepository;
         this.adsbdbClient = adsbdbClient;
         this.flightsClient = flightsClient;
-        this.airportLookupService = airportLookupService;
         this.callsignRoutes = callsignRoutes;
         this.clock = clock;
+        this.fallbackRoutes = new LegRouteFallback(flightsClient, airportLookupService, clock);
     }
 
     @Async("enrichmentExecutor")
     public void enrichNewAircraft(String icao24, String callsign) {
-        doEnrich(icao24, callsign);
+        enrichSynchronously(icao24, callsign);
     }
 
     /** Blocking — only call this from a single user-triggered request, never in bulk. */
     public void enrichSynchronously(String icao24, String callsign) {
-        doEnrich(icao24, callsign);
+        Optional<AircraftInfo> info = adsbdbClient.fetchAircraftInfo(icao24);
+        // Warms the callsign cache so the dossier/search have a route ready.
+        callsignRoutes.resolve(callsign);
+        // Aircraft is immutable (cloud migration A2) — no more
+        // load/mutate-fields/save; updateEnrichment issues a single
+        // targeted UPDATE, only touching the columns a lookup actually
+        // found a value for (see that method's own javadoc). Runs
+        // unconditionally, even when the lookup came back empty: it still
+        // needs to stamp metadataFetchedAt so a data-less aircraft (no
+        // adsbdb record) doesn't trigger a fresh external lookup every
+        // single time its dossier is viewed again. Route columns are no
+        // longer written (always null) — see the class javadoc.
+        AircraftInfo i = info.orElse(null);
+        aircraftRepository.updateEnrichment(icao24,
+                i == null ? null : i.model(),
+                i == null ? null : i.registration(),
+                i == null ? null : i.operator(),
+                null, null, null, null, null, null, null, null,
+                clock.instant());
+        if (info.isEmpty()) {
+            log.debug("No aircraft metadata found for {}", icao24);
+        }
     }
 
     /**
@@ -123,31 +135,6 @@ public class AircraftEnrichmentService {
         return confirmedAt;
     }
 
-    private void doEnrich(String icao24, String callsign) {
-        Optional<AircraftInfo> info = adsbdbClient.fetchAircraftInfo(icao24);
-        // Warms the callsign cache so the dossier/search have a route ready.
-        callsignRoutes.resolve(callsign);
-        // Aircraft is immutable (cloud migration A2) — no more
-        // load/mutate-fields/save; updateEnrichment issues a single
-        // targeted UPDATE, only touching the columns a lookup actually
-        // found a value for (see that method's own javadoc). Runs
-        // unconditionally, even when the lookup came back empty: it still
-        // needs to stamp metadataFetchedAt so a data-less aircraft (no
-        // adsbdb record) doesn't trigger a fresh external lookup every
-        // single time its dossier is viewed again. Route columns are no
-        // longer written — see the class javadoc.
-        AircraftInfo i = info.orElse(null);
-        aircraftRepository.updateEnrichment(icao24,
-                i == null ? null : i.model(),
-                i == null ? null : i.registration(),
-                i == null ? null : i.operator(),
-                null, null, null, null, null, null, null, null,
-                clock.instant());
-        if (info.isEmpty()) {
-            log.debug("No aircraft metadata found for {}", icao24);
-        }
-    }
-
     /**
      * The route of the flight this aircraft is on now: by callsign first
      * (schedule-based, resolves airborne flights, changes with each leg's
@@ -162,15 +149,7 @@ public class AircraftEnrichmentService {
         if (byCallsign.isPresent()) return byCallsign;
         if (legStart == null) return Optional.empty();
 
-        Instant now = clock.instant();
-        FallbackEntry cached = fallbackRoutes.get(icao24);
-        if (cached != null && cached.legStart().equals(legStart)
-                && (cached.route() != null || Duration.between(cached.fetchedAt(), now).compareTo(FALLBACK_RETRY_AFTER_MISS) < 0)) {
-            return Optional.ofNullable(cached.route());
-        }
-        Optional<Route> route = flightsClient.fetchRoute(icao24, legStart).map(this::backfillNames);
-        fallbackRoutes.put(icao24, new FallbackEntry(legStart, route.orElse(null), now));
-        return route;
+        return fallbackRoutes.routeFor(icao24, legStart);
     }
 
     /**
@@ -181,34 +160,6 @@ public class AircraftEnrichmentService {
     public Optional<Route> knownRoute(String icao24, String callsign) {
         Optional<Route> byCallsign = callsignRoutes.cached(callsign);
         if (byCallsign.isPresent()) return byCallsign;
-        FallbackEntry cached = fallbackRoutes.get(icao24);
-        return cached == null ? Optional.empty() : Optional.ofNullable(cached.route());
-    }
-
-    /**
-     * Fills in a name/lat/lon for any code that has one but is missing the
-     * other — in practice this only ever means the OpenSkyFlightsClient
-     * fallback path (bare codes, no name/coordinates), since adsbdb always
-     * returns both together or neither, but checking generically here means
-     * this doesn't need to know which path produced the route. Local
-     * static-table lookup (AirportLookupService), not another external
-     * call, so this is cheap enough to always attempt.
-     */
-    private Route backfillNames(Route route) {
-        Airport origin = route.originAirportName() == null
-                ? airportLookupService.lookup(route.originAirport()).orElse(null) : null;
-        Airport destination = route.destinationAirportName() == null
-                ? airportLookupService.lookup(route.destinationAirport()).orElse(null) : null;
-        if (origin == null && destination == null) return route;
-
-        return new Route(
-                route.originAirport(),
-                origin != null ? origin.name() : route.originAirportName(),
-                origin != null ? origin.latitude() : route.originAirportLat(),
-                origin != null ? origin.longitude() : route.originAirportLon(),
-                route.destinationAirport(),
-                destination != null ? destination.name() : route.destinationAirportName(),
-                destination != null ? destination.latitude() : route.destinationAirportLat(),
-                destination != null ? destination.longitude() : route.destinationAirportLon());
+        return fallbackRoutes.known(icao24);
     }
 }

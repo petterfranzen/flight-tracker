@@ -7,6 +7,8 @@ import org.springframework.mock.env.MockEnvironment;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -39,15 +41,28 @@ class ConfirmationBudgetsTest {
         return new ConfirmationBudgets(appState, clock, env, phaseLogger, globalDaily);
     }
 
+    /** tryCharge for each of {@code units} in turn; what each one answered. */
+    private static List<Boolean> charges(ConfirmationBudgets b, String providerId, int... units) {
+        List<Boolean> answers = new ArrayList<>();
+        for (int u : units) answers.add(b.tryCharge(providerId, u));
+        return answers;
+    }
+
+    /** Units charged today and this month, in that order. */
+    private static List<Integer> units(ConfirmationBudgets b, String providerId) {
+        return List.of(b.unitsToday(providerId), b.unitsThisMonth(providerId));
+    }
+
+    private void setBudget(String providerId, String period, int units) {
+        env.setProperty("flighttracker.confirmation.providers." + providerId + "." + period + "-budget", String.valueOf(units));
+    }
+
     @Test
     void withoutProviderKeys_theGlobalDailyBudgetApplies_andMonthlyIsUnlimited() {
         ConfirmationBudgets b = budgets(3);
 
-        assertThat(b.tryCharge("p", 1)).isTrue();
-        assertThat(b.tryCharge("p", 2)).isTrue();
-        assertThat(b.tryCharge("p", 1)).isFalse();
-        assertThat(b.unitsToday("p")).isEqualTo(3);
-        assertThat(b.unitsThisMonth("p")).isEqualTo(3);
+        assertThat(charges(b, "p", 1, 2, 1)).containsExactly(true, true, false);
+        assertThat(units(b, "p")).containsExactly(3, 3);
     }
 
     @Test
@@ -55,9 +70,7 @@ class ConfirmationBudgetsTest {
         env.setProperty("flighttracker.confirmation.providers.adb.daily-budget", "5");
         ConfirmationBudgets b = budgets(300);
 
-        assertThat(b.tryCharge("adb", 2)).isTrue();
-        assertThat(b.tryCharge("adb", 2)).isTrue();
-        assertThat(b.tryCharge("adb", 2)).isFalse(); // 4 + 2 > 5
+        assertThat(charges(b, "adb", 2, 2, 2)).containsExactly(true, true, false); // 4 + 2 > 5
         assertThat(b.unitsToday("adb")).isEqualTo(4);
         assertThat(b.tryCharge("adb", 1)).isTrue();
     }
@@ -80,40 +93,35 @@ class ConfirmationBudgetsTest {
         assertThat(b.tryCharge("adb", 6)).isTrue();
         clock.set(Instant.parse("2026-10-20T10:00:00Z")); // another day, same month
         assertThat(b.unitsToday("adb")).isZero();
-        assertThat(b.tryCharge("adb", 5)).isFalse();
-        assertThat(b.tryCharge("adb", 4)).isTrue();
+        assertThat(charges(b, "adb", 5, 4)).containsExactly(false, true);
         assertThat(b.unitsThisMonth("adb")).isEqualTo(10);
     }
 
     @Test
     void theDailyBudgetResetsAtUtcMidnight_notTheMonthlyOne() {
-        env.setProperty("flighttracker.confirmation.providers.p.daily-budget", "2");
-        env.setProperty("flighttracker.confirmation.providers.p.monthly-budget", "100");
+        setBudget("p", "daily", 2);
+        setBudget("p", "monthly", 100);
         ConfirmationBudgets b = budgets(300);
         clock.set(Instant.parse("2026-10-12T23:59:00Z"));
-        b.tryCharge("p", 2);
-        assertThat(b.tryCharge("p", 1)).isFalse();
+        assertThat(charges(b, "p", 2, 1)).endsWith(false);
 
         clock.set(Instant.parse("2026-10-13T00:00:00Z"));
 
         assertThat(b.tryCharge("p", 1)).isTrue();
-        assertThat(b.unitsToday("p")).isEqualTo(1);
-        assertThat(b.unitsThisMonth("p")).isEqualTo(3);
+        assertThat(units(b, "p")).containsExactly(1, 3);
     }
 
     @Test
     void theMonthlyBudgetResetsOnThe1stUtc() {
-        env.setProperty("flighttracker.confirmation.providers.p.monthly-budget", "4");
+        setBudget("p", "monthly", 4);
         ConfirmationBudgets b = budgets(300);
         clock.set(Instant.parse("2026-10-31T23:59:00Z"));
-        b.tryCharge("p", 4);
-        assertThat(b.tryCharge("p", 1)).isFalse();
+        assertThat(charges(b, "p", 4, 1)).endsWith(false);
 
         clock.set(Instant.parse("2026-11-01T00:00:00Z"));
 
         assertThat(b.tryCharge("p", 4)).isTrue();
-        assertThat(b.unitsThisMonth("p")).isEqualTo(4);
-        assertThat(b.unitsToday("p")).isEqualTo(4);
+        assertThat(units(b, "p")).containsExactly(4, 4);
     }
 
     @Test
@@ -140,10 +148,8 @@ class ConfirmationBudgetsTest {
 
         ConfirmationBudgets after = budgets(300); // a restart: new instance, same app_state
 
-        assertThat(after.unitsToday("adb")).isEqualTo(4);
-        assertThat(after.unitsThisMonth("adb")).isEqualTo(4);
-        assertThat(after.tryCharge("adb", 5)).isFalse(); // 4 + 5 > 8 today
-        assertThat(after.tryCharge("adb", 4)).isTrue();
+        assertThat(units(after, "adb")).containsExactly(4, 4);
+        assertThat(charges(after, "adb", 5, 4)).containsExactly(false, true); // 4 + 5 > 8 today
     }
 
     @Test
@@ -153,13 +159,11 @@ class ConfirmationBudgetsTest {
 
         ConfirmationBudgets b = budgets(300);
 
-        assertThat(b.unitsToday("p")).isZero();
-        assertThat(b.unitsThisMonth("p")).isZero();
+        assertThat(units(b, "p")).containsExactly(0, 0);
 
         appState.put("confirmation.budget.q", "2026-10-11:7|2026-10:90");
         env.setProperty("flighttracker.confirmation.providers.q.monthly-budget", "100");
-        assertThat(b.unitsToday("q")).isZero();
-        assertThat(b.unitsThisMonth("q")).isEqualTo(90);
+        assertThat(units(b, "q")).containsExactly(0, 90);
     }
 
     @Test
@@ -223,44 +227,40 @@ class ConfirmationBudgetsTest {
 
         assertThat(b.tryCharge("p", 1)).isTrue(); // the retry reads the real count: 9 + 1 <= 10
         assertThat(b.unitsThisMonth("p")).isEqualTo(10);
-        assertThat(b.tryCharge("p", 1)).isFalse();
+        assertThat(charges(b, "p", 1)).containsExactly(false);
     }
 
     @Test
     void anExhaustedDailyBudget_logsOneDegradedLinePerProviderAndDay() {
-        env.setProperty("flighttracker.confirmation.providers.p.daily-budget", "2");
+        setBudget("p", "daily", 2);
         PhaseLogger logger = mock(PhaseLogger.class);
         ConfirmationBudgets b = new ConfirmationBudgets(appState, clock, env, logger, 300);
 
         b.tryCharge("p", 2);
         verify(logger, never()).degraded(anyString());
-        assertThat(b.tryCharge("p", 1)).isFalse();
-        assertThat(b.tryCharge("p", 1)).isFalse();
-        assertThat(b.tryCharge("p", 1)).isFalse();
+        assertThat(charges(b, "p", 1, 1, 1)).containsOnly(false);
         verify(logger, times(1)).degraded(contains("daily budget"));
 
         clock.set(Instant.parse("2026-10-13T00:00:01Z"));
-        b.tryCharge("p", 2);
-        assertThat(b.tryCharge("p", 1)).isFalse();
+        assertThat(charges(b, "p", 2, 1)).endsWith(false);
         verify(logger, times(2)).degraded(contains("daily budget")); // once more on the new day
     }
 
     @Test
     void anExhaustedMonthlyBudget_logsOneDegradedLinePerProviderAndMonth() {
-        env.setProperty("flighttracker.confirmation.providers.p.monthly-budget", "3");
+        setBudget("p", "monthly", 3);
         PhaseLogger logger = mock(PhaseLogger.class);
         ConfirmationBudgets b = new ConfirmationBudgets(appState, clock, env, logger, 300);
 
         b.tryCharge("p", 3);
-        clock.set(Instant.parse("2026-10-20T10:00:00Z"));
-        assertThat(b.tryCharge("p", 1)).isFalse();
-        clock.set(Instant.parse("2026-10-21T10:00:00Z"));
-        assertThat(b.tryCharge("p", 1)).isFalse();
+        for (String day : List.of("2026-10-20T10:00:00Z", "2026-10-21T10:00:00Z")) {
+            clock.set(Instant.parse(day));
+            assertThat(b.tryCharge("p", 1)).isFalse();
+        }
         verify(logger, times(1)).degraded(contains("monthly budget of"));
 
         clock.set(Instant.parse("2026-11-02T10:00:00Z"));
-        b.tryCharge("p", 3);
-        assertThat(b.tryCharge("p", 1)).isFalse();
+        assertThat(charges(b, "p", 3, 1)).endsWith(false);
         verify(logger, times(2)).degraded(contains("monthly budget of"));
     }
 
