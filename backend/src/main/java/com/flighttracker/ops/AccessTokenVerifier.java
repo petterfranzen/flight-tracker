@@ -1,31 +1,20 @@
 package com.flighttracker.ops;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
-import java.math.BigInteger;
 import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
-import java.security.KeyFactory;
 import java.security.PublicKey;
 import java.security.Signature;
-import java.security.spec.RSAPublicKeySpec;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Base64;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 import java.util.regex.Pattern;
 
@@ -44,12 +33,10 @@ import java.util.regex.Pattern;
 @Component
 public class AccessTokenVerifier {
 
-    private static final Logger log = LoggerFactory.getLogger(AccessTokenVerifier.class);
-
     static final Duration CLOCK_SKEW = Duration.ofSeconds(60);
     // A token with an unknown key id triggers a key refetch, at most this
     // often, so forged tokens can't turn the app into a request amplifier.
-    static final Duration MIN_REFETCH_INTERVAL = Duration.ofMinutes(5);
+    static final Duration MIN_REFETCH_INTERVAL = AccessSigningKeys.MIN_REFETCH_INTERVAL;
     private static final int MAX_TOKEN_LENGTH = 8192;
     private static final Pattern TEAM_DOMAIN = Pattern.compile("[a-z0-9-]+\\.cloudflareaccess\\.com");
     private static final Base64.Decoder B64 = Base64.getUrlDecoder();
@@ -58,15 +45,13 @@ public class AccessTokenVerifier {
     private final String audience;
     private final Clock clock;
     private final ObjectMapper mapper;
-    private final Function<URI, String> fetcher;
-    private final Map<String, PublicKey> keys = new ConcurrentHashMap<>();
-    private volatile Instant lastFetch = Instant.EPOCH;
+    private final AccessSigningKeys keys;
 
     @Autowired
     public AccessTokenVerifier(@Value("${flighttracker.ops.access-team-domain:}") String teamDomain,
                                @Value("${flighttracker.ops.access-audience:}") String audience,
                                Clock clock, ObjectMapper mapper) {
-        this(teamDomain, audience, clock, mapper, AccessTokenVerifier::httpGet);
+        this(teamDomain, audience, clock, mapper, AccessSigningKeys::httpGet);
     }
 
     AccessTokenVerifier(String teamDomain, String audience, Clock clock, ObjectMapper mapper,
@@ -75,7 +60,7 @@ public class AccessTokenVerifier {
         this.audience = audience == null ? "" : audience.trim();
         this.clock = clock;
         this.mapper = mapper;
-        this.fetcher = fetcher;
+        this.keys = new AccessSigningKeys(this.teamDomain, clock, mapper, fetcher);
     }
 
     public boolean isConfigured() {
@@ -84,32 +69,46 @@ public class AccessTokenVerifier {
 
     /** True only for a well-formed, correctly signed, unexpired token for this audience and team. */
     public boolean verify(String token) {
-        if (!isConfigured() || token == null || token.isEmpty() || token.length() > MAX_TOKEN_LENGTH) return false;
+        if (!isConfigured() || !plausibleLength(token)) return false;
         try {
             String[] parts = token.split("\\.", -1);
             if (parts.length != 3) return false;
-
-            JsonNode header = mapper.readTree(B64.decode(parts[0]));
-            if (!"RS256".equals(text(header.get("alg")))) return false;
-            PublicKey key = keyFor(text(header.get("kid")));
-            if (key == null) return false;
-
-            Signature signature = Signature.getInstance("SHA256withRSA");
-            signature.initVerify(key);
-            signature.update((parts[0] + "." + parts[1]).getBytes(StandardCharsets.US_ASCII));
-            if (!signature.verify(B64.decode(parts[2]))) return false;
-
-            JsonNode claims = mapper.readTree(B64.decode(parts[1]));
-            Instant now = clock.instant();
-            JsonNode exp = claims.get("exp");
-            if (exp == null || !exp.isNumber() || Instant.ofEpochSecond(exp.asLong()).plus(CLOCK_SKEW).isBefore(now)) return false;
-            JsonNode nbf = claims.get("nbf");
-            if (nbf != null && nbf.isNumber() && Instant.ofEpochSecond(nbf.asLong()).minus(CLOCK_SKEW).isAfter(now)) return false;
-            if (!("https://" + teamDomain).equals(text(claims.get("iss")))) return false;
-            return audienceMatches(claims.get("aud"));
+            if (!signatureValid(parts)) return false;
+            return claimsValid(mapper.readTree(B64.decode(parts[1])));
         } catch (RuntimeException | GeneralSecurityException e) {
             return false;
         }
+    }
+
+    private static boolean plausibleLength(String token) {
+        return token != null && !token.isEmpty() && token.length() <= MAX_TOKEN_LENGTH;
+    }
+
+    private boolean signatureValid(String[] parts) throws GeneralSecurityException {
+        JsonNode header = mapper.readTree(B64.decode(parts[0]));
+        if (!"RS256".equals(text(header.get("alg")))) return false;
+        PublicKey key = keys.keyFor(text(header.get("kid")));
+        if (key == null) return false;
+
+        Signature signature = Signature.getInstance("SHA256withRSA");
+        signature.initVerify(key);
+        signature.update((parts[0] + "." + parts[1]).getBytes(StandardCharsets.US_ASCII));
+        return signature.verify(B64.decode(parts[2]));
+    }
+
+    private boolean claimsValid(JsonNode claims) {
+        Instant now = clock.instant();
+        Instant exp = epochSeconds(claims.get("exp"));
+        if (exp == null || exp.plus(CLOCK_SKEW).isBefore(now)) return false;
+        Instant nbf = epochSeconds(claims.get("nbf"));
+        if (nbf != null && nbf.minus(CLOCK_SKEW).isAfter(now)) return false;
+        if (!("https://" + teamDomain).equals(text(claims.get("iss")))) return false;
+        return audienceMatches(claims.get("aud"));
+    }
+
+    /** The claim as an instant, or null when it is absent or not a number. */
+    private static Instant epochSeconds(JsonNode node) {
+        return node != null && node.isNumber() ? Instant.ofEpochSecond(node.asLong()) : null;
     }
 
     private boolean audienceMatches(JsonNode aud) {
@@ -123,59 +122,7 @@ public class AccessTokenVerifier {
         return false;
     }
 
-    private PublicKey keyFor(String kid) {
-        if (kid == null) return null;
-        PublicKey key = keys.get(kid);
-        if (key != null) return key;
-        synchronized (this) {
-            key = keys.get(kid);
-            if (key != null) return key;
-            Instant now = clock.instant();
-            if (lastFetch.plus(MIN_REFETCH_INTERVAL).isAfter(now)) return null;
-            lastFetch = now;
-            try {
-                Map<String, PublicKey> fresh = parseKeys(fetcher.apply(URI.create("https://" + teamDomain + "/cdn-cgi/access/certs")));
-                keys.clear();
-                keys.putAll(fresh);
-            } catch (RuntimeException | GeneralSecurityException e) {
-                log.warn("ops: could not load access signing keys: {}", e.toString());
-                return null;
-            }
-            return keys.get(kid);
-        }
-    }
-
-    private Map<String, PublicKey> parseKeys(String body) throws GeneralSecurityException {
-        Map<String, PublicKey> out = new HashMap<>();
-        KeyFactory factory = KeyFactory.getInstance("RSA");
-        for (JsonNode k : mapper.readTree(body).path("keys")) {
-            String kid = text(k.get("kid"));
-            String n = text(k.get("n"));
-            String e = text(k.get("e"));
-            if (!"RSA".equals(text(k.get("kty"))) || kid == null || n == null || e == null) continue;
-            out.put(kid, factory.generatePublic(new RSAPublicKeySpec(
-                    new BigInteger(1, B64.decode(n)), new BigInteger(1, B64.decode(e)))));
-        }
-        return out;
-    }
-
     private static String text(JsonNode node) {
-        return node != null && node.isString() ? node.stringValue() : null;
-    }
-
-    private static String httpGet(URI uri) {
-        try {
-            HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
-            HttpResponse<String> response = client.send(
-                    HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(5)).GET().build(),
-                    HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() != 200) throw new IllegalStateException("HTTP " + response.statusCode());
-            return response.body();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new IllegalStateException("interrupted", e);
-        } catch (java.io.IOException e) {
-            throw new IllegalStateException(e.toString(), e);
-        }
+        return AccessSigningKeys.text(node);
     }
 }

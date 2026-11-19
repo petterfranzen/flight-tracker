@@ -135,19 +135,9 @@ public class ConfirmationGateway {
     /** Cached answer, or one real call if the pacing, budget and backoff allow it. */
     public Outcome lookup(ArrivalConfirmationProvider provider, ArrivalQuery query) {
         Instant now = clock.instant();
-        CacheKey key = new CacheKey(provider.id(), normalize(query.callsign()),
-                query.arrivalAirportIcao() == null ? "?" : query.arrivalAirportIcao(),
-                query.expectedArrivalAt() == null ? LocalDate.EPOCH : query.expectedArrivalAt().atZone(ZoneOffset.UTC).toLocalDate());
-
-        synchronized (cache) {
-            CacheEntry hit = cache.get(key);
-            if (hit != null) {
-                if (hit.expiresAt().isAfter(now) && !isEarlierLeg(hit, query, now, foundTtl(provider))) {
-                    return new Outcome(Kind.CACHED, hit.result());
-                }
-                cache.remove(key);
-            }
-        }
+        CacheKey key = cacheKey(provider, query);
+        Optional<LookupResult> hit = usableHit(key, provider, query, now);
+        if (hit.isPresent()) return new Outcome(Kind.CACHED, hit.get());
 
         // A query the provider can never answer costs nothing and is not a call: no charge, no
         // pacing, and the caller goes on to its next candidate. Not cached; the check is free.
@@ -157,27 +147,62 @@ public class ConfirmationGateway {
         ProviderState state = admit(provider.id(), units, now);
         if (state == null) return Outcome.SKIPPED;
 
-        LookupResult result;
-        try {
-            result = provider.lookup(query);
-        } catch (RuntimeException e) {
-            log.warn("Confirmation provider {} threw", provider.id(), e);
-            result = LookupResult.failed();
-        }
-        if (result == null) result = LookupResult.failed();
+        LookupResult result = call(provider, query);
         refundUnreached(provider.id(), units, result);
 
-        if (result.status() == LookupResult.Status.FOUND || result.status() == LookupResult.Status.NOT_FOUND) {
+        if (isAnswer(result.status())) {
             recordSuccess(state);
-            Duration ttl = ttl(result, provider);
-            synchronized (cache) {
-                cache.put(key, new CacheEntry(result, now, now.plus(ttl)));
-                evictOverflow();
-            }
+            cacheResult(key, result, ttl(result, provider), now);
         } else {
             recordFailure(provider.id(), state, result.status(), result.retryAfter());
         }
         return new Outcome(Kind.CALLED, result);
+    }
+
+    private static CacheKey cacheKey(ArrivalConfirmationProvider provider, ArrivalQuery query) {
+        return new CacheKey(provider.id(), normalize(query.callsign()),
+                query.arrivalAirportIcao() == null ? "?" : query.arrivalAirportIcao(),
+                utcDate(query.expectedArrivalAt()));
+    }
+
+    private static LocalDate utcDate(Instant at) {
+        return at == null ? LocalDate.EPOCH : at.atZone(ZoneOffset.UTC).toLocalDate();
+    }
+
+    /** The cached result if it has not expired and is not about an earlier leg; drops it otherwise. */
+    private Optional<LookupResult> usableHit(CacheKey key, ArrivalConfirmationProvider provider, ArrivalQuery query, Instant now) {
+        synchronized (cache) {
+            CacheEntry hit = cache.get(key);
+            if (hit == null) return Optional.empty();
+            if (hit.expiresAt().isAfter(now) && !isEarlierLeg(hit, query, now, foundTtl(provider))) {
+                return Optional.of(hit.result());
+            }
+            cache.remove(key);
+            return Optional.empty();
+        }
+    }
+
+    /** The provider's answer; FAILED when it throws or returns nothing. */
+    private static LookupResult call(ArrivalConfirmationProvider provider, ArrivalQuery query) {
+        try {
+            LookupResult result = provider.lookup(query);
+            return result == null ? LookupResult.failed() : result;
+        } catch (RuntimeException e) {
+            log.warn("Confirmation provider {} threw", provider.id(), e);
+            return LookupResult.failed();
+        }
+    }
+
+    private void cacheResult(CacheKey key, LookupResult result, Duration ttl, Instant now) {
+        synchronized (cache) {
+            cache.put(key, new CacheEntry(result, now, now.plus(ttl)));
+            evictOverflow();
+        }
+    }
+
+    /** FOUND or NOT_FOUND: the upstream answered, so the backoff resets and the result is cached. */
+    private static boolean isAnswer(LookupResult.Status status) {
+        return status == LookupResult.Status.FOUND || status == LookupResult.Status.NOT_FOUND;
     }
 
     /**
@@ -207,17 +232,10 @@ public class ConfirmationGateway {
         ProviderState state = admit(provider.id(), 1, now);
         if (state == null) return BoardOutcome.SKIPPED;
 
-        BoardResult result;
-        try {
-            result = provider.fetchArrivals(airportIcao, utcDate);
-        } catch (RuntimeException e) {
-            log.warn("Confirmation provider {} threw", provider.id(), e);
-            result = BoardResult.failed();
-        }
-        if (result == null) result = BoardResult.failed();
+        BoardResult result = fetch(provider, airportIcao, utcDate);
         budgets.adjust(provider.id(), result.costUnits() - 1); // one unit was charged before the call
 
-        if (result.status() == LookupResult.Status.FOUND || result.status() == LookupResult.Status.NOT_FOUND) {
+        if (isAnswer(result.status())) {
             recordSuccess(state);
             synchronized (boards) {
                 boards.put(key, new BoardCacheEntry(result, now, now.plus(boardTtl)));
@@ -227,6 +245,17 @@ public class ConfirmationGateway {
             recordFailure(provider.id(), state, result.status(), result.retryAfter());
         }
         return new BoardOutcome(Kind.CALLED, result);
+    }
+
+    /** The provider's board; FAILED when it throws or returns nothing. */
+    private static BoardResult fetch(AirportArrivalsProvider provider, String airportIcao, LocalDate utcDate) {
+        try {
+            BoardResult result = provider.fetchArrivals(airportIcao, utcDate);
+            return result == null ? BoardResult.failed() : result;
+        } catch (RuntimeException e) {
+            log.warn("Confirmation provider {} threw", provider.id(), e);
+            return BoardResult.failed();
+        }
     }
 
     /** The board if it is cached and fresh; never makes a call. */

@@ -98,8 +98,16 @@ class ArrivalConfirmationBoardTest {
         return a;
     }
 
-    private static BoardEntry entry(String callsign, String registration, Instant on, Instant in, String gate) {
-        return new BoardEntry(callsign, null, registration, new ArrivalInfo(null, null, on, in, gate, "5", "ESSA"));
+    private static BoardEntry entry(String callsign, Instant on) {
+        return entry(callsign, on, null, null);
+    }
+
+    private static BoardEntry entry(String callsign, Instant on, Instant in, String gate) {
+        return new BoardEntry(callsign, null, null, new ArrivalInfo(null, null, on, in, gate, "5", "ESSA"));
+    }
+
+    private static BoardEntry registered(String callsign, String registration, Instant on, String gate) {
+        return new BoardEntry(callsign, null, registration, new ArrivalInfo(null, null, on, null, gate, "5", "ESSA"));
     }
 
     private static Aircraft withRegistration(String icao24, String registration) {
@@ -116,10 +124,10 @@ class ArrivalConfirmationBoardTest {
         addInferred("a2", "NOZ2", "ESSA", td.plusSeconds(60));
         addGround("g3", "SAS3", td.plusSeconds(120));
         boards.boards.put("ESSA", List.of(
-                entry("SAS1", null, td, null, null),
-                entry("NOZ2", null, td.plusSeconds(60), td.plus(Duration.ofMinutes(8)), "B14"),
-                entry("SAS3", null, td.plusSeconds(120), null, null),
-                entry("DLH9", null, td, null, null)));
+                entry("SAS1", td),
+                entry("NOZ2", td.plusSeconds(60), td.plus(Duration.ofMinutes(8)), "B14"),
+                entry("SAS3", td.plusSeconds(120)),
+                entry("DLH9", td)));
 
         service(boards).tick();
 
@@ -152,7 +160,7 @@ class ArrivalConfirmationBoardTest {
         assertThat(store.size()).isZero();
         assertThat(boards.fetches).hasSize(1);
 
-        boards.boards.put("ESSA", List.of(entry("SAS1", null, td, null, null)));
+        boards.boards.put("ESSA", List.of(entry("SAS1", td)));
         clock.advance(Duration.ofSeconds(299));
         svc.tick(); // still the cached board: no call, no answer
         assertThat(boards.fetches).hasSize(1);
@@ -169,7 +177,7 @@ class ArrivalConfirmationBoardTest {
     @Test
     void aCandidateThatIsNotOnTheBoard_doesNotRefetchItEveryTtl_butOnlyEveryRecheckInterval() {
         addInferred("a1", "GA123", "ESSA", now.minus(Duration.ofMinutes(10)));
-        boards.boards.put("ESSA", List.of(entry("SAS9", null, now, null, null)));
+        boards.boards.put("ESSA", List.of(entry("SAS9", now)));
         ArrivalConfirmationService svc = service(boards);
 
         svc.tick();
@@ -186,7 +194,7 @@ class ArrivalConfirmationBoardTest {
     @Test
     void theRecheckMemoCountsFromTheBoardsFetchTime() {
         addInferred("a1", "GA123", "ESSA", now.minus(Duration.ofMinutes(10)));
-        boards.boards.put("ESSA", List.of(entry("SAS9", null, now, null, null)));
+        boards.boards.put("ESSA", List.of(entry("SAS9", now)));
         ArrivalConfirmationService svc = service(boards);
 
         svc.tick(); // fetched at 12:00:00, no GA123 on it
@@ -212,7 +220,7 @@ class ArrivalConfirmationBoardTest {
 
         clock.advance(Duration.ofSeconds(301)); // stale; a1 may not trigger a refetch, a newcomer may
         addInferred("a2", "SAS2", "ESSA", td.plusSeconds(60));
-        boards.boards.put("ESSA", List.of(entry("SAS1", null, td, null, null), entry("SAS2", null, td.plusSeconds(60), null, null)));
+        boards.boards.put("ESSA", List.of(entry("SAS1", td), entry("SAS2", td.plusSeconds(60))));
         svc.tick();
         assertThat(boards.fetches).hasSize(2);
         assertThat(store.forAircraft(aircraft.get("a2"))).isPresent();
@@ -227,7 +235,7 @@ class ArrivalConfirmationBoardTest {
     void anAircraftWaitingForItsGate_isRechecked_atMostOncePerRecheckInterval() {
         Instant td = now.minus(Duration.ofMinutes(10));
         addInferred("a1", "SAS1", "ESSA", td);
-        boards.boards.put("ESSA", List.of(entry("SAS1", null, td, null, null)));
+        boards.boards.put("ESSA", List.of(entry("SAS1", td)));
         ArrivalConfirmationService svc = service(boards);
         svc.tick(); // landing confirmed from the first board
         assertThat(boards.fetches).hasSize(1);
@@ -242,7 +250,7 @@ class ArrivalConfirmationBoardTest {
         svc.tick();
         assertThat(boards.fetches).hasSize(2); // 10 min since the last fetch: not yet
 
-        boards.boards.put("ESSA", List.of(entry("SAS1", null, td, td.plusSeconds(480), "B14")));
+        boards.boards.put("ESSA", List.of(entry("SAS1", td, td.plusSeconds(480), "B14")));
         clock.advance(Duration.ofMinutes(5)); // 15 min after the second fetch
         svc.tick();
         assertThat(boards.fetches).hasSize(3);
@@ -254,7 +262,7 @@ class ArrivalConfirmationBoardTest {
         Instant td = now.minus(Duration.ofMinutes(10));
         addInferred("x1", "SAS1", "ESSA", td);                       // sorts first; its ESSA board is missing
         addInferred("y1", "SAS2", "ESGG", td.plusSeconds(60));       // ESGG has a fresh cached board
-        boards.boards.put("ESGG", List.of(entry("SAS2", null, td.plusSeconds(60), null, null)));
+        boards.boards.put("ESGG", List.of(entry("SAS2", td.plusSeconds(60))));
         ConfirmationGateway gateway = new ConfirmationGateway(clock, 0, InMemoryAppState.budgets(clock, 300), 1000, 300, 60, 300, 100);
         LocalDate date = LocalDate.parse("2026-10-12");
         gateway.board(boards, "ESGG", date);                         // caches the ESGG board
@@ -274,7 +282,7 @@ class ArrivalConfirmationBoardTest {
     @Test
     void aNewCandidate_isMatchedAgainstTheCachedBoardWithoutACall() {
         Instant td = now.minus(Duration.ofMinutes(10));
-        boards.boards.put("ESSA", List.of(entry("SAS1", null, td, null, null), entry("SAS2", null, td, null, null)));
+        boards.boards.put("ESSA", List.of(entry("SAS1", td), entry("SAS2", td)));
         addInferred("a1", "SAS1", "ESSA", td);
         ArrivalConfirmationService svc = service(boards);
         svc.tick();
@@ -307,7 +315,7 @@ class ArrivalConfirmationBoardTest {
     void aConfirmedAircraftWithAGate_isNotACandidate_soNothingIsFetchedForIt() {
         Instant td = now.minus(Duration.ofMinutes(10));
         addInferred("a1", "SAS1", "ESSA", td);
-        boards.boards.put("ESSA", List.of(entry("SAS1", null, td, td.plusSeconds(480), "B14")));
+        boards.boards.put("ESSA", List.of(entry("SAS1", td, td.plusSeconds(480), "B14")));
         ArrivalConfirmationService svc = service(boards);
         svc.tick();
         assertThat(boards.fetches).hasSize(1);
@@ -324,7 +332,7 @@ class ArrivalConfirmationBoardTest {
     void callsigns_areMatchedTrimmedAndUpperCase() {
         Instant td = now.minus(Duration.ofMinutes(10));
         addInferred("a1", " sas1 ", "ESSA", td);
-        boards.boards.put("ESSA", List.of(entry("SAS1", null, td, null, null)));
+        boards.boards.put("ESSA", List.of(entry("SAS1", td)));
 
         service(boards).tick();
 
@@ -337,8 +345,8 @@ class ArrivalConfirmationBoardTest {
         addInferred("a1", "SAS1", "ESSA", td);
         when(aircraftRepository.findById("a1")).thenReturn(Optional.of(withRegistration("a1", "se-rua")));
         boards.boards.put("ESSA", List.of(
-                entry("SK9999", "SE-RUB", td, null, null),
-                entry("SAS1X", "SERUA", td, null, "C3")));
+                registered("SK9999", "SE-RUB", td, null),
+                registered("SAS1X", "SERUA", td, "C3")));
 
         service(boards).tick();
 
@@ -351,7 +359,7 @@ class ArrivalConfirmationBoardTest {
         addInferred("a1", "SAS1", "ESSA", td);
         addInferred("a2", "SAS2", "ESSA", td);
         when(aircraftRepository.findById("a2")).thenReturn(Optional.of(withRegistration("a2", null)));
-        boards.boards.put("ESSA", List.of(entry("OTHER", "SE-RUA", td, null, null)));
+        boards.boards.put("ESSA", List.of(registered("OTHER", "SE-RUA", td, null)));
 
         service(boards).tick();
 
@@ -362,7 +370,7 @@ class ArrivalConfirmationBoardTest {
     void theRegistrationIsNotLookedUpWhenTheBoardHasNone() {
         Instant td = now.minus(Duration.ofMinutes(10));
         addInferred("a1", "SAS1", "ESSA", td);
-        boards.boards.put("ESSA", List.of(entry("OTHER", null, td, null, null)));
+        boards.boards.put("ESSA", List.of(entry("OTHER", td)));
 
         service(boards).tick();
 
@@ -372,7 +380,7 @@ class ArrivalConfirmationBoardTest {
     @Test
     void anEntryWithoutActualTimes_confirmsNothing() {
         addInferred("a1", "SAS1", "ESSA", now.minusSeconds(300));
-        boards.boards.put("ESSA", List.of(entry("SAS1", null, null, null, "A1")));
+        boards.boards.put("ESSA", List.of(entry("SAS1", null, null, "A1")));
 
         service(boards).tick();
 
@@ -384,8 +392,8 @@ class ArrivalConfirmationBoardTest {
         Instant td = now.minus(Duration.ofMinutes(10));
         addInferred("a1", "SES1", "ESSA", td);
         boards.boards.put("ESSA", List.of(
-                entry("SES1", null, td.minus(Duration.ofHours(3)), td.minus(Duration.ofHours(3)).plusSeconds(480), "OLD"),
-                entry("SES1", null, td.plusSeconds(30), null, null)));
+                entry("SES1", td.minus(Duration.ofHours(3)), td.minus(Duration.ofHours(3)).plusSeconds(480), "OLD"),
+                entry("SES1", td.plusSeconds(30))));
 
         service(boards).tick();
         assertThat(store.forAircraft(aircraft.get("a1")).orElseThrow().info().gate()).isNull();
@@ -397,7 +405,7 @@ class ArrivalConfirmationBoardTest {
         Instant td = now.minus(Duration.ofMinutes(10));
         addInferred("a1", "SES1", "ESSA", td);
         boards.boards.put("ESSA", List.of(
-                entry("SES1", null, td.minus(Duration.ofHours(3)), td.minus(Duration.ofHours(3)).plusSeconds(480), "OLD")));
+                entry("SES1", td.minus(Duration.ofHours(3)), td.minus(Duration.ofHours(3)).plusSeconds(480), "OLD")));
 
         service(boards).tick();
 
@@ -412,8 +420,8 @@ class ArrivalConfirmationBoardTest {
         addInferred("a1", "SAS1", "ESSA", td);
         addInferred("a2", "SAS2", "ESGG", td.plusSeconds(60));
         addInferred("a3", "SAS3", "ESSA", td.plusSeconds(120));
-        boards.boards.put("ESSA", List.of(entry("SAS1", null, td, null, null), entry("SAS3", null, td, null, null)));
-        boards.boards.put("ESGG", List.of(entry("SAS2", null, td, null, null)));
+        boards.boards.put("ESSA", List.of(entry("SAS1", td), entry("SAS3", td)));
+        boards.boards.put("ESGG", List.of(entry("SAS2", td)));
         ArrivalConfirmationService svc = service(boards);
 
         svc.tick();
@@ -442,12 +450,12 @@ class ArrivalConfirmationBoardTest {
     void aGateComesLater_theConfirmedAircraftIsAskedAgainWhenTheBoardIsStale() {
         Instant td = now.minus(Duration.ofMinutes(10));
         addInferred("a1", "SAS1", "ESSA", td);
-        boards.boards.put("ESSA", List.of(entry("SAS1", null, td, null, null)));
+        boards.boards.put("ESSA", List.of(entry("SAS1", td)));
         ArrivalConfirmationService svc = service(boards);
         svc.tick();
         assertThat(store.forAircraft(aircraft.get("a1")).orElseThrow().gateAt()).isNull();
 
-        boards.boards.put("ESSA", List.of(entry("SAS1", null, td, td.plusSeconds(480), "B14")));
+        boards.boards.put("ESSA", List.of(entry("SAS1", td, td.plusSeconds(480), "B14")));
         clock.advance(Duration.ofSeconds(301));
         svc.tick();
 
@@ -470,7 +478,7 @@ class ArrivalConfirmationBoardTest {
                 return LookupResult.notFound();
             }
         };
-        boards.boards.put("ESSA", List.of(entry("SAS1", null, td, null, null)));
+        boards.boards.put("ESSA", List.of(entry("SAS1", td)));
         ConfirmationGateway gateway = new ConfirmationGateway(clock, 0, InMemoryAppState.budgets(clock, 300), 1000, 300, 60, 300, 100);
         ArrivalConfirmationService svc = new ArrivalConfirmationService(List.of(perFlight), List.of(boards), aircraftRepository,
                 gateway, store, live, routes, runways, training, clock, 0.5, 120, 300, 45, 15);

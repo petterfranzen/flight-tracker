@@ -62,6 +62,7 @@ import * as resumeDialog from "./ui/resumeDialog";
 import * as webglNotice from "./ui/webglNotice";
 import { createTrackedChip } from "./ui/trackedChip";
 import { createFavoriteActions } from "./ui/favoriteActions";
+import { createWatchFollow } from "./watchFollow";
 // Self-hosted cyberpunk face (latin subset).
 import "@fontsource/jetbrains-mono/latin-500.css";
 import "@fontsource/jetbrains-mono/latin-600.css";
@@ -501,9 +502,9 @@ function boot(): void {
     const source = useOverview ? overviewPlanes : Array.from(positions.values());
     // Watched flights' own live positions (see pollWatched): a watched plane may
     // sit outside the current viewport's data, and it is drawn either way.
-    const watchedIds = watchedIcao24s();
+    const watchedIds = watchFollow.watchedIcao24s();
     const knownIds = new Set(source.map((p) => p.icao24));
-    const watchedExtra = Array.from(watchedLive.values()).filter((p) => p.icao24 !== selectedId && !knownIds.has(p.icao24));
+    const watchedExtra = Array.from(watchFollow.watchedLive.values()).filter((p) => p.icao24 !== selectedId && !knownIds.has(p.icao24));
     const all = watchedExtra.length > 0 ? source.concat(watchedExtra) : source;
     const inView = all.filter((p) => p.icao24 !== selectedId && (!view || inBounds(view, p.latitude, p.longitude)));
     // An aircraft with a newer one on top of it is a ghost: not drawn at all
@@ -1197,187 +1198,13 @@ function boot(): void {
     store.update("focusRequest", (n) => n + 1);
   }
 
-  // ---- watched flights: the background follow ----
-  // The latest live position of each watched flight that is airborne, kept
-  // apart from `positions` (a viewport snapshot) so the map highlight survives
-  // a refetch and can sit outside the viewport's own data.
-  const watchedLive = new Map<string, AsOfMarker>();
-  // The airborne state seen last poll, per watchKey, so a departure is a
-  // transition (false -> true), not merely "airborne".
-  const watchedAirborne = new Map<string, boolean>();
-  let watchTimer: ReturnType<typeof setInterval> | null = null;
-  let watchGen = 0;
-  const WATCH_POLL_MS = 60_000;
-
-  /** icao24s of watched flights the last poll found airborne (the map draws them distinct). */
-  function watchedIcao24s(): Set<string> {
-    const out = new Set<string>();
-    const status = store.get("watchedStatus");
-    for (const key of Object.keys(status)) {
-      const row = status[key];
-      if (row?.airborne && row.icao24) out.add(row.icao24);
-    }
-    return out;
-  }
-
-  /**
-   * Polls every watched flight on the same cheap Swedavia endpoint the Watch
-   * panel used to poll (but only while it was open), follows each one that is
-   * airborne, and raises the departure toast on the tick it leaves the ground.
-   * Runs for the whole session, paused while the tab is hidden.
-   */
-  async function pollWatched(): Promise<void> {
-    const gen = ++watchGen;
-    const list = store.get("watchedFlights");
-    const prev = store.get("watchedStatus");
-    const entries = await Promise.all(
-      list.map(async (w) => {
-        try {
-          const { rows, status } = await searchScheduleWithStatus({ flight: w.flightNumber, date: w.date, airport: w.airport });
-          return [watchKey(w), rows.find((r) => r.airport === w.airport) ?? null, status] as const;
-        } catch {
-          return [watchKey(w), prev[watchKey(w)] ?? null, "incomplete"] as const;
-        }
-      }),
-    );
-    if (gen !== watchGen) return;
-    const status: Record<string, ScheduledFlight | null> = {};
-    const airborneNow = new Set<string>();
-    const positionsNow = new Map<string, FlightPosition | null>();
-    const fetches: Promise<void>[] = [];
-    const departed: WatchedFlight[] = [];
-    const notifySamples: { key: string; row: ScheduledFlight; boardStatus: "ok" | "stale" | "incomplete" }[] = [];
-    for (const [key, row, boardStatus] of entries) {
-      status[key] = row;
-      const air = !!(row && row.airborne && row.icao24);
-      const was = watchedAirborne.get(key);
-      watchedAirborne.set(key, air);
-      const icao24 = row?.icao24 ?? null;
-      // With the notify flag off, keep the request pattern exactly as it was
-      // before this slice: fetch a flight's live position only while it is
-      // airborne. The extra fetch for a not-yet-airborne flight exists only to
-      // feed the notification detector (the on-ground ticks that prove a
-      // landing), so it is gated on the flag instead of being paid for by every
-      // default build.
-      if (icao24 && (air || NOTIFY_ENABLED)) {
-        if (air) airborneNow.add(icao24);
-        fetches.push(
-          fetchFlightLive(icao24)
-            .then((p) => {
-              positionsNow.set(icao24, p);
-              if (p && air) watchedLive.set(icao24, { ...p, asOf: Date.now() });
-            })
-            .catch(() => {
-              positionsNow.set(icao24, null);
-            }),
-        );
-      }
-      if (air && was === false) {
-        const w = list.find((x) => watchKey(x) === key);
-        if (w) departed.push(w);
-      }
-      if (NOTIFY_ENABLED && row) notifySamples.push({ key, row, boardStatus });
-    }
-    await Promise.all(fetches);
-    if (gen !== watchGen) return;
-    // A flight no longer airborne: drop the position we kept for it.
-    for (const icao24 of Array.from(watchedLive.keys())) if (!airborneNow.has(icao24)) watchedLive.delete(icao24);
-    store.set("watchedStatus", status);
-    renderAircraftLayer();
-
-    if (NOTIFY_ENABLED) {
-      const notifyMap = loadNotifyState();
-      const poll: NotifyOutcome[] = [];
-      for (const sample of notifySamples) {
-        const position = sample.row.icao24 ? positionsNow.get(sample.row.icao24) ?? null : null;
-        const prior = notifyMap[sample.key] ?? emptyState();
-        const { state, event } = observeFlight(prior, { ...sample, position, nowMs: Date.now() });
-        poll.push({ key: sample.key, state, event });
-      }
-      // The state is persisted per flight, before its event is announced, so
-      // the record never depends on the banner drawing (commitNotifyPoll).
-      commitNotifyPoll({
-        poll,
-        map: notifyMap,
-        save: (map) => saveNotifyState(pruneNotifyState(map)),
-        announce: (outcome) => {
-          const { event } = outcome;
-          if (!event) return;
-          const flight = list.find((x) => watchKey(x) === outcome.key);
-          if (!flight) return;
-          const channel = chooseChannel({ hidden: document.hidden, enabled: outcome.state.enabled, permission: notificationPermission() });
-          if (channel === "os") {
-            void showOsNotification(event.title, event.text, { key: event.key, kind: event.kind });
-          } else {
-            store.set("watchNotice", { flight, text: event.text, kind: event.kind });
-          }
-        },
-      });
-    } else if (departed.length > 0) {
-      store.set("departureToast", departed[0]);
-    }
-  }
-
-  function startWatchPoll(): void {
-    if (watchTimer) clearInterval(watchTimer);
-    watchTimer = setInterval(() => {
-      if (!document.hidden) void pollWatched();
-    }, WATCH_POLL_MS);
-    document.addEventListener("visibilitychange", onVisibility);
-    void pollWatched();
-  }
-  function onVisibility(): void {
-    if (!document.hidden) void pollWatched();
-  }
-
-  /** Select the watched flight's plane and fly the map to it. No-op until it is airborne. */
-  function goToWatched(w: WatchedFlight): void {
-    const row = store.get("watchedStatus")[watchKey(w)] ?? null;
-    if (!row?.airborne || !row.icao24) return;
-    const icao24 = row.icao24;
-    const known = watchedLive.get(icao24) ?? positions.get(icao24);
-    if (known) {
-      handleSelectAircraft(known);
-      return;
-    }
-    fetchFlightLive(icao24)
-      .then((p) => {
-        if (!p) return;
-        watchedLive.set(icao24, { ...p, asOf: Date.now() });
-        handleSelectAircraft(p);
-        renderAircraftLayer();
-      })
-      .catch(() => {});
-  }
-
-  function watchFlight(w: WatchedFlight): void {
-    const list = store.get("watchedFlights");
-    if (list.some((x) => watchKey(x) === watchKey(w))) return;
-    const next = [...list, w];
-    saveWatched(next);
-    store.set("watchedFlights", next);
-    void pollWatched(); // resolve its schedule row now, not on the next tick
-  }
-
-  function unwatchFlight(w: WatchedFlight): void {
-    const key = watchKey(w);
-    const next = store.get("watchedFlights").filter((x) => watchKey(x) !== key);
-    saveWatched(next);
-    const status = { ...store.get("watchedStatus") };
-    delete status[key];
-    store.set("watchedStatus", status);
-    watchedAirborne.delete(key);
-    if (NOTIFY_ENABLED) forgetFlight(key);
-    store.set("watchedFlights", next);
-  }
-
-  function dismissDepartureToast(): void {
-    store.set("departureToast", null);
-  }
-
-  function dismissWatchNotice(): void {
-    store.set("watchNotice", null);
-  }
+  // ---- watched flights: the background follow (src/watchFollow.ts) ----
+  const watchFollow = createWatchFollow({
+    store,
+    positions: () => positions,
+    renderAircraftLayer: () => renderAircraftLayer(),
+    selectAircraft: (marker) => handleSelectAircraft(marker),
+  });
 
   // ---- favorites ----
   const favoriteActions = createFavoriteActions({
@@ -1414,11 +1241,11 @@ function boot(): void {
   store.set("removeFavoriteRoute", favoriteActions.removeFavoriteRoute);
   store.set("resumeTracking", startCycle);
   store.set("dismissResumeDialog", () => store.set("showResumeDialog", false));
-  store.set("watchFlight", watchFlight);
-  store.set("unwatchFlight", unwatchFlight);
-  store.set("goToWatched", goToWatched);
-  store.set("dismissDepartureToast", dismissDepartureToast);
-  store.set("dismissWatchNotice", dismissWatchNotice);
+  store.set("watchFlight", watchFollow.watchFlight);
+  store.set("unwatchFlight", watchFollow.unwatchFlight);
+  store.set("goToWatched", watchFollow.goToWatched);
+  store.set("dismissDepartureToast", watchFollow.dismissDepartureToast);
+  store.set("dismissWatchNotice", watchFollow.dismissWatchNotice);
 
   // ---- UI modules ----
   scaleBar.mount(map);
@@ -1508,7 +1335,7 @@ function boot(): void {
   subscribeLiveFeed(onLivePush, { onReconnect: clearArrivals });
 
   restartFetchCycleTimers(); // generation 0
-  startWatchPoll(); // watched flights, independently of the Watch panel
+  watchFollow.startWatchPoll(); // watched flights, independently of the Watch panel
   if (NOTIFY_ENABLED) {
     // #82 design §2: prune expired notification state on load and once an hour.
     // The disposer runs on pagehide so the interval is cleared when the page

@@ -92,6 +92,13 @@ public class TrainingDataService {
         OpenGap(Instant lastObservedAt) {
             this.lastObservedAt = lastObservedAt;
         }
+
+        /** True the first time only: the inferred landing is written once per gap. */
+        boolean claimInferred() {
+            if (inferredDone) return false;
+            inferredDone = true;
+            return true;
+        }
     }
 
     private final TrainingDataRepository repository;
@@ -140,32 +147,49 @@ public class TrainingDataService {
      */
     public void onGapEstimate(LiveAircraft a, TrackEndFeatures f, boolean newSnapshot) {
         if (!enabled) return;
-        String icao24 = f.icao24();
-        OpenGap cur = open.get(icao24);
-        if (cur != null && !cur.lastObservedAt.equals(f.lastObservedAt())) {
-            // A different last report means the aircraft reported again after the earlier gap.
-            resolve(cur, icao24, a);
-            open.remove(icao24);
-            cur = null;
-        }
+        OpenGap cur = closeIfResumed(open.get(f.icao24()), a, f);
         Instant now = clock.instant();
-        if (cur == null && !f.lastObservedAt().equals(rejected.get(icao24))
-                && !Duration.between(f.lastObservedAt(), now).minus(captureDelay).isNegative()) {
+        if (cur == null && captureDue(f, now)) {
             // The first tick on which the gap has lasted long enough: decide once.
-            if (qualifies(f)) {
-                rejected.remove(icao24);
-                pending.add(new Write(() -> repository.insertFeatures(f, now)));
-                cur = new OpenGap(f.lastObservedAt());
-                open.put(icao24, cur);
-            } else {
-                rejected.put(icao24, f.lastObservedAt());
-            }
+            cur = capture(f, now);
         }
-        if (cur != null && !cur.inferredDone && f.state() == TrackState.LANDED_INFERRED) {
-            cur.inferredDone = true;
-            pending.add(new Write(() -> repository.markInferred(icao24, f.lastObservedAt(),
+        if (inferredLandingDue(cur, f)) {
+            pending.add(new Write(() -> repository.markInferred(f.icao24(), f.lastObservedAt(),
                     f.state().name(), f.landingProbability(), now)));
         }
+    }
+
+    /** An open gap whose estimate now says landed (inferred), for the first time. */
+    private static boolean inferredLandingDue(OpenGap cur, TrackEndFeatures f) {
+        if (cur == null || f.state() != TrackState.LANDED_INFERRED) return false;
+        return cur.claimInferred();
+    }
+
+    /** The open gap, or null once it is resolved: a different last report means the aircraft reported again after it. */
+    private OpenGap closeIfResumed(OpenGap cur, LiveAircraft a, TrackEndFeatures f) {
+        if (cur == null || cur.lastObservedAt.equals(f.lastObservedAt())) return cur;
+        resolve(cur, f.icao24(), a);
+        open.remove(f.icao24());
+        return null;
+    }
+
+    /** Not already rejected for this report, and the gap has lasted the capture delay. */
+    private boolean captureDue(TrackEndFeatures f, Instant now) {
+        if (f.lastObservedAt().equals(rejected.get(f.icao24()))) return false;
+        return !Duration.between(f.lastObservedAt(), now).minus(captureDelay).isNegative();
+    }
+
+    /** Queues the features of a qualifying gap and opens it; remembers a non-qualifying one as rejected. */
+    private OpenGap capture(TrackEndFeatures f, Instant now) {
+        if (!qualifies(f)) {
+            rejected.put(f.icao24(), f.lastObservedAt());
+            return null;
+        }
+        rejected.remove(f.icao24());
+        pending.add(new Write(() -> repository.insertFeatures(f, now)));
+        OpenGap gap = new OpenGap(f.lastObservedAt());
+        open.put(f.icao24(), gap);
+        return gap;
     }
 
     /**

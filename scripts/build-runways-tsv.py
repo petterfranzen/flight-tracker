@@ -57,48 +57,82 @@ def num(s):
         return None
 
 
-def direction(row, own, other, length_ft):
-    lat, lon = num(row[own + "_latitude_deg"]), num(row[own + "_longitude_deg"])
-    olat, olon = num(row[other + "_latitude_deg"]), num(row[other + "_longitude_deg"])
-    heading = num(row[own + "_heading_degT"])
+def true_heading(heading, end, opposite):
+    """The CSV heading if it is possible, else the bearing to the other end."""
     if heading is None or not 0.0 <= heading <= 360.0:
-        heading = bearing(lat, lon, olat, olon)
-    heading %= 360.0
-    displaced_ft = num(row[own + "_displaced_threshold_ft"]) or 0.0
-    if displaced_ft > 0:
-        lat, lon = move(lat, lon, heading, displaced_ft * FT)
+        heading = bearing(*end, *opposite)
+    return heading % 360.0
+
+
+def elevation_m(row, own, other):
     elev_ft = num(row[own + "_elevation_ft"])
     if elev_ft is None:
         elev_ft = num(row[other + "_elevation_ft"])
-    elev = "" if elev_ft is None else "%d" % round(elev_ft * FT)
+    return "" if elev_ft is None else "%d" % round(elev_ft * FT)
+
+
+def direction(row, own, other, length_ft):
+    lat, lon = num(row[own + "_latitude_deg"]), num(row[own + "_longitude_deg"])
+    olat, olon = num(row[other + "_latitude_deg"]), num(row[other + "_longitude_deg"])
+    heading = true_heading(num(row[own + "_heading_degT"]), (lat, lon), (olat, olon))
+    displaced_ft = num(row[own + "_displaced_threshold_ft"]) or 0.0
+    if displaced_ft > 0:
+        lat, lon = move(lat, lon, heading, displaced_ft * FT)
+    elev = elevation_m(row, own, other)
     length_m = max(0.0, (length_ft - displaced_ft) * FT)
     return [row["airport_ident"], row[own + "_ident"].strip(), "%.6f" % lat, "%.6f" % lon,
             "%.1f" % heading, elev, "%d" % round(length_m)]
 
 
-def main(runways_csv, airports_tsv, out_tsv):
+END_COORDS = ("le_latitude_deg", "le_longitude_deg", "he_latitude_deg", "he_longitude_deg")
+HEADER = "airport_icao\tident\tthreshold_lat\tthreshold_lon\theading_deg\televation_m\tlength_m\n"
+
+
+def load_airports(airports_tsv):
     with open(airports_tsv, encoding="utf-8") as f:
-        airports = {line.split("\t", 1)[0] for line in f.read().splitlines()[1:] if line}
+        return {line.split("\t", 1)[0] for line in f.read().splitlines()[1:] if line}
+
+
+def has_both_ends(row):
+    if any(num(row[k]) is None for k in END_COORDS):
+        return False
+    return bool(row["le_ident"].strip() and row["he_ident"].strip())
+
+
+def usable_length_ft(row, airports):
+    """The runway's length in feet if it passes the filters, else None."""
+    if row["airport_ident"] not in airports or row["closed"] == "1":
+        return None
+    if not has_both_ends(row):
+        return None
+    length_ft = num(row["length_ft"])
+    if length_ft is None or length_ft * FT < MIN_LENGTH_M:
+        return None
+    return length_ft
+
+
+def keep_longest(out, d):
+    key = (d[0], d[1])   # (icao, ident) is the key
+    if key not in out or int(d[6]) > int(out[key][6]):
+        out[key] = d
+
+
+def collect(runways_csv, airports):
     out = {}
     with open(runways_csv, encoding="utf-8", newline="") as f:
         for row in csv.DictReader(f):
-            if row["airport_ident"] not in airports or row["closed"] == "1":
-                continue
-            if any(num(row[k]) is None for k in (
-                    "le_latitude_deg", "le_longitude_deg", "he_latitude_deg", "he_longitude_deg")):
-                continue
-            if not row["le_ident"].strip() or not row["he_ident"].strip():
-                continue
-            length_ft = num(row["length_ft"])
-            if length_ft is None or length_ft * FT < MIN_LENGTH_M:
+            length_ft = usable_length_ft(row, airports)
+            if length_ft is None:
                 continue
             for own, other in (("le", "he"), ("he", "le")):
-                d = direction(row, own, other, length_ft)
-                key = (d[0], d[1])
-                if key not in out or int(d[6]) > int(out[key][6]):   # (icao, ident) is the key
-                    out[key] = d
+                keep_longest(out, direction(row, own, other, length_ft))
+    return out
+
+
+def main(runways_csv, airports_tsv, out_tsv):
+    out = collect(runways_csv, load_airports(airports_tsv))
     with open(out_tsv, "w", encoding="utf-8", newline="\n") as f:
-        f.write("airport_icao\tident\tthreshold_lat\tthreshold_lon\theading_deg\televation_m\tlength_m\n")
+        f.write(HEADER)
         for key in sorted(out):
             f.write("\t".join(out[key]) + "\n")
     print("wrote %d directions at %d airports to %s" % (len(out), len({k[0] for k in out}), out_tsv))
