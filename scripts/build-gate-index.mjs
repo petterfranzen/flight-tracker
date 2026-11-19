@@ -114,39 +114,53 @@ function queryFor(airport) {
   return `[out:json][timeout:90];(node["aeroway"="gate"](around:${RADIUS_M},${airport.lat},${airport.lon});nwr["aeroway"="parking_position"](around:${RADIUS_M},${airport.lat},${airport.lon}););out center;`;
 }
 
+// Nodes carry lat/lon; ways and relations carry a centre (`out center`).
+function elementCoord(el) {
+  const lat = typeof el.lat === "number" ? el.lat : el.center?.lat;
+  const lon = typeof el.lon === "number" ? el.lon : el.center?.lon;
+  if (typeof lat !== "number" || typeof lon !== "number") return null;
+  return [rounded(lon), rounded(lat)];
+}
+
+// Every coordinate a ref carries, in element-id order: a ref can name more
+// than one object (EGLL has A-pier refs at two terminals), and the lookup
+// picks the one nearest the plane. Keeping only the first would put the
+// plane at the wrong terminal.
+function addCoord(target, keys, coord) {
+  for (const key of keys) {
+    const list = target.get(key);
+    if (list) list.push(coord);
+    else target.set(key, [coord]);
+  }
+}
+
+// Which map and which counter each kept aeroway kind feeds.
+const KINDS = new Map([
+  ["gate", { refs: "gates", count: "gateNodes" }],
+  ["parking_position", { refs: "stands", count: "standObjects" }],
+]);
+
+function addRef(layout, target, raw, coord) {
+  if (!raw) return;
+  const parts = normaliseRef(raw);
+  if (parts.length > 1) layout.composite++;
+  addCoord(target, parts, coord);
+}
+
+function addElement(layout, el) {
+  const kind = KINDS.get(el.tags?.aeroway);
+  if (!kind) return;
+  const coord = elementCoord(el);
+  if (!coord) return;
+  layout[kind.count]++;
+  addRef(layout, layout[kind.refs], el.tags.ref, coord);
+}
+
 async function layoutFor(airport) {
   const data = await overpass(queryFor(airport));
-  const gates = new Map();
-  const stands = new Map();
-  let gateNodes = 0;
-  let standObjects = 0;
-  let composite = 0;
-  for (const el of data.elements ?? []) {
-    const kind = el.tags?.aeroway;
-    if (kind !== "gate" && kind !== "parking_position") continue;
-    // Nodes carry lat/lon; ways and relations carry a centre (`out center`).
-    const lat = typeof el.lat === "number" ? el.lat : el.center?.lat;
-    const lon = typeof el.lon === "number" ? el.lon : el.center?.lon;
-    if (typeof lat !== "number" || typeof lon !== "number") continue;
-    if (kind === "gate") gateNodes++;
-    else standObjects++;
-    const raw = el.tags?.ref;
-    if (!raw) continue;
-    const parts = normaliseRef(raw);
-    if (parts.length > 1) composite++;
-    const coord = [rounded(lon), rounded(lat)];
-    const target = kind === "gate" ? gates : stands;
-    // Every coordinate a ref carries, in element-id order: a ref can name more
-    // than one object (EGLL has A-pier refs at two terminals), and the lookup
-    // picks the one nearest the plane. Keeping only the first would put the
-    // plane at the wrong terminal.
-    for (const key of parts) {
-      const list = target.get(key);
-      if (list) list.push(coord);
-      else target.set(key, [coord]);
-    }
-  }
-  return { gates, stands, gateNodes, standObjects, composite };
+  const layout = { gates: new Map(), stands: new Map(), gateNodes: 0, standObjects: 0, composite: 0 };
+  for (const el of data.elements ?? []) addElement(layout, el);
+  return layout;
 }
 
 const sortedObject = (map) => {
