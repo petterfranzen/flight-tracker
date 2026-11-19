@@ -182,6 +182,29 @@ class ProfileSecurityChainTest {
                 .noneMatch(cookie -> cookie.startsWith("FT_SESSION="));
     }
 
+    @Test
+    void anAnonymousProfileReadSetsNoSessionCookie() throws Exception {
+        // section9-hq #404: the request cache is off, so the 401 the entry point writes is
+        // not answered by saving the request into a fresh session, and each such call would
+        // otherwise leak one session that idles for 24h.
+        HttpResponse<String> response = send("GET", "/api/profile");
+        assertThat(response.statusCode()).isEqualTo(401);
+        assertThat(response.headers().allValues("Set-Cookie"))
+                .as("an anonymous profile read must not create a session")
+                .noneMatch(cookie -> cookie.startsWith("FT_SESSION="));
+    }
+
+    @Test
+    void startingALoginSetsNoSessionCookie() throws Exception {
+        // section9-hq #404: the pending authorization request is held in a bounded store
+        // outside the session, so a bare /oauth2/authorization/* start sets no cookie either.
+        HttpResponse<String> response = send("GET", "/oauth2/authorization/google");
+        assertThat(response.statusCode()).isEqualTo(302);
+        assertThat(response.headers().allValues("Set-Cookie"))
+                .as("starting a login must not create a session")
+                .noneMatch(cookie -> cookie.startsWith("FT_SESSION="));
+    }
+
     /** The one set of app headers a flag-on response must carry, each exactly once. */
     private static void assertOneSetOfAppHeaders(HttpResponse<?> response) {
         var headers = response.headers();
