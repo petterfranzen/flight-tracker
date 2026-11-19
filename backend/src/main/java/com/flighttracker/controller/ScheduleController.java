@@ -53,23 +53,42 @@ public class ScheduleController {
         if (!schedule.available()) {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Flight schedules need a Swedavia API key");
         }
-        LocalDate day;
+        LocalDate day = parseDay(date);
+        FlightScheduleService.Outcome outcome = new FlightScheduleService.Outcome();
+        List<ScheduledFlight> found = find(new Query(flight, from, to, airport), day, outcome);
+        return ResponseEntity.ok().header(STATUS_HEADER, outcome.status())
+                .body(found.stream().map(this::withLive).toList());
+    }
+
+    /** The search parameters other than the date. */
+    private record Query(String flight, String from, String to, String airport) {
+        boolean byFlightNumber() {
+            return present(flight);
+        }
+
+        boolean byRoute() {
+            return present(from) && present(to);
+        }
+    }
+
+    private static boolean present(String value) {
+        return value != null && !value.isBlank();
+    }
+
+    /** The requested day, default today (Swedish time). */
+    private LocalDate parseDay(String date) {
+        if (!present(date)) return schedule.today();
         try {
-            day = date == null || date.isBlank() ? schedule.today() : LocalDate.parse(date.trim());
+            return LocalDate.parse(date.trim());
         } catch (DateTimeParseException e) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "date must be yyyy-MM-dd");
         }
-        FlightScheduleService.Outcome outcome = new FlightScheduleService.Outcome();
-        List<ScheduledFlight> found;
-        if (flight != null && !flight.isBlank()) {
-            found = schedule.byFlightNumber(flight, day, codes(airport), outcome);
-        } else if (from != null && !from.isBlank() && to != null && !to.isBlank()) {
-            found = schedule.byRoute(codes(from), codes(to), day, outcome);
-        } else {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "give flight, or from and to");
-        }
-        return ResponseEntity.ok().header(STATUS_HEADER, outcome.status())
-                .body(found.stream().map(this::withLive).toList());
+    }
+
+    private List<ScheduledFlight> find(Query q, LocalDate day, FlightScheduleService.Outcome outcome) {
+        if (q.byFlightNumber()) return schedule.byFlightNumber(q.flight(), day, codes(q.airport()), outcome);
+        if (q.byRoute()) return schedule.byRoute(codes(q.from()), codes(q.to()), day, outcome);
+        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "give flight, or from and to");
     }
 
     private static List<String> codes(String csv) {
@@ -77,12 +96,15 @@ public class ScheduleController {
     }
 
     private ScheduledFlight withLive(ScheduledFlight f) {
-        Instant when = f.bestTime();
-        if (f.callsign() == null || when == null || Duration.between(when, Instant.now()).abs().compareTo(MATCH_WINDOW) > 0) return f;
+        if (f.callsign() == null || !withinMatchWindow(f.bestTime())) return f;
         Instant now = Instant.now();
         return liveStateStore.searchByCallsign(f.callsign(), now.minus(LiveVisibilityWindows.STALE_AIRBORNE_BOUND),
                         now.minus(LiveVisibilityWindows.LANDED_VISIBILITY), 10).stream()
                 .filter(p -> f.callsign().equalsIgnoreCase(p.callsign()) && !p.onGround())
                 .findFirst().map(FlightPosition::icao24).map(f::withLive).orElse(f);
+    }
+
+    private static boolean withinMatchWindow(Instant when) {
+        return when != null && Duration.between(when, Instant.now()).abs().compareTo(MATCH_WINDOW) <= 0;
     }
 }
