@@ -188,25 +188,26 @@ public class FlightPositionRepository {
 
     // Usage calc: full ordered history for one aircraft in a window.
     public List<FlightPosition> findByIcao24AndObservedAtBetween(String icao24, Instant from, Instant to) {
-        return jdbcClient.sql("""
+        return listInWindow(jdbcClient.sql("""
                 SELECT * FROM flight_position
                 WHERE icao24 = :icao24 AND observed_at BETWEEN :from AND :to
                 ORDER BY observed_at ASC
                 """)
-                .param("icao24", icao24)
-                .param("from", toEpochMilli(from))
-                .param("to", toEpochMilli(to))
-                .query(FlightPositionRepository::mapRow)
-                .list();
+                .param("icao24", icao24), from, to);
     }
 
     // Usage calc: history for every aircraft in a window, for the fleet report.
     public List<FlightPosition> findByObservedAtBetween(Instant from, Instant to) {
-        return jdbcClient.sql("""
+        return listInWindow(jdbcClient.sql("""
                 SELECT * FROM flight_position
                 WHERE observed_at BETWEEN :from AND :to
                 ORDER BY icao24 ASC, observed_at ASC
-                """)
+                """), from, to);
+    }
+
+    /** Binds the :from/:to window to a SELECT * and reads every row it returns. */
+    private static List<FlightPosition> listInWindow(JdbcClient.StatementSpec select, Instant from, Instant to) {
+        return select
                 .param("from", toEpochMilli(from))
                 .param("to", toEpochMilli(to))
                 .query(FlightPositionRepository::mapRow)
