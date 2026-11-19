@@ -8,8 +8,8 @@ import com.flighttracker.service.schedule.ScheduledFlight;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.ModelAttribute;
 import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -45,23 +45,22 @@ public class ScheduleController {
     }
 
     @GetMapping("/search")
-    public ResponseEntity<List<ScheduledFlight>> search(@RequestParam(required = false) String flight,
-                                        @RequestParam(required = false) String from,
-                                        @RequestParam(required = false) String to,
-                                        @RequestParam(required = false) String airport,
-                                        @RequestParam(required = false) String date) {
+    public ResponseEntity<List<ScheduledFlight>> search(@ModelAttribute SearchParams params) {
         if (!schedule.available()) {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Flight schedules need a Swedavia API key");
         }
-        LocalDate day = parseDay(date);
+        LocalDate day = parseDay(params.date());
         FlightScheduleService.Outcome outcome = new FlightScheduleService.Outcome();
-        List<ScheduledFlight> found = find(new Query(flight, from, to, airport), day, outcome);
+        List<ScheduledFlight> found = find(params, day, outcome);
         return ResponseEntity.ok().header(STATUS_HEADER, outcome.status())
                 .body(found.stream().map(this::withLive).toList());
     }
 
-    /** The search parameters other than the date. */
-    private record Query(String flight, String from, String to, String airport) {
+    /**
+     * The search's query parameters, all optional: {@code flight}, {@code from}, {@code to},
+     * {@code airport} and {@code date}, bound by name from the request.
+     */
+    public record SearchParams(String flight, String from, String to, String airport, String date) {
         boolean byFlightNumber() {
             return present(flight);
         }
@@ -85,7 +84,7 @@ public class ScheduleController {
         }
     }
 
-    private List<ScheduledFlight> find(Query q, LocalDate day, FlightScheduleService.Outcome outcome) {
+    private List<ScheduledFlight> find(SearchParams q, LocalDate day, FlightScheduleService.Outcome outcome) {
         if (q.byFlightNumber()) return schedule.byFlightNumber(q.flight(), day, codes(q.airport()), outcome);
         if (q.byRoute()) return schedule.byRoute(codes(q.from()), codes(q.to()), day, outcome);
         throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "give flight, or from and to");

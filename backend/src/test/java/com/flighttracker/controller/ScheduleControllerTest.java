@@ -1,5 +1,6 @@
 package com.flighttracker.controller;
 
+import com.flighttracker.controller.ScheduleController.SearchParams;
 import com.flighttracker.model.FlightPosition;
 import com.flighttracker.service.live.LiveStateStore;
 import com.flighttracker.service.schedule.FlightScheduleService;
@@ -43,14 +44,14 @@ class ScheduleControllerTest {
     @Test
     void unavailableWithoutAnApiKey() {
         when(schedule.available()).thenReturn(false);
-        assertStatus(() -> controller.search("BA778", null, null, null, null), HttpStatus.SERVICE_UNAVAILABLE);
+        assertStatus(() -> controller.search(new SearchParams("BA778", null, null, null, null)), HttpStatus.SERVICE_UNAVAILABLE);
     }
 
     @Test
     void rejectsABadDateAndAMissingQuery() {
-        assertStatus(() -> controller.search("BA778", null, null, null, "19/11/2026"), HttpStatus.BAD_REQUEST);
-        assertStatus(() -> controller.search(" ", "LHR", null, null, null), HttpStatus.BAD_REQUEST);
-        assertStatus(() -> controller.search(null, null, "ARN", null, null), HttpStatus.BAD_REQUEST);
+        assertStatus(() -> controller.search(new SearchParams("BA778", null, null, null, "19/11/2026")), HttpStatus.BAD_REQUEST);
+        assertStatus(() -> controller.search(new SearchParams(" ", "LHR", null, null, null)), HttpStatus.BAD_REQUEST);
+        assertStatus(() -> controller.search(new SearchParams(null, null, "ARN", null, null)), HttpStatus.BAD_REQUEST);
         verify(schedule, never()).byRoute(any(), any(), any(), any());
     }
 
@@ -59,7 +60,7 @@ class ScheduleControllerTest {
         ScheduledFlight f = flight(null, null);
         when(schedule.byFlightNumber(eq("BA778"), eq(TODAY), eq(List.of("ARN", "GOT")), any())).thenReturn(List.of(f));
 
-        ResponseEntity<List<ScheduledFlight>> r = controller.search("BA778", "LHR", "ARN", " ARN, ,GOT ", "  ");
+        ResponseEntity<List<ScheduledFlight>> r = controller.search(new SearchParams("BA778", "LHR", "ARN", " ARN, ,GOT ", "  "));
         assertThat(r.getBody()).containsExactly(f);
         assertThat(r.getHeaders().getFirst(ScheduleController.STATUS_HEADER)).isEqualTo("ok");
         verifyNoInteractions(live);
@@ -69,7 +70,7 @@ class ScheduleControllerTest {
     void byRouteOnTheGivenDate() {
         when(schedule.byRoute(eq(List.of("LHR", "LGW")), eq(List.of("ARN")), eq(LocalDate.of(2026, 11, 20)), any()))
                 .thenReturn(List.of());
-        assertThat(controller.search(null, "LHR,LGW", "ARN", null, " 2026-11-20 ").getBody()).isEmpty();
+        assertThat(controller.search(new SearchParams(null, "LHR,LGW", "ARN", null, " 2026-11-20 ")).getBody()).isEmpty();
     }
 
     @Test
@@ -86,7 +87,7 @@ class ScheduleControllerTest {
                 position("bbbbbb", "baw778", true),
                 position("cccccc", "baw778", false)));
 
-        List<ScheduledFlight> body = controller.search("BA778", null, null, null, null).getBody();
+        List<ScheduledFlight> body = controller.search(new SearchParams("BA778", null, null, null, null)).getBody();
         assertThat(body).containsExactly(near.withLive("cccccc"), later, noCallsign);
     }
 
