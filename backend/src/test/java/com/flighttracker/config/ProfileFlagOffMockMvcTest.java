@@ -1,6 +1,7 @@
 package com.flighttracker.config;
 
 import com.flighttracker.controller.ProfileController;
+import com.flighttracker.controller.ProfileDataController;
 import com.flighttracker.profile.ProfileProperties;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -17,7 +18,9 @@ import org.springframework.test.web.servlet.MockMvc;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
@@ -42,7 +45,8 @@ class ProfileFlagOffMockMvcTest {
     @SpringBootConfiguration
     @EnableAutoConfiguration(exclude = DataSourceAutoConfiguration.class)
     @EnableConfigurationProperties({ProfileProperties.class, OAuthClientProperties.class})
-    @Import({ProfileSecurityConfig.class, OAuthClientConfig.class, ProfileController.class})
+    @Import({ProfileSecurityConfig.class, OAuthClientConfig.class, ProfileController.class,
+            ProfileDataController.class})
     static class MinimalApp {
     }
 
@@ -56,6 +60,25 @@ class ProfileFlagOffMockMvcTest {
     void theProfileEndpointAnswers503WithTheFlagOff() throws Exception {
         mvc.perform(get("/api/profile"))
                 .andExpect(status().isServiceUnavailable());
+    }
+
+    @Test
+    void theFavoriteWritePathsDoNotExistWithTheFlagOff() throws Exception {
+        // On main today there is no mapping on this path, so the flag-off build must
+        // answer the same 404, never a write: the controller bean is not created.
+        mvc.perform(put("/api/profile/favorite")
+                        .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                        .content("{\"kind\":\"route\",\"itemKey\":\"ESSA-ESGG\",\"data\":{}}"))
+                .andExpect(status().isNotFound());
+        mvc.perform(delete("/api/profile/favorite").param("kind", "route").param("itemKey", "ESSA-ESGG"))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void noProfileDataControllerIsWiredWithTheFlagOff() {
+        assertThat(context.getBeanProvider(ProfileDataController.class).getIfAvailable())
+                .as("the favourite write controller is gated on the flag")
+                .isNull();
     }
 
     @Test
