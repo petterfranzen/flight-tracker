@@ -170,11 +170,13 @@ test("a real login against the fake provider yields a session and exactly the pr
   assert.ok(afterLogin, "the completed login must set a session cookie");
   assert.notEqual(afterLogin, beforeLogin, "the session id must change at login");
 
-  // 4. With that session the profile read is the provider id and nothing else --
-  //    no email, no name, no avatar, because none was ever asked for.
+  // 4. With that session the profile read is the provider id and the two lists of
+  //    step 5a-2 (D4) -- empty for a brand-new profile, and with no profile id or
+  //    subject anywhere -- plus no email, no name, no avatar, because none was ever
+  //    asked for.
   const profile = await hop(`${app.baseUrl}/api/profile`, jar);
   assert.equal(profile.res.status, 200);
-  assert.equal(await profile.res.text(), '{"provider":"google"}');
+  assert.deepEqual(await profile.res.json(), { provider: "google", favorites: [], watched: [] });
 
   // 5. The negative half: the feature must not have made every request stateful.
   //    An anonymous health check is answered without a session. The one cookie the

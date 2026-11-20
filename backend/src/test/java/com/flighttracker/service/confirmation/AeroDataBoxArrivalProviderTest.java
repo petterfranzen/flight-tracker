@@ -3,6 +3,10 @@ package com.flighttracker.service.confirmation;
 import com.flighttracker.observability.PhaseLogger;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.NullAndEmptySource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.config.YamlPropertiesFactoryBean;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.http.HttpHeaders;
@@ -21,7 +25,9 @@ import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Map;
 import java.util.Properties;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.contains;
@@ -52,15 +58,52 @@ class AeroDataBoxArrivalProviderTest {
     void setUp() {
         clock.set(Instant.parse("2026-10-12T12:00:00Z"));
         builder = RestClient.builder();
-        server = MockRestServiceServer.bindTo(builder).build();
+        resetServer();
     }
 
-    private AeroDataBoxArrivalProvider provider(boolean enabled, String key, String searchBy, boolean labels) {
-        return new AeroDataBoxArrivalProvider(clock, phases, enabled, key, BASE, "aerodatabox.p.rapidapi.com", searchBy, labels, builder);
+    /** The provider's constructor settings; {@link #DEFAULTS} is what most tests run with. */
+    record Setup(boolean enabled, String key, String searchBy, boolean labels) {
+        Setup withKey(String newKey) {
+            return new Setup(enabled, newKey, searchBy, labels);
+        }
+
+        Setup searchingBy(String newSearchBy) {
+            return new Setup(enabled, key, newSearchBy, labels);
+        }
+
+        Setup disabled() {
+            return new Setup(false, key, searchBy, labels);
+        }
+
+        Setup recordingLabels() {
+            return new Setup(enabled, key, searchBy, true);
+        }
+    }
+
+    static final Setup DEFAULTS = new Setup(true, "test-key", "Number", false);
+
+    private AeroDataBoxArrivalProvider provider(Setup s) {
+        return new AeroDataBoxArrivalProvider(clock, phases, s.enabled(), s.key(), BASE, "aerodatabox.p.rapidapi.com",
+                s.searchBy(), s.labels(), builder);
     }
 
     private AeroDataBoxArrivalProvider provider() {
-        return provider(true, "test-key", "Number", false);
+        return provider(DEFAULTS);
+    }
+
+    /** A fresh mock server for the next request of a test that makes several. */
+    private void resetServer() {
+        server = MockRestServiceServer.bindTo(builder).build();
+    }
+
+    static ArrivalQuery queryFor(String callsign) {
+        return new ArrivalQuery("780a8c", callsign, "EHAM", LANDED);
+    }
+
+    static Properties applicationYml() {
+        YamlPropertiesFactoryBean yaml = new YamlPropertiesFactoryBean();
+        yaml.setResources(new ClassPathResource("application.yml"));
+        return yaml.getObject();
     }
 
     static String fixture(String name) throws IOException {
@@ -81,12 +124,19 @@ class AeroDataBoxArrivalProviderTest {
         return provider().lookup(query);
     }
 
-    private static String arrival(String status, String scheduled, String revised, String runway) {
-        StringBuilder sb = new StringBuilder("[{\"status\":\"" + status + "\",\"arrival\":{\"airport\":{\"icao\":\"EHAM\"}");
-        if (scheduled != null) sb.append(",\"scheduledTime\":{\"utc\":\"").append(scheduled).append("\"}");
-        if (revised != null) sb.append(",\"revisedTime\":{\"utc\":\"").append(revised).append("\"}");
-        if (runway != null) sb.append(",\"runwayTime\":{\"utc\":\"").append(runway).append("\"}");
-        return sb.append("}}]").toString();
+    /** One AeroDataBox arrival entry at EHAM; a null time is left out of the JSON. */
+    record Arrival(String status, String scheduled, String revised, String runway) {
+        String json() {
+            StringBuilder sb = new StringBuilder("[{\"status\":\"" + status + "\",\"arrival\":{\"airport\":{\"icao\":\"EHAM\"}");
+            appendTime(sb, "scheduledTime", scheduled);
+            appendTime(sb, "revisedTime", revised);
+            appendTime(sb, "runwayTime", runway);
+            return sb.append("}}]").toString();
+        }
+
+        private static void appendTime(StringBuilder sb, String field, String utc) {
+            if (utc != null) sb.append(",\"").append(field).append("\":{\"utc\":\"").append(utc).append("\"}");
+        }
     }
 
     // ---- the time parser
@@ -102,13 +152,15 @@ class AeroDataBoxArrivalProviderTest {
         assertThat(AeroDataBoxArrivalProvider.parseTime("2025-07-12 10:30-05:00")).isEqualTo(Instant.parse("2025-07-12T15:30:00Z"));
     }
 
-    @Test
-    void parsesIsoWithTSecondsAndOffsetsWithoutAColon() {
-        assertThat(AeroDataBoxArrivalProvider.parseTime("2025-01-12T05:09:30Z")).isEqualTo(Instant.parse("2025-01-12T05:09:30Z"));
-        assertThat(AeroDataBoxArrivalProvider.parseTime("2025-01-12T06:09+01:00")).isEqualTo(Instant.parse("2025-01-12T05:09:00Z"));
-        assertThat(AeroDataBoxArrivalProvider.parseTime("2025-01-12 06:09+0100")).isEqualTo(Instant.parse("2025-01-12T05:09:00Z"));
-        assertThat(AeroDataBoxArrivalProvider.parseTime("2025-01-12 06:09:15.250+01")).isEqualTo(Instant.parse("2025-01-12T05:09:15.250Z"));
-        assertThat(AeroDataBoxArrivalProvider.parseTime("  2025-01-12 05:09z ")).isEqualTo(Instant.parse("2025-01-12T05:09:00Z"));
+    @ParameterizedTest
+    @CsvSource(delimiter = '|', ignoreLeadingAndTrailingWhitespace = false, value = {
+            "2025-01-12T05:09:30Z|2025-01-12T05:09:30Z",
+            "2025-01-12T06:09+01:00|2025-01-12T05:09:00Z",
+            "2025-01-12 06:09+0100|2025-01-12T05:09:00Z",
+            "2025-01-12 06:09:15.250+01|2025-01-12T05:09:15.250Z",
+            "  2025-01-12 05:09z |2025-01-12T05:09:00Z"})
+    void parsesIsoWithTSecondsAndOffsetsWithoutAColon(String text, Instant utc) {
+        assertThat(AeroDataBoxArrivalProvider.parseTime(text)).isEqualTo(utc);
     }
 
     @Test
@@ -116,13 +168,11 @@ class AeroDataBoxArrivalProviderTest {
         assertThat(AeroDataBoxArrivalProvider.parseTime("2025-01-12 05:09")).isEqualTo(Instant.parse("2025-01-12T05:09:00Z"));
     }
 
-    @Test
-    void garbageNullAndImpossibleTimesParseToNull() {
-        assertThat(AeroDataBoxArrivalProvider.parseTime(null)).isNull();
-        assertThat(AeroDataBoxArrivalProvider.parseTime("")).isNull();
-        assertThat(AeroDataBoxArrivalProvider.parseTime("soon")).isNull();
-        assertThat(AeroDataBoxArrivalProvider.parseTime("2025-13-45 05:09Z")).isNull();
-        assertThat(AeroDataBoxArrivalProvider.parseTime("2025-01-12")).isNull();
+    @ParameterizedTest
+    @NullAndEmptySource
+    @ValueSource(strings = {"soon", "2025-13-45 05:09Z", "2025-01-12"})
+    void garbageNullAndImpossibleTimesParseToNull(String text) {
+        assertThat(AeroDataBoxArrivalProvider.parseTime(text)).isNull();
     }
 
     // ---- request
@@ -147,7 +197,7 @@ class AeroDataBoxArrivalProviderTest {
         server.expect(once(), requestTo(BASE + "/flights/CallSign/CPA271?withAircraftImage=false&withLocation=false"))
                 .andRespond(withStatus(HttpStatus.NO_CONTENT));
 
-        provider(true, "k", "callsign", false).lookup(query(LANDED));
+        provider(DEFAULTS.withKey("k").searchingBy("callsign")).lookup(query(LANDED));
 
         server.verify();
     }
@@ -156,7 +206,7 @@ class AeroDataBoxArrivalProviderTest {
     void anUnknownSearchByFallsBackToNumber() {
         server.expect(once(), requestTo(CPA271)).andRespond(withStatus(HttpStatus.NO_CONTENT));
 
-        provider(true, "k", "Reg", false).lookup(query(LANDED));
+        provider(DEFAULTS.withKey("k").searchingBy("Reg")).lookup(query(LANDED));
 
         server.verify();
     }
@@ -174,10 +224,9 @@ class AeroDataBoxArrivalProviderTest {
     void aCallsignLongerThanTenCharactersOrWithOddCharactersMakesNoCall() {
         AeroDataBoxArrivalProvider p = provider();
 
-        assertThat(p.lookup(new ArrivalQuery("780a8c", "ABCDEFGHIJK", "EHAM", LANDED)).status()).isEqualTo(LookupResult.Status.NOT_FOUND);
-        assertThat(p.lookup(new ArrivalQuery("780a8c", "CPA/271", "EHAM", LANDED)).status()).isEqualTo(LookupResult.Status.NOT_FOUND);
-        assertThat(p.lookup(new ArrivalQuery("780a8c", " ", "EHAM", LANDED)).status()).isEqualTo(LookupResult.Status.NOT_FOUND);
-        assertThat(p.lookup(new ArrivalQuery("780a8c", null, "EHAM", LANDED)).status()).isEqualTo(LookupResult.Status.NOT_FOUND);
+        assertThat(Stream.of("ABCDEFGHIJK", "CPA/271", " ", null).map(callsign -> p.lookup(queryFor(callsign)).status()))
+                .containsExactly(LookupResult.Status.NOT_FOUND, LookupResult.Status.NOT_FOUND,
+                        LookupResult.Status.NOT_FOUND, LookupResult.Status.NOT_FOUND);
         server.verify(); // an unexpected request would have failed above
     }
 
@@ -188,13 +237,11 @@ class AeroDataBoxArrivalProviderTest {
         LookupResult result = lookupFixture("cx271-two-days.json", query(LANDED));
 
         assertThat(result.status()).isEqualTo(LookupResult.Status.FOUND);
-        ArrivalInfo info = result.info();
-        assertThat(info.actualOn()).isEqualTo(Instant.parse("2026-10-12T06:02:00Z"));
-        assertThat(info.actualIn()).isNull(); // revised == runway: no gate time
-        assertThat(info.terminal()).isEqualTo("2");
-        assertThat(info.gate()).isNull();
-        assertThat(info.arrivalAirportIcao()).isEqualTo("EHAM");
-        assertThat(info.rank()).isEqualTo(1);
+        assertThat(result.info())
+                .extracting(ArrivalInfo::actualOn, ArrivalInfo::actualIn, ArrivalInfo::terminal, ArrivalInfo::gate,
+                        ArrivalInfo::arrivalAirportIcao, ArrivalInfo::rank)
+                // actualIn is null: revised == runway, so no gate time
+                .containsExactly(Instant.parse("2026-10-12T06:02:00Z"), null, "2", null, "EHAM", 1);
     }
 
     @Test
@@ -209,11 +256,9 @@ class AeroDataBoxArrivalProviderTest {
     void aRevisedTimeLaterThanTheRunwayTimeIsTheGateTime() throws IOException {
         LookupResult result = lookupFixture("arrived-at-gate.json", query(LANDED));
 
-        ArrivalInfo info = result.info();
-        assertThat(info.actualOn()).isEqualTo(Instant.parse("2026-10-12T06:02:00Z"));
-        assertThat(info.actualIn()).isEqualTo(Instant.parse("2026-10-12T06:14:00Z"));
-        assertThat(info.gate()).isEqualTo("D87");
-        assertThat(info.rank()).isEqualTo(2);
+        assertThat(result.info())
+                .extracting(ArrivalInfo::actualOn, ArrivalInfo::actualIn, ArrivalInfo::gate, ArrivalInfo::rank)
+                .containsExactly(Instant.parse("2026-10-12T06:02:00Z"), Instant.parse("2026-10-12T06:14:00Z"), "D87", 2);
     }
 
     @Test
@@ -221,9 +266,9 @@ class AeroDataBoxArrivalProviderTest {
         LookupResult result = lookupFixture("approaching.json", query(LANDED));
 
         assertThat(result.status()).isEqualTo(LookupResult.Status.FOUND);
-        assertThat(result.info().actualOn()).isNull();
-        assertThat(result.info().actualIn()).isNull();
-        assertThat(result.info().rank()).isZero();
+        assertThat(result.info())
+                .extracting(ArrivalInfo::actualOn, ArrivalInfo::actualIn, ArrivalInfo::rank)
+                .containsExactly(null, null, 0);
     }
 
     @Test
@@ -238,8 +283,8 @@ class AeroDataBoxArrivalProviderTest {
     void divertedAndCanceledUncertainDoNotConfirmALandingEvenWithARunwayTime() {
         for (String status : new String[] {"Diverted", "CanceledUncertain", "Canceled", "Expected"}) {
             server.reset();
-            server = MockRestServiceServer.bindTo(builder).build();
-            LookupResult result = lookupBody(arrival(status, "2026-10-12 06:05Z", "2026-10-12 06:03Z", "2026-10-12 06:02Z"), query(LANDED));
+            resetServer();
+            LookupResult result = lookupBody(new Arrival(status, "2026-10-12 06:05Z", "2026-10-12 06:03Z", "2026-10-12 06:02Z").json(), query(LANDED));
             assertThat(result.info().rank()).as(status).isZero();
         }
     }
@@ -266,7 +311,7 @@ class AeroDataBoxArrivalProviderTest {
                 + "{\"status\":\"Arrived\",\"codeshareStatus\":\"Unknown\",\"arrival\":{\"airport\":{\"icao\":\"EHAM\"},\"runwayTime\":{\"utc\":\"2026-10-12 06:09Z\"}}}]", query(LANDED));
         assertThat(result.info().actualOn()).isEqualTo(Instant.parse("2026-10-12T06:09:00Z"));
 
-        server = MockRestServiceServer.bindTo(builder).build();
+        resetServer();
         result = lookupBody("[{\"status\":\"Arrived\",\"codeshareStatus\":\"IsCodeshared\",\"arrival\":{\"airport\":{\"icao\":\"EHAM\"},\"runwayTime\":{\"utc\":\"2026-10-12 06:02Z\"}}},"
                 + "{\"status\":\"arrived\",\"codeshareStatus\":\"isoperator\",\"arrival\":{\"airport\":{\"icao\":\"EHAM\"},\"runwayTime\":{\"utc\":\"2026-10-12 06:09Z\"}}}]", query(LANDED));
         assertThat(result.info().actualOn()).isEqualTo(Instant.parse("2026-10-12T06:09:00Z"));
@@ -288,7 +333,7 @@ class AeroDataBoxArrivalProviderTest {
 
     @Test
     void anEntryWithoutModeSIsKept() {
-        LookupResult result = lookupBody(arrival("Arrived", null, "2026-10-12 06:02Z", "2026-10-12 06:02Z"), query(LANDED));
+        LookupResult result = lookupBody(new Arrival("Arrived", null, "2026-10-12 06:02Z", "2026-10-12 06:02Z").json(), query(LANDED));
 
         assertThat(result.status()).isEqualTo(LookupResult.Status.FOUND);
     }
@@ -317,7 +362,7 @@ class AeroDataBoxArrivalProviderTest {
 
     @Test
     void arrivedWithoutARunwayTimeUsesTheRevisedTimeAndNoGateTime() {
-        LookupResult result = lookupBody(arrival("Arrived", "2026-10-12 06:05Z", "2026-10-12 06:02Z", null), query(LANDED));
+        LookupResult result = lookupBody(new Arrival("Arrived", "2026-10-12 06:05Z", "2026-10-12 06:02Z", null).json(), query(LANDED));
 
         assertThat(result.info().actualOn()).isEqualTo(LANDED);
         assertThat(result.info().actualIn()).isNull();
@@ -325,7 +370,7 @@ class AeroDataBoxArrivalProviderTest {
 
     @Test
     void aRevisedTimeEarlierThanOrEqualToTheRunwayTimeIsNotAGateTime() {
-        LookupResult earlier = lookupBody(arrival("Arrived", null, "2026-10-12 06:00Z", "2026-10-12 06:02Z"), query(LANDED));
+        LookupResult earlier = lookupBody(new Arrival("Arrived", null, "2026-10-12 06:00Z", "2026-10-12 06:02Z").json(), query(LANDED));
         assertThat(earlier.info().actualOn()).isEqualTo(LANDED);
         assertThat(earlier.info().actualIn()).isNull();
     }
@@ -333,7 +378,7 @@ class AeroDataBoxArrivalProviderTest {
     @Test
     void anEmptyArrayAndAnEmptyBodyAreNotFound() {
         assertThat(lookupBody("[]", query(LANDED)).status()).isEqualTo(LookupResult.Status.NOT_FOUND);
-        server = MockRestServiceServer.bindTo(builder).build();
+        resetServer();
         assertThat(lookupBody("", query(LANDED)).status()).isEqualTo(LookupResult.Status.NOT_FOUND);
     }
 
@@ -383,11 +428,11 @@ class AeroDataBoxArrivalProviderTest {
         server.expect(once(), requestTo(CPA271)).andRespond(withStatus(HttpStatus.TOO_MANY_REQUESTS));
         assertThat(provider().lookup(query(LANDED)).retryAfter()).isEqualTo(Duration.ofSeconds(60));
 
-        server = MockRestServiceServer.bindTo(builder).build();
+        resetServer();
         server.expect(once(), requestTo(CPA271)).andRespond(withStatus(HttpStatus.TOO_MANY_REQUESTS).header(HttpHeaders.RETRY_AFTER, "soon"));
         assertThat(provider().lookup(query(LANDED)).retryAfter()).isEqualTo(Duration.ofSeconds(60));
 
-        server = MockRestServiceServer.bindTo(builder).build();
+        resetServer();
         server.expect(once(), requestTo(CPA271)).andRespond(withStatus(HttpStatus.TOO_MANY_REQUESTS).header(HttpHeaders.RETRY_AFTER, "Mon, 12 Oct 2026 11:00:00 GMT"));
         assertThat(provider().lookup(query(LANDED)).retryAfter()).isEqualTo(Duration.ofSeconds(60));
     }
@@ -396,7 +441,7 @@ class AeroDataBoxArrivalProviderTest {
     void aRejectedKeyFailsOnceAndLocksTheProviderUntilTheNextUtcMidnight() {
         for (HttpStatus status : new HttpStatus[] {HttpStatus.UNAUTHORIZED, HttpStatus.FORBIDDEN}) {
             clock.set(Instant.parse("2026-10-12T12:00:00Z"));
-            server = MockRestServiceServer.bindTo(builder).build();
+            resetServer();
             server.expect(once(), requestTo(CPA271)).andRespond(withStatus(status));
             AeroDataBoxArrivalProvider p = provider();
             assertThat(p.enabled()).isTrue();
@@ -440,7 +485,7 @@ class AeroDataBoxArrivalProviderTest {
     @Test
     void badRequestNotFoundAndUnprocessableAreNoSuchFlight_notAFailure() {
         for (HttpStatus status : new HttpStatus[] {HttpStatus.BAD_REQUEST, HttpStatus.NOT_FOUND, HttpStatus.UNPROCESSABLE_ENTITY}) {
-            server = MockRestServiceServer.bindTo(builder).build();
+            resetServer();
             server.expect(once(), requestTo(CPA271)).andRespond(withStatus(status));
 
             LookupResult result = provider().lookup(query(LANDED));
@@ -455,11 +500,11 @@ class AeroDataBoxArrivalProviderTest {
         server.expect(once(), requestTo(CPA271)).andRespond(withStatus(HttpStatus.BAD_GATEWAY));
         assertThat(provider().lookup(query(LANDED)).status()).isEqualTo(LookupResult.Status.FAILED);
 
-        server = MockRestServiceServer.bindTo(builder).build();
+        resetServer();
         server.expect(once(), requestTo(CPA271)).andRespond(withStatus(HttpStatus.TOO_MANY_REQUESTS));
         assertThat(provider().lookup(query(LANDED)).status()).isEqualTo(LookupResult.Status.THROTTLED);
 
-        server = MockRestServiceServer.bindTo(builder).build();
+        resetServer();
         server.expect(once(), requestTo(CPA271)).andRespond(withStatus(HttpStatus.METHOD_NOT_ALLOWED));
         assertThat(provider().lookup(query(LANDED)).status()).isEqualTo(LookupResult.Status.FAILED);
     }
@@ -490,15 +535,15 @@ class AeroDataBoxArrivalProviderTest {
         assertThat(refused.status()).isEqualTo(LookupResult.Status.FAILED);
         assertThat(refused.costUnits()).isZero();
 
-        server = MockRestServiceServer.bindTo(builder).build();
+        resetServer();
         server.expect(once(), requestTo(CPA271)).andRespond(withException(new UnknownHostException("aerodatabox.p.rapidapi.com")));
         assertThat(provider().lookup(query(LANDED)).costUnits()).isZero();
 
-        server = MockRestServiceServer.bindTo(builder).build();
+        resetServer();
         server.expect(once(), requestTo(CPA271)).andRespond(withException(new SocketTimeoutException("connect timed out")));
         assertThat(provider().lookup(query(LANDED)).costUnits()).isZero();
 
-        server = MockRestServiceServer.bindTo(builder).build();
+        resetServer();
         server.expect(once(), requestTo(CPA271)).andRespond(withException(new SocketTimeoutException("Read timed out")));
         LookupResult slow = provider().lookup(query(LANDED));
         assertThat(slow.status()).isEqualTo(LookupResult.Status.FAILED);
@@ -509,14 +554,12 @@ class AeroDataBoxArrivalProviderTest {
     void acceptsOnlyAUsableCallsignWhileEnabled() {
         AeroDataBoxArrivalProvider p = provider();
 
-        assertThat(p.accepts(query(LANDED))).isTrue();
-        assertThat(p.accepts(new ArrivalQuery("780a8c", "cpa 271", "EHAM", LANDED))).isTrue();
-        assertThat(p.accepts(new ArrivalQuery("780a8c", "ABCDEFGHIJK", "EHAM", LANDED))).isFalse();
-        assertThat(p.accepts(new ArrivalQuery("780a8c", "CPA/271", "EHAM", LANDED))).isFalse();
-        assertThat(p.accepts(new ArrivalQuery("780a8c", " ", "EHAM", LANDED))).isFalse();
-        assertThat(p.accepts(new ArrivalQuery("780a8c", null, "EHAM", LANDED))).isFalse();
-        assertThat(provider(true, "", "Number", false).accepts(query(LANDED))).as("no key").isFalse();
-        assertThat(provider(false, "key", "Number", false).accepts(query(LANDED))).as("flag off").isFalse();
+        assertThat(Stream.of(query(LANDED), queryFor("cpa 271")).map(p::accepts)).containsExactly(true, true);
+        assertThat(Stream.of("ABCDEFGHIJK", "CPA/271", " ", null).map(callsign -> p.accepts(queryFor(callsign))))
+                .containsExactly(false, false, false, false);
+        assertThat(Stream.of(DEFAULTS.withKey(""), DEFAULTS.withKey("key").disabled())
+                .map(setup -> provider(setup).accepts(query(LANDED))))
+                .as("no key, flag off").containsExactly(false, false);
     }
 
     @Test
@@ -539,9 +582,7 @@ class AeroDataBoxArrivalProviderTest {
 
     @Test
     void applicationYmlSetsTheRecheckIntervalsAndNoGateWait() {
-        YamlPropertiesFactoryBean yaml = new YamlPropertiesFactoryBean();
-        yaml.setResources(new ClassPathResource("application.yml"));
-        Properties props = yaml.getObject();
+        Properties props = applicationYml();
 
         assertThat(props.getProperty("flighttracker.confirmation.aerodatabox.found-recheck-minutes")).isEqualTo("30");
         assertThat(props.getProperty("flighttracker.confirmation.aerodatabox.not-found-recheck-minutes")).isEqualTo("180");
@@ -558,7 +599,7 @@ class AeroDataBoxArrivalProviderTest {
         assertThat(result.info().actualOn()).isEqualTo(Instant.parse("2026-10-12T06:09:00Z"));
 
         // 50 minutes apart: close enough for the operator to win.
-        server = MockRestServiceServer.bindTo(builder).build();
+        resetServer();
         result = lookupBody("["
                 + "{\"status\":\"Arrived\",\"codeshareStatus\":\"IsOperator\",\"arrival\":{\"airport\":{\"icao\":\"EHAM\"},\"runwayTime\":{\"utc\":\"2026-10-12 06:55Z\"}}},"
                 + "{\"status\":\"Arrived\",\"codeshareStatus\":\"Unknown\",\"arrival\":{\"airport\":{\"icao\":\"EHAM\"},\"runwayTime\":{\"utc\":\"2026-10-12 06:05Z\"}}}]",
@@ -568,13 +609,13 @@ class AeroDataBoxArrivalProviderTest {
 
     @Test
     void isDisabledWithoutAKeyOrWithTheFlagOffAndMakesNoCall() {
-        assertThat(provider(true, "", "Number", false).enabled()).isFalse();
-        assertThat(provider(true, "  ", "Number", false).enabled()).isFalse();
-        assertThat(provider(true, null, "Number", false).enabled()).isFalse();
-        assertThat(provider(false, "key", "Number", false).enabled()).isFalse();
-        assertThat(provider(true, "key", "Number", false).enabled()).isTrue();
+        assertThat(Stream.of(DEFAULTS.withKey(""), DEFAULTS.withKey("  "), DEFAULTS.withKey(null),
+                        DEFAULTS.withKey("key").disabled())
+                .map(setup -> provider(setup).enabled()))
+                .containsExactly(false, false, false, false);
+        assertThat(provider(DEFAULTS.withKey("key")).enabled()).isTrue();
 
-        assertThat(provider(true, "", "Number", false).lookup(query(LANDED)).status()).isEqualTo(LookupResult.Status.FAILED);
+        assertThat(provider(DEFAULTS.withKey("")).lookup(query(LANDED)).status()).isEqualTo(LookupResult.Status.FAILED);
         server.verify();
     }
 
@@ -588,31 +629,28 @@ class AeroDataBoxArrivalProviderTest {
     void coversAnyKnownAirportButNotAnUnknownOne() {
         AeroDataBoxArrivalProvider p = provider();
 
-        assertThat(p.covers("EHAM")).isTrue();
-        assertThat(p.covers("KJFK")).isTrue();
-        assertThat(p.covers(null)).isFalse();
-        assertThat(p.covers(" ")).isFalse();
+        assertThat(Stream.of("EHAM", "KJFK", null, " ").map(p::covers)).containsExactly(true, true, false, false);
     }
 
     @Test
     void longTermStorageIsOffUnlessConfigured() {
-        assertThat(provider(true, "k", "Number", false).mayStoreLongTerm()).isFalse();
-        assertThat(provider(true, "k", "Number", true).mayStoreLongTerm()).isTrue();
+        assertThat(provider(DEFAULTS.withKey("k")).mayStoreLongTerm()).isFalse();
+        assertThat(provider(DEFAULTS.withKey("k").recordingLabels()).mayStoreLongTerm()).isTrue();
     }
 
     @Test
     void applicationYmlSetsTheCostBudgetsAndDefaults() {
-        YamlPropertiesFactoryBean yaml = new YamlPropertiesFactoryBean();
-        yaml.setResources(new ClassPathResource("application.yml"));
-        Properties p = yaml.getObject();
+        Properties p = applicationYml();
+        Map<String, String> expected = Map.of(
+                "flighttracker.confirmation.providers.aerodatabox.monthly-budget", "380",
+                "flighttracker.confirmation.providers.aerodatabox.daily-budget", "14",
+                "flighttracker.confirmation.aerodatabox.api-key", "${AERODATABOX_API_KEY:}",
+                "flighttracker.confirmation.aerodatabox.base-url", BASE,
+                "flighttracker.confirmation.aerodatabox.host", "aerodatabox.p.rapidapi.com",
+                "flighttracker.confirmation.aerodatabox.search-by", "Number",
+                "flighttracker.confirmation.aerodatabox.enabled", "true",
+                "flighttracker.confirmation.aerodatabox.record-training-labels", "false");
 
-        assertThat(p.getProperty("flighttracker.confirmation.providers.aerodatabox.monthly-budget")).isEqualTo("380");
-        assertThat(p.getProperty("flighttracker.confirmation.providers.aerodatabox.daily-budget")).isEqualTo("14");
-        assertThat(p.getProperty("flighttracker.confirmation.aerodatabox.api-key")).isEqualTo("${AERODATABOX_API_KEY:}");
-        assertThat(p.getProperty("flighttracker.confirmation.aerodatabox.base-url")).isEqualTo(BASE);
-        assertThat(p.getProperty("flighttracker.confirmation.aerodatabox.host")).isEqualTo("aerodatabox.p.rapidapi.com");
-        assertThat(p.getProperty("flighttracker.confirmation.aerodatabox.search-by")).isEqualTo("Number");
-        assertThat(p.getProperty("flighttracker.confirmation.aerodatabox.enabled")).isEqualTo("true");
-        assertThat(p.getProperty("flighttracker.confirmation.aerodatabox.record-training-labels")).isEqualTo("false");
+        assertThat(expected).allSatisfy((key, value) -> assertThat(p.getProperty(key)).as(key).isEqualTo(value));
     }
 }
