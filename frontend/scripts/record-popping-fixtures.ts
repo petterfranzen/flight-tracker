@@ -50,14 +50,20 @@ interface RecFleet {
   onGround: boolean;
 }
 
-function main(): void {
-  const world = new World();
-  const t0 = world.t0;
-  const times = Array.from({ length: TICK_COUNT }, (_, i) => t0 + i * TICK_MS);
-  const inside = (lat: number, lon: number): boolean =>
-    lat >= RECORD_BBOX.latMin && lat <= RECORD_BBOX.latMax && lon >= RECORD_BBOX.lonMin && lon <= RECORD_BBOX.lonMax;
+type SimAircraft = World["aircraft"][number];
+type HistoryPoint = { t: number; lat: number; lon: number };
 
-  // Every aircraft that is inside the recorded region at any tick.
+const inside = (lat: number, lon: number): boolean =>
+  lat >= RECORD_BBOX.latMin && lat <= RECORD_BBOX.latMax && lon >= RECORD_BBOX.lonMin && lon <= RECORD_BBOX.lonMax;
+
+/** A position rounded to the 4 dp the fixtures store. */
+function roundedAt(world: World, a: SimAircraft, t: number): { lat: number; lon: number } {
+  const p = world.positionAt(a, t);
+  return { lat: round(p.lat, 4), lon: round(p.lon, 4) };
+}
+
+/** Every aircraft that is inside the recorded region at any tick. */
+function recordFleet(world: World, times: number[]): RecFleet[] {
   const fleet: RecFleet[] = [];
   for (const a of world.aircraft) {
     if (!times.some((t) => { const p = world.positionAt(a, t); return inside(p.lat, p.lon); })) continue;
@@ -71,85 +77,111 @@ function main(): void {
       onGround: false,
     });
   }
+  return fleet;
+}
 
+/** Positions only; each tick's time is recordedAtMs + i * tickMs (meta). */
+function recordTicks(world: World, times: number[], fleet: RecFleet[]): { lat: number[]; lon: number[] }[] {
   const inFleet = new Set(fleet.map((f) => f.icao24));
-  // Positions only; each tick's time is recordedAtMs + i * tickMs (meta).
-  const ticks = times.map((t) => {
+  const members = world.aircraft.filter((a) => inFleet.has(a.icao24));
+  return times.map((t) => {
     const lat: number[] = [];
     const lon: number[] = [];
-    for (const a of world.aircraft) {
-      if (!inFleet.has(a.icao24)) continue;
-      const p = world.positionAt(a, t);
-      lat.push(round(p.lat, 4));
-      lon.push(round(p.lon, 4));
+    for (const a of members) {
+      const p = roundedAt(world, a, t);
+      lat.push(p.lat);
+      lon.push(p.lon);
     }
     return { lat, lon };
   });
+}
 
-  // Candidate planes for the "select a plane" scenario: the fleet nearest the
-  // map's default centre at the start, so they are the ones on screen there.
+/**
+ * Candidate planes for the "select a plane" scenario: the fleet nearest the
+ * map's default centre at the start, so they are the ones on screen there.
+ */
+function pickCandidates(world: World, fleet: RecFleet[]): string[] {
   const centre = { lat: 59.33, lon: 18.06 };
-  const candidates = fleet
+  return fleet
     .map((f) => ({ f, d: Math.hypot(world.get(f.icao24)!.lat0 - centre.lat, world.get(f.icao24)!.lon0 - centre.lon) }))
     .sort((x, y) => x.d - y.d)
     .slice(0, HISTORY_CANDIDATES)
     .map((x) => x.f.icao24);
+}
 
-  const history: Record<string, { t: number; lat: number; lon: number }[]> = {};
-  for (const icao of candidates) {
-    const a = world.get(icao)!;
-    const points: { t: number; lat: number; lon: number }[] = [];
-    for (let s = HISTORY_S; s >= 0; s -= HISTORY_STEP_S) {
-      const p = world.positionAt(a, t0 - s * 1000);
-      points.push({ t: t0 - s * 1000, lat: round(p.lat, 4), lon: round(p.lon, 4) });
-    }
-    for (let i = 0; i < TICK_COUNT; i++) {
-      const p = world.positionAt(a, times[i]);
-      points.push({ t: times[i], lat: round(p.lat, 4), lon: round(p.lon, 4) });
-    }
-    history[icao] = points;
+/** A 40-minute history before t0, then every recorded tick. */
+function historyFor(world: World, a: SimAircraft, times: number[]): HistoryPoint[] {
+  const t0 = world.t0;
+  const points: HistoryPoint[] = [];
+  for (let s = HISTORY_S; s >= 0; s -= HISTORY_STEP_S) {
+    points.push({ t: t0 - s * 1000, ...roundedAt(world, a, t0 - s * 1000) });
   }
+  for (const t of times) {
+    points.push({ t, ...roundedAt(world, a, t) });
+  }
+  return points;
+}
 
-  // /api/flights/{icao24}/status samples: a plain live track (no estimate), so
-  // the marker is never moved by the status — the trail/marker checks are
-  // about the /live and WebSocket data only.
+/**
+ * /api/flights/{icao24}/status samples: a plain live track (no estimate), so
+ * the marker is never moved by the status — the trail/marker checks are
+ * about the /live and WebSocket data only.
+ */
+function statusSamples(world: World, icao: string, times: number[]): unknown[] {
+  const a = world.get(icao)!;
+  return times
+    .filter((_, i) => i % STATUS_SAMPLE_EVERY === 0)
+    .map((t) => {
+      const p = roundedAt(world, a, t);
+      return {
+        icao24: icao,
+        state: "LIVE",
+        confidence: null,
+        source: "adsb",
+        sourceKind: "observed",
+        lastSeenAt: new Date(t).toISOString(),
+        lastSeenLat: p.lat,
+        lastSeenLon: p.lon,
+        estimate: null,
+        landing: null,
+        gate: null,
+        terminal: null,
+        confirmedAt: null,
+      };
+    });
+}
+
+function recordingMeta(t0: number) {
+  return {
+    version: 1,
+    source: "scenario World (tests/scenarios/world.ts): a deterministic, OpenSky-shaped fleet around Stockholm",
+    recordedAt: new Date(t0).toISOString(),
+    recordedAtMs: t0,
+    tickMs: TICK_MS,
+    tickCount: TICK_COUNT,
+    bbox: RECORD_BBOX,
+    zooms: RECORD_ZOOMS,
+    wsNote: "WebSocket frames are the same recorded positions, one LiveFrame per aircraft per tick, filtered to the viewport the app last reported — the replay derives them (see docs/popping-harness.md).",
+  };
+}
+
+function main(): void {
+  const world = new World();
+  const t0 = world.t0;
+  const times = Array.from({ length: TICK_COUNT }, (_, i) => t0 + i * TICK_MS);
+  const fleet = recordFleet(world, times);
+  const ticks = recordTicks(world, times, fleet);
+  const candidates = pickCandidates(world, fleet);
+
+  const history: Record<string, HistoryPoint[]> = {};
   const status: Record<string, unknown[]> = {};
   for (const icao of candidates) {
-    const a = world.get(icao)!;
-    status[icao] = times
-      .filter((_, i) => i % STATUS_SAMPLE_EVERY === 0)
-      .map((t) => {
-        const p = world.positionAt(a, t);
-        return {
-          icao24: icao,
-          state: "LIVE",
-          confidence: null,
-          source: "adsb",
-          sourceKind: "observed",
-          lastSeenAt: new Date(t).toISOString(),
-          lastSeenLat: round(p.lat, 4),
-          lastSeenLon: round(p.lon, 4),
-          estimate: null,
-          landing: null,
-          gate: null,
-          terminal: null,
-          confirmedAt: null,
-        };
-      });
+    history[icao] = historyFor(world, world.get(icao)!, times);
+    status[icao] = statusSamples(world, icao, times);
   }
 
   const recording = {
-    meta: {
-      version: 1,
-      source: "scenario World (tests/scenarios/world.ts): a deterministic, OpenSky-shaped fleet around Stockholm",
-      recordedAt: new Date(t0).toISOString(),
-      recordedAtMs: t0,
-      tickMs: TICK_MS,
-      tickCount: TICK_COUNT,
-      bbox: RECORD_BBOX,
-      zooms: RECORD_ZOOMS,
-      wsNote: "WebSocket frames are the same recorded positions, one LiveFrame per aircraft per tick, filtered to the viewport the app last reported — the replay derives them (see docs/popping-harness.md).",
-    },
+    meta: recordingMeta(t0),
     fleet,
     ticks,
     selected: { candidates, history, status },
