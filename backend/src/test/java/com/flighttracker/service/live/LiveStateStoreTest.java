@@ -21,6 +21,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.tuple;
@@ -315,12 +316,11 @@ class LiveStateStoreTest {
 
         List<ClusterPoint> clusters = store.clustered(T0.minusSeconds(100_000), T0.minusSeconds(100_000), activeSince, WORLD, 2.0);
 
-        assertThat(clusters).hasSize(1);
-        ClusterPoint c = clusters.get(0);
-        assertThat(c.getCount()).isEqualTo(2);
-        // Centroid of the two active aircraft only: the parked and silent ones don't pull it.
-        assertThat(c.getLat()).isCloseTo(10.2, within(1e-9));
-        assertThat(c.getLon()).isCloseTo(20.2, within(1e-9));
+        assertThat(clusters).singleElement().satisfies(c -> {
+            assertThat(c.getCount()).isEqualTo(2);
+            // Centroid of the two active aircraft only: the parked and silent ones don't pull it.
+            assertThat(new double[] {c.getLat(), c.getLon()}).containsExactly(new double[] {10.2, 20.2}, within(1e-9));
+        });
         // The parked and silent aircraft are still live — only the bubbles ignore them.
         assertThat(store.countLive(T0.minusSeconds(100_000), T0.minusSeconds(100_000))).isEqualTo(4);
     }
@@ -353,9 +353,10 @@ class LiveStateStoreTest {
 
         assertThat(o.planes()).extracting(LiveMarker::getIcao24).containsExactly("fast33", "mid222");
         // The other two active aircraft are bubbled, and the planes are NOT counted again.
-        assertThat(o.clusters()).hasSize(1);
-        assertThat(o.clusters().get(0).getCount()).isEqualTo(2);
-        assertThat(o.clusters().get(0).getLat()).isCloseTo(10.4, within(1e-9)); // mean of 10.1 and 10.7
+        assertThat(o.clusters()).singleElement().satisfies(bubble -> {
+            assertThat(bubble.getCount()).isEqualTo(2);
+            assertThat(bubble.getLat()).isCloseTo(10.4, within(1e-9)); // mean of 10.1 and 10.7
+        });
     }
 
     @Test
@@ -419,16 +420,13 @@ class LiveStateStoreTest {
         tools.jackson.databind.JsonNode root = new tools.jackson.databind.json.JsonMapper().readTree(json);
 
         tools.jackson.databind.JsonNode plane = root.get("planes").get(0);
-        assertThat(plane.get("icao24").asText()).isEqualTo("fast33");
-        assertThat(plane.get("callsign").asText()).isEqualTo("FAST");
-        assertThat(plane.get("latitude").asDouble()).isEqualTo(10.5);
-        assertThat(plane.get("longitude").asDouble()).isEqualTo(20.5);
-        assertThat(plane.get("headingDeg").asDouble()).isEqualTo(90.0);
-        assertThat(plane.has("observedAt")).isTrue();
-        assertThat(plane.get("onGround").asBoolean()).isFalse();
+        assertThat(List.of(plane.get("icao24").asText(), plane.get("callsign").asText())).containsExactly("fast33", "FAST");
+        assertThat(List.of(plane.get("latitude").asDouble(), plane.get("longitude").asDouble(), plane.get("headingDeg").asDouble()))
+                .containsExactly(10.5, 20.5, 90.0);
+        assertThat(List.of(plane.has("observedAt"), plane.get("onGround").asBoolean()))
+                .as("has observedAt, onGround").containsExactly(true, false);
         tools.jackson.databind.JsonNode cluster = root.get("clusters").get(0);
-        assertThat(cluster.get("lat").asDouble()).isEqualTo(10.1);
-        assertThat(cluster.get("lon").asDouble()).isEqualTo(20.1);
+        assertThat(List.of(cluster.get("lat").asDouble(), cluster.get("lon").asDouble())).containsExactly(10.1, 20.1);
         assertThat(cluster.get("count").asLong()).isEqualTo(1);
     }
 
@@ -461,8 +459,9 @@ class LiveStateStoreTest {
 
         assertThat(before).isEqualTo(2); // air001 and gnd001: the 13 h airborne and 30 h landed ones are past their windows
         assertThat(store.countLive(airborneCutoff, landedCutoff)).isEqualTo(before);
-        assertThat(store.findLatestPosition("gnd002")).isEmpty(); // 30 h silent: forgotten
-        assertThat(store.findLatestPosition("air002")).isPresent(); // 13 h silent but inside the 24 h longest window: kept, just not live
+        // gnd002, 30 h silent: forgotten. air002, 13 h silent but inside the 24 h longest window: kept, just not live.
+        assertThat(Stream.of("gnd002", "air002").map(id -> store.findLatestPosition(id).isPresent()))
+                .containsExactly(false, true);
     }
 
     @Test
@@ -493,11 +492,13 @@ class LiveStateStoreTest {
         assertThat(applied).isTrue();
         LiveAircraft a = store.get("abc123").orElseThrow();
         assertThat(a.gap()).isSameAs(gap);
-        assertThat(a.latitude()).isEqualTo(59.0); // the last real report is untouched
-        assertThat(a.displayLatitude()).isEqualTo(59.1);
-        assertThat(a.displayLongitude()).isEqualTo(18.1);
-        assertThat(a.estimatedAt()).isEqualTo(T0.plusSeconds(120));
-        assertThat(store.findLatestPosition("abc123").orElseThrow().latitude()).isEqualTo(59.1);
+        assertThat(a)
+                .extracting(LiveAircraft::latitude, LiveAircraft::displayLatitude, LiveAircraft::displayLongitude,
+                        LiveAircraft::estimatedAt)
+                // latitude is the last real report, untouched
+                .containsExactly(59.0, 59.1, 18.1, T0.plusSeconds(120));
+        FlightPosition latest = store.findLatestPosition("abc123").orElseThrow();
+        assertThat(latest.latitude()).isEqualTo(59.1);
         assertThat(store.icao24sWithEstimate()).contains("abc123");
     }
 
@@ -524,10 +525,10 @@ class LiveStateStoreTest {
         boolean stale = store.writeGapEstimate("abc123", T0, gapAt(59.1, 18.1, T0.plusSeconds(120)));
         boolean unknown = store.writeGapEstimate("ghost01", T0, gapAt(1, 1, T0));
 
-        assertThat(stale).isFalse();
-        assertThat(unknown).isFalse();
-        assertThat(store.get("abc123").orElseThrow().gap()).isNull();
-        assertThat(store.get("abc123").orElseThrow().displayLatitude()).isEqualTo(59.2);
+        assertThat(List.of(stale, unknown)).containsExactly(false, false);
+        LiveAircraft a = store.get("abc123").orElseThrow();
+        assertThat(a.gap()).isNull();
+        assertThat(a.displayLatitude()).isEqualTo(59.2);
     }
 
     @Test

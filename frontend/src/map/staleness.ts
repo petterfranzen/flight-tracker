@@ -38,13 +38,7 @@ export function findShadowedIds(list: LiveMarker[]): Set<string> {
   const cosLat = Math.max(0.01, Math.cos((list[0].latitude * Math.PI) / 180));
   const cellLon = cellLat / cosLat;
 
-  const cells = new Map<string, LiveMarker[]>();
-  const key = (r: number, c: number) => `${r},${c}`;
-  const withinRange = (a: LiveMarker, b: LiveMarker) => {
-    const dy = (a.latitude - b.latitude) * METERS_PER_DEGREE_LAT;
-    const dx = (a.longitude - b.longitude) * METERS_PER_DEGREE_LAT * cosLat;
-    return dx * dx + dy * dy < OVERLAP_METERS * OVERLAP_METERS;
-  };
+  const grid: ShadowGrid = { cells: new Map(), cellLat, cellLon, cosLat };
 
   // Newest first, so a marker only ever has to be compared with markers
   // already known to be newer than it.
@@ -55,25 +49,51 @@ export function findShadowedIds(list: LiveMarker[]): Set<string> {
     (a, b) => (observedAtMs(b.observedAt) - observedAtMs(a.observedAt)) || 0,
   );
   for (const m of byFreshness) {
-    const row = Math.floor(m.latitude / cellLat);
-    const col = Math.floor(m.longitude / cellLon);
-    let isShadowed = false;
-    for (let r = row - 1; r <= row + 1 && !isShadowed; r++) {
-      for (let c = col - 1; c <= col + 1 && !isShadowed; c++) {
-        const bucket = cells.get(key(r, c));
-        if (bucket && bucket.some((newer) => withinRange(m, newer))) isShadowed = true;
-      }
-    }
-    if (isShadowed) {
-      shadowed.add(m.icao24);
-      continue;
-    }
-    const k = key(row, col);
-    const bucket = cells.get(k);
-    if (bucket) bucket.push(m);
-    else cells.set(k, [m]);
+    if (hasNewerNeighbour(grid, m)) shadowed.add(m.icao24);
+    else addToGrid(grid, m);
   }
   return shadowed;
+}
+
+/** The newer markers seen so far, bucketed in cells of OVERLAP_METERS. */
+interface ShadowGrid {
+  cells: Map<string, LiveMarker[]>;
+  cellLat: number;
+  cellLon: number;
+  /** One longitude scale for the whole list. */
+  cosLat: number;
+}
+
+const cellKey = (r: number, c: number): string => `${r},${c}`;
+
+function cellOf(grid: ShadowGrid, m: LiveMarker): { row: number; col: number } {
+  return { row: Math.floor(m.latitude / grid.cellLat), col: Math.floor(m.longitude / grid.cellLon) };
+}
+
+function withinRange(a: LiveMarker, b: LiveMarker, cosLat: number): boolean {
+  const dy = (a.latitude - b.latitude) * METERS_PER_DEGREE_LAT;
+  const dx = (a.longitude - b.longitude) * METERS_PER_DEGREE_LAT * cosLat;
+  return dx * dx + dy * dy < OVERLAP_METERS * OVERLAP_METERS;
+}
+
+/** Whether a marker already in the grid (so newer) is within OVERLAP_METERS of `m`. */
+function hasNewerNeighbour(grid: ShadowGrid, m: LiveMarker): boolean {
+  const { row, col } = cellOf(grid, m);
+  for (let r = row - 1; r <= row + 1; r++) {
+    for (let c = col - 1; c <= col + 1; c++) {
+      const bucket = grid.cells.get(cellKey(r, c));
+      if (bucket?.some((newer) => withinRange(m, newer, grid.cosLat))) return true;
+    }
+  }
+  return false;
+}
+
+function addToGrid(grid: ShadowGrid, m: LiveMarker): void {
+  const { row, col } = cellOf(grid, m);
+  const k = cellKey(row, col);
+  const bucket = grid.cells.get(k);
+  if (bucket) bucket.push(m);
+  else grid.cells.set(k, [m]);
 }
 
 /** icao24s whose last report is older than DIM_AFTER_MS. */

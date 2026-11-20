@@ -12,8 +12,10 @@ import com.flighttracker.service.live.LiveAircraft;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
+import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -40,66 +42,65 @@ class TrackStatusTest {
         return List.copyOf(node.propertyNames());
     }
 
+    /** The named fields of {@code node}, each read with {@code read}, in order. */
+    private static <T> List<T> values(JsonNode node, Function<JsonNode, T> read, String... fields) {
+        return Arrays.stream(fields).map(node::get).map(read).toList();
+    }
+
+    private static JsonNode json(TrackStatus s) {
+        return MAPPER.readTree(MAPPER.writeValueAsString(s));
+    }
+
+    private static final List<String> STATUS_FIELDS = List.of("icao24", "state", "confidence", "source", "sourceKind",
+            "lastSeenAt", "lastSeenLat", "lastSeenLon", "estimate", "landing", "gate", "terminal", "confirmedAt");
+
     @Test
     void liveAircraft_isLive_observed_withNoConfidenceEstimateOrLanding() throws Exception {
         TrackStatus s = TrackStatus.from(aircraft(false, null));
 
-        JsonNode json = MAPPER.readTree(MAPPER.writeValueAsString(s));
-        assertThat(json.get("state").asText()).isEqualTo("LIVE");
-        assertThat(json.get("confidence").isNull()).isTrue();
-        assertThat(json.get("source").asText()).isEqualTo("adsb");
-        assertThat(json.get("sourceKind").asText()).isEqualTo("observed");
-        assertThat(json.get("estimate").isNull()).isTrue();
-        assertThat(json.get("landing").isNull()).isTrue();
+        JsonNode json = json(s);
+        assertThat(values(json, JsonNode::asText, "state", "source", "sourceKind"))
+                .containsExactly("LIVE", "adsb", "observed");
+        assertThat(values(json, JsonNode::isNull, "confidence", "estimate", "landing"))
+                .containsExactly(true, true, true);
     }
 
     @Test
     void onGround_isOnGround_withFullConfidence() {
         TrackStatus s = TrackStatus.from(aircraft(true, null));
 
-        assertThat(s.state()).isEqualTo(TrackState.ON_GROUND);
-        assertThat(s.confidence()).isEqualTo(1.0);
-        assertThat(s.source()).isEqualTo("adsb");
-        assertThat(s.sourceKind()).isEqualTo("observed");
-        assertThat(s.estimate()).isNull();
-        assertThat(s.landing()).isNull();
+        assertThat(s)
+                .extracting(TrackStatus::state, TrackStatus::confidence, TrackStatus::source, TrackStatus::sourceKind,
+                        TrackStatus::estimate, TrackStatus::landing)
+                .containsExactly(TrackState.ON_GROUND, 1.0, "adsb", "observed", null, null);
     }
 
     @Test
     void coverageLost_carriesTheGapEstimate_andTheLastRealReportNotTheDisplayPosition() throws Exception {
         TrackStatus s = TrackStatus.from(aircraft(false, gap(TrackState.COVERAGE_LOST, "ESSA", "19R")));
 
-        JsonNode json = MAPPER.readTree(MAPPER.writeValueAsString(s));
-        assertThat(fieldNames(json)).containsExactly("icao24", "state", "confidence", "source", "sourceKind",
-                "lastSeenAt", "lastSeenLat", "lastSeenLon", "estimate", "landing", "gate", "terminal", "confirmedAt");
-        assertThat(json.get("icao24").asText()).isEqualTo("4ca123");
-        assertThat(json.get("state").asText()).isEqualTo("COVERAGE_LOST");
-        assertThat(json.get("confidence").asDouble()).isEqualTo(0.85);
-        assertThat(json.get("source").asText()).isEqualTo("physics");
-        assertThat(json.get("sourceKind").asText()).isEqualTo("inferred");
-        assertThat(json.get("lastSeenAt").asText()).isEqualTo("2026-10-12T11:00:00Z");
-        assertThat(json.get("lastSeenLat").asDouble()).isEqualTo(59.60);
-        assertThat(json.get("lastSeenLon").asDouble()).isEqualTo(17.90);
+        JsonNode json = json(s);
+        assertThat(fieldNames(json)).containsExactlyElementsOf(STATUS_FIELDS);
+        assertThat(values(json, JsonNode::asText, "icao24", "state", "source", "sourceKind", "lastSeenAt"))
+                .containsExactly("4ca123", "COVERAGE_LOST", "physics", "inferred", "2026-10-12T11:00:00Z");
+        assertThat(values(json, JsonNode::asDouble, "confidence", "lastSeenLat", "lastSeenLon"))
+                .containsExactly(0.85, 59.60, 17.90);
 
         JsonNode est = json.get("estimate");
         assertThat(fieldNames(est)).containsExactly("lat", "lon", "radiusM", "at", "landingProbability");
-        assertThat(est.get("lat").asDouble()).isEqualTo(59.65);
-        assertThat(est.get("lon").asDouble()).isEqualTo(17.93);
-        assertThat(est.get("radiusM").asDouble()).isEqualTo(1800);
+        assertThat(values(est, JsonNode::asDouble, "lat", "lon", "radiusM", "landingProbability"))
+                .containsExactly(59.65, 17.93, 1800.0, 0.4);
         assertThat(est.get("at").asText()).isEqualTo("2026-10-12T11:02:00Z");
-        assertThat(est.get("landingProbability").asDouble()).isEqualTo(0.4);
 
         JsonNode landing = json.get("landing");
         assertThat(fieldNames(landing)).containsExactly("airportIcao", "runway", "touchdownAt");
-        assertThat(landing.get("airportIcao").asText()).isEqualTo("ESSA");
-        assertThat(landing.get("runway").asText()).isEqualTo("19R");
-        assertThat(landing.get("touchdownAt").asText()).isEqualTo("2026-10-12T11:03:10Z");
+        assertThat(values(landing, JsonNode::asText, "airportIcao", "runway", "touchdownAt"))
+                .containsExactly("ESSA", "19R", "2026-10-12T11:03:10Z");
 
         // present, and null, until a confirmation provider fills them
         assertThat(json.has("gate")).isTrue();
-        assertThat(json.get("gate").isNull()).isTrue();
-        assertThat(json.get("terminal").isNull()).isTrue();
-        assertThat(json.get("confirmedAt").isNull()).isTrue();
+        assertThat(values(json, JsonNode::isNull, "gate", "terminal", "confirmedAt"))
+                .containsExactly(true, true, true);
     }
 
     @Test
@@ -132,37 +133,31 @@ class TrackStatusTest {
     void confirmedLanding_withoutGateIn_isLandedConfirmed_andReplacesTheEstimate() throws Exception {
         TrackStatus s = TrackStatus.from(aircraft(false, gap(TrackState.LANDED_INFERRED, "ESSA", "19R")), confirmation(ON, null, null));
 
-        assertThat(s.state()).isEqualTo(TrackState.LANDED_CONFIRMED);
-        assertThat(s.confidence()).isEqualTo(1.0);
-        assertThat(s.source()).isEqualTo("mock");
-        assertThat(s.sourceKind()).isEqualTo("confirmed");
-        assertThat(s.estimate()).isNull();
-        assertThat(s.landing().airportIcao()).isEqualTo("ESSA");
-        assertThat(s.landing().runway()).isEqualTo("19R");
-        assertThat(s.landing().touchdownAt()).isEqualTo(ON);
-        assertThat(s.confirmedAt()).isEqualTo(ON);
-        assertThat(s.gate()).isNull();
-        assertThat(s.lastSeenAt()).isEqualTo(SEEN);
+        assertThat(s)
+                .extracting(TrackStatus::state, TrackStatus::confidence, TrackStatus::source, TrackStatus::sourceKind,
+                        TrackStatus::estimate, TrackStatus::confirmedAt, TrackStatus::gate, TrackStatus::lastSeenAt)
+                .containsExactly(TrackState.LANDED_CONFIRMED, 1.0, "mock", "confirmed", null, ON, null, SEEN);
+        assertThat(s.landing())
+                .extracting(TrackStatus.Landing::airportIcao, TrackStatus.Landing::runway, TrackStatus.Landing::touchdownAt)
+                .containsExactly("ESSA", "19R", ON);
     }
 
     @Test
     void confirmedGateIn_isAtGate_withGateTerminalAndConfirmedAtTheGateTime() throws Exception {
         TrackStatus s = TrackStatus.from(aircraft(true, null), confirmation(ON, IN, "B14"));
 
-        assertThat(s.state()).isEqualTo(TrackState.AT_GATE);
-        assertThat(s.gate()).isEqualTo("B14");
-        assertThat(s.terminal()).isEqualTo("2");
-        assertThat(s.confirmedAt()).isEqualTo(IN);
-        assertThat(s.landing().airportIcao()).isEqualTo("ESSA");
-        assertThat(s.landing().runway()).isNull();
+        assertThat(s)
+                .extracting(TrackStatus::state, TrackStatus::gate, TrackStatus::terminal, TrackStatus::confirmedAt)
+                .containsExactly(TrackState.AT_GATE, "B14", "2", IN);
+        assertThat(s.landing())
+                .extracting(TrackStatus.Landing::airportIcao, TrackStatus.Landing::runway)
+                .containsExactly("ESSA", null);
 
-        JsonNode json = MAPPER.readTree(MAPPER.writeValueAsString(s));
-        assertThat(fieldNames(json)).containsExactly("icao24", "state", "confidence", "source", "sourceKind",
-                "lastSeenAt", "lastSeenLat", "lastSeenLon", "estimate", "landing", "gate", "terminal", "confirmedAt");
-        assertThat(json.get("state").asText()).isEqualTo("AT_GATE");
-        assertThat(json.get("sourceKind").asText()).isEqualTo("confirmed");
+        JsonNode json = json(s);
+        assertThat(fieldNames(json)).containsExactlyElementsOf(STATUS_FIELDS);
+        assertThat(values(json, JsonNode::asText, "state", "sourceKind", "confirmedAt"))
+                .containsExactly("AT_GATE", "confirmed", "2026-10-12T11:11:30Z");
         assertThat(json.get("estimate").isNull()).isTrue();
-        assertThat(json.get("confirmedAt").asText()).isEqualTo("2026-10-12T11:11:30Z");
     }
 
     @Test
