@@ -34,9 +34,19 @@ export interface ModalOptions {
   initial?: HTMLElement | null;
 }
 
-/** Whether the phone layout is in force (the same literal as every component's own media query). */
+/**
+ * The one "compact" layout condition: a narrow viewport (a phone in portrait)
+ * OR a short one (a phone in landscape, where the width never dips below the
+ * phone breakpoint but the desktop chrome — a 423px-tall stack in a 390px
+ * viewport — simply does not fit). Every component's phone media query and
+ * every JS layout check uses this exact string, so portrait and landscape
+ * agree on one layout.
+ */
+export const COMPACT_QUERY = "(max-width: 768px), (max-height: 500px)";
+
+/** Whether the compact (phone) layout is in force — the same literal as every component's own media query. */
 export function isPhone(): boolean {
-  return window.matchMedia("(max-width: 768px)").matches;
+  return window.matchMedia(COMPACT_QUERY).matches;
 }
 
 function focusable(container: HTMLElement): HTMLElement[] {

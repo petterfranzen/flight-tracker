@@ -84,7 +84,7 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
   // would otherwise leave the user staring at the list with the plane hidden.
   function selectAndClose(select: () => void): void {
     select();
-    if (window.matchMedia("(max-width: 768px)").matches) closeControlPanel("favorites");
+    if (isPhone()) closeControlPanel("favorites");
   }
 
   function setOpen(next: boolean): void {

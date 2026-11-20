@@ -101,7 +101,7 @@
    sheet. Desktop is untouched: .flight-search-panel carries no styling
    outside this media query, so on desktop it's an unstyled wrapper div and
    every child renders exactly as it did before this was introduced. */
-@media (max-width: 768px) {
+@media (max-width: 768px), (max-height: 500px) {
   .flight-search {
     width: auto;
   }
@@ -186,7 +186,7 @@
 .flight-search-option--airborne { cursor: pointer; }
 .flight-search-watched-status { color: var(--color-text-muted); font-size: 11px; text-align: right; }
 
-@media (max-width: 768px) {
+@media (max-width: 768px), (max-height: 500px) {
   /* 44px tap targets for the chips, the house minimum (glyph stays small). */
   .flight-search-chip { min-height: 44px; }
   /* The text fields are targets too — at 16px text plus 10px padding they land

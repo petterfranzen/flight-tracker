@@ -119,6 +119,21 @@ async function expectTargets(page: Page, selectors: string[]): Promise<void> {
   expect(problems, problems.join("; ")).toEqual([]);
 }
 
+/**
+ * Every visible field must be at least 16px: iOS Safari zooms the page on
+ * focus of a field under 16px and then leaves it panned sideways, so a 12px
+ * watch input costs the user a zoom-in and a sideways scroll on every focus.
+ */
+async function expectFieldsAtLeast16(page: Page, label: string): Promise<void> {
+  const sizes = await page.evaluate(() =>
+    Array.from(document.querySelectorAll<HTMLElement>("input, textarea, select"))
+      .filter((el) => el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden")
+      .map((el) => ({ cls: el.className, size: parseFloat(getComputedStyle(el).fontSize) })),
+  );
+  expect(sizes.length, `${label}: at least one visible field`).toBeGreaterThan(0);
+  for (const { cls, size } of sizes) expect(size, `${label}: font-size of "${cls}"`).toBeGreaterThanOrEqual(16);
+}
+
 test.describe("phone accessibility", () => {
   test("every control reached by keyboard is named and shows the token focus ring", async ({ page }) => {
     await page.setViewportSize(PHONE);
@@ -304,6 +319,37 @@ test.describe("phone accessibility", () => {
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     expect(overflow).toBeLessThanOrEqual(0);
   });
+
+  // section9-hq#420: the watch panel's four fields inherited the panel's own
+  // 12px, so every focus on them zoomed the page on iOS. Search already
+  // carried the 16px guard; watch was missed. Asserted at both phone widths
+  // the audit named, with each panel that holds a field open.
+  for (const vp of [
+    { name: "390x844", width: 390, height: 844 },
+    { name: "375x667", width: 375, height: 667 },
+  ]) {
+    test(`every visible field is >= 16px (no iOS zoom) at ${vp.name}`, async ({ page }) => {
+      await page.setViewportSize({ width: vp.width, height: vp.height });
+      await seedWatched(page, [{ flightNumber: "SK528", date: "2026-11-07", airport: "ARN", label: "ARN → LHR" }]);
+      await mockFlightApi(page);
+      await page.route("**/api/schedule/search*", (route) => route.fulfill({ json: [SCHEDULE_ROW] }));
+      await page.goto("/");
+      await waitForMapReady(page, 60_000);
+      await waitForChrome(page);
+
+      // Search overlay: both text fields.
+      await page.locator(".flight-search-fab").click();
+      await expect(page.locator(".flight-search-airport-input")).toBeVisible();
+      await expectFieldsAtLeast16(page, `search @ ${vp.name}`);
+      await page.keyboard.press("Escape");
+
+      // Watch panel: flight, from, to and the date field.
+      await page.locator(".watch-panel-toggle").click();
+      await expect(page.locator(".watch-panel-date")).toBeVisible();
+      await expectFieldsAtLeast16(page, `watch @ ${vp.name}`);
+      await page.keyboard.press("Escape");
+    });
+  }
 
   test("the resume dialog is modal: focus moves in, Escape closes, focus returns", async ({ page }) => {
     await page.setViewportSize(PHONE);
