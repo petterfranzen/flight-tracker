@@ -8,6 +8,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.Ordered;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
+import org.springframework.web.util.UrlPathHelper;
 
 import java.io.IOException;
 
@@ -93,13 +94,20 @@ public class SecurityHeadersFilter extends OncePerRequestFilter implements Order
      * read/write API, the sign-out POST, and the two OAuth redirects the browser
      * is sent through. Kept in step with {@code ProfileSecurityConfig}'s path
      * constants by {@code ProfileSecurityChainTest}.
+     *
+     * <p>Matched on the <em>decoded</em> path MVC routes on, via
+     * {@link UrlPathHelper#defaultInstance}, not the raw {@code getRequestURI()}: a
+     * request that spells a protected path with an encoded letter reaches the same
+     * handler, so it must get the same {@code no-store} the CSRF matcher now reads
+     * the decoded path for too.
      */
-    static boolean isNoStorePath(String uri) {
-        return uri != null
-                && (uri.startsWith("/api/profile")
-                        || uri.startsWith("/api/auth")
-                        || uri.startsWith("/oauth2/authorization/")
-                        || uri.startsWith("/login/oauth2/code/"));
+    static boolean isNoStorePath(HttpServletRequest request) {
+        String path = UrlPathHelper.defaultInstance.getPathWithinApplication(request);
+        return path != null
+                && (path.startsWith("/api/profile")
+                        || path.startsWith("/api/auth")
+                        || path.startsWith("/oauth2/authorization/")
+                        || path.startsWith("/login/oauth2/code/"));
     }
 
     @Override
@@ -117,7 +125,7 @@ public class SecurityHeadersFilter extends OncePerRequestFilter implements Order
         // Legacy twin of frame-ancestors 'none'.
         response.setHeader("X-Frame-Options", "DENY");
         response.setHeader(cspHeader, CSP);
-        if (noStoreOnAuthPaths && isNoStorePath(request.getRequestURI())) {
+        if (noStoreOnAuthPaths && isNoStorePath(request)) {
             response.setHeader("Cache-Control", "no-store");
         }
         chain.doFilter(request, response);

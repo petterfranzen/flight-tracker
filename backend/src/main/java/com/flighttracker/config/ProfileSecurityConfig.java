@@ -19,10 +19,16 @@ import org.springframework.security.oauth2.core.user.OAuth2User;
 import org.springframework.security.web.authentication.SimpleUrlAuthenticationFailureHandler;
 import org.springframework.security.web.csrf.CookieCsrfTokenRepository;
 import org.springframework.security.web.firewall.DefaultHttpFirewall;
-import org.springframework.util.AntPathMatcher;
+import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher;
+import org.springframework.security.web.util.matcher.AndRequestMatcher;
+import org.springframework.security.web.util.matcher.OrRequestMatcher;
+import org.springframework.security.web.util.matcher.RequestMatcher;
+
+import jakarta.servlet.http.HttpServletRequest;
 
 import java.time.Clock;
 import java.util.List;
+import java.util.Set;
 
 /**
  * The one thing optional social login changes in the request pipeline
@@ -83,7 +89,11 @@ import java.util.List;
  *       (section9-hq #326, optional).</li>
  *   <li>The CSRF matcher is the authorize matcher: both rules are built from
  *       {@link #AUTHENTICATED_PATHS} and {@link #CSRF_PROTECTED_PATHS}, so a
- *       write to {@code /api/profileX} is no longer token-checked.</li>
+ *       write to {@code /api/profileX} is no longer token-checked. It matches the
+ *       <em>decoded</em> path MVC routes on (a
+ *       {@link PathPatternRequestMatcher}), so an encoded spelling of a protected
+ *       path is token-checked too, where the old raw-URI
+ *       {@code AntPathMatcher} let it through.</li>
  * </ul>
  *
  * <p><b>Still open before the flag is enabled</b> (not part of this slice):
@@ -131,28 +141,47 @@ public class ProfileSecurityConfig {
      */
     static final String LOGIN_PAGE = "/";
 
-    /** Path-pattern semantics, the same the authorize rule's string patterns are matched with. */
-    private static final AntPathMatcher PATH_MATCHER = new AntPathMatcher();
+    /** The methods a state-changing request can use; every other method is safe. */
+    private static final Set<String> UNSAFE_METHODS = Set.of("POST", "PUT", "DELETE", "PATCH");
+
+    /**
+     * The CSRF rule's matcher: {@link #CSRF_PROTECTED_PATHS} matched with Spring Security's
+     * {@link PathPatternRequestMatcher} — the <em>same</em> mechanism, on the <em>same</em>
+     * patterns, the authorize rule's {@code requestMatchers} uses — ANDed with "the method is
+     * unsafe".
+     *
+     * <p>{@code PathPatternRequestMatcher} reads the decoded path (what MVC routes on), where
+     * the old code matched the raw {@code request.getRequestURI()}: a request whose URI spells
+     * a protected path with an encoded letter matched neither pattern, so the CSRF check was
+     * skipped while authentication still applied. Matching the decoded path closes that gap and
+     * keeps the two rules from drifting, because both are now built from the same constants.
+     * Built once; the matcher is immutable and thread-safe.
+     */
+    private static final RequestMatcher CSRF_PROTECTED_WRITE = csrfProtectedWriteMatcher();
+
+    private static RequestMatcher csrfProtectedWriteMatcher() {
+        PathPatternRequestMatcher.Builder paths = PathPatternRequestMatcher.withDefaults();
+        List<PathPatternRequestMatcher> pathMatchers = CSRF_PROTECTED_PATHS.stream()
+                .map(paths::matcher)
+                .toList();
+        return new AndRequestMatcher(new OrRequestMatcher(pathMatchers), ProfileSecurityConfig::isUnsafeMethod);
+    }
+
+    private static boolean isUnsafeMethod(HttpServletRequest request) {
+        return UNSAFE_METHODS.contains(request.getMethod());
+    }
 
     /**
      * True only for a state-changing request the feature owns: a profile write, or
      * {@code POST /api/auth/logout}. A safe method is never token-checked (so a
      * {@code GET /api/profile} still reads), and no other path is touched, so CSRF
      * on cannot 403 an endpoint that works today (notably {@code POST /api/health},
-     * which must keep its 405 rather than become a 403).
+     * which must keep its 405 rather than become a 403). The verdict comes from
+     * {@link #CSRF_PROTECTED_WRITE}, the very matcher the chain is configured with, so a
+     * test of this method and the runtime rule cannot disagree.
      */
-    static boolean isCsrfProtectedWrite(jakarta.servlet.http.HttpServletRequest request) {
-        String method = request.getMethod();
-        boolean unsafe = "POST".equals(method) || "PUT".equals(method)
-                || "DELETE".equals(method) || "PATCH".equals(method);
-        if (!unsafe) {
-            return false;
-        }
-        String uri = request.getRequestURI();
-        // The same path patterns the authorize rule protects — a write to /api/profileX is
-        // no longer token-checked — plus the sign-out POST.
-        return uri != null && CSRF_PROTECTED_PATHS.stream()
-                .anyMatch(pattern -> PATH_MATCHER.match(pattern, uri));
+    static boolean isCsrfProtectedWrite(HttpServletRequest request) {
+        return CSRF_PROTECTED_WRITE.matches(request);
     }
 
     @Bean
@@ -179,7 +208,7 @@ public class ProfileSecurityConfig {
                 .csrf(csrf -> csrf
                         .csrfTokenRepository(CookieCsrfTokenRepository.withHttpOnlyFalse())
                         .spa()
-                        .requireCsrfProtectionMatcher(ProfileSecurityConfig::isCsrfProtectedWrite))
+                        .requireCsrfProtectionMatcher(CSRF_PROTECTED_WRITE))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(AUTHENTICATED_PATHS.toArray(String[]::new)).authenticated()
                         .anyRequest().permitAll())
@@ -252,6 +281,24 @@ public class ProfileSecurityConfig {
         FilterRegistrationBean<AbsoluteSessionFilter> registration = new FilterRegistrationBean<>(filter);
         registration.addUrlPatterns("/*");
         registration.setOrder(-110);
+        return registration;
+    }
+
+    /**
+     * The request-body cap for the feature's own writes (finding M4, section9-hq #403):
+     * a profile write or the sign-out POST may not carry more than
+     * {@link ProfileWriteBodyLimitFilter#MAX_BODY_BYTES}. Ordered ahead of the security
+     * chain, so an oversized body is answered {@code 413} before the firewall or the CSRF
+     * check sees it, and installed only with the flag on — the flag-off path has no such
+     * route and stays untouched.
+     */
+    @Bean
+    @ConditionalOnProperty(prefix = "flighttracker.profile", name = "enabled", havingValue = "true")
+    FilterRegistrationBean<ProfileWriteBodyLimitFilter> profileWriteBodyLimitFilter() {
+        FilterRegistrationBean<ProfileWriteBodyLimitFilter> registration =
+                new FilterRegistrationBean<>(new ProfileWriteBodyLimitFilter());
+        registration.addUrlPatterns("/*");
+        registration.setOrder(-105);
         return registration;
     }
 
