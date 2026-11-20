@@ -86,10 +86,12 @@ import java.util.List;
  *       write to {@code /api/profileX} is no longer token-checked.</li>
  *   <li>No anonymous path creates a session (section9-hq #404). The chain disables the
  *       request cache, so the 401 the entry point writes is not saved into a fresh
- *       session, and a pending OAuth authorization request is held in the bounded
- *       {@link BoundedAuthorizationRequestRepository} instead of the session, so a bare
- *       {@code /oauth2/authorization/*} creates no session either. A session now appears
- *       only once a login succeeds.</li>
+ *       session, a pending OAuth authorization request is held in the bounded
+ *       {@link BoundedAuthorizationRequestRepository} instead of the session, and
+ *       {@link #loginFailureRedirect()} keeps a failed login from stashing its exception
+ *       in one — so a bare {@code /oauth2/authorization/*}, a refused callback and an
+ *       anonymous profile read all set no session. A session appears only once a login
+ *       succeeds.</li>
  * </ul>
  *
  * <p><b>Still open before the flag is enabled</b> (not part of this slice):
@@ -249,6 +251,11 @@ public class ProfileSecurityConfig {
             response.setStatus(HttpStatus.FOUND.value());
             response.setHeader(org.springframework.http.HttpHeaders.LOCATION, url);
         });
+        // A failed login must not stash its exception in a fresh session (section9-hq
+        // #404): with the request cache off, that would be the last way an anonymous
+        // request creates one, and nothing reads it back — there is no server-rendered
+        // login page (the SPA shows its own error from the ?error it is sent to).
+        failure.setAllowSessionCreation(false);
         return failure;
     }
 

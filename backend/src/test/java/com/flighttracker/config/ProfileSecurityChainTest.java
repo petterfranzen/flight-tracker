@@ -205,6 +205,18 @@ class ProfileSecurityChainTest {
                 .noneMatch(cookie -> cookie.startsWith("FT_SESSION="));
     }
 
+    @Test
+    void aRefusedLoginSetsNoSessionCookie() throws Exception {
+        // section9-hq #404: a callback the app refuses (no pending request for its state)
+        // is sent to the SPA's ?error without a session either — the failure handler is
+        // told not to stash its exception in one.
+        HttpResponse<String> response = send("GET", "/login/oauth2/code/google");
+        assertThat(response.statusCode()).isEqualTo(302);
+        assertThat(response.headers().allValues("Set-Cookie"))
+                .as("a refused login must not create a session")
+                .noneMatch(cookie -> cookie.startsWith("FT_SESSION="));
+    }
+
     /** The one set of app headers a flag-on response must carry, each exactly once. */
     private static void assertOneSetOfAppHeaders(HttpResponse<?> response) {
         var headers = response.headers();
