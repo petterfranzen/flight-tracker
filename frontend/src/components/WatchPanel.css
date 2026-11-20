@@ -92,6 +92,22 @@
   padding: 6px 8px;
   font: inherit;
 }
+/* WebKit, unlike Chromium, ignores the width above for input[type=date]: iOS
+   Safari lays the native date control out at its own intrinsic width and
+   centres the value, so it ran past the panel's right edge while the text
+   fields above stayed put. Resetting `appearance` and giving it a block-level
+   full width makes WebKit honour the same box as the other fields; the
+   ::-webkit-date-and-time-value pseudo-element is where WebKit centres the
+   value, so left-align that too. Tapping still opens the native picker. */
+.watch-panel-date {
+  -webkit-appearance: none;
+  appearance: none;
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  text-align: left;
+}
+.watch-panel-date::-webkit-date-and-time-value { text-align: left; }
 .watch-panel-or, .watch-panel-message, .watch-panel-detail { color: var(--color-text-muted); }
 .watch-panel-message { margin: 6px 0 0; }
 .watch-panel-heading { margin: 10px 0 4px; font-weight: 600; }

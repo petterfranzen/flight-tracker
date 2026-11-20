@@ -80,6 +80,27 @@ export interface MapHit {
   activate(): void;
 }
 
+/** Whether `hit` beats `best`: a lower priority outright, else nearer within the same priority. */
+function beats(hit: MapHit, best: MapHit | null): boolean {
+  if (!best || hit.priority < best.priority) return true;
+  return hit.priority === best.priority && hit.distance < best.distance;
+}
+
+type GateFeature = ReturnType<MaplibreMap["querySourceFeatures"]>[number];
+
+/** Of the basemap gate points whose ref is `want` (trimmed, upper-case), the one nearest `near`. */
+function nearestGate(features: GateFeature[], want: string, near: LatLon): LatLon | null {
+  let best: { p: LatLon; d: number } | null = null;
+  for (const f of features) {
+    if (String(f.properties?.ref ?? "").trim().toUpperCase() !== want) continue;
+    const p = geometryPoint(f.geometry);
+    if (!p) continue;
+    const d = distanceM(near, p);
+    if (!best || d < best.d) best = { p, d };
+  }
+  return best ? best.p : null;
+}
+
 /** A plane the plane layers drew (map/planes.ts), for tests. Pixels are container pixels. */
 export interface RenderedPlane {
   icao24: string;
@@ -205,7 +226,7 @@ export class FlightMap {
     let best: MapHit | null = null;
     for (const target of this.hitTargets) {
       const hit = target(p);
-      if (hit && (!best || hit.priority < best.priority || (hit.priority === best.priority && hit.distance < best.distance))) best = hit;
+      if (hit && beats(hit, best)) best = hit;
     }
     return best;
   }
@@ -347,23 +368,18 @@ export class FlightMap {
   findGate(ref: string, near: LatLon, icao?: string | null): LatLon | null {
     const indexed = gateFromIndex(icao, ref, near);
     if (indexed) return indexed;
-    const want = ref.trim().toUpperCase();
-    let best: { p: LatLon; d: number } | null = null;
-    let features: ReturnType<MaplibreMap["querySourceFeatures"]> = [];
+    const features = this.basemapGates();
+    return features ? nearestGate(features, ref.trim().toUpperCase(), near) : null;
+  }
+
+  /** The basemap's own `aeroway` gate points in the loaded tiles, or null while there is no source to ask. */
+  private basemapGates(): GateFeature[] | null {
     try {
       if (!this.gl.getSource("openmaptiles")) return null;
-      features = this.gl.querySourceFeatures("openmaptiles", { sourceLayer: "aeroway", filter: ["==", ["get", "class"], "gate"] });
+      return this.gl.querySourceFeatures("openmaptiles", { sourceLayer: "aeroway", filter: ["==", ["get", "class"], "gate"] });
     } catch {
       return null; // the source is mid-update; the next sourcedata asks again
     }
-    for (const f of features) {
-      if (String(f.properties?.ref ?? "").trim().toUpperCase() !== want) continue;
-      const p = geometryPoint(f.geometry);
-      if (!p) continue;
-      const d = distanceM(near, p);
-      if (!best || d < best.d) best = { p, d };
-    }
-    return best ? best.p : null;
   }
 
   /** Re-reads the container's size, if it changed since the map last measured it. */
@@ -523,6 +539,18 @@ export interface FollowSelectedHandle {
 }
 
 /**
+ * The selected plane's lat/lon, or nulls mid-switch. Switching from aircraft
+ * A to B updates selectedId and selectedPos one after the other, so for a
+ * moment selectedId is B while lat/lon are still A's. Treating that as "B's
+ * position" flew the map to A and marked B as already centred, so B's real
+ * position was then ignored.
+ */
+function selectedLatLon({ selectedId, positionId, lat, lon }: FollowSelectedUpdate): [number | null, number | null] {
+  if (selectedId != null && positionId !== selectedId) return [null, null];
+  return [lat, lon];
+}
+
+/**
  * Keeps the map framed on the selected aircraft — flyTo on a genuinely new
  * selection or an explicit Focus-Plane click, panTo (no zoom change) when
  * the mobile sheet's own height just changed, and deliberately nothing on
@@ -542,17 +570,9 @@ export function createFollowSelected(map: FlightMap, onOffScreenChange: (offScre
   }
   map.on("moveend", checkOffScreen);
 
-  function update({ selectedId, positionId, positionFresh, lat, lon, onGround, velocityMs, sheetExpanded, focusRequest }: FollowSelectedUpdate): void {
-    // Switching from aircraft A to B updates selectedId and selectedPos one
-    // after the other, so for a moment selectedId is B while lat/lon are
-    // still A's. Treating that as "B's position" flew the map to A and
-    // marked B as already centred, so B's real position was then ignored.
-    if (selectedId != null && positionId !== selectedId) {
-      lat = null;
-      lon = null;
-    }
-    currentLat = lat;
-    currentLon = lon;
+  function update(params: FollowSelectedUpdate): void {
+    const { selectedId } = params;
+    [currentLat, currentLon] = selectedLatLon(params);
     // The mobile sheet just mounted, changed height or unmounted: the map
     // has to know its new size *now*, before centring within it, not when
     // its own ResizeObserver gets round to it. A no-op when the size hasn't
@@ -564,11 +584,22 @@ export function createFollowSelected(map: FlightMap, onOffScreenChange: (offScre
       onOffScreenChange(false);
       return;
     }
-    if (lat == null || lon == null) return;
-    // A new selection waits for a fresh position before flying: the one it
-    // was selected with may be a list entry from many seconds ago.
-    if (lastCenteredId !== selectedId && !positionFresh) return;
+    if (currentLat == null || currentLon == null) return;
+    if (!readyToFrame(params)) return;
+    reframe(params, [currentLat, currentLon]);
+    checkOffScreen();
+  }
 
+  /**
+   * A new selection waits for a fresh position before flying: the one it
+   * was selected with may be a list entry from many seconds ago.
+   */
+  function readyToFrame({ selectedId, positionFresh }: FollowSelectedUpdate): boolean {
+    return lastCenteredId === selectedId || positionFresh;
+  }
+
+  /** flyTo on a new selection or a Focus-Plane click, panTo on a sheet toggle, and nothing on an ordinary position tick. */
+  function reframe({ selectedId, onGround, velocityMs, sheetExpanded, focusRequest }: FollowSelectedUpdate, at: [number, number]): void {
     const isNewSelection = lastCenteredId !== selectedId;
     const isFocusRequest = !isNewSelection && focusRequest !== lastFocusRequest;
     const isSheetToggle = !isNewSelection && !isFocusRequest && sheetExpanded !== lastSheetExpanded;
@@ -578,14 +609,12 @@ export function createFollowSelected(map: FlightMap, onOffScreenChange: (offScre
 
     if (isNewSelection || isFocusRequest) {
       const minZoom = isTaxiing(onGround, velocityMs) ? GROUND_SELECTED_ZOOM : SELECTED_MIN_ZOOM;
-      const targetZoom = Math.max(map.getZoom(), minZoom);
-      map.flyTo([lat, lon], targetZoom, 800);
+      map.flyTo(at, Math.max(map.getZoom(), minZoom), 800);
     } else if (isSheetToggle) {
-      map.panTo([lat, lon], 500);
+      map.panTo(at, 500);
     }
     // Deliberately no else branch: an ordinary position tick does not
     // recenter the map.
-    checkOffScreen();
   }
 
   function destroy(): void {

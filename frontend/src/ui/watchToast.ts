@@ -4,6 +4,16 @@ import "../components/WatchToast.css";
 
 const AUTO_DISMISS_MS = 15_000;
 
+/** What the toast should show right now: the watch notice, else the departure toast, else nothing. */
+function currentToast(store: AppStore) {
+  const notice = store.get("watchNotice");
+  const departure = store.get("departureToast");
+  const flight = notice?.flight ?? departure;
+  if (!flight) return null;
+  const text = notice?.text ?? (departure ? `${departure.flightNumber} is airborne` : "");
+  return { flight, text, key: `${flight.flightNumber}|${flight.date}|${flight.airport}` };
+}
+
 /**
  * The small event banner over the map: #149's departure toast, widened into
  * the general watched-flight banner (#82 design §5). It shows the flight, the
@@ -17,9 +27,13 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
   let timer: ReturnType<typeof setTimeout> | null = null;
   let shown: { text: string; key: string } | null = null;
 
-  function dismiss(): void {
+  function stopTimer(): void {
     if (timer) clearTimeout(timer);
     timer = null;
+  }
+
+  function dismiss(): void {
+    stopTimer();
     shown = null;
     if (store.get("watchNotice")) store.get("dismissWatchNotice")();
     else store.get("dismissDepartureToast")();
@@ -28,36 +42,31 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
   // The toast auto-dismisses, but never out from under a keyboard user: while
   // anything inside it has focus the countdown is suspended, and it restarts
   // (fresh, from the full interval) once focus leaves.
-  function holdOpen(): void {
-    if (timer) clearTimeout(timer);
-    timer = null;
-  }
   function restartCountdown(): void {
     if (!el.hidden) timer = setTimeout(dismiss, AUTO_DISMISS_MS);
   }
-  el.addEventListener("focusin", holdOpen);
+  el.addEventListener("focusin", stopTimer);
   el.addEventListener("focusout", restartCountdown);
 
+  function isShown(text: string, key: string): boolean {
+    return shown !== null && shown.text === text && shown.key === key;
+  }
+
   function render(): void {
-    const notice = store.get("watchNotice");
-    const departure = store.get("departureToast");
-    const flight = notice?.flight ?? departure;
-    const text = notice?.text ?? (departure ? `${departure.flightNumber} is airborne` : "");
-    const key = flight ? `${flight.flightNumber}|${flight.date}|${flight.airport}` : "";
-    if (!flight) {
-      if (timer) clearTimeout(timer);
-      timer = null;
+    const toast = currentToast(store);
+    if (!toast) {
+      stopTimer();
       shown = null;
       el.hidden = true;
       return;
     }
+    const { flight, text, key } = toast;
     // A second event while the first is up replaces it and restarts the timer.
-    if (shown && shown.text === text && shown.key === key) {
+    if (isShown(text, key)) {
       el.hidden = false;
       return;
     }
-    if (timer) clearTimeout(timer);
-    timer = null;
+    stopTimer();
     shown = { text, key };
     clear(el);
     el.hidden = false;
