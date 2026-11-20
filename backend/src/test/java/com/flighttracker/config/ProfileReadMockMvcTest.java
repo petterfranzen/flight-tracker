@@ -58,7 +58,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
                 "server.servlet.session.cookie.secure=false",
                 "flighttracker.oauth.google.client-id=test-client-id",
                 "flighttracker.oauth.google.client-secret=test-client-secret",
-                "flighttracker.profile.public-base-url=https://flight.pastabake.cloud"
+                "flighttracker.profile.public-base-url=https://flight.pastabake.cloud",
+                "flighttracker.profile.subject-pepper=profile-read-test-pepper"
         })
 @AutoConfigureMockMvc
 class ProfileReadMockMvcTest {
@@ -70,7 +71,7 @@ class ProfileReadMockMvcTest {
     @EnableAutoConfiguration(exclude = DataSourceAutoConfiguration.class)
     @EnableConfigurationProperties({ProfileProperties.class, OAuthClientProperties.class})
     @Import({ProfileSecurityConfig.class, OAuthClientConfig.class, ProfileController.class,
-            ProfileResolver.class, ProfileReader.class,
+            ProfileResolver.class, SubjectHash.class, ProfileReader.class,
             ProfileRepository.class, FavoriteRepository.class, WatchedFlightRepository.class})
     static class MinimalApp {
 
@@ -101,6 +102,9 @@ class ProfileReadMockMvcTest {
     private ClientRegistrationRepository registrations;
 
     @Autowired
+    private SubjectHash subjectHash;
+
+    @Autowired
     private ProfileRepository profiles;
 
     @Autowired
@@ -120,7 +124,7 @@ class ProfileReadMockMvcTest {
 
     /** The profile the read resolved/created for {@link #SUBJECT}. */
     private String profileId() {
-        return profiles.findByProviderAndSubjectHash("google", SubjectHash.of("google", SUBJECT))
+        return profiles.findByProviderAndSubjectHash("google", subjectHash.of("google", SUBJECT))
                 .orElseThrow(() -> new AssertionError("the read must have created a profile row"))
                 .id();
     }
@@ -140,7 +144,7 @@ class ProfileReadMockMvcTest {
                 .andExpect(jsonPath("$.email").doesNotExist())
                 .andExpect(jsonPath("$.name").doesNotExist());
 
-        assertThat(profiles.findByProviderAndSubjectHash("google", SubjectHash.of("google", SUBJECT)))
+        assertThat(profiles.findByProviderAndSubjectHash("google", subjectHash.of("google", SUBJECT)))
                 .as("a first read resolves the profile, creating the row")
                 .isPresent();
     }

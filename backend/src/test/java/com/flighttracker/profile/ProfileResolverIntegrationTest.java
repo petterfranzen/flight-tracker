@@ -34,6 +34,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ProfileResolverIntegrationTest {
 
     private static final Instant NOW = Instant.parse("2026-10-01T12:00:00Z");
+    /** The hash the app hashes subjects with in this test — the pepper is arbitrary here. */
+    private static final SubjectHash SUBJECT_HASH = new SubjectHash("integration-test-pepper");
+
     private static final String SUBJECT = "113702818845229001";
 
     @TempDir
@@ -58,7 +61,7 @@ class ProfileResolverIntegrationTest {
     /** A resolver whose clock (and its repository's) is fixed at {@code now}. */
     private ProfileResolver resolverAt(Instant now) {
         Clock clock = Clock.fixed(now, ZoneOffset.UTC);
-        return new ProfileResolver(new ProfileRepository(jdbc, clock), clock);
+        return new ProfileResolver(new ProfileRepository(jdbc, clock), SUBJECT_HASH, clock);
     }
 
     private long count() {
@@ -84,7 +87,7 @@ class ProfileResolverIntegrationTest {
         // never the subject.
         assertThat(Base64.getUrlDecoder().decode(profile.id())).hasSize(16);
         assertThat(profile.id()).isNotEqualTo(SUBJECT);
-        assertThat(profile.subjectHash()).isEqualTo(SubjectHash.of("google", SUBJECT));
+        assertThat(profile.subjectHash()).isEqualTo(SUBJECT_HASH.of("google", SUBJECT));
 
         // The raw subject is nowhere in the stored row — only the hash.
         String stored = storedGoogleSubjectHash();

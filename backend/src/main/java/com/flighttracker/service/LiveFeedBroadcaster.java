@@ -93,15 +93,16 @@ public class LiveFeedBroadcaster extends TextWebSocketHandler implements SmartLi
     // behind a stalled client's blocked write, so it can't be open-ended.
     static final long CLOSE_TIMEOUT_MS = 2_000;
 
-    // A registered session and the client IP it was counted under.
-    private record Registered(WebSocketSession session, String ip) { }
+    // A registered session and the client-IP key it was counted under.
+    private record Registered(WebSocketSession session, String ipKey) { }
 
     // Registered sessions, keyed by the raw session's id. Whoever removes an
     // entry (release) is the one that gives its slot back, so each session
     // is counted out exactly once however many close paths fire.
     private final Map<String, Registered> sessions = new ConcurrentHashMap<>();
-    // Open sessions per client IP, never above maxConnectionsPerIp. Entries
-    // are removed at zero, so the map only holds IPs with a live socket.
+    // Open sessions per client-IP key (the /64 for IPv6, see
+    // ClientIpResolver.rateLimitKey), never above maxConnectionsPerIp. Entries
+    // are removed at zero, so the map only holds keys with a live socket.
     private final Map<String, Integer> connectionsByIp = new ConcurrentHashMap<>();
     private final int maxConnectionsPerIp;
     private final ClientIpResolver clientIpResolver;
@@ -132,16 +133,18 @@ public class LiveFeedBroadcaster extends TextWebSocketHandler implements SmartLi
             closeQuietly(session, CloseStatus.GOING_AWAY);
             return;
         }
-        String ip = clientIp(session);
-        if (!acquire(ip)) {
+        // Keyed by the /64 for IPv6, not the full address, so one client cannot
+        // present 2^64 identities against this cap (audit finding M3).
+        String ipKey = ClientIpResolver.rateLimitKey(clientIp(session));
+        if (!acquire(ipKey)) {
             log.debug("Refusing WebSocket client {}: {} connections already open from {}",
-                    session.getId(), maxConnectionsPerIp, ip);
+                    session.getId(), maxConnectionsPerIp, ipKey);
             closeQuietly(session, CloseStatus.SERVICE_OVERLOAD); // 1013, "try again later"; not registered, nothing to release
             return;
         }
         sessions.put(session.getId(), new Registered(new ConcurrentWebSocketSessionDecorator(
                 session, SEND_TIME_LIMIT_MS, BUFFER_SIZE_LIMIT_BYTES,
-                ConcurrentWebSocketSessionDecorator.OverflowStrategy.DROP), ip));
+                ConcurrentWebSocketSessionDecorator.OverflowStrategy.DROP), ipKey));
         // A client that hung up between the slot being taken and the entry
         // being stored has already had its close callback find nothing to
         // release; give the slot back here instead of leaking it.
@@ -163,14 +166,14 @@ public class LiveFeedBroadcaster extends TextWebSocketHandler implements SmartLi
         release(session);
     }
 
-    /** Takes a slot for ip unless it already has the maximum (0 or less = no cap). */
-    private boolean acquire(String ip) {
+    /** Takes a slot for a client-IP key unless it already has the maximum (0 or less = no cap). */
+    private boolean acquire(String ipKey) {
         if (maxConnectionsPerIp <= 0) {
-            connectionsByIp.merge(ip, 1, Integer::sum);
+            connectionsByIp.merge(ipKey, 1, Integer::sum);
             return true;
         }
         boolean[] taken = {false};
-        connectionsByIp.compute(ip, (k, n) -> {
+        connectionsByIp.compute(ipKey, (k, n) -> {
             int open = n == null ? 0 : n;
             if (open >= maxConnectionsPerIp) return n;
             taken[0] = true;
@@ -189,13 +192,13 @@ public class LiveFeedBroadcaster extends TextWebSocketHandler implements SmartLi
     private void release(WebSocketSession session) {
         Registered removed = sessions.remove(session.getId());
         if (removed != null) {
-            connectionsByIp.computeIfPresent(removed.ip(), (k, n) -> n <= 1 ? null : n - 1);
+            connectionsByIp.computeIfPresent(removed.ipKey(), (k, n) -> n <= 1 ? null : n - 1);
         }
     }
 
-    /** Open sessions currently counted against ip (for tests and diagnostics). */
-    int connectionsFor(String ip) {
-        return connectionsByIp.getOrDefault(ip, 0);
+    /** Open sessions currently counted against a client-IP key (for tests and diagnostics). */
+    int connectionsFor(String ipKey) {
+        return connectionsByIp.getOrDefault(ipKey, 0);
     }
 
     /** Number of IPs holding a slot; 0 when nothing is connected (for tests). */

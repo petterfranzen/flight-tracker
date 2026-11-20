@@ -127,6 +127,13 @@ flighttracker:
     # redirect URI: the provider rejects an http callback, and behind Cloudflare the
     # app itself only ever sees http (TLS terminates at the edge). No trailing slash.
     public-base-url: ${FLIGHTTRACKER_PUBLIC_BASE_URL:}
+    # Key for the subject hashes stored in profile.subject_hash (audit finding M2):
+    # HMAC-SHA256(pepper, provider || ':' || subject), so a leaked database is not a
+    # dictionary lookup over GitHub's small sequential ids. Required whenever
+    # enabled=true: the app refuses to start without it, deliberately, rather than
+    # fall back to an unsalted hash. The value lives only in the VM's
+    # /etc/flight-tracker/env (FLIGHTTRACKER_SUBJECT_PEPPER), never in this repo.
+    subject-pepper: ${FLIGHTTRACKER_SUBJECT_PEPPER:}
   # OAuth client registrations for optional social login (design: section9-hq #84,
   # step 3a). Only the *names* are here, like every other credential in this file:
   # the client id and secret come from the VM's /etc/flight-tracker/env
@@ -320,16 +327,18 @@ flighttracker:
     # a hard ceiling.
     hot-poll-daily-call-budget: 3000
     # Hard cap on how many times POST /api/agents/restart can reopen the
-    # poll window within restart-quota-window-minutes — see
+    # poll window within restart-quota-window-minutes, *per client key* — see
     # PollWindowService.restart(). This app being internet-facing means
     # this bounds worst-case OpenSky usage from *anyone* hammering restart
-    # directly, not just the frontend's own honest calls. This one is a
-    # short-window throttle (it resets every 15 minutes, so on its own it
-    # doesn't bound a whole day) — hot-poll-daily-call-budget above and
-    # hot-poll-seconds-per-ip-per-day below are what actually keep total
-    # usage bounded day to day, globally and per caller respectively; this
-    # one just stops any single burst of restart calls from being able to
-    # pin the window open indefinitely inside one short window.
+    # directly, not just the frontend's own honest calls. It is charged per
+    # key rather than to everyone combined (audit finding M1), so one
+    # caller's burst cannot lock every other visitor out of the window.
+    # This one is a short-window throttle (it resets every 15 minutes, so on
+    # its own it doesn't bound a whole day) — hot-poll-daily-call-budget
+    # above and hot-poll-seconds-per-ip-per-day below are what actually keep
+    # total usage bounded day to day, globally and per caller respectively;
+    # this one just stops any single burst of restart calls from being able
+    # to pin the window open indefinitely inside one short window.
     restart-quota-max: 3
     restart-quota-window-minutes: 15
     # Global sweep (pollGlobal() — no bbox, every aircraft worldwide):
@@ -416,6 +425,12 @@ flighttracker:
     # HotPollUserBudget, wired into AgentController.restart(). Also exempt
     # for local/private-range callers, same as the limits above.
     hot-poll-seconds-per-ip-per-day: 4500
+    # Key for the HMAC under which HotPollUserBudget persists each client key to
+    # app_state (audit finding M3): the row is 'hotpoll.ip.<HMAC-SHA256(pepper,
+    # key)>', so a raw client IP never lands in the database. Optional — empty
+    # keeps a deterministic (unkeyed-HMAC) token for local/dev, where there is no
+    # real data; production sets FLIGHTTRACKER_RATE_LIMIT_PEPPER.
+    ip-hash-pepper: ${FLIGHTTRACKER_RATE_LIMIT_PEPPER:}
   # GET /api/ops/stats (ops/OpsStatsFilter): memory, I/O and freshness numbers
   # for the coordinator and the ops agent. Served only to requests carrying a
   # valid Cloudflare Access token for this team and application; anything else
