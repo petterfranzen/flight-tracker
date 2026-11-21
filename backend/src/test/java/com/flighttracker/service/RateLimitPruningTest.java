@@ -9,7 +9,11 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.startsWith;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
 /** Security review #143 L8: the per-IP maps forget idle IPs instead of growing forever. */
@@ -79,8 +83,20 @@ class RateLimitPruningTest {
         clock.advance(Duration.ofHours(2));
         budget.sweep();
         assertThat(budget.trackedIps()).isEqualTo(1);
-        verify(appState).delete("hotpoll.ip.198.51.100.0");
-        verify(appState).delete("hotpoll.ip.198.51.100.499");
+        // Stored under an HMAC of the key, never the raw IP (finding M3).
+        verify(appState).delete("hotpoll.ip." + ClientKeyToken.of("", "198.51.100.0").value());
+        verify(appState).delete("hotpoll.ip." + ClientKeyToken.of("", "198.51.100.499").value());
+    }
+
+    @Test
+    void hotPollBudgetPersistsAnHmacOfTheKey_neverTheRawIp() {
+        AppStateRepository appState = mock(AppStateRepository.class);
+        HotPollUserBudget budget = new HotPollUserBudget(appState, 4500, "a-pepper", new MutableClock());
+
+        assertThat(budget.tryGrant("203.0.113.9", false, 300)).isTrue();
+
+        verify(appState).put(eq("hotpoll.ip." + ClientKeyToken.of("a-pepper", "203.0.113.9").value()), anyString());
+        verify(appState, never()).put(startsWith("hotpoll.ip.203.0.113"), anyString());
     }
 
     @Test

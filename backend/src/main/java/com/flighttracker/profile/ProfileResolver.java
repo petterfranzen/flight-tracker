@@ -48,10 +48,12 @@ public class ProfileResolver {
     private static final Base64.Encoder ID_ENCODER = Base64.getUrlEncoder().withoutPadding();
 
     private final ProfileRepository profiles;
+    private final SubjectHash subjectHash;
     private final Clock clock;
 
-    public ProfileResolver(ProfileRepository profiles, Clock clock) {
+    public ProfileResolver(ProfileRepository profiles, SubjectHash subjectHash, Clock clock) {
         this.profiles = profiles;
+        this.subjectHash = subjectHash;
         this.clock = clock;
     }
 
@@ -61,12 +63,12 @@ public class ProfileResolver {
      * moves at most once a day.
      */
     public Profile resolve(String provider, String subject) {
-        String subjectHash = SubjectHash.of(provider, subject);
-        Optional<Profile> created = profiles.insertIfAbsent(newId(), provider, subjectHash);
+        String hash = subjectHash.of(provider, subject);
+        Optional<Profile> created = profiles.insertIfAbsent(newId(), provider, hash);
         if (created.isPresent()) {
             return created.get();
         }
-        Profile existing = profiles.findByProviderAndSubjectHash(provider, subjectHash)
+        Profile existing = profiles.findByProviderAndSubjectHash(provider, hash)
                 .orElseThrow(() -> new IllegalStateException(
                         "profile for provider " + provider + " was gone right after its insert"));
         if (!isTouchDue(existing, clock.instant())) {

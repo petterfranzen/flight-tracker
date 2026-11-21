@@ -16,23 +16,30 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Per-client-IP daily cap on hot-poll *time*, not requests — separate
- * from (and in addition to) RestartRateLimiter, which throttles how often
- * an IP may call POST /api/agents/restart at all. That one stops sustained
- * hammering of the endpoint; this one bounds how many seconds of actual
- * 18s hot polling a single caller can rack up across a rolling 24h, since
- * a caller well under RestartRateLimiter's request-count limits could
- * still keep re-granting the maximum poll-window-seconds back to back all
- * day otherwise.
+ * Per-client-key daily cap on hot-poll *time*, not requests — separate
+ * from (and in addition to) RestartRateLimiter, which throttles how often a
+ * key may call POST /api/agents/restart at all. That one stops sustained
+ * hammering of the endpoint; this one bounds how many seconds of actual hot
+ * polling a single caller can rack up across a rolling 24h, since a caller
+ * well under RestartRateLimiter's request-count limits could still keep
+ * re-granting the maximum poll-window-seconds back to back all day
+ * otherwise.
  *
- * Cloud migration A1 (PLAN.md §6 item 6): "the original design requirement"
+ * <p>The key is the caller's {@link ClientIpResolver#rateLimitKey} — the /64
+ * for IPv6 — so one IPv6 client cannot hold 2^64 identities (finding M3 of
+ * the security audit, section9-hq #405).
+ *
+ * <p>Cloud migration A1 (PLAN.md §6 item 6): "the original design requirement"
  * is that this budget — like the global hot-poll-daily-call-budget in
- * PollWindowService — survive a process restart, so each IP's grant
- * history is write-through persisted to the small app_state table
- * (AppStateRepository, key {@code "hotpoll.ip.<ip>"}), and every distinct
- * IP's history is reloaded at startup. The in-memory ConcurrentHashMap is
- * still the source of truth for every read/check — app_state only exists
- * so that map isn't empty again after a restart.
+ * PollWindowService — survive a process restart, so each key's grant history
+ * is write-through persisted to the small app_state table
+ * (AppStateRepository). What is stored is an <b>HMAC of the key</b>, not the
+ * key itself (finding M3): the row is {@code "hotpoll.ip.<token>"} where
+ * {@code token = HMAC-SHA256(flighttracker.rate-limit.ip-hash-pepper, key)},
+ * so a raw client IP never lands in the database, and every distinct key's
+ * history is reloaded at startup. The in-memory map is keyed by the same
+ * token and stays the source of truth for every read/check — app_state only
+ * exists so that map isn't empty again after a restart.
  */
 @Component
 public class HotPollUserBudget {
@@ -41,14 +48,16 @@ public class HotPollUserBudget {
 
     private final AppStateRepository appState;
     private final long dailyCapSeconds;
+    private final String ipHashPepper;
 
-    // One deque of (grant instant, seconds granted) per IP, oldest first —
-    // pruned to the last 24h on every check, which also bounds each IP's
-    // own memory use over time; sweep() also forgets IPs with nothing left
-    // in the window (and their app_state row), so the key set stays bounded
-    // (security review #143 L8). Entries change only inside compute*(),
-    // atomic per key, so a sweep can't discard a grant being recorded.
-    private final ConcurrentHashMap<String, Deque<Grant>> grantsByIp = new ConcurrentHashMap<>();
+    // One deque of (grant instant, seconds granted) per key token, oldest
+    // first — pruned to the last 24h on every check, which also bounds each
+    // key's own memory use over time; sweep() also forgets keys with nothing
+    // left in the window (and their app_state row), so the key set stays
+    // bounded (security review #143 L8). Entries change only inside
+    // compute*(), atomic per key, so a sweep can't discard a grant being
+    // recorded.
+    private final ConcurrentHashMap<ClientKeyToken, Deque<Grant>> grantsByKey = new ConcurrentHashMap<>();
 
     private record Grant(Instant at, long seconds) {
         String encode() {
@@ -66,37 +75,43 @@ public class HotPollUserBudget {
     @Autowired
     public HotPollUserBudget(AppStateRepository appState,
                               @Value("${flighttracker.rate-limit.hot-poll-seconds-per-ip-per-day}") long dailyCapSeconds,
+                              @Value("${flighttracker.rate-limit.ip-hash-pepper:}") String ipHashPepper,
                               Clock clock) {
         this.appState = appState;
         this.dailyCapSeconds = dailyCapSeconds;
+        this.ipHashPepper = ipHashPepper == null ? "" : ipHashPepper;
         this.clock = clock;
     }
 
     public HotPollUserBudget(AppStateRepository appState, long dailyCapSeconds) {
-        this(appState, dailyCapSeconds, Clock.systemUTC());
+        this(appState, dailyCapSeconds, "", Clock.systemUTC());
     }
 
-    /** Number of IPs currently tracked (for tests and diagnostics). */
+    public HotPollUserBudget(AppStateRepository appState, long dailyCapSeconds, Clock clock) {
+        this(appState, dailyCapSeconds, "", clock);
+    }
+
+    /** Number of keys currently tracked (for tests and diagnostics). */
     int trackedIps() {
-        return grantsByIp.size();
+        return grantsByKey.size();
     }
 
-    /** Drops grants older than 24h and forgets IPs with none left, including their persisted row. */
+    /** Drops grants older than 24h and forgets keys with none left, including their persisted row. */
     @Scheduled(fixedDelayString = "${flighttracker.rate-limit.sweep-interval-ms:600000}")
     void sweep() {
         Instant dayAgo = clock.instant().minus(Duration.ofDays(1));
-        for (String ip : grantsByIp.keySet()) {
-            grantsByIp.computeIfPresent(ip, (k, history) -> {
+        for (ClientKeyToken token : grantsByKey.keySet()) {
+            grantsByKey.computeIfPresent(token, (k, history) -> {
                 boolean changed = false;
                 while (!history.isEmpty() && history.peekFirst().at().isBefore(dayAgo)) {
                     history.pollFirst();
                     changed = true;
                 }
                 if (history.isEmpty()) {
-                    appState.delete(KEY_PREFIX + ip);
+                    appState.delete(KEY_PREFIX + token.value());
                     return null;
                 }
-                if (changed) persist(ip, history);
+                if (changed) persist(token, history);
                 return history;
             });
         }
@@ -106,28 +121,30 @@ public class HotPollUserBudget {
     void loadFromAppState() {
         Map<String, String> rows = appState.getAllWithPrefix(KEY_PREFIX);
         for (var entry : rows.entrySet()) {
-            String ip = entry.getKey().substring(KEY_PREFIX.length());
+            ClientKeyToken token = new ClientKeyToken(entry.getKey().substring(KEY_PREFIX.length()));
             Deque<Grant> history = new ArrayDeque<>();
             for (String encoded : entry.getValue().split(",")) {
                 if (!encoded.isBlank()) history.addLast(Grant.decode(encoded));
             }
-            if (!history.isEmpty()) grantsByIp.put(ip, history);
+            if (!history.isEmpty()) grantsByKey.put(token, history);
         }
     }
 
     /**
+     * @param key          the caller's rate-limit key ({@link ClientIpResolver#rateLimitKey}).
      * @param isLocal      see ClientIpResolver.isLocal — local callers are exempt entirely.
      * @param grantSeconds how many seconds this particular grant would add (poll-window-seconds).
-     * @return true if this IP has room left today and the grant was recorded; false if granting it
-     *         would push this IP over dailyCapSeconds for the last 24h — the caller should not open
+     * @return true if this key has room left today and the grant was recorded; false if granting it
+     *         would push this key over dailyCapSeconds for the last 24h — the caller should not open
      *         (or extend) the poll window in that case.
      */
-    public boolean tryGrant(String ip, boolean isLocal, long grantSeconds) {
+    public boolean tryGrant(String key, boolean isLocal, long grantSeconds) {
         if (isLocal) return true;
 
+        ClientKeyToken token = ClientKeyToken.of(ipHashPepper, key);
         Instant now = clock.instant();
         boolean[] granted = {false};
-        grantsByIp.compute(ip, (k, existing) -> {
+        grantsByKey.compute(token, (k, existing) -> {
             Deque<Grant> history = existing != null ? existing : new ArrayDeque<>();
             Instant dayAgo = now.minus(Duration.ofDays(1));
             while (!history.isEmpty() && history.peekFirst().at().isBefore(dayAgo)) {
@@ -138,15 +155,15 @@ public class HotPollUserBudget {
             if (usedToday + grantSeconds <= dailyCapSeconds) {
                 history.addLast(new Grant(now, grantSeconds));
                 granted[0] = true;
-                persist(ip, history);
+                persist(token, history);
             }
             return history.isEmpty() ? null : history;
         });
         return granted[0];
     }
 
-    private void persist(String ip, Deque<Grant> history) {
+    private void persist(ClientKeyToken token, Deque<Grant> history) {
         String encoded = history.stream().map(Grant::encode).reduce((a, b) -> a + "," + b).orElse("");
-        appState.put(KEY_PREFIX + ip, encoded);
+        appState.put(KEY_PREFIX + token.value(), encoded);
     }
 }
