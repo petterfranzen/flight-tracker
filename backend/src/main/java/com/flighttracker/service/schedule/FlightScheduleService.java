@@ -19,6 +19,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Stream;
 
 /**
  * Looks flights up on Swedavia's FlightInfo boards (the key and rotation are the arrivals provider's).
@@ -139,15 +140,18 @@ public class FlightScheduleService {
         List<ScheduledFlight> out = new ArrayList<>();
         Set<String> fromSet = Set.copyOf(upper(from));
         Set<String> toSet = Set.copyOf(upper(to));
-        for (String dest : toSet) {
-            if (!swedavia.servesIata(dest)) continue;
-            board(dest, "arrivals", date, outcome).stream().filter(f -> fromSet.contains(f.departureIata())).forEach(out::add);
-        }
-        for (String origin : fromSet) {
-            if (!swedavia.servesIata(origin)) continue;
-            board(origin, "departures", date, outcome).stream().filter(f -> toSet.contains(f.arrivalIata())).forEach(out::add);
-        }
+        servedBoards(toSet, "arrivals", date, outcome)
+                .filter(f -> fromSet.contains(f.departureIata())).forEach(out::add);
+        servedBoards(fromSet, "departures", date, outcome)
+                .filter(f -> toSet.contains(f.arrivalIata())).forEach(out::add);
         return sorted(out);
+    }
+
+    /** The boards of the Swedavia airports among {@code airports}, fetched one after the other in set order. */
+    private Stream<ScheduledFlight> servedBoards(Set<String> airports, String direction, LocalDate date, Outcome outcome) {
+        return airports.stream()
+                .filter(swedavia::servesIata)
+                .flatMap(airport -> board(airport, direction, date, outcome).stream());
     }
 
     private static List<String> upper(List<String> codes) {
@@ -169,21 +173,12 @@ public class FlightScheduleService {
         String key = iata + "/" + direction + "/" + date;
         Instant now = clock.instant();
         Cached hit = cache.get(key);
-        if (hit != null && now.isBefore(hit.at().plus(TTL))) return hit.flights();
+        if (isFresh(hit, now)) return hit.flights();
         // A board that could not be fetched or read is not cached as empty: the next search tries again
         // (after the pause), and a stale board is served meanwhile.
-        Instant pause = badUntil.get(key);
-        if (pause != null && now.isBefore(pause)) return unavailable(hit, outcome);
-        if (!mayCall(now)) return unavailable(hit, outcome);
+        if (isPaused(key, now) || !mayCall(now)) return unavailable(hit, outcome);
         SwedaviaArrivalsProvider.BoardFetch fetch = swedavia.fetchBoardBody(iata, direction, date);
-        if (!fetch.hasBody()) {
-            if (!fetch.failed()) { // nothing was asked (no board for that day or airport): an empty board, not a fault
-                budgets.adjust(BUDGET_ID, -1);
-                return hit == null ? List.of() : hit.flights();
-            }
-            failed(fetch.retryAfter());
-            return unavailable(hit, outcome);
-        }
+        if (!fetch.hasBody()) return withoutBody(fetch, hit, outcome);
         succeeded();
         List<ScheduledFlight> flights;
         try {
@@ -193,11 +188,34 @@ public class FlightScheduleService {
             badUntil.put(key, now.plus(BAD_BOARD_PAUSE));
             return unavailable(hit, outcome);
         }
+        store(key, now, flights);
+        return flights;
+    }
+
+    private static boolean isFresh(Cached hit, Instant now) {
+        return hit != null && now.isBefore(hit.at().plus(TTL));
+    }
+
+    private boolean isPaused(String key, Instant now) {
+        Instant pause = badUntil.get(key);
+        return pause != null && now.isBefore(pause);
+    }
+
+    private List<ScheduledFlight> withoutBody(SwedaviaArrivalsProvider.BoardFetch fetch, Cached hit, Outcome outcome) {
+        if (fetch.failed()) {
+            failed(fetch.retryAfter());
+            return unavailable(hit, outcome);
+        }
+        // nothing was asked (no board for that day or airport): an empty board, not a fault
+        budgets.adjust(BUDGET_ID, -1);
+        return hit == null ? List.of() : hit.flights();
+    }
+
+    private void store(String key, Instant now, List<ScheduledFlight> flights) {
         badUntil.remove(key);
         cache.put(key, new Cached(now, flights));
         cache.values().removeIf(c -> c.at().isBefore(now.minus(EVICT_AFTER)));
         badUntil.values().removeIf(t -> t.isBefore(now));
-        return flights;
     }
 
     private static List<ScheduledFlight> unavailable(Cached stale, Outcome outcome) {
@@ -246,24 +264,33 @@ public class FlightScheduleService {
         List<ScheduledFlight> out = new ArrayList<>();
         JsonNode flights = mapper.readTree(body).path("flights");
         if (!flights.isArray()) return out;
-        boolean arrivals = direction.equals("arrivals");
         for (JsonNode f : flights) {
-            String number = text(f.path("flightId"));
-            if (number == null) continue;
-            JsonNode leg = f.path("flightLegIdentifier");
-            JsonNode times = f.path(arrivals ? "arrivalTime" : "departureTime");
-            JsonNode where = f.path("locationAndStatus");
-            String code = text(where.path("flightLegStatus"));
-            String status = text(where.path("flightLegStatusEnglish"));
-            if (status == null && code != null) status = STATUS.getOrDefault(code.toUpperCase(Locale.ROOT), code);
-            String departure = text(leg.path("departureAirportIata"));
-            String arrival = text(leg.path("arrivalAirportIata"));
-            out.add(new ScheduledFlight(normalizeFlight(number), callsign(f, number), direction, airport,
-                    arrivals ? departure : airport, arrivals ? airport : arrival,
-                    instant(times.path("scheduledUtc")), instant(times.path("estimatedUtc")), instant(times.path("actualUtc")),
-                    text(where.path("gate")), text(where.path("terminal")), code, status, null, false));
+            if (text(f.path("flightId")) != null) out.add(flight(f, airport, direction));
         }
         return out;
+    }
+
+    /** One board entry (one with a flightId) as a ScheduledFlight. */
+    private static ScheduledFlight flight(JsonNode f, String airport, String direction) {
+        boolean arrivals = direction.equals("arrivals");
+        String number = text(f.path("flightId"));
+        JsonNode leg = f.path("flightLegIdentifier");
+        JsonNode times = f.path(arrivals ? "arrivalTime" : "departureTime");
+        JsonNode where = f.path("locationAndStatus");
+        String code = text(where.path("flightLegStatus"));
+        String departure = text(leg.path("departureAirportIata"));
+        String arrival = text(leg.path("arrivalAirportIata"));
+        return new ScheduledFlight(normalizeFlight(number), callsign(f, number), direction, airport,
+                arrivals ? departure : airport, arrivals ? airport : arrival,
+                instant(times.path("scheduledUtc")), instant(times.path("estimatedUtc")), instant(times.path("actualUtc")),
+                text(where.path("gate")), text(where.path("terminal")), code, status(where, code), null, false);
+    }
+
+    /** Swedavia's English status, else our reading of the status code, else the code itself. */
+    private static String status(JsonNode where, String code) {
+        String status = text(where.path("flightLegStatusEnglish"));
+        if (status != null || code == null) return status;
+        return STATUS.getOrDefault(code.toUpperCase(Locale.ROOT), code);
     }
 
     /** Swedavia's own callsign if it gives one, else the airline's ICAO code (or our prefix table) plus the number. */
@@ -279,9 +306,13 @@ public class FlightScheduleService {
     }
 
     private static String text(JsonNode node) {
-        if (node == null || node.isMissingNode() || node.isNull()) return null;
+        if (isAbsent(node)) return null;
         String s = node.asText().trim();
         return s.isEmpty() ? null : s;
+    }
+
+    private static boolean isAbsent(JsonNode node) {
+        return node == null || node.isMissingNode() || node.isNull();
     }
 
     private static Instant instant(JsonNode node) {

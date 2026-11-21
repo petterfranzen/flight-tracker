@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import {
   BUDGET,
   CENTRE,
@@ -43,6 +43,102 @@ async function hold(h: Replay, rounds: number, name: string): Promise<void> {
     await h.step(`${name} (hold ${i})`);
   }
 }
+
+interface Estimate {
+  observedAt: string;
+  lat: number;
+  lon: number;
+}
+
+/** The estimate: a tick ahead of the report /live carries, report's own observedAt. */
+function estimateOf(h: Replay, idx: number): Estimate {
+  const report = Math.min(h.tickIndex, REC.ticks.length - 1);
+  const ahead = Math.min(report + 1, REC.ticks.length - 1);
+  return { observedAt: new Date(tickTime(report)).toISOString(), lat: REC.ticks[ahead].lat[idx], lon: REC.ticks[ahead].lon[idx] };
+}
+
+/**
+ * Serves the estimate from the selected plane's status and its own poll, so
+ * the marker sits on it whichever of the two lands last.
+ */
+async function serveEstimate(page: Page, plane0: (typeof REC.fleet)[number], estimateAt: () => Estimate): Promise<void> {
+  await page.route(new RegExp(`/api/flights/${plane0.icao24}/status`), (route) => {
+    const e = estimateAt();
+    return route.fulfill({
+      json: {
+        icao24: plane0.icao24,
+        state: "LIVE",
+        confidence: null,
+        source: "adsb",
+        sourceKind: "observed",
+        lastSeenAt: e.observedAt,
+        lastSeenLat: e.lat,
+        lastSeenLon: e.lon,
+        estimate: { lat: e.lat, lon: e.lon, radiusM: 500, at: e.observedAt, landingProbability: 0 },
+        landing: null,
+        gate: null,
+        terminal: null,
+        confirmedAt: null,
+      },
+    });
+  });
+  await page.route(new RegExp(`/api/flights/${plane0.icao24}/live`), (route) => {
+    const e = estimateAt();
+    return route.fulfill({
+      json: {
+        id: 0,
+        icao24: plane0.icao24,
+        callsign: plane0.callsign,
+        observedAt: e.observedAt,
+        latitude: e.lat,
+        longitude: e.lon,
+        altitudeM: plane0.altitudeM,
+        velocityMs: plane0.velocityMs,
+        headingDeg: plane0.headingDeg,
+        verticalRateMs: 0,
+        onGround: false,
+        agentSource: "opensky",
+      },
+    });
+  });
+}
+
+/** Degrees between the drawn marker of `icao24` and `at` (1 when it is not drawn). */
+async function drawnDistanceTo(h: Replay, icao24: string, at: { lat: number; lon: number }): Promise<number> {
+  const p = (await h.drawn()).find((x) => x.icao24 === icao24);
+  return p ? Math.hypot(p.lat - at.lat, p.lon - at.lon) : 1;
+}
+
+/** Moves the app's clock 250 ms and counts what is drawn. */
+async function countAfterQuarterSecond(page: Page, h: Replay): Promise<number> {
+  await page.clock.runFor(250);
+  return (await h.drawn()).length;
+}
+
+/**
+ * The drawn count over `rounds` recorded ticks. The app's clock only moves
+ * when the test moves it (no real sleeps): each sample is 250 ms of app time,
+ * and a tick's frames are pushed before its first.
+ */
+async function drawnCountsOverTicks(page: Page, h: Replay, rounds: number): Promise<number[]> {
+  const counts: number[] = [];
+  for (let r = 0; r < rounds; r++) {
+    h.advance(); // one recorded tick: its frames are pushed
+    for (let i = 0; i < 8; i++) counts.push(await countAfterQuarterSecond(page, h));
+  }
+  return counts;
+}
+
+/** Lets the view's /live response land and be drawn (the first sample is its set, not a fill step). */
+async function landedAtLeast(page: Page, h: Replay, min: number): Promise<void> {
+  await expect.poll(() => countAfterQuarterSecond(page, h), { timeout: 20_000, intervals: [50] }).toBeGreaterThanOrEqual(min);
+}
+
+// A fill is a step of several planes at once; a plane or two drifting in or
+// out of the declutter between ticks is the popping budget's business above.
+const FILL_STEP = 3;
+const updates = (c: number[]): number => c.filter((n, i) => i > 0 && n - c[i - 1] >= FILL_STEP).length;
+const drops = (c: number[]): number => c.filter((n, i) => i > 0 && c[i - 1] - n >= FILL_STEP).length;
 
 /** Prints the scenario's table and fails if any signal is over budget. */
 function report(scenario: string, h: Replay): void {
@@ -232,66 +328,15 @@ test.describe("popping @scenario", () => {
     const callsign = await pickCandidate(page);
     const plane0 = REC.fleet.find((f) => f.callsign === callsign)!;
     const idx = REC.fleet.indexOf(plane0);
-    /** The estimate: a tick ahead of the report /live carries, report's own observedAt. */
-    const estimateAt = (): { observedAt: string; lat: number; lon: number } => {
-      const report = Math.min(h.tickIndex, REC.ticks.length - 1);
-      const ahead = Math.min(report + 1, REC.ticks.length - 1);
-      return { observedAt: new Date(tickTime(report)).toISOString(), lat: REC.ticks[ahead].lat[idx], lon: REC.ticks[ahead].lon[idx] };
-    };
-    // Serve the estimate from the selected plane's status and its own poll, so
-    // the marker sits on it whichever of the two lands last.
-    await page.route(new RegExp(`/api/flights/${plane0.icao24}/status`), (route) => {
-      const e = estimateAt();
-      return route.fulfill({
-        json: {
-          icao24: plane0.icao24,
-          state: "LIVE",
-          confidence: null,
-          source: "adsb",
-          sourceKind: "observed",
-          lastSeenAt: e.observedAt,
-          lastSeenLat: e.lat,
-          lastSeenLon: e.lon,
-          estimate: { lat: e.lat, lon: e.lon, radiusM: 500, at: e.observedAt, landingProbability: 0 },
-          landing: null,
-          gate: null,
-          terminal: null,
-          confirmedAt: null,
-        },
-      });
-    });
-    await page.route(new RegExp(`/api/flights/${plane0.icao24}/live`), (route) => {
-      const e = estimateAt();
-      return route.fulfill({
-        json: {
-          id: 0,
-          icao24: plane0.icao24,
-          callsign: plane0.callsign,
-          observedAt: e.observedAt,
-          latitude: e.lat,
-          longitude: e.lon,
-          altitudeM: plane0.altitudeM,
-          velocityMs: plane0.velocityMs,
-          headingDeg: plane0.headingDeg,
-          verticalRateMs: 0,
-          onGround: false,
-          agentSource: "opensky",
-        },
-      });
-    });
+    const estimateAt = () => estimateOf(h, idx);
+    await serveEstimate(page, plane0, estimateAt);
 
     await clickPlane(page, callsign);
     await page.clock.runFor(300);
     const est = estimateAt();
     await h.step(`selected ${callsign}`);
     await expect
-      .poll(
-        async () => {
-          const p = (await h.drawn()).find((x) => x.icao24 === plane0.icao24);
-          return p ? Math.hypot(p.lat - est.lat, p.lon - est.lon) : 1;
-        },
-        { timeout: 5_000, message: "the marker sits on its estimate" },
-      )
+      .poll(() => drawnDistanceTo(h, plane0.icao24, est), { timeout: 5_000, message: "the marker sits on its estimate" })
       .toBeLessThan(0.0005);
     const onEstimate = (await h.drawn()).find((p) => p.icao24 === plane0.icao24)!;
 
@@ -389,30 +434,9 @@ test.describe("popping @scenario", () => {
     test.setTimeout(240_000);
     const h = await startReplay(page, testInfo, { ramp: { startFrac: 0.5, perTick: 0.2 } });
     await boot(page);
-    // The app's clock only moves when the test moves it (no real sleeps): each
-    // sample is 250 ms of app time, and a tick's frames are pushed before its first.
     const pauseClock = async () => page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1_000);
-    const countsAfter = async (rounds: number): Promise<number[]> => {
-      const counts: number[] = [];
-      for (let r = 0; r < rounds; r++) {
-        h.advance(); // one recorded tick: its frames are pushed
-        for (let i = 0; i < 8; i++) {
-          await page.clock.runFor(250);
-          counts.push((await h.drawn()).length);
-        }
-      }
-      return counts;
-    };
-    /** Lets the view's /live response land and be drawn (the first sample is its set, not a fill step). */
-    const landed = async (min: number) =>
-      expect
-        .poll(async () => { await page.clock.runFor(250); return (await h.drawn()).length; }, { timeout: 20_000, intervals: [50] })
-        .toBeGreaterThanOrEqual(min);
-    // A fill is a step of several planes at once; a plane or two drifting in or
-    // out of the declutter between ticks is the popping budget's business above.
-    const FILL_STEP = 3;
-    const updates = (c: number[]): number => c.filter((n, i) => i > 0 && n - c[i - 1] >= FILL_STEP).length;
-    const drops = (c: number[]): number => c.filter((n, i) => i > 0 && c[i - 1] - n >= FILL_STEP).length;
+    const countsAfter = (rounds: number) => drawnCountsOverTicks(page, h, rounds);
+    const landed = (min: number) => landedAtLeast(page, h, min);
 
     await jumpTo(page, CENTRE.lat, CENTRE.lon, 7);
     await pauseClock();
@@ -452,7 +476,7 @@ test.describe("popping @scenario", () => {
     const t0 = await page.evaluate(() => Date.now());
     h.advance(); // the server now knows everything: frames for the whole view
     await expect
-      .poll(async () => { await page.clock.runFor(250); return (await h.drawn()).length; }, { timeout: 20_000, intervals: [50], message: "the frames' planes are drawn" })
+      .poll(() => countAfterQuarterSecond(page, h), { timeout: 20_000, intervals: [50], message: "the frames' planes are drawn" })
       .toBeGreaterThanOrEqual(30);
     // ... within a couple of seconds of app time, far under the hold's 4 to 12 s.
     expect((await page.evaluate(() => Date.now())) - t0, "drawn without waiting out a hold").toBeLessThan(3_000);
@@ -481,13 +505,13 @@ test.describe("popping @scenario", () => {
     await page.clock.pauseAt(await page.evaluate(() => Date.now() + 5_000));
     await page.clock.runFor(1_000);
     await expect
-      .poll(async () => { await page.clock.runFor(250); return (await h.drawn()).length; }, { timeout: 20_000, intervals: [50], message: "the opening snapshot draws its planes" })
+      .poll(() => countAfterQuarterSecond(page, h), { timeout: 20_000, intervals: [50], message: "the opening snapshot draws its planes" })
       .toBeGreaterThanOrEqual(5);
     const snapshotDrawn = (await h.drawn()).length;
     const t0 = await page.evaluate(() => Date.now());
     h.advance(); // the server now knows the whole view: frames for the rest of it
     await expect
-      .poll(async () => { await page.clock.runFor(250); return (await h.drawn()).length; }, { timeout: 20_000, intervals: [50], message: "the frames' planes are drawn" })
+      .poll(() => countAfterQuarterSecond(page, h), { timeout: 20_000, intervals: [50], message: "the frames' planes are drawn" })
       .toBeGreaterThanOrEqual(30);
     const filled = (await h.drawn()).length;
     const waitedMs = (await page.evaluate(() => Date.now())) - t0;

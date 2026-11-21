@@ -50,69 +50,78 @@ async function installedApp(page: Page): Promise<void> {
   await page.locator(".boot-screen").waitFor({ state: "detached", timeout: 30_000 });
 }
 
+interface VisibleRow {
+  sel: string;
+  tag: string;
+  cls: string;
+  name: string;
+  top: number;
+}
+
+/** Runs in the page: every visible match of each selector, in selector then document order. */
+function visibleRows(selectors: string[]): VisibleRow[] {
+  const visible = (el: Element): boolean => {
+    const cs = getComputedStyle(el);
+    const shown = [cs.display !== "none", cs.visibility !== "hidden", Number(cs.opacity) > 0].every(Boolean);
+    const r = el.getBoundingClientRect();
+    return shown && r.width > 0 && r.height > 0;
+  };
+  const row = (sel: string, el: Element): VisibleRow => ({
+    sel,
+    tag: el.tagName,
+    cls: typeof el.className === "string" ? el.className : "",
+    name: el.getAttribute("aria-label") ?? (el.textContent ?? "").trim().slice(0, 40),
+    top: el.getBoundingClientRect().top,
+  });
+  return selectors.flatMap((sel) => Array.from(document.querySelectorAll(sel)).filter(visible).map((el) => row(sel, el)));
+}
+
+/**
+ * Runs in the page: walks the strip [0, clear) at the left, middle and right.
+ * The topmost element there must be the map, never a control or panel.
+ */
+function scrimOffenders({ interactive, clear }: { interactive: string; clear: number }) {
+  const hitSel = `${interactive}, .control-panel, .tracked-chip, .app-header, .left-overlay-stack`;
+  const ys = Array.from({ length: Math.ceil(clear / 8) }, (_, i) => i * 8);
+  const points = [20, Math.round(window.innerWidth / 2), window.innerWidth - 20].flatMap((x) => ys.map((y) => ({ x, y })));
+  return points.flatMap(({ x, y }) => {
+    const el = document.elementFromPoint(x, y) as HTMLElement | null;
+    if (!el?.closest(hitSel)) return [];
+    return [{ x, y, tag: el.tagName, cls: typeof el.className === "string" ? el.className : "" }];
+  });
+}
+
+/** Runs in the page: the viewport and the boxes of the map canvas and the app shell. */
+function viewportBoxes() {
+  const box = (el: Element | null) => {
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return { top: r.top, left: r.left, right: r.right, bottom: r.bottom, width: r.width, height: r.height };
+  };
+  return {
+    innerHeight: window.innerHeight,
+    innerWidth: window.innerWidth,
+    canvas: box(document.querySelector(".map-container canvas")),
+    shell: box(document.querySelector(".app-shell")),
+  };
+}
+
+async function scrimReport(page: Page) {
+  return {
+    ...(await page.evaluate(viewportBoxes)),
+    chromeRows: await page.evaluate(visibleRows, TOP_CHROME),
+    interactiveRows: await page.evaluate(visibleRows, [INTERACTIVE]),
+    offenders: await page.evaluate(scrimOffenders, { interactive: INTERACTIVE, clear: CLEAR }),
+  };
+}
+
 test.describe("installed app: map edge to edge, controls clear of the status-bar scrim", () => {
   test.describe.configure({ timeout: 120_000 });
 
   test("the map canvas starts at y=0 and nothing active sits in the scrim strip", async ({ page }) => {
     await installedApp(page);
 
-    const report = await page.evaluate(
-      ({ chrome, interactive, clear }) => {
-        const visible = (el: Element): boolean => {
-          const cs = getComputedStyle(el);
-          if (cs.display === "none" || cs.visibility === "hidden" || Number(cs.opacity) <= 0) return false;
-          const r = el.getBoundingClientRect();
-          return r.width > 0 && r.height > 0;
-        };
-        const box = (el: Element | null) => {
-          if (!el) return null;
-          const r = el.getBoundingClientRect();
-          return { top: r.top, left: r.left, right: r.right, bottom: r.bottom, width: r.width, height: r.height };
-        };
-
-        const chromeRows: { sel: string; cls: string; top: number }[] = [];
-        for (const sel of chrome) {
-          for (const el of Array.from(document.querySelectorAll(sel))) {
-            if (!visible(el)) continue;
-            chromeRows.push({ sel, cls: typeof el.className === "string" ? el.className : "", top: el.getBoundingClientRect().top });
-          }
-        }
-
-        const interactiveRows: { tag: string; cls: string; name: string; top: number }[] = [];
-        for (const el of Array.from(document.querySelectorAll(interactive))) {
-          if (!visible(el)) continue;
-          interactiveRows.push({
-            tag: el.tagName,
-            cls: typeof el.className === "string" ? el.className : "",
-            name: el.getAttribute("aria-label") ?? (el.textContent ?? "").trim().slice(0, 40),
-            top: el.getBoundingClientRect().top,
-          });
-        }
-
-        // Walk the strip: the topmost element there must be the map, never a
-        // control or panel.
-        const offenders: { x: number; y: number; tag: string; cls: string }[] = [];
-        const hitSel = `${interactive}, .control-panel, .tracked-chip, .app-header, .left-overlay-stack`;
-        for (const x of [20, Math.round(window.innerWidth / 2), window.innerWidth - 20]) {
-          for (let y = 0; y < clear; y += 8) {
-            const el = document.elementFromPoint(x, y) as HTMLElement | null;
-            const hit = el?.closest(hitSel);
-            if (hit) offenders.push({ x, y, tag: el!.tagName, cls: typeof el!.className === "string" ? el!.className : "" });
-          }
-        }
-
-        return {
-          innerHeight: window.innerHeight,
-          innerWidth: window.innerWidth,
-          canvas: box(document.querySelector(".map-container canvas")),
-          shell: box(document.querySelector(".app-shell")),
-          chromeRows,
-          interactiveRows,
-          offenders,
-        };
-      },
-      { chrome: TOP_CHROME, interactive: INTERACTIVE, clear: CLEAR },
-    );
+    const report = await scrimReport(page);
 
     // The map runs to the very top and the very bottom of the viewport.
     expect(report.canvas).not.toBeNull();

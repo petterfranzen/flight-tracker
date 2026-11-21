@@ -2,6 +2,8 @@ package com.flighttracker.config;
 
 import com.flighttracker.controller.ProfileController;
 import com.flighttracker.profile.ProfileProperties;
+import com.flighttracker.profile.ProfileReader;
+import com.flighttracker.profile.ProfileSnapshot;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.SpringBootConfiguration;
@@ -10,11 +12,17 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.security.oauth2.client.registration.ClientRegistration;
 import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
 import org.springframework.test.web.servlet.MockMvc;
 
+import java.util.List;
+
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.oidcLogin;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.startsWith;
@@ -29,8 +37,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  *
  * <p>With {@code flighttracker.profile.enabled=true} a signed-out caller gets a
  * bare {@code 401} on {@code /api/profile} (no login redirect — account
- * enumeration, §5), and a signed-in one gets the provider id and nothing else
- * (§1.3). The registration the login is built from is the app's own, taken from
+ * enumeration, §5), and a signed-in one gets the provider id and the two
+ * (empty, here) lists of step 5a-2 — and nothing else (§1.3, D4). The registration the login is built from is the app's own, taken from
  * the repository {@link OAuthClientConfig} assembled, so the test exercises the
  * real configuration and not a stand-in.
  */
@@ -54,6 +62,20 @@ class ProfileOidcLoginMockMvcTest {
     @EnableConfigurationProperties({ProfileProperties.class, OAuthClientProperties.class})
     @Import({ProfileSecurityConfig.class, OAuthClientConfig.class, ProfileController.class})
     static class MinimalApp {
+
+        /**
+         * The read the endpoint delegates to, stubbed: this test owns the session
+         * and the provider id it yields, while the real read against real rows is
+         * pinned in {@link ProfileReadMockMvcTest}. Echoing the provider back keeps
+         * the assertion below honest about what the controller extracted.
+         */
+        @Bean
+        ProfileReader profileReader() {
+            ProfileReader reader = mock(ProfileReader.class);
+            when(reader.read(anyString(), anyString()))
+                    .thenAnswer(call -> new ProfileSnapshot(call.getArgument(0), List.of(), List.of()));
+            return reader;
+        }
     }
 
     @Autowired
@@ -69,7 +91,7 @@ class ProfileOidcLoginMockMvcTest {
     }
 
     @Test
-    void aLoggedInUserGetsTheProviderIdAndNothingElse() throws Exception {
+    void aLoggedInUserGetsTheProviderAndTheirTwoLists() throws Exception {
         ClientRegistration google = registrations.findByRegistrationId(OAuthClientConfig.GOOGLE_REGISTRATION_ID);
         mvc.perform(get("/api/profile")
                         .with(oidcLogin()
@@ -77,6 +99,9 @@ class ProfileOidcLoginMockMvcTest {
                                 .idToken(token -> token.claim("sub", "subject-123"))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.provider").value("google"))
+                // Step 5a-2 (D4): the two lists are always present, empty when there is nothing.
+                .andExpect(jsonPath("$.favorites").isEmpty())
+                .andExpect(jsonPath("$.watched").isEmpty())
                 // No email, no name, no avatar — only the provider (design §1.3).
                 .andExpect(jsonPath("$.email").doesNotExist())
                 .andExpect(jsonPath("$.name").doesNotExist());

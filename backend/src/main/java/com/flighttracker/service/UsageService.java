@@ -8,20 +8,24 @@ import org.springframework.stereotype.Service;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.util.*;
-import java.util.stream.Collectors;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Turns flight_position history into usage figures.
  *
  * This used to be the stated reason for keeping every historic row
  * forever. It no longer is: PositionRetentionService prunes that table to
- * a rolling 24h window, so these figures now cover the retention window
+ * a rolling 72h window, so these figures now cover the retention window
  * rather than all time. That was a deliberate trade — /api/usage has no
  * caller anywhere in the frontend, while unbounded history cost ~0.8 GB a
  * day. If deep usage history is ever genuinely wanted, the right shape is
  * a small rolled-up aggregate table written as the data ages out, not
  * retaining raw position rows to derive it from.
+ *
+ * UsageController caps one request at 24h, and the rows are streamed
+ * rather than loaded, so a request holds one running total per aircraft,
+ * not the window's rows.
  */
 @Service
 public class UsageService {
@@ -38,43 +42,58 @@ public class UsageService {
     }
 
     public List<AircraftUsage> usageForWindow(Instant from, Instant to) {
-        List<FlightPosition> all = positionRepository.findByObservedAtBetween(from, to);
-
-        Map<String, List<FlightPosition>> byAircraft = all.stream()
-                .collect(Collectors.groupingBy(FlightPosition::icao24, LinkedHashMap::new, Collectors.toList()));
-
-        List<AircraftUsage> results = new ArrayList<>();
-        for (var entry : byAircraft.entrySet()) {
-            results.add(summarise(entry.getKey(), entry.getValue()));
-        }
-        return results;
+        // Rows arrive in (icao24, observed_at) order, so each aircraft's
+        // track is one contiguous run: only the current aircraft's running
+        // totals and its previous row are held, never the window's rows.
+        List<Track> tracks = new ArrayList<>();
+        positionRepository.forEachInWindowByAircraft(from, to, position -> {
+            Track current = tracks.isEmpty() ? null : tracks.get(tracks.size() - 1);
+            if (current == null || !current.icao24.equals(position.icao24())) {
+                current = new Track(position.icao24());
+                tracks.add(current);
+            }
+            current.add(position);
+        });
+        // Registrations are looked up after the read has finished, so the
+        // streaming query never waits on a second connection.
+        return tracks.stream().map(this::summarise).toList();
     }
 
-    private AircraftUsage summarise(String icao24, List<FlightPosition> track) {
-        double distanceKm = 0.0;
-        double airborneSeconds = 0.0;
+    /** One aircraft's running totals, built row by row in observed_at order. */
+    private static final class Track {
+        private final String icao24;
+        private long reports;
+        private double distanceKm;
+        private double airborneSeconds;
+        private FlightPosition previous;
 
-        for (int i = 1; i < track.size(); i++) {
-            FlightPosition prev = track.get(i - 1);
-            FlightPosition curr = track.get(i);
-
-            double legKm = haversineKm(prev.latitude(), prev.longitude(),
-                                        curr.latitude(), curr.longitude());
-            distanceKm += legKm;
-
-            if (!prev.onGround() && !curr.onGround()) {
-                airborneSeconds += Duration.between(prev.observedAt(), curr.observedAt()).getSeconds();
-            }
+        Track(String icao24) {
+            this.icao24 = icao24;
         }
 
-        double airborneHours = airborneSeconds / 3600.0;
-        double avgSpeedKmh = airborneHours > 0 ? distanceKm / airborneHours : 0.0;
+        void add(FlightPosition curr) {
+            if (previous != null) {
+                distanceKm += haversineKm(previous.latitude(), previous.longitude(),
+                                          curr.latitude(), curr.longitude());
+                if (!previous.onGround() && !curr.onGround()) {
+                    airborneSeconds += Duration.between(previous.observedAt(), curr.observedAt()).getSeconds();
+                }
+            }
+            previous = curr;
+            reports++;
+        }
+    }
 
-        String registration = aircraftRepository.findById(icao24)
+    private AircraftUsage summarise(Track track) {
+        double airborneHours = track.airborneSeconds / 3600.0;
+        double avgSpeedKmh = airborneHours > 0 ? track.distanceKm / airborneHours : 0.0;
+
+        String registration = aircraftRepository.findById(track.icao24)
                 .map(a -> a.registration())
                 .orElse(null);
 
-        return new AircraftUsage(icao24, registration, track.size(), round2(distanceKm), round2(airborneHours), round2(avgSpeedKmh));
+        return new AircraftUsage(track.icao24, registration, track.reports,
+                round2(track.distanceKm), round2(airborneHours), round2(avgSpeedKmh));
     }
 
     private static double haversineKm(double lat1, double lon1, double lat2, double lon2) {

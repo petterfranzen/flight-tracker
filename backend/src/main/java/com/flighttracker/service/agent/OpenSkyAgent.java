@@ -221,77 +221,12 @@ public class OpenSkyAgent implements FlightDataAgent {
         return (secondsLeft + intervalSeconds - 1) / intervalSeconds; // ceil, so a partial interval still counts
     }
 
-    @SuppressWarnings("unchecked")
     private List<RawPositionReport> fetchStates(String url, PollBackoff backoff) {
-        Instant now = clock.instant();
-        if (backoff.isCoolingDown(now)) {
-            log.debug("Skipping poll, backing off until {}", backoff.coolingDownUntil());
-            return List.of();
-        }
-        if (rateLimit.exhausted(now)) {
-            // OpenSky's own headers said the budget is spent; don't spend a
-            // call confirming it. Cool down exactly until the reset it
-            // advertised (self-correcting as the reset approaches).
-            Duration wait = rateLimit.waitUntilReset(now).orElse(MIN_BACKOFF);
-            backoff.recordFailure(wait);
-            log.warn("OpenSky credit budget exhausted — backing off {}s", wait.toSeconds());
-            phases.degraded("OpenSky credit budget exhausted, backing off " + wait.toSeconds() + "s");
-            return List.of();
-        }
-
+        if (skipCall(clock.instant(), backoff)) return List.of();
         try {
-            RestClient.RequestHeadersSpec<?> request = client.get().uri(url);
-            Optional<String> token = tokenProvider.getAccessToken();
-            if (token.isPresent()) {
-                request = request.header(HttpHeaders.AUTHORIZATION, "Bearer " + token.get());
-            }
-            if (authModeLogged.compareAndSet(false, true)) {
-                log.info("OpenSky polling is {}", token.isPresent() ? "authenticated" : "anonymous (no OPENSKY_CLIENT_ID/SECRET configured)");
-            }
-            ResponseEntity<Map> response = request.retrieve().toEntity(Map.class);
-            rateLimit.observe(response.getHeaders(), clock.instant());
-            backoff.recordSuccess();
-            Map<String, Object> body = response.getBody();
-            if (body == null || body.get("states") == null) return List.of();
-
-            List<List<Object>> states = (List<List<Object>>) body.get("states");
-            List<RawPositionReport> out = new ArrayList<>();
-            for (List<Object> s : states) {
-                // OpenSky state vector array layout — index 5/6 = lon/lat.
-                Double lon = asDouble(s.get(5));
-                Double lat = asDouble(s.get(6));
-                if (lon == null || lat == null) continue; // no fix yet, skip
-
-                out.add(new RawPositionReport(
-                        ((String) s.get(0)).trim(),                 // icao24
-                        s.get(1) == null ? null : ((String) s.get(1)).trim(), // callsign
-                        Instant.ofEpochSecond(((Number) s.get(4)).longValue()),
-                        lat, lon,
-                        altitudeM(s),
-                        asDouble(s.get(9)),   // velocity, m/s
-                        asDouble(s.get(10)),  // true track, deg
-                        asDouble(s.get(11)),  // vertical rate, m/s
-                        Boolean.TRUE.equals(s.get(8)) // on_ground
-                ));
-            }
-            return out;
+            return requestStates(url, backoff);
         } catch (HttpClientErrorException.TooManyRequests e) {
-            rateLimit.observe(e.getResponseHeaders(), clock.instant());
-            Optional<Duration> retryAfter = retryAfter(e);
-            Duration wait;
-            if (retryAfter.isPresent()) {
-                wait = retryAfter.get();
-                backoff.recordFailure(wait); // still count toward escalation, even though the wait itself is server-dictated
-            } else {
-                wait = backoff.recordFailure(MIN_BACKOFF, MAX_BACKOFF);
-            }
-            log.warn("OpenSky throttled us (429) — backing off {}s", wait.toSeconds());
-            // Surfaces on the dashboard as "Degraded" rather than the
-            // stack merely looking quiet: being rate-limited by the
-            // upstream is the single most common reason a demo shows
-            // fewer aircraft than expected.
-            phases.degraded("OpenSky rate-limited us (429), backing off " + wait.toSeconds() + "s");
-            return List.of();
+            onThrottled(e, backoff);
         } catch (HttpServerErrorException e) {
             // The API itself is unhealthy, not just rate-limiting us — back
             // off substantially harder than a transient timeout so we're
@@ -299,19 +234,99 @@ public class OpenSkyAgent implements FlightDataAgent {
             rateLimit.observe(e.getResponseHeaders(), clock.instant());
             Duration wait = backoff.recordFailure(SEVERE_MIN_BACKOFF, SEVERE_MAX_BACKOFF);
             log.warn("OpenSky returned a server error ({}) — backing off {}s", e.getStatusCode(), wait.toSeconds());
-            return List.of();
         } catch (ResourceAccessException e) {
             // Connect/read timeout, DNS failure, connection reset, etc.
             Duration wait = backoff.recordFailure(MIN_BACKOFF, MAX_BACKOFF);
             log.warn("OpenSky request timed out ({}) — backing off {}s", e.getMessage(), wait.toSeconds());
-            return List.of();
         } catch (Exception e) {
             // Anything else unexpected: still back off, so an unforeseen
             // failure mode can't hot-loop the poller every 18s either.
             Duration wait = backoff.recordFailure(MIN_BACKOFF, MAX_BACKOFF);
             log.warn("OpenSky poll failed ({}) — backing off {}s", e.toString(), wait.toSeconds());
-            return List.of();
         }
+        return List.of();
+    }
+
+    /** True if this poll must not make a network call: cooling down, or OpenSky said the budget is spent. */
+    private boolean skipCall(Instant now, PollBackoff backoff) {
+        if (backoff.isCoolingDown(now)) {
+            log.debug("Skipping poll, backing off until {}", backoff.coolingDownUntil());
+            return true;
+        }
+        if (!rateLimit.exhausted(now)) return false;
+        // OpenSky's own headers said the budget is spent; don't spend a
+        // call confirming it. Cool down exactly until the reset it
+        // advertised (self-correcting as the reset approaches).
+        Duration wait = rateLimit.waitUntilReset(now).orElse(MIN_BACKOFF);
+        backoff.recordFailure(wait);
+        log.warn("OpenSky credit budget exhausted — backing off {}s", wait.toSeconds());
+        phases.degraded("OpenSky credit budget exhausted, backing off " + wait.toSeconds() + "s");
+        return true;
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<RawPositionReport> requestStates(String url, PollBackoff backoff) {
+        RestClient.RequestHeadersSpec<?> request = client.get().uri(url);
+        Optional<String> token = tokenProvider.getAccessToken();
+        if (token.isPresent()) {
+            request = request.header(HttpHeaders.AUTHORIZATION, "Bearer " + token.get());
+        }
+        if (authModeLogged.compareAndSet(false, true)) {
+            log.info("OpenSky polling is {}", token.isPresent() ? "authenticated" : "anonymous (no OPENSKY_CLIENT_ID/SECRET configured)");
+        }
+        ResponseEntity<Map> response = request.retrieve().toEntity(Map.class);
+        rateLimit.observe(response.getHeaders(), clock.instant());
+        backoff.recordSuccess();
+        Map<String, Object> body = response.getBody();
+        if (body == null || body.get("states") == null) return List.of();
+        return toReports((List<List<Object>>) body.get("states"));
+    }
+
+    private static List<RawPositionReport> toReports(List<List<Object>> states) {
+        List<RawPositionReport> out = new ArrayList<>();
+        for (List<Object> s : states) {
+            RawPositionReport report = toReport(s);
+            if (report != null) out.add(report);
+        }
+        return out;
+    }
+
+    /** One OpenSky state vector as a report, or null while it has no fix yet. */
+    private static RawPositionReport toReport(List<Object> s) {
+        // OpenSky state vector array layout — index 5/6 = lon/lat.
+        Double lon = asDouble(s.get(5));
+        Double lat = asDouble(s.get(6));
+        if (lon == null || lat == null) return null; // no fix yet, skip
+
+        return new RawPositionReport(
+                ((String) s.get(0)).trim(),                 // icao24
+                s.get(1) == null ? null : ((String) s.get(1)).trim(), // callsign
+                Instant.ofEpochSecond(((Number) s.get(4)).longValue()),
+                lat, lon,
+                altitudeM(s),
+                asDouble(s.get(9)),   // velocity, m/s
+                asDouble(s.get(10)),  // true track, deg
+                asDouble(s.get(11)),  // vertical rate, m/s
+                Boolean.TRUE.equals(s.get(8)) // on_ground
+        );
+    }
+
+    private void onThrottled(HttpClientErrorException.TooManyRequests e, PollBackoff backoff) {
+        rateLimit.observe(e.getResponseHeaders(), clock.instant());
+        Optional<Duration> retryAfter = retryAfter(e);
+        Duration wait;
+        if (retryAfter.isPresent()) {
+            wait = retryAfter.get();
+            backoff.recordFailure(wait); // still count toward escalation, even though the wait itself is server-dictated
+        } else {
+            wait = backoff.recordFailure(MIN_BACKOFF, MAX_BACKOFF);
+        }
+        log.warn("OpenSky throttled us (429) — backing off {}s", wait.toSeconds());
+        // Surfaces on the dashboard as "Degraded" rather than the
+        // stack merely looking quiet: being rate-limited by the
+        // upstream is the single most common reason a demo shows
+        // fewer aircraft than expected.
+        phases.degraded("OpenSky rate-limited us (429), backing off " + wait.toSeconds() + "s");
     }
 
     /**
