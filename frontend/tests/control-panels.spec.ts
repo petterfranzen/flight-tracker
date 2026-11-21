@@ -135,14 +135,27 @@ test.describe("phone control panels", () => {
     }
   });
 
-  test("the date field sits inside its panel", async ({ page }) => {
+  // WebKit regression (section9-hq#390): iOS Safari lays input[type=date] out at
+  // the native control's own intrinsic width and centres its value, so the field
+  // ran past the panel's right edge and was wider than the text fields above it.
+  // The old `width: 100%` on `.watch-panel-form input` fixed that in Chromium
+  // only; WatchPanel.css now also resets `appearance` on the field. The suite
+  // has no WebKit project and CI installs Chromium alone (build-deploy.yml), so
+  // this asserts the geometry at the phone viewport in the engine CI runs; the
+  // same assertions hold in WebKit, where the reset is what makes them true.
+  test("the date field sits inside its panel and matches the text fields' box", async ({ page }) => {
     await bootPhone(page);
     const panelBox = await openPanel(page, ".watch-panel-toggle", ".watch-panel-content");
-    const date = await page.locator(".watch-panel-date").boundingBox();
-    expect(date).not.toBeNull();
-    expect(date!.x).toBeGreaterThanOrEqual(panelBox.x);
-    expect(date!.x + date!.width).toBeLessThanOrEqual(panelBox.x + panelBox.width + 0.5);
-    expect(date!.height).toBeGreaterThanOrEqual(44);
+    const date = await settledBox(page.locator(".watch-panel-date"));
+    const flight = await settledBox(page.locator(".watch-panel-flight"));
+    expect(date.x).toBeGreaterThanOrEqual(panelBox.x);
+    expect(date.x + date.width).toBeLessThanOrEqual(panelBox.x + panelBox.width + 0.5);
+    expect(date.height).toBeGreaterThanOrEqual(44);
+    // The same box as the Flight field above it, not a wider native control.
+    expect(Math.abs(date.x - flight.x)).toBeLessThanOrEqual(1);
+    expect(Math.abs(date.width - flight.width)).toBeLessThanOrEqual(1);
+    // Left-aligned value, like the text fields; iOS centres a native date value.
+    expect(await page.locator(".watch-panel-date").evaluate((el) => getComputedStyle(el).textAlign)).toBe("left");
   });
 
 });

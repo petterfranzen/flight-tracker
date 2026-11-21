@@ -197,7 +197,13 @@ const lenDelimited = (num: number, bytes: number[]) => [...field(num, 2), ...var
 const text = (s: string) => [...Buffer.from(s, "utf8")];
 const zigzag = (n: number) => (n << 1) ^ (n >> 31);
 
-function gateTile(z: number, x: number, y: number, ref: string, at: { lat: number; lon: number }): Buffer | null {
+interface TileId {
+  z: number;
+  x: number;
+  y: number;
+}
+
+function gateTile({ z, x, y }: TileId, ref: string, at: { lat: number; lon: number }): Buffer | null {
   const n = 2 ** z;
   const fx = ((at.lon + 180) / 360) * n;
   const latRad = (at.lat * Math.PI) / 180;
@@ -259,7 +265,7 @@ async function open(page: Page, opts: OpenOptions) {
   // The airport's tiles carry the gate E5B.
   await page.route(/tiles\.openfreemap\.org\/t\/(\d+)\/(\d+)\/(\d+)\.pbf/, (r) => {
     const [, z, x, y] = r.request().url().match(/\/t\/(\d+)\/(\d+)\/(\d+)\.pbf/)!;
-    const body = +z >= (opts.gateMinZoom ?? 0) ? gateTile(+z, +x, +y, opts.gateRef ?? "E5B", GATE) : null;
+    const body = +z >= (opts.gateMinZoom ?? 0) ? gateTile({ z: +z, x: +x, y: +y }, opts.gateRef ?? "E5B", GATE) : null;
     return r.fulfill({ body: body ?? Buffer.alloc(0), contentType: "application/x-protobuf" });
   });
   await page.route("https://tiles.openfreemap.org/planet", (r) => r.fulfill({ json: OPENFREEMAP_TILEJSON }));

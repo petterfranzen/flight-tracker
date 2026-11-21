@@ -21,6 +21,7 @@ import java.sql.Connection;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -83,15 +84,18 @@ class ProfileServiceIntegrationTest {
         return jdbc.sql("SELECT COUNT(*) FROM " + table).query(Long.class).single();
     }
 
+    /** Row counts of profile, favorite and watched_flight, in that order. */
+    private List<Long> rowCounts() {
+        return List.of(count("profile"), count("favorite"), count("watched_flight"));
+    }
+
     @Test
     void deleteProfile_erasesTheProfileAndEveryChildRow() {
         seed("p1");
 
         assertThat(service().deleteProfile("p1")).isTrue();
 
-        assertThat(count("profile")).isZero();
-        assertThat(count("favorite")).isZero();
-        assertThat(count("watched_flight")).isZero();
+        assertThat(rowCounts()).containsExactly(0L, 0L, 0L);
     }
 
     @Test
@@ -102,8 +106,8 @@ class ProfileServiceIntegrationTest {
         assertThat(service().deleteProfile("p1")).isTrue();
 
         assertThat(count("profile")).isEqualTo(1);
-        assertThat(favorites.countForProfile("p2")).isEqualTo(2);
-        assertThat(watched.findByProfileId("p2")).hasSize(1);
+        assertThat(List.of(favorites.countForProfile("p2"), (long) watched.findByProfileId("p2").size()))
+                .as("p2's favorites and watched flights").containsExactly(2L, 1L);
     }
 
     @Test
@@ -112,9 +116,7 @@ class ProfileServiceIntegrationTest {
 
         assertThat(service().deleteProfile("missing")).isFalse();
 
-        assertThat(count("profile")).isEqualTo(1);
-        assertThat(count("favorite")).isEqualTo(2);
-        assertThat(count("watched_flight")).isEqualTo(1);
+        assertThat(rowCounts()).containsExactly(1L, 2L, 1L);
     }
 
     @Test
@@ -133,8 +135,6 @@ class ProfileServiceIntegrationTest {
         assertThatThrownBy(() -> service(failing).deleteProfile("p1"))
                 .isInstanceOf(RuntimeException.class);
 
-        assertThat(count("profile")).isEqualTo(1);
-        assertThat(count("favorite")).isEqualTo(2);
-        assertThat(count("watched_flight")).isEqualTo(1);
+        assertThat(rowCounts()).containsExactly(1L, 2L, 1L);
     }
 }

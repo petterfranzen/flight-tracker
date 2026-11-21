@@ -10,6 +10,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.function.Predicate;
 import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -106,91 +107,153 @@ class SchemaMigrationGuardTest {
      * cannot false-positive the rules.
      */
     private static List<Statement> statements(String text) {
-        List<Statement> out = new ArrayList<>();
-        List<String> pendingComments = new ArrayList<>();
-        StringBuilder raw = new StringBuilder();
-        StringBuilder code = new StringBuilder();
-        boolean started = false;
-
+        StatementSplitter splitter = new StatementSplitter();
         for (String line : text.split("\n", -1)) {
-            String trimmed = line.trim();
-            if (trimmed.isEmpty()) {
-                if (!started) pendingComments.clear();   // a blank line ends a comment block
-                continue;
+            splitter.accept(new SqlLine(line));
+        }
+        return splitter.finish();
+    }
+
+    /** Line-by-line state of {@link #statements}: the statement being built and its leading comments. */
+    private static final class StatementSplitter {
+        private final List<Statement> out = new ArrayList<>();
+        private final List<String> pendingComments = new ArrayList<>();
+        private final StringBuilder raw = new StringBuilder();
+        private final StringBuilder code = new StringBuilder();
+        private boolean started = false;
+
+        void accept(SqlLine line) {
+            if (line.text().trim().isEmpty()) {
+                acceptBlank();
+            } else if (line.isComment()) {
+                acceptComment(line.text());
+            } else {
+                acceptCode(line);
             }
-            if (isBlockCommentLine(trimmed)) {
-                if (started) raw.append(line).append('\n');
-                else pendingComments.add(line);
-                continue;
-            }
-            if (!started) {
-                started = true;
-                pendingComments.forEach(c -> raw.append(c).append('\n'));
-                pendingComments.clear();
-            }
-            String withoutComment = stripComment(line);
-            raw.append(line).append('\n');
+        }
+
+        /** A blank line ends a comment block, so it detaches comments from the next statement. */
+        private void acceptBlank() {
+            if (!started) pendingComments.clear();
+        }
+
+        private void acceptComment(String line) {
+            if (started) raw.append(line).append('\n');
+            else pendingComments.add(line);
+        }
+
+        private void acceptCode(SqlLine line) {
+            if (!started) startStatement();
+            String withoutComment = line.withoutComment();
+            raw.append(line.text()).append('\n');
             code.append(withoutComment).append('\n');
-            if (withoutComment.contains(";")) {
-                out.add(new Statement(raw.toString(), code.toString()));
-                started = false;
-                raw.setLength(0);
-                code.setLength(0);
-            }
+            if (withoutComment.contains(";")) endStatement();
         }
-        if (started && !code.toString().isBlank()) {
+
+        private void startStatement() {
+            started = true;
+            pendingComments.forEach(c -> raw.append(c).append('\n'));
+            pendingComments.clear();
+        }
+
+        private void endStatement() {
             out.add(new Statement(raw.toString(), code.toString()));
+            started = false;
+            raw.setLength(0);
+            code.setLength(0);
         }
-        return out;
-    }
 
-    /** True for a line that is entirely a SQL comment ({@code -- …} or a block-comment line). */
-    private static boolean isBlockCommentLine(String trimmed) {
-        return trimmed.startsWith("--") || trimmed.startsWith("/*") || trimmed.startsWith("*");
-    }
-
-    /** Drops a trailing line comment (and any block-comment span) from code, outside quotes. */
-    private static String stripComment(String line) {
-        StringBuilder sb = new StringBuilder();
-        boolean inSingleQuote = false;
-        for (int i = 0; i < line.length(); i++) {
-            char c = line.charAt(i);
-            if (c == '\'') {
-                inSingleQuote = !inSingleQuote;
-                sb.append(c);
-                continue;
+        List<Statement> finish() {
+            if (started && !code.toString().isBlank()) {
+                out.add(new Statement(raw.toString(), code.toString()));
             }
-            if (!inSingleQuote) {
-                if (c == '-' && i + 1 < line.length() && line.charAt(i + 1) == '-') break;
-                if (c == '/' && i + 1 < line.length() && line.charAt(i + 1) == '*') {
-                    int end = line.indexOf("*/", i + 2);
-                    if (end < 0) break;
-                    i = end + 1;
-                    continue;
+            return out;
+        }
+    }
+
+    /** One script line, and how to read it as SQL. */
+    private record SqlLine(String text) {
+
+        /** True for a line that is entirely a SQL comment ({@code -- …} or a block-comment line). */
+        boolean isComment() {
+            String trimmed = text.trim();
+            return trimmed.startsWith("--") || trimmed.startsWith("/*") || trimmed.startsWith("*");
+        }
+
+        /** Drops a trailing line comment (and any block-comment span) from code, outside quotes. */
+        String withoutComment() {
+            StringBuilder sb = new StringBuilder();
+            boolean inSingleQuote = false;
+            int i = 0;
+            while (i >= 0 && i < text.length()) {
+                int next = inSingleQuote ? i : afterComment(i);
+                if (next == i) {
+                    char c = text.charAt(i);
+                    if (c == '\'') inSingleQuote = !inSingleQuote;
+                    sb.append(c);
+                    next = i + 1;
                 }
+                i = next;
             }
-            sb.append(c);
+            return sb.toString();
         }
-        return sb.toString();
+
+        /**
+         * Where code resumes if a comment starts at {@code i}: {@code i} itself when none
+         * starts there, past the closing {@code *}{@code /} of a block comment, or -1 when
+         * the comment runs to the end of the line.
+         */
+        private int afterComment(int i) {
+            if (text.startsWith("--", i)) return -1;
+            if (!text.startsWith("/*", i)) return i;
+            int end = text.indexOf("*/", i + 2);
+            return end < 0 ? -1 : end + 2;
+        }
     }
+
+    /** A statement's code, upper-cased with whitespace collapsed, as the rules read it. */
+    private record Ddl(String sql) {
+
+        boolean matches(Pattern pattern) {
+            return pattern.matcher(sql).find();
+        }
+
+        boolean addsNotNullColumnWithoutDefault() {
+            return addsNotNullColumn() && !sql.contains("DEFAULT");
+        }
+
+        private boolean addsNotNullColumn() {
+            return isAlterTableAdd() && sql.contains("NOT NULL");
+        }
+
+        private boolean isAlterTableAdd() {
+            return sql.startsWith("ALTER TABLE") && sql.contains(" ADD ");
+        }
+    }
+
+    /** One additive-migrations rule: what breaks it, and the reason quoted in the failure. */
+    private record Rule(Predicate<Ddl> isBrokenBy, String reason) {
+    }
+
+    /** Checked in order; a statement reports the first rule it breaks. */
+    private static final List<Rule> RULES = List.of(
+            new Rule(ddl -> ddl.matches(DROP),
+                    "DROP is not additive — a dropped table, index or column still needed by the "
+                            + "previous jar's statements breaks a rollback: "),
+            new Rule(ddl -> ddl.matches(RENAME),
+                    "RENAME is not backward-compatible — the previous jar writes the old name: "),
+            new Rule(Ddl::addsNotNullColumnWithoutDefault,
+                    "ALTER TABLE … ADD … NOT NULL without a DEFAULT — the previous jar's INSERTs "
+                            + "omit the column and fail: "));
 
     /** Returns a description of the rule this statement breaks, or null when it is additive. */
     private static String violationIn(String code) {
-        String c = code.toUpperCase(Locale.ROOT).replaceAll("\\s+", " ").trim();
-        if (c.isEmpty()) return null;
-
-        if (DROP.matcher(c).find()) {
-            return "DROP is not additive — a dropped table, index or column still needed by the "
-                    + "previous jar's statements breaks a rollback: " + c;
-        }
-        if (RENAME.matcher(c).find()) {
-            return "RENAME is not backward-compatible — the previous jar writes the old name: " + c;
-        }
-        if (c.startsWith("ALTER TABLE") && c.contains(" ADD ") && c.contains("NOT NULL")
-                && !c.contains("DEFAULT")) {
-            return "ALTER TABLE … ADD … NOT NULL without a DEFAULT — the previous jar's INSERTs "
-                    + "omit the column and fail: " + c;
-        }
-        return null;
+        Ddl ddl = new Ddl(code.toUpperCase(Locale.ROOT).replaceAll("\\s+", " ").trim());
+        if (ddl.sql().isEmpty()) return null;
+        return RULES.stream()
+                .filter(rule -> rule.isBrokenBy().test(ddl))
+                .findFirst()
+                .map(rule -> rule.reason() + ddl.sql())
+                .orElse(null);
     }
 }
