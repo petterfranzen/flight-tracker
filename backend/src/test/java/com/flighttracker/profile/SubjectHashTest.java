@@ -20,7 +20,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 class SubjectHashTest {
 
-    private static final String PEPPER = "unit-test-pepper";
+    private static final String PEPPER = "unit-test-pepper-0123456789abcdef";
     private final SubjectHash subjectHash = new SubjectHash(PEPPER);
 
     @Test
@@ -38,7 +38,7 @@ class SubjectHashTest {
     @Test
     void thePepperIsTheKey_soTheSameSubjectUnderTwoPeppersDiffers() {
         assertThat(subjectHash.of("github", "4242"))
-                .isNotEqualTo(new SubjectHash("another-pepper").of("github", "4242"));
+                .isNotEqualTo(new SubjectHash("another-pepper-0123456789abcdef00").of("github", "4242"));
     }
 
     @Test
@@ -75,5 +75,14 @@ class SubjectHashTest {
         assertThatThrownBy(() -> new SubjectHash(null)).isInstanceOf(IllegalStateException.class);
         assertThatThrownBy(() -> new SubjectHash("")).isInstanceOf(IllegalStateException.class);
         assertThatThrownBy(() -> new SubjectHash("   ")).isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    void refusesAPepperShorterThanTheMinimum() {
+        assertThatThrownBy(() -> new SubjectHash("too-short-pepper")).isInstanceOf(IllegalStateException.class);
+        // 31 bytes: one short of the 32-byte floor.
+        assertThatThrownBy(() -> new SubjectHash("a".repeat(31))).isInstanceOf(IllegalStateException.class);
+        // Exactly 32 bytes is accepted.
+        assertThat(new SubjectHash("a".repeat(32)).of("github", "1")).hasSize(64);
     }
 }

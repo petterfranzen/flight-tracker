@@ -131,7 +131,8 @@ flighttracker:
     # HMAC-SHA256(pepper, provider || ':' || subject), so a leaked database is not a
     # dictionary lookup over GitHub's small sequential ids. Required whenever
     # enabled=true: the app refuses to start without it, deliberately, rather than
-    # fall back to an unsalted hash. The value lives only in the VM's
+    # fall back to an unsalted hash. Must be at least 32 bytes (generate with
+    # `openssl rand -base64 32`). The value lives only in the VM's
     # /etc/flight-tracker/env (FLIGHTTRACKER_SUBJECT_PEPPER), never in this repo.
     subject-pepper: ${FLIGHTTRACKER_SUBJECT_PEPPER:}
   # OAuth client registrations for optional social login (design: section9-hq #84,
@@ -427,9 +428,13 @@ flighttracker:
     hot-poll-seconds-per-ip-per-day: 4500
     # Key for the HMAC under which HotPollUserBudget persists each client key to
     # app_state (audit finding M3): the row is 'hotpoll.ip.<HMAC-SHA256(pepper,
-    # key)>', so a raw client IP never lands in the database. Optional — empty
-    # keeps a deterministic (unkeyed-HMAC) token for local/dev, where there is no
-    # real data; production sets FLIGHTTRACKER_RATE_LIMIT_PEPPER.
+    # key)>', so a raw client IP never lands in the database. There is no fallback
+    # key — a fixed one in this public repo would leave the token brute-forceable
+    # from the address alone — so a prod-profile run refuses to start without it,
+    # and any other run logs one warning and derives a random key for that process
+    # (see IpHashPepper). Must be at least 32 bytes (generate with `openssl rand
+    # -base64 32`). The value lives only in the VM's /etc/flight-tracker/env
+    # (FLIGHTTRACKER_RATE_LIMIT_PEPPER), never in this repo.
     ip-hash-pepper: ${FLIGHTTRACKER_RATE_LIMIT_PEPPER:}
   # GET /api/ops/stats (ops/OpsStatsFilter): memory, I/O and freshness numbers
   # for the coordinator and the ops agent. Served only to requests carrying a

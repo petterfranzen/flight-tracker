@@ -7,6 +7,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -15,9 +16,13 @@ import static org.mockito.ArgumentMatchers.startsWith;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 /** Security review #143 L8: the per-IP maps forget idle IPs instead of growing forever. */
 class RateLimitPruningTest {
+
+    /** A pepper of the minimum length the token HMAC accepts. */
+    private static final String PEPPER = "unit-test-pepper-0123456789abcdef";
 
     /** A clock the test moves by hand. */
     static final class MutableClock extends Clock {
@@ -70,7 +75,7 @@ class RateLimitPruningTest {
     void hotPollBudgetSweepDropsIdleIpsAndTheirPersistedRows() {
         MutableClock clock = new MutableClock();
         AppStateRepository appState = mock(AppStateRepository.class);
-        HotPollUserBudget budget = new HotPollUserBudget(appState, 4500, clock);
+        HotPollUserBudget budget = new HotPollUserBudget(appState, 4500, PEPPER, clock);
 
         for (int i = 0; i < 500; i++) assertThat(budget.tryGrant("198.51.100." + i, false, 300)).isTrue();
         assertThat(budget.trackedIps()).isEqualTo(500);
@@ -84,30 +89,46 @@ class RateLimitPruningTest {
         budget.sweep();
         assertThat(budget.trackedIps()).isEqualTo(1);
         // Stored under an HMAC of the key, never the raw IP (finding M3).
-        verify(appState).delete("hotpoll.ip." + ClientKeyToken.of("", "198.51.100.0").value());
-        verify(appState).delete("hotpoll.ip." + ClientKeyToken.of("", "198.51.100.499").value());
+        verify(appState).delete("hotpoll.ip." + ClientKeyToken.of(PEPPER, "198.51.100.0").value());
+        verify(appState).delete("hotpoll.ip." + ClientKeyToken.of(PEPPER, "198.51.100.499").value());
     }
 
     @Test
     void hotPollBudgetPersistsAnHmacOfTheKey_neverTheRawIp() {
         AppStateRepository appState = mock(AppStateRepository.class);
-        HotPollUserBudget budget = new HotPollUserBudget(appState, 4500, "a-pepper", new MutableClock());
+        HotPollUserBudget budget = new HotPollUserBudget(appState, 4500, PEPPER, new MutableClock());
 
         assertThat(budget.tryGrant("203.0.113.9", false, 300)).isTrue();
 
-        verify(appState).put(eq("hotpoll.ip." + ClientKeyToken.of("a-pepper", "203.0.113.9").value()), anyString());
+        verify(appState).put(eq("hotpoll.ip." + ClientKeyToken.of(PEPPER, "203.0.113.9").value()), anyString());
         verify(appState, never()).put(startsWith("hotpoll.ip.203.0.113"), anyString());
     }
 
     @Test
     void hotPollBudgetStillEnforcesTheCapAfterASweep() {
         MutableClock clock = new MutableClock();
-        HotPollUserBudget budget = new HotPollUserBudget(mock(AppStateRepository.class), 600, clock);
+        HotPollUserBudget budget = new HotPollUserBudget(mock(AppStateRepository.class), 600, PEPPER, clock);
         assertThat(budget.tryGrant("203.0.113.9", false, 300)).isTrue();
         assertThat(budget.tryGrant("203.0.113.9", false, 300)).isTrue();
         budget.sweep();
         assertThat(budget.tryGrant("203.0.113.9", false, 300)).isFalse();
         clock.advance(Duration.ofHours(25));
         assertThat(budget.tryGrant("203.0.113.9", false, 300)).isTrue();
+    }
+
+    @Test
+    void startupDeletesPreM3RowsKeyedByTheRawClientKey_andKeepsTokenRows() {
+        AppStateRepository appState = mock(AppStateRepository.class);
+        String tokenKey = "hotpoll.ip." + ClientKeyToken.of(PEPPER, "203.0.113.9").value();
+        when(appState.getAllWithPrefix("hotpoll.ip.")).thenReturn(Map.of(
+                "hotpoll.ip.198.51.100.7", "1762502400000:300",
+                tokenKey, "1762502400000:300"));
+
+        HotPollUserBudget budget = new HotPollUserBudget(appState, 4500, PEPPER);
+        budget.loadFromAppState();
+
+        verify(appState).delete("hotpoll.ip.198.51.100.7");
+        verify(appState, never()).delete(tokenKey);
+        assertThat(budget.trackedIps()).isEqualTo(1);
     }
 }

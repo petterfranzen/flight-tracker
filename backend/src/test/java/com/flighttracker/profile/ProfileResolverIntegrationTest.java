@@ -35,7 +35,7 @@ class ProfileResolverIntegrationTest {
 
     private static final Instant NOW = Instant.parse("2026-10-01T12:00:00Z");
     /** The hash the app hashes subjects with in this test — the pepper is arbitrary here. */
-    private static final SubjectHash SUBJECT_HASH = new SubjectHash("integration-test-pepper");
+    private static final SubjectHash SUBJECT_HASH = new SubjectHash("integration-test-pepper-0123456789abcdef");
 
     private static final String SUBJECT = "113702818845229001";
 
