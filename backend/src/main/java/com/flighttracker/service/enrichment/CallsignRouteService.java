@@ -115,8 +115,17 @@ public class CallsignRouteService {
     public Optional<Route> cached(String callsign) {
         String c = normalize(callsign);
         if (c == null) return Optional.empty();
-        Entry e = cache.get(c);
+        return cachedRoute(c);
+    }
+
+    private Optional<Route> cachedRoute(String normalizedCallsign) {
+        Entry e = cache.get(normalizedCallsign);
         return e == null ? Optional.empty() : Optional.ofNullable(e.route());
+    }
+
+    private boolean hasFreshEntry(String normalizedCallsign, Instant now) {
+        Entry e = cache.get(normalizedCallsign);
+        return e != null && e.fresh(now);
     }
 
     /**
@@ -127,12 +136,9 @@ public class CallsignRouteService {
     public Optional<Route> resolve(String callsign) {
         String c = normalize(callsign);
         if (c == null) return Optional.empty();
-        Entry e = cache.get(c);
-        if (e != null && e.fresh(clock.instant())) return Optional.ofNullable(e.route());
-        if (clock.instant().isBefore(pausedUntil)) return e == null ? Optional.empty() : Optional.ofNullable(e.route());
+        if (hasFreshEntry(c, clock.instant()) || clock.instant().isBefore(pausedUntil)) return cachedRoute(c);
         lookup(c);
-        Entry after = cache.get(c);
-        return after == null ? Optional.empty() : Optional.ofNullable(after.route());
+        return cachedRoute(c);
     }
 
     /** One background lookup per tick; see the class javadoc. */
@@ -141,42 +147,59 @@ public class CallsignRouteService {
     public void resolveNext() {
         Instant now = clock.instant();
         if (now.isBefore(pausedUntil)) return;
-        String next = queue.poll();
-        if (next == null) {
-            if (Duration.between(lastRefill, now).compareTo(REFILL_INTERVAL) < 0) return;
-            refill(now);
-            next = queue.poll();
-            if (next == null) return;
-        }
+        String next = pollOrRefill(now);
+        if (next == null) return;
         queued.remove(next);
-        Entry e = cache.get(next);
-        if (e != null && e.fresh(now)) return;
+        if (hasFreshEntry(next, now)) return;
         lookup(next);
+    }
+
+    /** The next queued callsign, refilling an empty queue at most once per REFILL_INTERVAL. */
+    private String pollOrRefill(Instant now) {
+        String next = queue.poll();
+        if (next != null || Duration.between(lastRefill, now).compareTo(REFILL_INTERVAL) < 0) return next;
+        refill(now);
+        return queue.poll();
     }
 
     private void lookup(String callsign) {
         AdsbdbClient.RouteLookup result = adsbdbClient.lookupRoute(callsign);
         Instant now = clock.instant();
         switch (result.status()) {
-            case FOUND, NOT_FOUND -> {
-                throttlePause = Duration.ZERO;
-                Route route = result.route().orElse(null);
-                cache.put(callsign, new Entry(route, now));
-                repository.upsert(callsign, route, now);
-            }
-            case THROTTLED -> {
-                Duration doubled = throttlePause.multipliedBy(2);
-                throttlePause = doubled.compareTo(MIN_THROTTLE_PAUSE) < 0 ? MIN_THROTTLE_PAUSE
-                        : doubled.compareTo(MAX_THROTTLE_PAUSE) > 0 ? MAX_THROTTLE_PAUSE : doubled;
-                pausedUntil = now.plus(throttlePause);
-                requeue(callsign);
-                log.info("adsbdb throttled callsign lookups (429) — pausing {}s", throttlePause.toSeconds());
-            }
-            case FAILED -> {
-                pausedUntil = now.plus(FAILURE_PAUSE);
-                requeue(callsign);
-            }
+            case FOUND, NOT_FOUND -> record(callsign, result.route().orElse(null), now);
+            case THROTTLED -> backOffThrottled(callsign, now);
+            case FAILED -> backOff(callsign, now.plus(FAILURE_PAUSE));
         }
+    }
+
+    /** A real answer (route or definite miss): cache and persist it, and reset the throttle backoff. */
+    private void record(String callsign, Route route, Instant now) {
+        throttlePause = Duration.ZERO;
+        cache.put(callsign, new Entry(route, now));
+        repository.upsert(callsign, route, now);
+    }
+
+    private void backOffThrottled(String callsign, Instant now) {
+        throttlePause = nextThrottlePause(throttlePause);
+        backOff(callsign, now.plus(throttlePause));
+        log.info("adsbdb throttled callsign lookups (429) — pausing {}s", throttlePause.toSeconds());
+    }
+
+    /** Doubles the previous pause, clamped to [MIN_THROTTLE_PAUSE, MAX_THROTTLE_PAUSE]. */
+    static Duration nextThrottlePause(Duration previous) {
+        Duration doubled = previous.multipliedBy(2);
+        if (doubled.compareTo(MIN_THROTTLE_PAUSE) < 0) return MIN_THROTTLE_PAUSE;
+        return doubled.compareTo(MAX_THROTTLE_PAUSE) > 0 ? MAX_THROTTLE_PAUSE : doubled;
+    }
+
+    private void backOff(String callsign, Instant until) {
+        pausedUntil = until;
+        requeue(callsign);
+    }
+
+    private boolean needsQueueing(String normalizedCallsign, Instant now) {
+        return normalizedCallsign != null && !queued.contains(normalizedCallsign)
+                && !hasFreshEntry(normalizedCallsign, now);
     }
 
     private void requeue(String callsign) {
@@ -193,10 +216,9 @@ public class CallsignRouteService {
         List<String> rest = new ArrayList<>();
         for (LiveAircraft a : live) {
             String c = normalize(a.callsign());
-            if (c == null || queued.contains(c)) continue;
-            Entry e = cache.get(c);
-            if (e != null && e.fresh(now)) continue;
-            (viewport.contains(a.displayLatitude(), a.displayLongitude()) ? onScreen : rest).add(c);
+            if (needsQueueing(c, now)) {
+                (viewport.contains(a.displayLatitude(), a.displayLongitude()) ? onScreen : rest).add(c);
+            }
         }
         onScreen.forEach(this::requeue);
         rest.forEach(this::requeue);
