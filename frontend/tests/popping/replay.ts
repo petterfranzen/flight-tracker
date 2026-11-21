@@ -233,6 +233,94 @@ async function waitApplied(
   }
 }
 
+type View = { zoom: number; centre: { lat: number; lon: number } };
+
+/** The view has not moved since the previous step (false for the first step). */
+function isViewStill(v: View, prev: StepMetrics | null): boolean {
+  if (!prev) return false;
+  const sameZoom = Math.abs(v.zoom - prev.zoom) < STILL_ZOOM;
+  return sameZoom && Math.hypot(v.centre.lat - prev.centre.lat, v.centre.lon - prev.centre.lon) < STILL_DEG;
+}
+
+interface StepDiffInput {
+  prev: StepMetrics | null;
+  drawn: DrawnPlane[];
+  truth: TruthPlane[];
+  viewStill: boolean;
+}
+
+type StepDiff = Pick<StepMetrics, "vanished" | "appeared" | "backwards">;
+
+/** What changed in the drawn set since the previous step. */
+function stepDiff({ prev, drawn, truth, viewStill }: StepDiffInput): StepDiff {
+  if (!prev) return { vanished: [], appeared: [], backwards: [] };
+  const truthById = new Map(truth.map((t) => [t.icao24, t]));
+  const prevDrawn = new Map(prev.truthDrawn.map((p) => [p.icao24, p]));
+  const drawnIds = new Set(drawn.map((p) => p.icao24));
+  const shouldBeDrawn = (icao24: string) => viewStill && (truthById.get(icao24)?.inDrawnArea ?? false);
+  return {
+    // Drawn last step, not now, though it is still in the drawn area.
+    vanished: prev.truthDrawn.filter((p) => !drawnIds.has(p.icao24) && shouldBeDrawn(p.icao24)).map((p) => p.icao24),
+    // Drawn now, not last step, though the view did not move.
+    appeared: drawn.filter((p) => !prevDrawn.has(p.icao24) && shouldBeDrawn(p.icao24)).map((p) => p.icao24),
+    backwards: backwardsMoves(drawn, prevDrawn, truthById),
+  };
+}
+
+/** Planes whose drawn position moved back along their heading by more than the tolerance. */
+function backwardsMoves(
+  drawn: DrawnPlane[],
+  prevDrawn: Map<string, DrawnPlane>,
+  truthById: Map<string, TruthPlane>,
+): StepMetrics["backwards"] {
+  const moves: StepMetrics["backwards"] = [];
+  for (const p of drawn) {
+    const before = prevDrawn.get(p.icao24);
+    const t = truthById.get(p.icao24);
+    if (!before || !t) continue;
+    const rad = (t.headingDeg * Math.PI) / 180;
+    const along = (p.lon - before.lon) * Math.sin(rad) + (p.lat - before.lat) * Math.cos(rad);
+    if (along < -BACKWARDS_TOL_DEG) moves.push({ icao24: p.icao24, backDeg: -along });
+  }
+  return moves;
+}
+
+/** The selected plane's distance from the end of its drawn trail, when over the tolerance. */
+function offTrail(selected: DrawnPlane | null, end: { lat: number; lon: number } | null): StepMetrics["selectedOffTrail"] {
+  if (!selected || !end) return null;
+  const offDeg = Math.hypot(selected.lat - end.lat, selected.lon - end.lon);
+  return offDeg > TRAIL_TOL_DEG ? { icao24: selected.icao24, offDeg } : null;
+}
+
+/** A short, fixed-width table of every step. */
+function stepTable(steps: StepMetrics[]): string {
+  const rows = steps.map((s, i) => [
+    String(i + 1).padStart(2),
+    s.name.slice(0, 34).padEnd(34),
+    s.zoom.toFixed(1).padStart(4),
+    (s.viewStill ? "still" : "moved").padEnd(5),
+    String(s.drawn).padStart(5),
+    String(s.vanished.length).padStart(8),
+    String(s.appeared.length).padStart(8),
+    String(s.backwards.length).padStart(9),
+    String(s.backwards.reduce((a, b) => Math.max(a, b.backDeg), 0)).padStart(9),
+    (s.selectedOffTrail ? s.selectedOffTrail.offDeg.toFixed(4) : "-").padStart(11),
+  ]);
+  const head = ["#", "step".padEnd(34), "zoom", "view".padEnd(5), "drawn", "vanished", "appeared", "backwards", "back max°", "sel off°"];
+  return [head, ...rows].map((r) => r.join("  ")).join("\n");
+}
+
+function stepSummary(steps: StepMetrics[]): string {
+  const sum = (f: (s: StepMetrics) => number) => steps.reduce((a, s) => a + f(s), 0);
+  return (
+    `steps ${steps.length}  drawn ${steps.map((s) => s.drawn).join("/")}  ` +
+    `vanished ${sum((s) => s.vanished.length)}  appeared ${sum((s) => s.appeared.length)}  ` +
+    `backwards ${sum((s) => s.backwards.length)}  ` +
+    `selectedOffTrail ${sum((s) => (s.selectedOffTrail ? 1 : 0))} steps  ` +
+    `selectedOffTrailMaxDeg ${Math.max(0, ...steps.map((s) => s.selectedOffTrail?.offDeg ?? 0)).toFixed(4)}`
+  );
+}
+
 /**
  * Scenario options.
  *
@@ -460,52 +548,17 @@ export async function startReplay(page: Page, testInfo: TestInfo, opts: ReplayOp
       const d = await drawn();
       const v = await view();
       const prev = steps[steps.length - 1] ?? null;
-      const drawnIds = new Set(d.map((p) => p.icao24));
-      const truthById = new Map(truth.map((t) => [t.icao24, t]));
-      const viewStill = !!prev && Math.abs(v.zoom - prev.zoom) < STILL_ZOOM && Math.hypot(v.centre.lat - prev.centre.lat, v.centre.lon - prev.centre.lon) < STILL_DEG;
-
-      const vanished: string[] = [];
-      const appeared: string[] = [];
-      const backwards: { icao24: string; backDeg: number }[] = [];
-
-      if (prev) {
-        const prevDrawn = new Map(prev.truthDrawn.map((p) => [p.icao24, p]));
-        for (const p of prev.truthDrawn) {
-          const t = truthById.get(p.icao24);
-          if (viewStill && !drawnIds.has(p.icao24) && t && t.inDrawnArea) vanished.push(p.icao24);
-        }
-        for (const p of d) {
-          if (viewStill && !prevDrawn.has(p.icao24) && (truthById.get(p.icao24)?.inDrawnArea ?? false)) appeared.push(p.icao24);
-        }
-        for (const p of d) {
-          const before = prevDrawn.get(p.icao24);
-          const t = truthById.get(p.icao24);
-          if (!before || !t) continue;
-          const dx = p.lon - before.lon;
-          const dy = p.lat - before.lat;
-          const hx = Math.sin((t.headingDeg * Math.PI) / 180);
-          const hy = Math.cos((t.headingDeg * Math.PI) / 180);
-          const along = dx * hx + dy * hy;
-          if (along < -BACKWARDS_TOL_DEG) backwards.push({ icao24: p.icao24, backDeg: -along });
-        }
-      }
-
+      const viewStill = isViewStill(v, prev);
       const selected = d.find((p) => p.selected) ?? null;
-      const end = selected ? await routeEnd() : null;
-      const selectedOffTrail =
-        selected && end && Math.hypot(selected.lat - end.lat, selected.lon - end.lon) > TRAIL_TOL_DEG
-          ? { icao24: selected.icao24, offDeg: Math.hypot(selected.lat - end.lat, selected.lon - end.lon) }
-          : null;
+      const selectedOffTrail = offTrail(selected, selected ? await routeEnd() : null);
 
       const metrics: StepMetrics = {
         name,
         zoom: v.zoom,
         centre: v.centre,
-        viewStill: !!prev && viewStill,
+        viewStill,
         drawn: d.length,
-        vanished,
-        appeared,
-        backwards,
+        ...stepDiff({ prev, drawn: d, truth, viewStill }),
         selectedOffTrail,
         truthDrawn: d,
       };
@@ -517,32 +570,8 @@ export async function startReplay(page: Page, testInfo: TestInfo, opts: ReplayOp
       await testInfo.attach(`step ${steps.length}: ${name}`, { body: JSON.stringify({ ...metrics, truthDrawn: undefined, view: v }), contentType: "application/json" });
       return metrics;
     },
-    table() {
-      const rows = steps.map((s, i) => [
-        String(i + 1).padStart(2),
-        s.name.slice(0, 34).padEnd(34),
-        s.zoom.toFixed(1).padStart(4),
-        (s.viewStill ? "still" : "moved").padEnd(5),
-        String(s.drawn).padStart(5),
-        String(s.vanished.length).padStart(8),
-        String(s.appeared.length).padStart(8),
-        String(s.backwards.length).padStart(9),
-        String(s.backwards.reduce((a, b) => Math.max(a, b.backDeg), 0)).padStart(9),
-        (s.selectedOffTrail ? s.selectedOffTrail.offDeg.toFixed(4) : "-").padStart(11),
-      ]);
-      const head = ["#", "step".padEnd(34), "zoom", "view".padEnd(5), "drawn", "vanished", "appeared", "backwards", "back max°", "sel off°"];
-      return [head, ...rows].map((r) => r.join("  ")).join("\n");
-    },
-    summary() {
-      const sum = (f: (s: StepMetrics) => number) => steps.reduce((a, s) => a + f(s), 0);
-      return (
-        `steps ${steps.length}  drawn ${steps.map((s) => s.drawn).join("/")}  ` +
-        `vanished ${sum((s) => s.vanished.length)}  appeared ${sum((s) => s.appeared.length)}  ` +
-        `backwards ${sum((s) => s.backwards.length)}  ` +
-        `selectedOffTrail ${sum((s) => (s.selectedOffTrail ? 1 : 0))} steps  ` +
-        `selectedOffTrailMaxDeg ${Math.max(0, ...steps.map((s) => s.selectedOffTrail?.offDeg ?? 0)).toFixed(4)}`
-      );
-    },
+    table: () => stepTable(steps),
+    summary: () => stepSummary(steps),
   };
   return h;
 }

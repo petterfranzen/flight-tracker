@@ -61,23 +61,36 @@ public record TrackEndFeatures(String icao24,
      */
     public static TrackEndFeatures of(LiveAircraft a, List<TrackPoint> recent, String originIcao,
                                       String destinationIcao, GapEstimate physics) {
-        Double firstAlt = null;
+        Double firstAlt = firstAltitude(recent);
+        Double altChange = firstAlt == null || a.altitudeM() == null ? null : a.altitudeM() - firstAlt;
+        return new TrackEndFeatures(a.icao24(), a.observedAt(), a.callsign(), originIcao, destinationIcao,
+                a.latitude(), a.longitude(), a.altitudeM(), a.verticalRateMs(), a.velocityMs(), a.headingDeg(),
+                recent.size(), windowSeconds(recent), altChange, meanVerticalRate(recent),
+                physics.geometry(), physics.state(), physics.landingProbability(), physics.touchdownAt(),
+                physics.landingAirportIcao(), physics.landingRunway(), physics.model());
+    }
+
+    private static Double firstAltitude(List<TrackPoint> recent) {
+        for (TrackPoint p : recent) {
+            if (p.altitudeM() != null) return p.altitudeM();
+        }
+        return null;
+    }
+
+    private static Double meanVerticalRate(List<TrackPoint> recent) {
         double vrSum = 0;
         int vrCount = 0;
         for (TrackPoint p : recent) {
-            if (firstAlt == null && p.altitudeM() != null) firstAlt = p.altitudeM();
             if (p.verticalRateMs() != null) {
                 vrSum += p.verticalRateMs();
                 vrCount++;
             }
         }
-        Double windowSeconds = recent.size() < 2 ? null
+        return vrCount == 0 ? null : vrSum / vrCount;
+    }
+
+    private static Double windowSeconds(List<TrackPoint> recent) {
+        return recent.size() < 2 ? null
                 : Duration.between(recent.get(0).observedAt(), recent.get(recent.size() - 1).observedAt()).toMillis() / 1000.0;
-        Double altChange = firstAlt == null || a.altitudeM() == null ? null : a.altitudeM() - firstAlt;
-        return new TrackEndFeatures(a.icao24(), a.observedAt(), a.callsign(), originIcao, destinationIcao,
-                a.latitude(), a.longitude(), a.altitudeM(), a.verticalRateMs(), a.velocityMs(), a.headingDeg(),
-                recent.size(), windowSeconds, altChange, vrCount == 0 ? null : vrSum / vrCount,
-                physics.geometry(), physics.state(), physics.landingProbability(), physics.touchdownAt(),
-                physics.landingAirportIcao(), physics.landingRunway(), physics.model());
     }
 }

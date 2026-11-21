@@ -44,8 +44,9 @@ export interface LabelStyle {
   letterSpacing?: string;
 }
 
-/** Draws `text` on its background box (padding included) with the box's top-left at (x, y), px. */
-export function drawLabel(ctx: CanvasRenderingContext2D, text: string, style: LabelStyle, x: number, y: number): void {
+/** Draws `text` on its background box (padding included) with the box's top-left at `at`, px. */
+export function drawLabel(ctx: CanvasRenderingContext2D, text: string, style: LabelStyle, at: { x: number; y: number }): void {
+  const { x, y } = at;
   ctx.font = style.font;
   if (style.letterSpacing) ctx.letterSpacing = style.letterSpacing;
   const { width, height, ascent } = measureLabel(text, style);
@@ -70,7 +71,11 @@ export function measureLabel(text: string, style: LabelStyle): { width: number; 
 
 // The map takes one resolver for missing images; it hands each id to the
 // server registered for its prefix.
-const servers = new WeakMap<FlightMap, { prefix: string; resolve(id: string): void }[]>();
+interface ImageServer {
+  prefix: string;
+  resolve(id: string): void;
+}
+const servers = new WeakMap<FlightMap, ImageServer[]>();
 
 /**
  * Serves every image whose id starts with `prefix` on demand: a symbol
@@ -81,32 +86,38 @@ const servers = new WeakMap<FlightMap, { prefix: string; resolve(id: string): vo
  */
 export function serveImages(map: FlightMap, prefix: string, draw: (key: string) => DrawnImage, font?: string): void {
   const stale = new Set<string>();
+  const add = (id: string): void => {
+    const { data, pixelRatio } = draw(id.slice(prefix.length));
+    map.gl.addImage(id, data, { pixelRatio });
+  };
+  const redraw = (): void => {
+    for (const id of stale) {
+      if (!map.gl.hasImage(id)) continue;
+      map.gl.removeImage(id);
+      add(id);
+    }
+    stale.clear();
+  };
+  serversFor(map).push({
+    prefix,
+    resolve(id) {
+      if (map.gl.hasImage(id)) return;
+      add(id);
+      if (!font || document.fonts.check(font)) return;
+      if (stale.size === 0) document.fonts.load(font).then(redraw, () => {});
+      stale.add(id);
+    },
+  });
+}
+
+/** The map's image servers, installing its one missing-image resolver on first use. */
+function serversFor(map: FlightMap): ImageServer[] {
   let list = servers.get(map);
   if (!list) {
-    const registered: { prefix: string; resolve(id: string): void }[] = [];
+    const registered: ImageServer[] = [];
     list = registered;
     servers.set(map, registered);
     map.gl.setMissingStyleImageResolver((id) => registered.find((s) => id.startsWith(s.prefix))?.resolve(id));
   }
-  list.push({
-    prefix,
-    resolve(id) {
-      if (map.gl.hasImage(id)) return;
-      const { data, pixelRatio } = draw(id.slice(prefix.length));
-      map.gl.addImage(id, data, { pixelRatio });
-      if (font && !document.fonts.check(font)) {
-        if (stale.size === 0) document.fonts.load(font).then(redraw, () => {});
-        stale.add(id);
-      }
-    },
-  });
-  function redraw(): void {
-    for (const id of stale) {
-      if (!map.gl.hasImage(id)) continue;
-      const { data, pixelRatio } = draw(id.slice(prefix.length));
-      map.gl.removeImage(id);
-      map.gl.addImage(id, data, { pixelRatio });
-    }
-    stale.clear();
-  }
+  return list;
 }

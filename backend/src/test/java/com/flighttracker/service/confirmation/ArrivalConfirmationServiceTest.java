@@ -99,8 +99,15 @@ class ArrivalConfirmationServiceTest {
         return a;
     }
 
-    private LiveAircraft addGround(String icao24, String callsign, Instant landedSince, double lat, double lon) {
-        LiveAircraft a = new LiveAircraft(1L, icao24, callsign, landedSince.plusSeconds(60), lat, lon, 0.0, 5.0, 190.0, 0.0,
+    /** Where a parked aircraft stands. */
+    private record Spot(double lat, double lon) {
+    }
+
+    /** Beside ESSA 19R, the runway in {@link #runways}. */
+    private static final Spot BY_ESSA_19R = new Spot(59.651, 17.931);
+
+    private LiveAircraft addGround(String icao24, String callsign, Instant landedSince, Spot spot) {
+        LiveAircraft a = new LiveAircraft(1L, icao24, callsign, landedSince.plusSeconds(60), spot.lat(), spot.lon(), 0.0, 5.0, 190.0, 0.0,
                 true, "opensky", landedSince, null, null, null, null);
         aircraft.put(icao24, a);
         return a;
@@ -143,8 +150,8 @@ class ArrivalConfirmationServiceTest {
 
     @Test
     void onGroundAircraft_areAskedAboutWithinTwoHoursOfLanding_atTheNearestRunwaysAirport() {
-        addGround("fresh", "SAS1", now.minus(Duration.ofMinutes(30)), 59.651, 17.931);
-        addGround("old", "SAS2", now.minus(Duration.ofMinutes(130)), 59.651, 17.931);
+        addGround("fresh", "SAS1", now.minus(Duration.ofMinutes(30)), BY_ESSA_19R);
+        addGround("old", "SAS2", now.minus(Duration.ofMinutes(130)), BY_ESSA_19R);
 
         service(provider).tick();
 
@@ -158,7 +165,7 @@ class ArrivalConfirmationServiceTest {
         when(routes.cached("SAS1")).thenReturn(Optional.of(
                 new Route("ESSA", null, null, null, "ESGG", null, null, null)));
         addGap("a1", "SAS1", gap(TrackState.LANDED_INFERRED, 0.92, null, now.minusSeconds(300)), now.minusSeconds(900));
-        addGround("g1", "SAS1", now.minus(Duration.ofMinutes(10)), 10.0, 10.0); // far from any runway
+        addGround("g1", "SAS1", now.minus(Duration.ofMinutes(10)), new Spot(10.0, 10.0)); // far from any runway
 
         service(provider).tick();
 
@@ -177,7 +184,7 @@ class ArrivalConfirmationServiceTest {
 
     @Test
     void gapsComeBeforeOnGround_thenOldestFirst() {
-        addGround("ground", "SAS9", now.minus(Duration.ofMinutes(100)), 59.651, 17.931);
+        addGround("ground", "SAS9", now.minus(Duration.ofMinutes(100)), BY_ESSA_19R);
         addGap("newer", "SAS2", gap(TrackState.LANDED_INFERRED, 0.9, "ESSA", now.minusSeconds(100)), now.minusSeconds(600));
         addGap("older", "SAS1", gap(TrackState.LANDED_INFERRED, 0.9, "ESSA", now.minusSeconds(500)), now.minusSeconds(900));
 
@@ -297,7 +304,7 @@ class ArrivalConfirmationServiceTest {
 
     @Test
     void anOnGroundAircraftHasNoFeatureRowToLabel_soTheTrainingServiceIsNotCalled() {
-        LiveAircraft a = addGround("g1", "SAS1", now.minus(Duration.ofMinutes(10)), 59.651, 17.931);
+        LiveAircraft a = addGround("g1", "SAS1", now.minus(Duration.ofMinutes(10)), BY_ESSA_19R);
         provider.answer = q -> found(q.expectedArrivalAt(), q.expectedArrivalAt().plusSeconds(480));
 
         service(provider).tick();
@@ -322,7 +329,7 @@ class ArrivalConfirmationServiceTest {
     @Test
     void aConfirmationWithoutAGate_isNotAskedAboutAfterTheGateWait() {
         Instant on = now.minus(Duration.ofMinutes(20));
-        addGround("g1", "SAS1", on, 59.651, 17.931);
+        addGround("g1", "SAS1", on, BY_ESSA_19R);
         provider.answer = q -> found(on, null);
         ArrivalConfirmationService svc = service(provider);
         svc.tick();
@@ -343,7 +350,7 @@ class ArrivalConfirmationServiceTest {
     @Test
     void aConfirmedAircraftWaitingForItsGate_isAskedAfterTheUnconfirmedOnes() {
         Instant onConfirmed = now.minus(Duration.ofMinutes(25));
-        addGround("conf", "SAS1", onConfirmed, 59.651, 17.931);
+        addGround("conf", "SAS1", onConfirmed, BY_ESSA_19R);
         provider.answer = q -> q.icao24().equals("conf") ? found(onConfirmed, null) : LookupResult.notFound();
         ArrivalConfirmationService svc = service(provider);
         svc.tick(); // conf is confirmed, without a gate
@@ -351,7 +358,7 @@ class ArrivalConfirmationServiceTest {
 
         // a later arrival: oldest-first alone would put conf first, the confirmation puts it last
         clock.advance(Duration.ofMinutes(6)); // conf's cached answer has expired
-        addGround("fresh", "SAS2", now.minus(Duration.ofMinutes(10)), 59.651, 17.931);
+        addGround("fresh", "SAS2", now.minus(Duration.ofMinutes(10)), BY_ESSA_19R);
         svc.tick();
         svc.tick();
 
@@ -388,7 +395,7 @@ class ArrivalConfirmationServiceTest {
     private void landConfirmFlyAndLandAgain(ArrivalConfirmationService svc) {
         Instant firstLanding = Instant.parse("2026-10-12T10:00:00Z");
         clock.set(firstLanding.plus(Duration.ofMinutes(12)));
-        addGround("g1", "SES1", firstLanding, 59.651, 17.931);
+        addGround("g1", "SES1", firstLanding, BY_ESSA_19R);
         svc.tick();
         assertThat(store.forAircraft(aircraft.get("g1"))).isPresent();
 
@@ -429,7 +436,7 @@ class ArrivalConfirmationServiceTest {
     @Test
     void aConfirmationWithGateIn_isNotAskedAboutAgain_butOneWithoutIs() {
         Instant on = now.minus(Duration.ofMinutes(20));
-        addGround("g1", "SAS1", on, 59.651, 17.931);
+        addGround("g1", "SAS1", on, BY_ESSA_19R);
         provider.answer = q -> found(on, null);
         ArrivalConfirmationService svc = service(provider);
         svc.tick();
@@ -449,13 +456,13 @@ class ArrivalConfirmationServiceTest {
     @Test
     void theConfirmationSurvivesTaxiing_andIsNeverDowngradedByALaterNotFound() {
         Instant on = now.minus(Duration.ofMinutes(20));
-        addGround("g1", "SAS1", on, 59.651, 17.931);
+        addGround("g1", "SAS1", on, BY_ESSA_19R);
         provider.answer = q -> found(on, null);
         ArrivalConfirmationService svc = service(provider);
         svc.tick();
 
         // more ground reports (taxiing), then the provider forgets the flight
-        addGround("g1", "SAS1", on, 59.652, 17.932);
+        addGround("g1", "SAS1", on, new Spot(59.652, 17.932));
         provider.answer = q -> LookupResult.notFound();
         clock.advance(Duration.ofMinutes(16));
         svc.tick();
@@ -468,7 +475,7 @@ class ArrivalConfirmationServiceTest {
     @Test
     void aNewFlight_clearsTheConfirmation() {
         Instant on = now.minus(Duration.ofMinutes(20));
-        addGround("g1", "SAS1", on, 59.651, 17.931);
+        addGround("g1", "SAS1", on, BY_ESSA_19R);
         provider.answer = q -> found(on, on.plusSeconds(480));
         ArrivalConfirmationService svc = service(provider);
         svc.tick();
@@ -484,7 +491,7 @@ class ArrivalConfirmationServiceTest {
     @Test
     void confirmationsOfAircraftThatLeftTheLiveSetAreEvicted() {
         Instant on = now.minus(Duration.ofMinutes(20));
-        addGround("g1", "SAS1", on, 59.651, 17.931);
+        addGround("g1", "SAS1", on, BY_ESSA_19R);
         provider.answer = q -> found(on, null);
         ArrivalConfirmationService svc = service(provider);
         svc.tick();

@@ -9,8 +9,8 @@ actually on someone's screen (`ViewportService`, in-memory) — the map only
 ever fetches/renders what's within its current viewport, not the whole
 world at once. Because every historic position is kept (72h retention), the
 `/api/usage` endpoint derives distance flown and airborne hours for any
-time window straight from the position history — no separate "usage" table
-to keep in sync.
+time window of up to 24 h straight from the position history — no separate
+"usage" table to keep in sync.
 
 ## Stack
 - **Backend**: Java 21 / Spring Boot, one process — REST, WebSocket and the scheduled `FlightDataAgent` pollers all in one JVM (no Spring profiles). Live aircraft state (`LiveStateStore`) is an in-memory map, not a DB table; only the persistent position history and a couple of restart-surviving counters (`app_state`) touch the database. Real-time updates to WebSocket clients go through an in-process Spring event (`PositionsPersistedEvent`), not cross-process coordination.

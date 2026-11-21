@@ -63,6 +63,7 @@ import * as webglNotice from "./ui/webglNotice";
 import { createTrackedChip } from "./ui/trackedChip";
 import { createFavoriteActions } from "./ui/favoriteActions";
 import { createWatchFollow } from "./watchFollow";
+import { createFetchCycle } from "./fetchCycle";
 // Self-hosted cyberpunk face (latin subset).
 import "@fontsource/jetbrains-mono/latin-500.css";
 import "@fontsource/jetbrains-mono/latin-600.css";
@@ -228,14 +229,8 @@ function boot(): void {
     list.forEach((p, i) => overviewIndex.set(p.icao24, i));
   }
 
-  let cycleStart = Date.now();
-  let fetchIntervalTimer: ReturnType<typeof setInterval> | null = null;
-  let overviewTimer: ReturnType<typeof setInterval> | null = null;
-  let dialogTimer: ReturnType<typeof setTimeout> | null = null;
-
   let bounds: Bounds | null = null;
   let zoom = 6;
-  let viewportFetchTimer: ReturnType<typeof setTimeout> | null = null;
   let viewportAbort: AbortController | null = null;
 
   // Per zoom for the overview (its cell size depends on it); for individual aircraft
@@ -664,8 +659,7 @@ function boot(): void {
    * requests never overlap or land out of order.
    */
   function fetchViewport(): void {
-    if (viewportFetchTimer) clearTimeout(viewportFetchTimer);
-    viewportFetchTimer = null;
+    fetchCycle.cancelViewportFetch();
     if (!bounds) return;
     const now = Date.now();
     const hit = applyCachedView(now);
@@ -761,19 +755,6 @@ function boot(): void {
     }, PREFETCH_DELAY_MS);
   }
 
-  function fetchFreshData(): void {
-    fetchLiveCount()
-      .then((n) => store.set("trackedCount", n))
-      .catch(() => {});
-    fetchLiveCount(false)
-      .then((n) => store.set("seenCount", n))
-      .catch(() => {});
-    // A viewport request still in flight (or about to fire) already covers
-    // this tick — don't stack a second one on top of it.
-    if (viewportAbort || viewportFetchTimer) return;
-    fetchViewport();
-  }
-
   function handleViewportChange(nextBounds: Bounds, nextZoom: number, immediate = false): void {
     const wasZoomedOut = zoom < CLUSTER_FETCH_MAX_ZOOM;
     bounds = nextBounds;
@@ -792,10 +773,7 @@ function boot(): void {
     cancelPrefetch();
     viewportAbort?.abort();
     viewportAbort = null;
-    if (viewportFetchTimer) clearTimeout(viewportFetchTimer);
-    viewportFetchTimer = null;
-    if (immediate) fetchViewport();
-    else viewportFetchTimer = setTimeout(fetchViewport, VIEWPORT_DEBOUNCE_MS);
+    fetchCycle.scheduleViewportFetch(immediate);
   }
 
   // ---- live push feed ----
@@ -898,57 +876,6 @@ function boot(): void {
       store.set("selectedPosFresh", true);
       appendRoutePoint(selectedUpdate);
     }
-  }
-
-  function stopFetchCycle(): void {
-    if (fetchIntervalTimer) clearInterval(fetchIntervalTimer);
-    fetchIntervalTimer = null;
-    if (overviewTimer) clearInterval(overviewTimer);
-    overviewTimer = null;
-    if (dialogTimer) clearTimeout(dialogTimer);
-    dialogTimer = null;
-  }
-
-  function restartFetchCycleTimers(): void {
-    if (fetchIntervalTimer) clearInterval(fetchIntervalTimer);
-    fetchIntervalTimer = setInterval(() => {
-      if (Date.now() - cycleStart >= FETCH_STOP_MS) {
-        if (fetchIntervalTimer) clearInterval(fetchIntervalTimer);
-        fetchIntervalTimer = null;
-        return;
-      }
-      fetchFreshData();
-    }, FETCH_INTERVAL_MS);
-
-    if (overviewTimer) clearInterval(overviewTimer);
-    overviewTimer = setInterval(() => {
-      if (Date.now() - cycleStart >= FETCH_STOP_MS) {
-        if (overviewTimer) clearInterval(overviewTimer);
-        overviewTimer = null;
-        return;
-      }
-      if (zoom < CLUSTER_FETCH_MAX_ZOOM && !document.hidden && !viewportAbort && !viewportFetchTimer) fetchViewport();
-    }, OVERVIEW_REFRESH_MS);
-
-    // At the end of the watch window, ask — don't silently reopen the
-    // backend's poll window. /api/agents/restart is called from exactly two
-    // places: page load (only if the window is closed) and the Resume
-    // button (startCycle). Never from a timer, a reconnect or an error path.
-    if (dialogTimer) clearTimeout(dialogTimer);
-    const dialogDelay = DIALOG_STOP_MS - (Date.now() - cycleStart);
-    dialogTimer = setTimeout(() => {
-      stopFetchCycle();
-      store.set("showResumeDialog", true);
-    }, dialogDelay);
-  }
-
-  /** The Resume button. */
-  function startCycle(): void {
-    cycleStart = Date.now();
-    store.set("showResumeDialog", false);
-    restartPolling().catch(() => {});
-    fetchFreshData();
-    restartFetchCycleTimers();
   }
 
   // ---- per-selection lifecycle (history/dossier fetch, priority poll, "now" ticker) ----
@@ -1213,6 +1140,20 @@ function boot(): void {
     toggleFavoriteRoute,
   });
 
+  // ---- fetch cycle (src/fetchCycle.ts) ----
+  const fetchCycle = createFetchCycle({
+    store,
+    fetchViewport: () => fetchViewport(),
+    viewportInFlight: () => viewportAbort !== null,
+    zoomedOut: () => zoom < CLUSTER_FETCH_MAX_ZOOM,
+    restartPolling: () => restartPolling(),
+    viewportDebounceMs: VIEWPORT_DEBOUNCE_MS,
+    fetchIntervalMs: FETCH_INTERVAL_MS,
+    fetchStopMs: FETCH_STOP_MS,
+    overviewRefreshMs: OVERVIEW_REFRESH_MS,
+    dialogStopMs: DIALOG_STOP_MS,
+  });
+
   // ---- map + layers ----
   // Layer order on the map, bottom to top: basemap, airports, the trail,
   // planes, the selected plane (each module adds its layers below the next).
@@ -1239,7 +1180,7 @@ function boot(): void {
   store.set("toggleRouteFavorite", favoriteActions.toggleRouteFavorite);
   store.set("removeFavoriteAircraft", favoriteActions.removeFavoriteAircraft);
   store.set("removeFavoriteRoute", favoriteActions.removeFavoriteRoute);
-  store.set("resumeTracking", startCycle);
+  store.set("resumeTracking", fetchCycle.start);
   store.set("dismissResumeDialog", () => store.set("showResumeDialog", false));
   store.set("watchFlight", watchFollow.watchFlight);
   store.set("unwatchFlight", watchFollow.unwatchFlight);
@@ -1334,7 +1275,7 @@ function boot(): void {
   // snapshot is the source of truth again (see clearArrivals).
   subscribeLiveFeed(onLivePush, { onReconnect: clearArrivals });
 
-  restartFetchCycleTimers(); // generation 0
+  fetchCycle.restart(); // generation 0
   watchFollow.startWatchPoll(); // watched flights, independently of the Watch panel
   if (NOTIFY_ENABLED) {
     // #82 design §2: prune expired notification state on load and once an hour.
