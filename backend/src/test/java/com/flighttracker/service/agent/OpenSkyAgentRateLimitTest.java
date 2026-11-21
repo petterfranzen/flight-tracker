@@ -9,6 +9,8 @@ import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.client.MockRestServiceServer;
+import org.springframework.test.web.client.ResponseCreator;
+import org.springframework.test.web.client.response.DefaultResponseCreator;
 import org.springframework.web.client.RestClient;
 
 import java.time.Clock;
@@ -61,12 +63,32 @@ class OpenSkyAgentRateLimitTest {
         return "{\"time\":1791230400,\"states\":[[\"abc123\",\"SAS1\",1791230400,1791230400,1791230400,18.0,59.0,10000.0,false,200.0,90.0,0.0]]}";
     }
 
+    /** Expects exactly one request to {@code url}, answered with {@code response}. */
+    private void expect(String url, ResponseCreator response) {
+        server.expect(once(), requestTo(url)).andRespond(response);
+    }
+
+    /** One aircraft, with the given rate-limit header name/value pairs. */
+    private static DefaultResponseCreator ok(String... headerNamesAndValues) {
+        DefaultResponseCreator response = withSuccess(body(), MediaType.APPLICATION_JSON);
+        for (int i = 0; i < headerNamesAndValues.length; i += 2) {
+            response = response.header(headerNamesAndValues[i], headerNamesAndValues[i + 1]);
+        }
+        return response;
+    }
+
+    /** One aircraft, with the credits left and the seconds until the budget resets. */
+    private static DefaultResponseCreator okWithBudget(String remaining, String retryAfterSeconds) {
+        return ok(OpenSkyRateLimit.REMAINING_HEADER, remaining, OpenSkyRateLimit.RETRY_AFTER_HEADER, retryAfterSeconds);
+    }
+
+    private static DefaultResponseCreator throttled() {
+        return withStatus(HttpStatus.TOO_MANY_REQUESTS).header("Retry-After", "30");
+    }
+
     @Test
     void aSpentBudgetInTheHeaders_skipsTheNextCall() {
-        server.expect(once(), requestTo(STATES))
-                .andRespond(withSuccess(body(), MediaType.APPLICATION_JSON)
-                        .header(OpenSkyRateLimit.REMAINING_HEADER, "0")
-                        .header(OpenSkyRateLimit.RETRY_AFTER_HEADER, "120"));
+        expect(STATES, okWithBudget("0", "120"));
 
         OpenSkyAgent agent = agent();
         assertThat(agent.pollGlobal()).hasSize(1);
@@ -76,13 +98,8 @@ class OpenSkyAgentRateLimitTest {
 
     @Test
     void creditsLeftInTheHeader_keepTheSweepGoing() {
-        server.expect(once(), requestTo(STATES))
-                .andRespond(withSuccess(body(), MediaType.APPLICATION_JSON)
-                        .header(OpenSkyRateLimit.REMAINING_HEADER, "4000")
-                        .header(OpenSkyRateLimit.RETRY_AFTER_HEADER, "3600"));
-        server.expect(once(), requestTo(STATES))
-                .andRespond(withSuccess(body(), MediaType.APPLICATION_JSON)
-                        .header(OpenSkyRateLimit.REMAINING_HEADER, "3996"));
+        expect(STATES, okWithBudget("4000", "3600"));
+        expect(STATES, ok(OpenSkyRateLimit.REMAINING_HEADER, "3996"));
 
         OpenSkyAgent agent = agent();
         assertThat(agent.pollGlobal()).hasSize(1);
@@ -92,10 +109,8 @@ class OpenSkyAgentRateLimitTest {
 
     @Test
     void aHotPollThrottle_doesNotSilenceTheGlobalSweep() {
-        server.expect(once(), requestTo(HOT))
-                .andRespond(withStatus(HttpStatus.TOO_MANY_REQUESTS).header("Retry-After", "30"));
-        server.expect(once(), requestTo(STATES))
-                .andRespond(withSuccess(body(), MediaType.APPLICATION_JSON));
+        expect(HOT, throttled());
+        expect(STATES, ok());
 
         OpenSkyAgent agent = agent();
         assertThat(agent.poll()).isEmpty();        // 429 on the hot poll
@@ -105,10 +120,8 @@ class OpenSkyAgentRateLimitTest {
 
     @Test
     void aSweepThrottle_doesNotSilenceTheHotPoll() {
-        server.expect(once(), requestTo(STATES))
-                .andRespond(withStatus(HttpStatus.TOO_MANY_REQUESTS).header("Retry-After", "30"));
-        server.expect(once(), requestTo(HOT))
-                .andRespond(withSuccess(body(), MediaType.APPLICATION_JSON));
+        expect(STATES, throttled());
+        expect(HOT, ok());
 
         OpenSkyAgent agent = agent();
         assertThat(agent.pollGlobal()).isEmpty();  // 429 on the sweep
@@ -118,10 +131,7 @@ class OpenSkyAgentRateLimitTest {
 
     @Test
     void hotPollYields_whileTheCreditsLeftAreReservedForSweeps() {
-        server.expect(once(), requestTo(STATES))
-                .andRespond(withSuccess(body(), MediaType.APPLICATION_JSON)
-                        .header(OpenSkyRateLimit.REMAINING_HEADER, "40")
-                        .header(OpenSkyRateLimit.RETRY_AFTER_HEADER, "43200"));
+        expect(STATES, okWithBudget("40", "43200"));
 
         OpenSkyAgent agent = agent();
         assertThat(agent.pollGlobal()).hasSize(1);
@@ -134,12 +144,8 @@ class OpenSkyAgentRateLimitTest {
 
     @Test
     void hotPollRuns_whenTheCreditsLeftCoverTheRemainingSweeps() {
-        server.expect(once(), requestTo(STATES))
-                .andRespond(withSuccess(body(), MediaType.APPLICATION_JSON)
-                        .header(OpenSkyRateLimit.REMAINING_HEADER, "4000")
-                        .header(OpenSkyRateLimit.RETRY_AFTER_HEADER, "43200"));
-        server.expect(once(), requestTo(HOT))
-                .andRespond(withSuccess(body(), MediaType.APPLICATION_JSON));
+        expect(STATES, okWithBudget("4000", "43200"));
+        expect(HOT, ok());
 
         OpenSkyAgent agent = agent();
         assertThat(agent.pollGlobal()).hasSize(1);

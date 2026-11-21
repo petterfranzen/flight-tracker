@@ -51,93 +51,15 @@ export function mount(map: FlightMap, onAirportSelect: (ap: AirportSelection) =>
 
   map.whenStyleReady(() => {
     if (destroyed) return;
-    const dotColor = cssToken("--color-airport", "#e2ddc9");
-    const dotFill = cssToken("--color-airport-fill", "#1a1a1a");
-    const label: LabelStyle = {
-      font: `700 10px ${cssToken("--font-data", "monospace")}`,
-      color: dotColor,
-      background: cssToken("--color-airport-label-bg", "rgba(20, 20, 20, 0.75)"),
-      padX: 4,
-      padY: 1,
-      radius: 2,
-    };
-    serveImages(
-      map,
-      IMAGE_PREFIX,
-      (code) => {
-        const text = measureLabel(code, label);
-        const height = Math.max(DOT_BOX_PX, text.height);
-        const { ctx, done } = canvas(LABEL_LEFT_PX + DOT_BOX_PX / 2 + text.width, height, Math.max(2, window.devicePixelRatio || 1));
-        // The image's left edge is DOT_BOX_PX / 2 left of the airport (icon-offset below).
-        ctx.beginPath();
-        ctx.arc(DOT_BOX_PX / 2, height / 2, DOT_PX / 2 - 1, 0, 2 * Math.PI);
-        ctx.fillStyle = dotFill;
-        ctx.fill();
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = dotColor;
-        ctx.stroke();
-        drawLabel(ctx, code, label, DOT_BOX_PX / 2 + LABEL_LEFT_PX, (height - text.height) / 2);
-        return done();
-      },
-      label.font,
-    );
-
-    gl.addSource(SOURCE, {
-      type: "geojson",
-      data: {
-        type: "FeatureCollection",
-        features: AIRPORTS.map((ap) => ({ type: "Feature", properties: { code: ap.code, name: ap.name, rank: ap.rank }, geometry: { type: "Point", coordinates: ap.pos } })),
-      },
-    });
-    gl.addLayer(
-      {
-        id: LAYER,
-        type: "symbol",
-        source: SOURCE,
-        filter: rankFilter(),
-        layout: {
-          "icon-image": ["concat", IMAGE_PREFIX, ["get", "code"]],
-          "icon-anchor": "left",
-          "icon-offset": [-DOT_BOX_PX / 2, 0],
-          "icon-allow-overlap": true,
-          "icon-ignore-placement": true,
-        },
-      },
-      [ROUTE_BOTTOM_LAYER_ID, ROUTE_LAYER_ID, PLANES_LAYER].find((id) => gl.getLayer(id)),
-    );
+    serveAirportImages(map);
+    addAirportLayer(map);
     added = true;
   });
 
-  const rendered = (box?: [[number, number], [number, number]]) => (added ? gl.queryRenderedFeatures(box ?? undefined, { layers: [LAYER] }) : []);
+  const rendered: RenderedQuery = (box) => (added ? gl.queryRenderedFeatures(box ?? undefined, { layers: [LAYER] }) : []);
 
-  map.addHitTarget((pt: Point): MapHit | null => {
-    let best: MapHit | null = null;
-    for (const f of rendered([
-      [pt.x - HIT_PX, pt.y - HIT_PX],
-      [pt.x + HIT_PX, pt.y + HIT_PX],
-    ])) {
-      const [lon, lat] = (f.geometry as GeoJSON.Point).coordinates;
-      const at = map.project(lat, lon);
-      // Only the dot is a target (the code chip never blocks a drag or a plane).
-      if (Math.abs(at.x - pt.x) > HIT_PX || Math.abs(at.y - pt.y) > HIT_PX) continue;
-      const distance = Math.hypot(at.x - pt.x, at.y - pt.y);
-      if (best && best.distance <= distance) continue;
-      const { code, name } = f.properties as { code: string; name: string };
-      best = { id: `airport:${code}`, priority: 1, distance, activate: () => onAirportSelect({ code, name, lat, lon }) };
-    }
-    return best;
-  });
-
-  map.renderedAirports = (): RenderedAirport[] => {
-    const out = new Map<string, RenderedAirport>();
-    for (const f of rendered()) {
-      const [lon, lat] = (f.geometry as GeoJSON.Point).coordinates;
-      const code = (f.properties as { code: string }).code;
-      const at = map.project(lat, lon);
-      out.set(`${code}@${lat.toFixed(3)},${lon.toFixed(3)}`, { code, lat, lon, x: at.x, y: at.y });
-    }
-    return Array.from(out.values());
-  };
+  map.addHitTarget((pt: Point): MapHit | null => airportHit(map, rendered, pt, onAirportSelect));
+  map.renderedAirports = (): RenderedAirport[] => renderedAirports(map, rendered);
 
   return () => {
     destroyed = true;
@@ -148,4 +70,100 @@ export function mount(map: FlightMap, onAirportSelect: (ap: AirportSelection) =>
     added = false;
     map.renderedAirports = () => [];
   };
+}
+
+/** The airport layer's rendered features, in `box` or everywhere; none until the layer is added. */
+type RenderedQuery = (box?: [[number, number], [number, number]]) => ReturnType<FlightMap["gl"]["queryRenderedFeatures"]>;
+
+/** Serves each airport's dot and code chip as one image, drawn from the theme's airport tokens. */
+function serveAirportImages(map: FlightMap): void {
+  const dotColor = cssToken("--color-airport", "#e2ddc9");
+  const dotFill = cssToken("--color-airport-fill", "#1a1a1a");
+  const label: LabelStyle = {
+    font: `700 10px ${cssToken("--font-data", "monospace")}`,
+    color: dotColor,
+    background: cssToken("--color-airport-label-bg", "rgba(20, 20, 20, 0.75)"),
+    padX: 4,
+    padY: 1,
+    radius: 2,
+  };
+  serveImages(
+    map,
+    IMAGE_PREFIX,
+    (code) => {
+      const text = measureLabel(code, label);
+      const height = Math.max(DOT_BOX_PX, text.height);
+      const { ctx, done } = canvas(LABEL_LEFT_PX + DOT_BOX_PX / 2 + text.width, height, Math.max(2, window.devicePixelRatio || 1));
+      // The image's left edge is DOT_BOX_PX / 2 left of the airport (icon-offset below).
+      ctx.beginPath();
+      ctx.arc(DOT_BOX_PX / 2, height / 2, DOT_PX / 2 - 1, 0, 2 * Math.PI);
+      ctx.fillStyle = dotFill;
+      ctx.fill();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = dotColor;
+      ctx.stroke();
+      drawLabel(ctx, code, label, { x: DOT_BOX_PX / 2 + LABEL_LEFT_PX, y: (height - text.height) / 2 });
+      return done();
+    },
+    label.font,
+  );
+}
+
+/** The airports source and its one symbol layer, under the trail and the planes. */
+function addAirportLayer(map: FlightMap): void {
+  const gl = map.gl;
+  gl.addSource(SOURCE, {
+    type: "geojson",
+    data: {
+      type: "FeatureCollection",
+      features: AIRPORTS.map((ap) => ({ type: "Feature", properties: { code: ap.code, name: ap.name, rank: ap.rank }, geometry: { type: "Point", coordinates: ap.pos } })),
+    },
+  });
+  gl.addLayer(
+    {
+      id: LAYER,
+      type: "symbol",
+      source: SOURCE,
+      filter: rankFilter(),
+      layout: {
+        "icon-image": ["concat", IMAGE_PREFIX, ["get", "code"]],
+        "icon-anchor": "left",
+        "icon-offset": [-DOT_BOX_PX / 2, 0],
+        "icon-allow-overlap": true,
+        "icon-ignore-placement": true,
+      },
+    },
+    [ROUTE_BOTTOM_LAYER_ID, ROUTE_LAYER_ID, PLANES_LAYER].find((id) => gl.getLayer(id)),
+  );
+}
+
+/** The nearest airport dot within HIT_PX of `pt`, as a hit that opens its dossier. */
+function airportHit(map: FlightMap, rendered: RenderedQuery, pt: Point, onAirportSelect: (ap: AirportSelection) => void): MapHit | null {
+  let best: MapHit | null = null;
+  for (const f of rendered([
+    [pt.x - HIT_PX, pt.y - HIT_PX],
+    [pt.x + HIT_PX, pt.y + HIT_PX],
+  ])) {
+    const [lon, lat] = (f.geometry as GeoJSON.Point).coordinates;
+    const at = map.project(lat, lon);
+    // Only the dot is a target (the code chip never blocks a drag or a plane).
+    if (Math.abs(at.x - pt.x) > HIT_PX || Math.abs(at.y - pt.y) > HIT_PX) continue;
+    const distance = Math.hypot(at.x - pt.x, at.y - pt.y);
+    if (best && best.distance <= distance) continue;
+    const { code, name } = f.properties as { code: string; name: string };
+    best = { id: `airport:${code}`, priority: 1, distance, activate: () => onAirportSelect({ code, name, lat, lon }) };
+  }
+  return best;
+}
+
+/** What the airport layer drew, one entry per airport, for tests. */
+function renderedAirports(map: FlightMap, rendered: RenderedQuery): RenderedAirport[] {
+  const out = new Map<string, RenderedAirport>();
+  for (const f of rendered()) {
+    const [lon, lat] = (f.geometry as GeoJSON.Point).coordinates;
+    const code = (f.properties as { code: string }).code;
+    const at = map.project(lat, lon);
+    out.set(`${code}@${lat.toFixed(3)},${lon.toFixed(3)}`, { code, lat, lon, x: at.x, y: at.y });
+  }
+  return Array.from(out.values());
 }

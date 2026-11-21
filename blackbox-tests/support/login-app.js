@@ -120,18 +120,30 @@ async function isHealthy(healthUrl) {
   }
 }
 
+function hasExited(child) {
+  return child.exitCode !== null || child.signalCode !== null;
+}
+
+/** Why the jar can no longer come up (it failed to spawn or it exited), or null while it still might. */
+function startupFailure({ child, healthUrl, spawnError }) {
+  const err = spawnError();
+  if (err) {
+    return `could not start the jar: ${err.message}`;
+  }
+  if (hasExited(child)) {
+    return `the jar exited (code ${child.exitCode}, signal ${child.signalCode}) before ${healthUrl} answered`;
+  }
+  return null;
+}
+
 /** Polls `/api/health` until it answers or the deadline passes; every failure path carries the log tail. */
 async function waitForHealth({ baseUrl, child, logPath, spawnError }) {
   const healthUrl = `${baseUrl}/api/health`;
   const deadline = Date.now() + HEALTH_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    if (spawnError()) {
-      throw new Error(`could not start the jar: ${spawnError().message}\n${logTail(logPath)}`);
-    }
-    if (child.exitCode !== null || child.signalCode !== null) {
-      throw new Error(
-        `the jar exited (code ${child.exitCode}, signal ${child.signalCode}) before ${healthUrl} answered\n${logTail(logPath)}`
-      );
+    const failure = startupFailure({ child, healthUrl, spawnError });
+    if (failure) {
+      throw new Error(`${failure}\n${logTail(logPath)}`);
     }
     if (await isHealthy(healthUrl)) {
       return;
@@ -141,15 +153,7 @@ async function waitForHealth({ baseUrl, child, logPath, spawnError }) {
   throw new Error(`the jar did not answer ${healthUrl} within ${HEALTH_TIMEOUT_MS / 1000} s\n${logTail(logPath)}`);
 }
 
-/**
- * Starts the flag-on jar against `fake` and waits for it to be healthy. Throws
- * with the jar's log tail if it never answers; throws a plain message when no
- * jar is built at all (the caller has already decided whether to skip).
- */
-export async function startLoginApp({ fake } = {}) {
-  if (!fake?.issuer) {
-    throw new TypeError("startLoginApp({ fake }) needs the fake provider, e.g. the object startFakeOidc() returns");
-  }
+function requireJar() {
   const jar = resolveJar();
   if (jar === null) {
     throw new Error(
@@ -157,17 +161,16 @@ export async function startLoginApp({ fake } = {}) {
         "build one with: cd backend && mvn -B package -DskipTests"
     );
   }
+  return jar;
+}
 
-  const workDir = mkdtempSync(join(tmpdir(), "ft-login-app-"));
-  const logPath = join(workDir, "app.log");
+/** Spawns the jar with its output appended to `logPath`; `stop()` is idempotent and also runs on process exit. */
+function spawnJar({ jar, workDir, logPath, env }) {
   const logFd = openSync(logPath, "a");
-  const port = await freePort();
-  const baseUrl = `http://127.0.0.1:${port}`;
-
   let spawnError = null;
   const child = spawn("java", ["-Xmx512m", "-jar", jar], {
     cwd: workDir,
-    env: appEnv({ port, workDir, fake }),
+    env,
     stdio: ["ignore", logFd, logFd],
   });
   child.on("error", (err) => {
@@ -181,15 +184,34 @@ export async function startLoginApp({ fake } = {}) {
     }
     stopped = true;
     process.off("exit", stop);
-    if (child.exitCode === null && child.signalCode === null) {
+    if (!hasExited(child)) {
       child.kill("SIGTERM");
     }
     closeSync(logFd);
   };
   process.once("exit", stop);
+  return { child, stop, spawnError: () => spawnError };
+}
+
+/**
+ * Starts the flag-on jar against `fake` and waits for it to be healthy. Throws
+ * with the jar's log tail if it never answers; throws a plain message when no
+ * jar is built at all (the caller has already decided whether to skip).
+ */
+export async function startLoginApp({ fake } = {}) {
+  if (!fake?.issuer) {
+    throw new TypeError("startLoginApp({ fake }) needs the fake provider, e.g. the object startFakeOidc() returns");
+  }
+  const jar = requireJar();
+
+  const workDir = mkdtempSync(join(tmpdir(), "ft-login-app-"));
+  const logPath = join(workDir, "app.log");
+  const port = await freePort();
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const { child, stop, spawnError } = spawnJar({ jar, workDir, logPath, env: appEnv({ port, workDir, fake }) });
 
   try {
-    await waitForHealth({ baseUrl, child, logPath, spawnError: () => spawnError });
+    await waitForHealth({ baseUrl, child, logPath, spawnError });
   } catch (err) {
     stop();
     throw err;

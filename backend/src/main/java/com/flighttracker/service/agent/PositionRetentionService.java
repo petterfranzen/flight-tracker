@@ -172,6 +172,23 @@ public class PositionRetentionService {
         long cutoffMillis = now.minusMillis(Math.round(retentionHours * 3_600_000)).toEpochMilli();
 
         long start = System.nanoTime();
+        PositionPrune run = deleteExpiredPositions(cutoffMillis);
+
+        pruneTrainingData(now);
+        pruneWatchedFlights(now);
+        evictSilentLiveAircraft(now);
+
+        if (run.totalDeleted() == 0) return;
+        reclaimFreedPages();
+        logPositionPrune(run, start);
+    }
+
+    /** One run's flight_position deletes: rows deleted, batches run, and whether it stopped with a full batch. */
+    private record PositionPrune(int totalDeleted, int batches, boolean moreRemaining) {
+    }
+
+    /** The batched 72h delete of flight_position, bounded by max-batches-per-run and shutdown. */
+    private PositionPrune deleteExpiredPositions(long cutoffMillis) {
         int totalDeleted = 0;
         int batches = 0;
         boolean moreRemaining = false;
@@ -186,34 +203,43 @@ public class PositionRetentionService {
             if (deleted == null || deleted < batchSize) break;
             if (batches == maxBatchesPerRun || stopping) moreRemaining = true;
         }
+        return new PositionPrune(totalDeleted, batches, moreRemaining);
+    }
 
-        pruneTrainingData(now);
-        pruneWatchedFlights(now);
-
-        // The in-memory live set is pruned on the same cadence: an aircraft
-        // silent past every visibility window can't be live again without a
-        // new report, and keeping it only makes every request scan it.
+    /**
+     * The in-memory live set is pruned on the same cadence: an aircraft
+     * silent past every visibility window can't be live again without a
+     * new report, and keeping it only makes every request scan it.
+     */
+    private void evictSilentLiveAircraft(Instant now) {
         int evicted = liveStateStore.evictSilentBefore(now.minus(LiveVisibilityWindows.LONGEST_VISIBILITY));
         if (evicted > 0) log.info("live state: forgot {} aircraft silent for over {}", evicted, LiveVisibilityWindows.LONGEST_VISIBILITY);
+    }
 
-        if (totalDeleted > 0) {
-            // Reclaims pages the DELETE above just freed, in small,
-            // predictable steps (2000 pages at a time) rather than a full
-            // blocking VACUUM — see schema.sql's own auto_vacuum=INCREMENTAL
-            // comment. wal_checkpoint(TRUNCATE) then folds the WAL file
-            // back into the main database file and truncates it, so a long
-            // run doesn't leave the -wal file growing indefinitely between
-            // checkpoints.
-            jdbcTemplate.execute("PRAGMA incremental_vacuum(2000)");
-            jdbcTemplate.execute("PRAGMA wal_checkpoint(TRUNCATE)");
-        }
+    /**
+     * Reclaims pages the flight_position DELETE just freed, in small,
+     * predictable steps (2000 pages at a time) rather than a full
+     * blocking VACUUM — see schema.sql's own auto_vacuum=INCREMENTAL
+     * comment. wal_checkpoint(TRUNCATE) then folds the WAL file
+     * back into the main database file and truncates it, so a long
+     * run doesn't leave the -wal file growing indefinitely between
+     * checkpoints.
+     */
+    private void reclaimFreedPages() {
+        jdbcTemplate.execute("PRAGMA incremental_vacuum(2000)");
+        jdbcTemplate.execute("PRAGMA wal_checkpoint(TRUNCATE)");
+    }
 
-        if (totalDeleted == 0) return;
+    private void logPositionPrune(PositionPrune run, long start) {
         long ms = (System.nanoTime() - start) / 1_000_000;
         log.info("retention: deleted {} flight_position rows older than {}h in {} batches ({} ms){}",
-                totalDeleted, retentionHours, batches, ms,
-                moreRemaining ? (stopping ? " — stopped early for shutdown, more remaining"
-                        : " — hit max-batches-per-run, more remaining for next cycle") : "");
+                run.totalDeleted(), retentionHours, run.batches(), ms, remainingNote(run.moreRemaining()));
+    }
+
+    private String remainingNote(boolean moreRemaining) {
+        if (!moreRemaining) return "";
+        return stopping ? " — stopped early for shutdown, more remaining"
+                : " — hit max-batches-per-run, more remaining for next cycle";
     }
 
     /** Separate from the flight_position rule above: these small tables keep a year by default. */
