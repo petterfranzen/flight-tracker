@@ -32,7 +32,7 @@ class SubjectHashWiringTest {
     @Test
     void flagOn_withAPepper_theBeanHashesDeterministically() {
         runner.withPropertyValues("flighttracker.profile.enabled=true",
-                        "flighttracker.profile.subject-pepper=wiring-test-pepper")
+                        "flighttracker.profile.subject-pepper=wiring-test-pepper-0123456789abcdef")
                 .run(ctx -> assertThat(ctx.getBean(SubjectHash.class).of("github", "1"))
                         .isEqualTo(ctx.getBean(SubjectHash.class).of("github", "1")));
     }

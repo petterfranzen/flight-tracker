@@ -42,6 +42,13 @@ import java.util.Objects;
 @ConditionalOnProperty(prefix = "flighttracker.profile", name = "enabled", havingValue = "true")
 public class SubjectHash {
 
+    /**
+     * Minimum pepper length in bytes, matching {@code ClientKeyToken}'s floor
+     * for the IP-hash pepper: a 256-bit key is the least an HMAC can use and
+     * still be infeasible to brute-force.
+     */
+    private static final int MIN_PEPPER_BYTES = 32;
+
     private final byte[] pepper;
 
     /**
@@ -54,6 +61,10 @@ public class SubjectHash {
         if (pepper == null || pepper.isBlank()) {
             throw new IllegalStateException("flighttracker.profile.subject-pepper "
                     + "(FLIGHTTRACKER_SUBJECT_PEPPER) must be set when flighttracker.profile.enabled=true");
+        }
+        if (pepper.getBytes(StandardCharsets.UTF_8).length < MIN_PEPPER_BYTES) {
+            throw new IllegalStateException("flighttracker.profile.subject-pepper "
+                    + "(FLIGHTTRACKER_SUBJECT_PEPPER) must be at least " + MIN_PEPPER_BYTES + " bytes");
         }
         this.pepper = pepper.getBytes(StandardCharsets.UTF_8);
     }

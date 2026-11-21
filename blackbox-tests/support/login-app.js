@@ -37,7 +37,7 @@ const LOGIN_CLIENT_SECRET = "bb-login-secret";
  * without once the profile flag is on. Test-only, exactly like the secret above:
  * production sets its own from its environment and it never lives in the repo.
  */
-const LOGIN_SUBJECT_PEPPER = "bb-login-subject-pepper";
+const LOGIN_SUBJECT_PEPPER = "bb-login-subject-pepper-0123456789abcdef";
 
 /** Where the jar usually is: CI downloads the artifact to dist/, a local Maven build lands in target/. */
 const JAR_CANDIDATES = ["dist/flight-tracker.jar", "backend/target/flight-tracker.jar"];

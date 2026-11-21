@@ -59,7 +59,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
                 "flighttracker.oauth.google.client-id=test-client-id",
                 "flighttracker.oauth.google.client-secret=test-client-secret",
                 "flighttracker.profile.public-base-url=https://flight.pastabake.cloud",
-                "flighttracker.profile.subject-pepper=profile-read-test-pepper"
+                "flighttracker.profile.subject-pepper=profile-read-test-pepper-0123456789abcdef"
         })
 @AutoConfigureMockMvc
 class ProfileReadMockMvcTest {

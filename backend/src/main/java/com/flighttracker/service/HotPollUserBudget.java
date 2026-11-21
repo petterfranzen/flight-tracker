@@ -11,9 +11,10 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayDeque;
+import java.util.Arrays;
 import java.util.Deque;
-import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 
 /**
  * Per-client-key daily cap on hot-poll *time*, not requests — separate
@@ -75,20 +76,21 @@ public class HotPollUserBudget {
     @Autowired
     public HotPollUserBudget(AppStateRepository appState,
                               @Value("${flighttracker.rate-limit.hot-poll-seconds-per-ip-per-day}") long dailyCapSeconds,
-                              @Value("${flighttracker.rate-limit.ip-hash-pepper:}") String ipHashPepper,
+                              IpHashPepper ipHashPepper,
                               Clock clock) {
+        this(appState, dailyCapSeconds, ipHashPepper.value(), clock);
+    }
+
+    /** For tests: they supply their own pepper instead of an {@link IpHashPepper}. */
+    public HotPollUserBudget(AppStateRepository appState, long dailyCapSeconds, String ipHashPepper) {
+        this(appState, dailyCapSeconds, ipHashPepper, Clock.systemUTC());
+    }
+
+    public HotPollUserBudget(AppStateRepository appState, long dailyCapSeconds, String ipHashPepper, Clock clock) {
         this.appState = appState;
         this.dailyCapSeconds = dailyCapSeconds;
-        this.ipHashPepper = ipHashPepper == null ? "" : ipHashPepper;
+        this.ipHashPepper = ipHashPepper;
         this.clock = clock;
-    }
-
-    public HotPollUserBudget(AppStateRepository appState, long dailyCapSeconds) {
-        this(appState, dailyCapSeconds, "", Clock.systemUTC());
-    }
-
-    public HotPollUserBudget(AppStateRepository appState, long dailyCapSeconds, Clock clock) {
-        this(appState, dailyCapSeconds, "", clock);
     }
 
     /** Number of keys currently tracked (for tests and diagnostics). */
@@ -119,14 +121,29 @@ public class HotPollUserBudget {
 
     @PostConstruct
     void loadFromAppState() {
-        Map<String, String> rows = appState.getAllWithPrefix(KEY_PREFIX);
-        for (var entry : rows.entrySet()) {
-            ClientKeyToken token = new ClientKeyToken(entry.getKey().substring(KEY_PREFIX.length()));
-            Deque<Grant> history = new ArrayDeque<>();
-            for (String encoded : entry.getValue().split(",")) {
-                if (!encoded.isBlank()) history.addLast(Grant.decode(encoded));
+        for (var entry : appState.getAllWithPrefix(KEY_PREFIX).entrySet()) {
+            String suffix = entry.getKey().substring(KEY_PREFIX.length());
+            if (ClientKeyToken.isToken(suffix)) {
+                restore(new ClientKeyToken(suffix), entry.getValue());
+            } else {
+                // A row from before finding M3 is keyed by the raw client key, so
+                // it can never match a token this version computes: dead weight
+                // (and a raw address in the database) that would only linger until
+                // the sweep pruned it. Delete it instead — idempotent and
+                // additive-safe, since only a non-token suffix ever gets here.
+                appState.delete(entry.getKey());
             }
-            if (!history.isEmpty()) grantsByKey.put(token, history);
+        }
+    }
+
+    /** Reloads one row's grant history, ignoring it when it holds no grants. */
+    private void restore(ClientKeyToken token, String encoded) {
+        Deque<Grant> history = Arrays.stream(encoded.split(","))
+                .filter(part -> !part.isBlank())
+                .map(Grant::decode)
+                .collect(Collectors.toCollection(ArrayDeque::new));
+        if (!history.isEmpty()) {
+            grantsByKey.put(token, history);
         }
     }
 

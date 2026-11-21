@@ -62,7 +62,7 @@ class AgentControllerTest {
         lenient().when(request.getHeader("Origin")).thenReturn(null);
 
         RestartRateLimiter rateLimiter = new RestartRateLimiter(3, 20);
-        HotPollUserBudget hotPollUserBudget = new HotPollUserBudget(appState, 4500);
+        HotPollUserBudget hotPollUserBudget = new HotPollUserBudget(appState, 4500, "agentcontroller-test-pepper-0123456789abcd");
         PollWindowService pollWindowService = new PollWindowService(appState, 300, 3, 15, 3000);
 
         return new AgentController(pollWindowService, rateLimiter, hotPollUserBudget,
@@ -193,7 +193,7 @@ class AgentControllerTest {
         AppStateRepository state = mock(AppStateRepository.class);
         PollWindowService window = new PollWindowService(state, 300, 3, 15, 3000);
         AgentController controller = new AgentController(window, new RestartRateLimiter(10, 20),
-                new HotPollUserBudget(state, 4500), new ClientIpResolver("127.0.0.1,::1"), guard(false));
+                new HotPollUserBudget(state, 4500, "agentcontroller-test-pepper-0123456789abcd"), new ClientIpResolver("127.0.0.1,::1"), guard(false));
 
         HttpServletRequest a = visitorFrom("203.0.113.9");
         HttpServletRequest b = visitorFrom("203.0.113.10");
