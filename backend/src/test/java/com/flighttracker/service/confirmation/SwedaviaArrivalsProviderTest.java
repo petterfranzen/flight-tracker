@@ -17,8 +17,10 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Properties;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.contains;
@@ -138,48 +140,57 @@ class SwedaviaArrivalsProviderTest {
 
         // LAN with gate and bags: landed, and at the gate from the first bag.
         BoardEntry sas1402 = byCallsign(board, "SAS1402");
-        assertThat(sas1402.flightNumber()).isEqualTo("SK1402");
-        assertThat(sas1402.registration()).isEqualTo("SE-ROA");
-        assertThat(sas1402.info().actualOn()).isEqualTo(Instant.parse("2026-10-12T10:04:12Z"));
-        assertThat(sas1402.info().actualIn()).isEqualTo(Instant.parse("2026-10-12T10:14:00Z"));
-        assertThat(sas1402.info().gate()).isEqualTo("E5");
-        assertThat(sas1402.info().terminal()).isEqualTo("5");
-        assertThat(sas1402.info().arrivalAirportIcao()).isEqualTo("ESSA");
-        assertThat(sas1402.info().rank()).isEqualTo(2);
+        assertThat(sas1402)
+                .returns("SK1402", BoardEntry::flightNumber)
+                .returns("SE-ROA", BoardEntry::registration);
+        assertThat(sas1402.info())
+                .returns(Instant.parse("2026-10-12T10:04:12Z"), ArrivalInfo::actualOn)
+                .returns(Instant.parse("2026-10-12T10:14:00Z"), ArrivalInfo::actualIn)
+                .returns("E5", ArrivalInfo::gate)
+                .returns("5", ArrivalInfo::terminal)
+                .returns("ESSA", ArrivalInfo::arrivalAirportIcao)
+                .returns(2, ArrivalInfo::rank);
 
         // LAN without a first bag (only an estimate): landed, not at the gate.
         BoardEntry sas1404 = byCallsign(board, "SAS1404");
-        assertThat(sas1404.info().actualOn()).isEqualTo(Instant.parse("2026-10-12T10:20:00Z"));
-        assertThat(sas1404.info().actualIn()).isNull();
-        assertThat(sas1404.info().gate()).isEqualTo("F3");
-        assertThat(sas1404.info().rank()).isEqualTo(1);
+        assertThat(sas1404.info())
+                .returns(Instant.parse("2026-10-12T10:20:00Z"), ArrivalInfo::actualOn)
+                .returns(null, ArrivalInfo::actualIn)
+                .returns("F3", ArrivalInfo::gate)
+                .returns(1, ArrivalInfo::rank);
 
         // SCH: on the board, nothing to confirm.
         BoardEntry noz4001 = byCallsign(board, "NOZ4001");
-        assertThat(noz4001.info().actualOn()).isNull();
-        assertThat(noz4001.info().actualIn()).isNull();
-        assertThat(noz4001.info().rank()).isZero();
+        assertNothingToConfirm(noz4001, "NOZ4001");
 
         // DEL (deleted) and DIV (diverted) never confirm a landing, even with times and bags.
         for (String callsign : List.of("SAS2012", "SAS1500")) {
-            BoardEntry e = byCallsign(board, callsign);
-            assertThat(e.info().actualOn()).as(callsign).isNull();
-            assertThat(e.info().actualIn()).as(callsign).isNull();
-            assertThat(e.info().rank()).as(callsign).isZero();
+            assertNothingToConfirm(byCallsign(board, callsign), callsign);
         }
 
         // No locationAndStatus, a timestamp without Z, diIndicator inside flightLegIdentifier.
         BoardEntry fin861 = byCallsign(board, "FIN861");
-        assertThat(fin861.info().actualOn()).isEqualTo(Instant.parse("2026-10-12T11:30:00Z"));
-        assertThat(fin861.info().gate()).isNull();
-        assertThat(fin861.info().terminal()).isNull();
+        assertThat(fin861.info())
+                .returns(Instant.parse("2026-10-12T11:30:00Z"), ArrivalInfo::actualOn)
+                .returns(null, ArrivalInfo::gate)
+                .returns(null, ArrivalInfo::terminal);
 
         // Nulls everywhere, an unknown field, an offset timestamp: matched by registration only.
         BoardEntry byReg = board.entries().stream().filter(e -> "SE-RUB".equals(e.registration())).findFirst().orElseThrow();
-        assertThat(byReg.callsign()).isNull();
-        assertThat(byReg.flightNumber()).isNull();
-        assertThat(byReg.info().actualOn()).isEqualTo(Instant.parse("2026-10-12T12:10:00.250Z"));
-        assertThat(byReg.info().gate()).isNull();
+        assertThat(byReg)
+                .returns(null, BoardEntry::callsign)
+                .returns(null, BoardEntry::flightNumber);
+        assertThat(byReg.info())
+                .returns(Instant.parse("2026-10-12T12:10:00.250Z"), ArrivalInfo::actualOn)
+                .returns(null, ArrivalInfo::gate);
+    }
+
+    /** On the board, but no landing and no gate to confirm, and ranked lowest. */
+    private static void assertNothingToConfirm(BoardEntry entry, String callsign) {
+        assertThat(entry.info()).as(callsign)
+                .returns(null, ArrivalInfo::actualOn)
+                .returns(null, ArrivalInfo::actualIn)
+                .returns(0, ArrivalInfo::rank);
     }
 
     @Test
@@ -263,8 +274,9 @@ class SwedaviaArrivalsProviderTest {
 
         server.verify();
         assertThat(first.costUnits()).isEqualTo(1);
-        assertThat(second.status()).isEqualTo(LookupResult.Status.FAILED);
-        assertThat(second.costUnits()).isEqualTo(1);
+        assertThat(second)
+                .returns(LookupResult.Status.FAILED, BoardResult::status)
+                .returns(1, BoardResult::costUnits);
         assertThat(provider.enabled()).isFalse();
         verify(logger).degraded(contains("rejected every API key"));
         assertThat(provider.fetchArrivals("ESSA", TODAY).costUnits()).isZero(); // and no call is made while locked
@@ -429,33 +441,42 @@ class SwedaviaArrivalsProviderTest {
     void aSummerTouchdownAt2230UtcIsOnTheNextLocalDate() {
         SwedaviaArrivalsProvider provider = provider();
 
-        // CEST is UTC+2: 22:30Z on 12 Jul is 00:30 on 13 Jul.
-        assertThat(provider.boardDate(Instant.parse("2026-07-12T22:30:00Z"))).isEqualTo(LocalDate.parse("2026-07-13"));
-        assertThat(provider.boardDate(Instant.parse("2026-07-12T21:59:00Z"))).isEqualTo(LocalDate.parse("2026-07-12"));
-        // CET is UTC+1: 22:30Z in January is still the same local day, 23:30 local.
-        assertThat(provider.boardDate(Instant.parse("2026-01-12T22:30:00Z"))).isEqualTo(LocalDate.parse("2026-01-12"));
-        assertThat(provider.boardDate(Instant.parse("2026-01-12T23:00:00Z"))).isEqualTo(LocalDate.parse("2026-01-13"));
+        assertBoardDates(provider, List.of(
+                // CEST is UTC+2: 22:30Z on 12 Jul is 00:30 on 13 Jul.
+                List.of("2026-07-12T22:30:00Z", "2026-07-13"),
+                List.of("2026-07-12T21:59:00Z", "2026-07-12"),
+                // CET is UTC+1: 22:30Z in January is still the same local day, 23:30 local.
+                List.of("2026-01-12T22:30:00Z", "2026-01-12"),
+                List.of("2026-01-12T23:00:00Z", "2026-01-13")));
     }
 
     @Test
     void theBoardDateFollowsTheDstSwitchesOfTheLastSundaysOfMarchAndOctober() {
         SwedaviaArrivalsProvider provider = provider();
 
-        // Sunday 29 March 2026: CET becomes CEST at 01:00Z. 00:30Z is 01:30 CET, still the 29th.
-        assertThat(provider.boardDate(Instant.parse("2026-03-29T00:30:00Z"))).isEqualTo(LocalDate.parse("2026-03-29"));
-        // After the switch it is UTC+2: 21:59Z is 23:59 local, 22:30Z is 00:30 on the 30th.
-        assertThat(provider.boardDate(Instant.parse("2026-03-29T21:59:00Z"))).isEqualTo(LocalDate.parse("2026-03-29"));
-        assertThat(provider.boardDate(Instant.parse("2026-03-29T22:30:00Z"))).isEqualTo(LocalDate.parse("2026-03-30"));
-        // The evening before is still UTC+1: 22:30Z on the 28th is 23:30 local.
-        assertThat(provider.boardDate(Instant.parse("2026-03-28T22:30:00Z"))).isEqualTo(LocalDate.parse("2026-03-28"));
+        assertBoardDates(provider, List.of(
+                // Sunday 29 March 2026: CET becomes CEST at 01:00Z. 00:30Z is 01:30 CET, still the 29th.
+                List.of("2026-03-29T00:30:00Z", "2026-03-29"),
+                // After the switch it is UTC+2: 21:59Z is 23:59 local, 22:30Z is 00:30 on the 30th.
+                List.of("2026-03-29T21:59:00Z", "2026-03-29"),
+                List.of("2026-03-29T22:30:00Z", "2026-03-30"),
+                // The evening before is still UTC+1: 22:30Z on the 28th is 23:30 local.
+                List.of("2026-03-28T22:30:00Z", "2026-03-28"),
 
-        // Sunday 25 October 2026: CEST becomes CET at 01:00Z. 00:30Z is 02:30 CEST, the 25th.
-        assertThat(provider.boardDate(Instant.parse("2026-10-25T00:30:00Z"))).isEqualTo(LocalDate.parse("2026-10-25"));
-        // After the switch it is UTC+1: 22:30Z is 23:30 local, still the 25th; 23:00Z is the 26th.
-        assertThat(provider.boardDate(Instant.parse("2026-10-25T22:30:00Z"))).isEqualTo(LocalDate.parse("2026-10-25"));
-        assertThat(provider.boardDate(Instant.parse("2026-10-25T23:00:00Z"))).isEqualTo(LocalDate.parse("2026-10-26"));
-        // The evening before is still UTC+2: 22:30Z on the 24th is 00:30 on the 25th.
-        assertThat(provider.boardDate(Instant.parse("2026-10-24T22:30:00Z"))).isEqualTo(LocalDate.parse("2026-10-25"));
+                // Sunday 25 October 2026: CEST becomes CET at 01:00Z. 00:30Z is 02:30 CEST, the 25th.
+                List.of("2026-10-25T00:30:00Z", "2026-10-25"),
+                // After the switch it is UTC+1: 22:30Z is 23:30 local, still the 25th; 23:00Z is the 26th.
+                List.of("2026-10-25T22:30:00Z", "2026-10-25"),
+                List.of("2026-10-25T23:00:00Z", "2026-10-26"),
+                // The evening before is still UTC+2: 22:30Z on the 24th is 00:30 on the 25th.
+                List.of("2026-10-24T22:30:00Z", "2026-10-25")));
+    }
+
+    /** Each case is an instant and the board date it falls on. */
+    private static void assertBoardDates(SwedaviaArrivalsProvider provider, List<List<String>> cases) {
+        for (List<String> c : cases) {
+            assertThat(provider.boardDate(Instant.parse(c.get(0)))).as(c.get(0)).isEqualTo(LocalDate.parse(c.get(1)));
+        }
     }
 
     @Test
@@ -474,22 +495,19 @@ class SwedaviaArrivalsProviderTest {
     @Test
     void disabledWithoutAKeyOrWithTheFlagOff() {
         assertThat(provider(true, "primary", "").enabled()).isTrue();
-        assertThat(provider(true, "", "").enabled()).isFalse();
-        assertThat(provider(true, "  ", null).enabled()).isFalse();
-        assertThat(provider(false, "primary", "").enabled()).isFalse();
+        assertThat(List.of(provider(true, "", ""), provider(true, "  ", null), provider(false, "primary", "")))
+                .noneMatch(SwedaviaArrivalsProvider::enabled);
     }
 
     @Test
     void coversTheTenSwedaviaAirportsOnly() {
         SwedaviaArrivalsProvider provider = provider();
 
-        for (String icao : List.of("ESSA", "ESSB", "ESGG", "ESMS", "ESPA", "ESNU", "ESNZ", "ESSV", "ESDF", "ESNQ")) {
+        for (String icao : List.of("ESSA", "ESSB", "ESGG", "ESMS", "ESPA", "ESNU", "ESNZ", "ESSV", "ESDF", "ESNQ", "essa")) {
             assertThat(provider.covers(icao)).as(icao).isTrue();
         }
-        assertThat(provider.covers("essa")).isTrue();
         assertThat(provider.covers("ESKN")).as("Skavsta is not Swedavia").isFalse();
-        assertThat(provider.covers("EKCH")).isFalse();
-        assertThat(provider.covers(null)).isFalse();
+        assertThat(Arrays.asList("EKCH", null)).noneMatch(provider::covers);
         assertThat(provider.id()).isEqualTo("swedavia");
     }
 
@@ -506,11 +524,13 @@ class SwedaviaArrivalsProviderTest {
         yaml.setResources(new ClassPathResource("application.yml"));
         Properties p = yaml.getObject();
 
-        assertThat(p.getProperty("flighttracker.confirmation.providers.swedavia.monthly-budget")).isEqualTo("9000");
-        assertThat(p.getProperty("flighttracker.confirmation.providers.swedavia.daily-budget")).isEqualTo("300");
         assertThat(Integer.parseInt(p.getProperty("flighttracker.confirmation.min-interval-seconds"))).isGreaterThanOrEqualTo(2);
-        assertThat(p.getProperty("flighttracker.confirmation.swedavia.base-url")).isEqualTo(BASE);
-        assertThat(p.getProperty("flighttracker.confirmation.swedavia.api-key")).isEqualTo("${SWEDAVIA_API_KEY:}");
-        assertThat(p.getProperty("flighttracker.confirmation.swedavia.api-key-secondary")).isEqualTo("${SWEDAVIA_API_KEY_SECONDARY:}");
+        assertThat(Stream.of(
+                        "flighttracker.confirmation.providers.swedavia.monthly-budget",
+                        "flighttracker.confirmation.providers.swedavia.daily-budget",
+                        "flighttracker.confirmation.swedavia.base-url",
+                        "flighttracker.confirmation.swedavia.api-key",
+                        "flighttracker.confirmation.swedavia.api-key-secondary").map(p::getProperty))
+                .containsExactly("9000", "300", BASE, "${SWEDAVIA_API_KEY:}", "${SWEDAVIA_API_KEY_SECONDARY:}");
     }
 }
