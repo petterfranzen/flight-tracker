@@ -9,6 +9,7 @@ import com.flighttracker.service.enrichment.CallsignRouteService;
 import com.flighttracker.service.enrichment.Route;
 import com.flighttracker.service.live.LiveAircraft;
 import com.flighttracker.service.live.LiveStateStore;
+import com.flighttracker.service.training.ConfirmedLanding;
 import com.flighttracker.service.training.TrainingDataService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -286,7 +287,7 @@ class ArrivalConfirmationServiceTest {
         Confirmation c = store.forAircraft(a).orElseThrow();
         assertThat(c.providerId()).isEqualTo("fake");
         assertThat(c.info().actualOn()).isEqualTo(on);
-        verify(training).recordConfirmedLanding("a1", gapKey, "fake", on, "ESSA");
+        verify(training).recordConfirmedLanding(new ConfirmedLanding("a1", gapKey, "fake", on, "ESSA"));
     }
 
     @Test
@@ -299,7 +300,7 @@ class ArrivalConfirmationServiceTest {
         service(provider).tick();
 
         assertThat(store.forAircraft(a)).isPresent();
-        verify(training, never()).recordConfirmedLanding(any(), any(), any(), any(), any());
+        verify(training, never()).recordConfirmedLanding(any());
     }
 
     @Test
@@ -310,7 +311,7 @@ class ArrivalConfirmationServiceTest {
         service(provider).tick();
 
         assertThat(store.forAircraft(a)).isPresent();
-        verify(training, never()).recordConfirmedLanding(any(), any(), any(), any(), any());
+        verify(training, never()).recordConfirmedLanding(any());
     }
 
     @Test
@@ -323,7 +324,7 @@ class ArrivalConfirmationServiceTest {
         svc.tick();
         svc.tick();
 
-        verify(training, org.mockito.Mockito.times(1)).recordConfirmedLanding(any(), any(), any(), any(), any());
+        verify(training, org.mockito.Mockito.times(1)).recordConfirmedLanding(any());
     }
 
     @Test
@@ -375,7 +376,7 @@ class ArrivalConfirmationServiceTest {
 
         assertThat(provider.calls).hasSize(1);
         assertThat(store.size()).isZero();
-        verify(training, never()).recordConfirmedLanding(any(), any(), any(), any(), any());
+        verify(training, never()).recordConfirmedLanding(any());
     }
 
     @Test
@@ -388,7 +389,7 @@ class ArrivalConfirmationServiceTest {
         service(provider).tick();
 
         assertThat(store.forAircraft(a).orElseThrow().landedAt()).isEqualTo(on);
-        verify(training).recordConfirmedLanding("a1", observedAt, "fake", on, "ESSA");
+        verify(training).recordConfirmedLanding(new ConfirmedLanding("a1", observedAt, "fake", on, "ESSA"));
     }
 
     /** The reviewed scenario: lands 10:00 and is confirmed with a gate, flies again, lands 11:30 and goes silent. */
@@ -418,7 +419,7 @@ class ArrivalConfirmationServiceTest {
         landConfirmFlyAndLandAgain(service(provider));
 
         assertThat(store.size()).isZero();
-        verify(training, never()).recordConfirmedLanding(any(), any(), any(), any(), any());
+        verify(training, never()).recordConfirmedLanding(any());
     }
 
     @Test
@@ -430,7 +431,7 @@ class ArrivalConfirmationServiceTest {
         assertThat(provider.calls).extracting(ArrivalQuery::expectedArrivalAt).containsExactly(
                 Instant.parse("2026-10-12T10:00:00Z"), Instant.parse("2026-10-12T11:30:00Z"));
         Instant secondLanding = Instant.parse("2026-10-12T11:30:00Z");
-        verify(training).recordConfirmedLanding("g1", Instant.parse("2026-10-12T11:25:00Z"), "fake", secondLanding, "ESSA");
+        verify(training).recordConfirmedLanding(new ConfirmedLanding("g1", Instant.parse("2026-10-12T11:25:00Z"), "fake", secondLanding, "ESSA"));
     }
 
     @Test
@@ -510,6 +511,6 @@ class ArrivalConfirmationServiceTest {
         service(provider).tick();
 
         assertThat(store.size()).isZero();
-        verify(training, never()).recordConfirmedLanding(any(), any(), any(), any(), any());
+        verify(training, never()).recordConfirmedLanding(any());
     }
 }
