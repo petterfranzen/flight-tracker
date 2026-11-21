@@ -7,6 +7,7 @@ import com.flighttracker.dto.LiveOverview;
 import com.flighttracker.model.FlightPosition;
 import com.flighttracker.repository.Timestamps;
 import com.flighttracker.service.LiveVisibilityWindows;
+import com.flighttracker.service.agent.RawPositionReport;
 import com.flighttracker.service.confirmation.Confirmation;
 import com.flighttracker.service.confirmation.ConfirmationStore;
 import com.flighttracker.service.coverage.GapEstimate;
@@ -191,20 +192,19 @@ public class LiveStateStore {
      *         icao24, or strictly newer than what was stored); false if it
      *         was a stale/duplicate report and the store was left unchanged.
      */
-    public boolean upsert(String icao24, String callsign, Instant observedAt,
-                           double latitude, double longitude, Double altitudeM,
-                           Double velocityMs, Double headingDeg, Double verticalRateMs,
-                           boolean onGround, String agentSource) {
+    public boolean upsert(RawPositionReport report, String agentSource) {
+        Instant observedAt = report.observedAt();
         AtomicReference<Boolean> accepted = new AtomicReference<>(Boolean.FALSE);
-        byIcao24.compute(icao24, (key, existing) -> {
+        byIcao24.compute(report.icao24(), (key, existing) -> {
             if (existing != null && !observedAt.isAfter(existing.observedAt())) {
                 return existing; // stale or duplicate — never regress "latest"
             }
             accepted.set(Boolean.TRUE);
             long id = existing != null ? existing.id() : idSequence.incrementAndGet();
-            return new LiveAircraft(id, icao24, callsign, observedAt, latitude, longitude,
-                    altitudeM, velocityMs, headingDeg, verticalRateMs, onGround, agentSource,
-                    landedSince(existing, onGround, observedAt), null, null, null, null);
+            return new LiveAircraft(id, report.icao24(), report.callsign(), observedAt,
+                    report.latitude(), report.longitude(), report.altitudeM(), report.velocityMs(),
+                    report.headingDeg(), report.verticalRateMs(), report.onGround(), agentSource,
+                    landedSince(existing, report.onGround(), observedAt), null, null, null, null);
         });
         return accepted.get();
     }
@@ -374,12 +374,12 @@ public class LiveStateStore {
         return count;
     }
 
-    private List<LiveAircraft> activeInBounds(Instant staleAirborneCutoff, Instant landedCutoff, Instant activeSince, Bounds bounds) {
+    private List<LiveAircraft> activeInBounds(ActiveTrafficQuery query) {
         List<LiveAircraft> out = new ArrayList<>();
         for (LiveAircraft a : byIcao24.values()) {
-            if (!isLive(a, staleAirborneCutoff, landedCutoff)) continue;
-            if (a.onGround() || a.observedAt().isBefore(activeSince)) continue;
-            if (!bounds.contains(a.displayLatitude(), a.displayLongitude())) continue;
+            if (!isLive(a, query.staleAirborneCutoff(), query.landedCutoff())) continue;
+            if (a.onGround() || a.observedAt().isBefore(query.activeSince())) continue;
+            if (!query.bounds().contains(a.displayLatitude(), a.displayLongitude())) continue;
             out.add(a);
         }
         return out;
@@ -404,8 +404,8 @@ public class LiveStateStore {
      * gridDeg is trusted as already clamped by the caller (see
      * FlightController's MIN/MAX_CLUSTER_GRID_DEG).
      */
-    public List<ClusterPoint> clustered(Instant staleAirborneCutoff, Instant landedCutoff, Instant activeSince, Bounds bounds, double gridDeg) {
-        return LiveOverviews.bucket(activeInBounds(staleAirborneCutoff, landedCutoff, activeSince, bounds), gridDeg);
+    public List<ClusterPoint> clustered(ActiveTrafficQuery query, double gridDeg) {
+        return LiveOverviews.bucket(activeInBounds(query), gridDeg);
     }
 
     /**
@@ -422,10 +422,8 @@ public class LiveStateStore {
      * viewport shows some real planes alongside its bubble. gridDeg is
      * trusted as already clamped by the caller.
      */
-    public LiveOverview overview(Instant staleAirborneCutoff, Instant landedCutoff, Instant activeSince, Bounds bounds,
-                                 double gridDeg, int maxPlanes, int perCell) {
-        return LiveOverviews.overview(activeInBounds(staleAirborneCutoff, landedCutoff, activeSince, bounds),
-                new LiveOverviews.PlaneAllowance(gridDeg, maxPlanes, perCell), this::marker);
+    public LiveOverview overview(ActiveTrafficQuery query, PlaneAllowance allowance) {
+        return LiveOverviews.overview(activeInBounds(query), allowance, this::marker);
     }
 
     /**
@@ -439,10 +437,8 @@ public class LiveStateStore {
      * client's exact overlap pass takes it from there. At most
      * {@code maxPlanes} are returned. cellDeg is trusted as already clamped.
      */
-    public LiveOverview discovered(Instant staleAirborneCutoff, Instant landedCutoff, Instant activeSince, Bounds bounds,
-                                   double cellDeg, int maxPlanes) {
-        return LiveOverviews.discovered(activeInBounds(staleAirborneCutoff, landedCutoff, activeSince, bounds),
-                cellDeg, maxPlanes, this::marker);
+    public LiveOverview discovered(ActiveTrafficQuery query, double cellDeg, int maxPlanes) {
+        return LiveOverviews.discovered(activeInBounds(query), cellDeg, maxPlanes, this::marker);
     }
 
     /**

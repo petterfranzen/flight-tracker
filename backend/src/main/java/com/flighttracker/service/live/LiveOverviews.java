@@ -20,10 +20,6 @@ import java.util.function.Function;
  */
 final class LiveOverviews {
 
-    /** How many planes the overview may draw: at most {@code maxPlanes}, {@code perCell} per {@code gridDeg} cell. */
-    record PlaneAllowance(double gridDeg, int maxPlanes, int perCell) {
-    }
-
     /** Fastest airborne first (unknown speed counts as -1), newest report as the tie-break, then icao24. */
     private static final Comparator<LiveAircraft> MOST_ACTIVE_FIRST = (a, b) -> {
         double va = a.velocityMs() != null ? a.velocityMs() : -1;
