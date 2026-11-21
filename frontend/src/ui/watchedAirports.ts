@@ -80,7 +80,7 @@ export function mount(map: FlightMap, store: AppStore): () => void {
         ctx.lineWidth = 2;
         ctx.strokeStyle = color;
         ctx.stroke();
-        drawLabel(ctx, text, label, LABEL_X_PX, (height - m.height) / 2);
+        drawLabel(ctx, text, label, { x: LABEL_X_PX, y: (height - m.height) / 2 });
         return done();
       },
       label.font,

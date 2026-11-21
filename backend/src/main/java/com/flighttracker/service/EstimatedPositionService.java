@@ -100,14 +100,13 @@ public final class EstimatedPositionService {
      */
     public static FlightPosition estimate(FlightPosition last, Instant asOf,
                                            Double destinationLat, Double destinationLon) {
-        if (last == null || last.onGround()) return last;
-        if (destinationLat == null || destinationLon == null) return last;
-        Double speed = last.velocityMs();
-        Double heading = last.headingDeg();
-        if (speed == null || speed < MIN_SPEED_MS || heading == null) return last;
+        if (!isAirborne(last) || !hasDestination(destinationLat, destinationLon)) return last;
+        if (!hasUsableMotion(last)) return last;
 
         Duration elapsed = Duration.between(last.observedAt(), asOf);
         if (elapsed.compareTo(MIN_AGE) < 0) return last;
+        double speed = last.velocityMs();
+        double heading = last.headingDeg();
 
         double distanceToDestinationM = haversineMeters(
                 last.latitude(), last.longitude(), destinationLat, destinationLon);
@@ -121,6 +120,20 @@ public final class EstimatedPositionService {
 
         double[] projected = destinationPoint(last.latitude(), last.longitude(), heading, distanceM);
         return last.withEstimatedPosition(projected[0], projected[1]);
+    }
+
+    private static boolean isAirborne(FlightPosition last) {
+        return last != null && !last.onGround();
+    }
+
+    private static boolean hasDestination(Double destinationLat, Double destinationLon) {
+        return destinationLat != null && destinationLon != null;
+    }
+
+    private static boolean hasUsableMotion(FlightPosition last) {
+        Double speed = last.velocityMs();
+        if (speed == null || last.headingDeg() == null) return false;
+        return !(speed < MIN_SPEED_MS);
     }
 
     // Standard spherical "destination point given start point, initial

@@ -68,18 +68,24 @@ export function pickInitialView(clusters: ClusterPoint[], defaultCenter: LatLon,
     if (here >= INITIAL_MIN_PLANES) return { ...defaultCenter, zoom: zoom === INITIAL_ZOOM ? zoomFor(here) : zoom, planes: here };
   }
   if (widest >= LOCAL_EMPTY_BELOW) return null;
+  return busiestWindow(clusters, defaultCenter, viewport);
+}
 
-  let best: InitialView | null = null;
-  let bestDist = Infinity;
+/** Whether a window of `planes` at `dist` from the default beats the best so far: more planes, or as many and nearer. */
+function isBetter(planes: number, dist: number, best: { view: InitialView; dist: number } | null): boolean {
+  if (!best || planes > best.view.planes) return true;
+  return planes === best.view.planes && dist < best.dist;
+}
+
+/** The busiest window in the world at INITIAL_ZOOM with enough planes, ties going to the one nearest the default; null if none. */
+function busiestWindow(clusters: ClusterPoint[], defaultCenter: LatLon, viewport: { width: number; height: number }): InitialView | null {
+  let best: { view: InitialView; dist: number } | null = null;
   for (const c of clusters) {
     const candidate = { lat: c.lat, lon: c.lon };
     const planes = planesInWindow(clusters, candidate, INITIAL_ZOOM, viewport);
     if (planes < INITIAL_MIN_PLANES) continue;
     const dist = Math.hypot(c.lat - defaultCenter.lat, c.lon - defaultCenter.lon);
-    if (!best || planes > best.planes || (planes === best.planes && dist < bestDist)) {
-      best = { ...candidate, zoom: zoomFor(planes), planes };
-      bestDist = dist;
-    }
+    if (isBetter(planes, dist, best)) best = { view: { ...candidate, zoom: zoomFor(planes), planes }, dist };
   }
-  return best;
+  return best ? best.view : null;
 }
