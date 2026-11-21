@@ -69,7 +69,8 @@ API, WebSocket and SPA on the same port either way.
 - `flights-history.test.js` — `GET /api/flights/{icao24}/history`: response
   shape, required `from`/`to` params, unknown aircraft, invalid time range.
 - `usage.test.js` — `GET /api/usage`: response shape, required `from`/`to`
-  params, derived-field sanity (non-negative distance/hours/speed).
+  params, the window rules (`to` after `from`, at most 24 h, so 72 h is a
+  400), derived-field sanity (non-negative distance/hours/speed).
 - `error-bodies.test.js` — the app's error responses (404/405/400/500):
   each carries a single generic `error` field and no framework name, container
   name or version in the body or headers, and a request the container itself
