@@ -12,7 +12,7 @@ Layout on the box:
 /opt/flight-tracker/app/current.jar      symlink -> releases/<sha>.jar
 /opt/flight-tracker/app/previous.jar     symlink -> releases/<sha>.jar (rollback target)
 /opt/flight-tracker/app/releases/        up to 5 kept jars, oldest pruned after each successful deploy
-/etc/flight-tracker/env                  OPENSKY_CLIENT_ID/SECRET (root:flighttracker, 0640)
+/etc/flight-tracker/env                  OPENSKY_CLIENT_ID/SECRET, the HMAC peppers (root:flighttracker, 0640)
 /etc/systemd/system/flight-tracker.service
 /var/lib/flight-tracker/                 StateDirectory: flighttracker.db (+ -wal/-shm)
 /usr/local/sbin/cloudflared-patch.sh     patch rule: upgrade cloudflared only once its release is 24 h old
@@ -186,3 +186,31 @@ For a major CVE (CVSS 7+ or CISA KEV), lift the hold with
 `sudo /usr/local/sbin/cloudflared-patch.sh --now`, inside the 72 h bound.
 
 To copy the files over, run `scp` from a checkout, or paste their contents into `sudo tee`.
+
+### One-time: set the HMAC peppers
+
+`cloud-init.yaml` only runs when a server is created, so the VM that already
+exists needs its two pepper variables added by hand. Both are secrets this
+deployment alone holds: generate each on the box (never on a laptop you copy
+around, and never into this repo), one per variable — do not reuse one value for
+both. `openssl rand -base64 32` is 32 random bytes, comfortably over the
+required 32-byte minimum:
+
+```bash
+# Append each value to the env file as root, then restart.
+sudo sh -c 'printf "FLIGHTTRACKER_RATE_LIMIT_PEPPER=%s\n" "$(openssl rand -base64 32)" >> /etc/flight-tracker/env'
+sudo sh -c 'printf "FLIGHTTRACKER_SUBJECT_PEPPER=%s\n"     "$(openssl rand -base64 32)" >> /etc/flight-tracker/env'
+sudo systemctl restart flight-tracker
+```
+
+`FLIGHTTRACKER_RATE_LIMIT_PEPPER` keys the per-client budget rows
+(`HotPollUserBudget`): a run with the `prod` profile refuses to start without
+it, and a run without that profile logs one warning and derives a random key for
+that process only. `FLIGHTTRACKER_SUBJECT_PEPPER` keys the social-login subject
+hashes (`SubjectHash`); it is needed only once `flighttracker.profile.enabled`
+is switched on, and the app refuses to start with that flag on and no pepper.
+
+Changing either pepper does not corrupt anything, but rows written under the old
+one become unreachable: the per-client budgets and social-login identities start
+fresh, and the orphaned rows are swept within 24 h. Pick both values before the
+feature they key is first used, and keep them stable afterwards.
