@@ -16,8 +16,6 @@ import org.springframework.web.server.ResponseStatusException;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
-import java.time.format.DateTimeParseException;
-import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -50,49 +48,25 @@ public class ScheduleController {
                                         @RequestParam(required = false) String to,
                                         @RequestParam(required = false) String airport,
                                         @RequestParam(required = false) String date) {
+        return search(new ScheduleSearchParams(flight, from, to, airport, date));
+    }
+
+    /** The search itself, on parameters already bound by {@link #search(String, String, String, String, String)}. */
+    public ResponseEntity<List<ScheduledFlight>> search(ScheduleSearchParams params) {
         if (!schedule.available()) {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Flight schedules need a Swedavia API key");
         }
-        LocalDate day = parseDay(date);
+        LocalDate day = params.day(schedule::today);
         FlightScheduleService.Outcome outcome = new FlightScheduleService.Outcome();
-        List<ScheduledFlight> found = find(new Query(flight, from, to, airport), day, outcome);
+        List<ScheduledFlight> found = find(params, day, outcome);
         return ResponseEntity.ok().header(STATUS_HEADER, outcome.status())
                 .body(found.stream().map(this::withLive).toList());
     }
 
-    /** The search parameters other than the date. */
-    private record Query(String flight, String from, String to, String airport) {
-        boolean byFlightNumber() {
-            return present(flight);
-        }
-
-        boolean byRoute() {
-            return present(from) && present(to);
-        }
-    }
-
-    private static boolean present(String value) {
-        return value != null && !value.isBlank();
-    }
-
-    /** The requested day, default today (Swedish time). */
-    private LocalDate parseDay(String date) {
-        if (!present(date)) return schedule.today();
-        try {
-            return LocalDate.parse(date.trim());
-        } catch (DateTimeParseException e) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "date must be yyyy-MM-dd");
-        }
-    }
-
-    private List<ScheduledFlight> find(Query q, LocalDate day, FlightScheduleService.Outcome outcome) {
-        if (q.byFlightNumber()) return schedule.byFlightNumber(q.flight(), day, codes(q.airport()), outcome);
-        if (q.byRoute()) return schedule.byRoute(codes(q.from()), codes(q.to()), day, outcome);
+    private List<ScheduledFlight> find(ScheduleSearchParams q, LocalDate day, FlightScheduleService.Outcome outcome) {
+        if (q.byFlightNumber()) return schedule.byFlightNumber(q.flight(), day, q.airportCodes(), outcome);
+        if (q.byRoute()) return schedule.byRoute(q.fromCodes(), q.toCodes(), day, outcome);
         throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "give flight, or from and to");
-    }
-
-    private static List<String> codes(String csv) {
-        return csv == null ? List.of() : Arrays.stream(csv.split(",")).map(String::trim).filter(s -> !s.isEmpty()).toList();
     }
 
     private ScheduledFlight withLive(ScheduledFlight f) {

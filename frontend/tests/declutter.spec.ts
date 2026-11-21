@@ -13,12 +13,13 @@ interface Opts {
   onGround?: boolean;
   ageMinutes?: number;
 }
-const plane = (icao24: string, callsign: string, lat: number, lon: number, o: Opts = {}) => ({
+type LatLon = { lat: number; lon: number };
+const plane = (icao24: string, callsign: string, at: LatLon, o: Opts = {}) => ({
   icao24,
   callsign,
   observedAt: minutesAgo(o.ageMinutes ?? 1),
-  latitude: lat,
-  longitude: lon,
+  latitude: at.lat,
+  longitude: at.lon,
   headingDeg: 90,
   onGround: o.onGround ?? false,
 });
@@ -26,8 +27,14 @@ const plane = (icao24: string, callsign: string, lat: number, lon: number, o: Op
 /** `cols` x rows planes on a lattice 0.35° of longitude by 0.15° of latitude apart: 64 x 54 px at z8, clear of each other. */
 function lattice(prefix: string, n: number, cols: number, o: Opts = {}) {
   return Array.from({ length: n }, (_, i) =>
-    plane(`${prefix}${i.toString(16).padStart(5, "0")}`, `${prefix.toUpperCase()}${i}`, BASE.lat - 0.7 + Math.floor(i / cols) * 0.15, BASE.lon - 2 + (i % cols) * 0.35, o),
+    plane(`${prefix}${i.toString(16).padStart(5, "0")}`, `${prefix.toUpperCase()}${i}`, { lat: BASE.lat - 0.7 + Math.floor(i / cols) * 0.15, lon: BASE.lon - 2 + (i % cols) * 0.35 }, o),
   );
+}
+
+/** Whether `pt` lies more than `inset` px inside a `box`-sized view on every side. */
+function insetContains(box: { width: number; height: number }, pt: { x: number; y: number }, inset: number): boolean {
+  const inX = pt.x > inset && pt.x < box.width - inset;
+  return inX && pt.y > inset && pt.y < box.height - inset;
 }
 
 async function serve(page: Page, list: ReturnType<typeof plane>[], zoom = 8) {
@@ -53,9 +60,9 @@ test.describe("hiding overlapping planes", () => {
     await serve(
       page,
       [
-        plane("aaaaaa", "FIRST", BASE.lat, BASE.lon),
-        plane("bbbbbb", "SECOND", BASE.lat + 0.001, BASE.lon + 0.001), // a few px away
-        plane("cccccc", "ALONE", BASE.lat, BASE.lon + 0.6), // ~110 px away: room
+        plane("aaaaaa", "FIRST", BASE),
+        plane("bbbbbb", "SECOND", { lat: BASE.lat + 0.001, lon: BASE.lon + 0.001 }), // a few px away
+        plane("cccccc", "ALONE", { lat: BASE.lat, lon: BASE.lon + 0.6 }), // ~110 px away: room
       ],
       9,
     );
@@ -66,7 +73,7 @@ test.describe("hiding overlapping planes", () => {
   test("a hidden plane comes back once zooming in gives it room", async ({ page }) => {
     await serve(
       page,
-      [plane("aaaaaa", "FIRST", BASE.lat, BASE.lon), plane("bbbbbb", "SECOND", BASE.lat + 0.01, BASE.lon + 0.01)],
+      [plane("aaaaaa", "FIRST", BASE), plane("bbbbbb", "SECOND", { lat: BASE.lat + 0.01, lon: BASE.lon + 0.01 })],
       9,
     );
     await expect.poll(() => count(page), { timeout: 10_000 }).toBe(1);
@@ -77,7 +84,7 @@ test.describe("hiding overlapping planes", () => {
   test("an active flight beats a parked one that was discovered first", async ({ page }) => {
     await serve(
       page,
-      [plane("aaaaaa", "PARKED", BASE.lat, BASE.lon, { onGround: true }), plane("bbbbbb", "FLYING", BASE.lat + 0.001, BASE.lon + 0.001)],
+      [plane("aaaaaa", "PARKED", BASE, { onGround: true }), plane("bbbbbb", "FLYING", { lat: BASE.lat + 0.001, lon: BASE.lon + 0.001 })],
       9,
     );
     await expect.poll(() => count(page), { timeout: 10_000 }).toBe(1);
@@ -87,7 +94,7 @@ test.describe("hiding overlapping planes", () => {
   test("a crowded view draws as many as fit and no two overlap", async ({ page }) => {
     // 1,500 aircraft packed into ~2° x 1°: far more than fit on screen at this size.
     const crowd = Array.from({ length: 1500 }, (_, i) =>
-      plane(`x${i.toString(16).padStart(5, "0")}`, `X${i}`, BASE.lat - 0.5 + ((i * 7) % 100) * 0.01, BASE.lon - 1 + ((i * 13) % 100) * 0.02),
+      plane(`x${i.toString(16).padStart(5, "0")}`, `X${i}`, { lat: BASE.lat - 0.5 + ((i * 7) % 100) * 0.01, lon: BASE.lon - 1 + ((i * 13) % 100) * 0.02 }),
     );
     await serve(page, crowd, 9);
     await expect.poll(() => count(page), { timeout: 10_000 }).toBeGreaterThan(20);
@@ -150,7 +157,7 @@ test.describe("capping how many planes are drawn", () => {
 
   test("in the app: a dense view draws at most 300 planes on a laptop, 150 on a phone", async ({ page }) => {
     const dense = Array.from({ length: 3_000 }, (_, i) =>
-      plane(`d${i.toString(16).padStart(5, "0")}`, `D${i}`, BASE.lat - 1.2 + (((i * 7919) % 10_000) / 10_000) * 2.4, BASE.lon - 2.5 + (((i * 104_729) % 10_000) / 10_000) * 5),
+      plane(`d${i.toString(16).padStart(5, "0")}`, `D${i}`, { lat: BASE.lat - 1.2 + (((i * 7919) % 10_000) / 10_000) * 2.4, lon: BASE.lon - 2.5 + (((i * 104_729) % 10_000) / 10_000) * 5 }),
     );
     await serve(page, dense, 8);
     await expect.poll(() => count(page), { timeout: 10_000 }).toBeGreaterThan(100);
@@ -165,7 +172,7 @@ test.describe("capping how many planes are drawn", () => {
 
 test.describe("big planes", () => {
   test("icons are bigger than the old dart, grow gradually up to city zoom, and shrink at an airport to fit its stands", async ({ page }) => {
-    await serve(page, [plane("aaaaaa", "SOLO", BASE.lat, BASE.lon)], 8);
+    await serve(page, [plane("aaaaaa", "SOLO", BASE)], 8);
     await expect.poll(() => count(page), { timeout: 10_000 }).toBe(1);
     const size = async () => (await renderedPlanes(page))[0].size;
     const sizeAt = async (zoom: number) => {
@@ -195,13 +202,13 @@ test.describe("big planes", () => {
 
   test("at stand zoom, planes 55 m apart (neighbouring gates) are both drawn", async ({ page }) => {
     // 0.0005 deg of latitude is ~55 m.
-    await serve(page, [plane("aaaaaa", "GATE1", BASE.lat, BASE.lon), plane("bbbbbb", "GATE2", BASE.lat + 0.0005, BASE.lon)], 16);
+    await serve(page, [plane("aaaaaa", "GATE1", BASE), plane("bbbbbb", "GATE2", { lat: BASE.lat + 0.0005, lon: BASE.lon })], 16);
     await expect.poll(() => count(page), { timeout: 10_000 }).toBe(2);
   });
 
   test("at Heathrow's latitude, planes at neighbouring narrow-body stands (43 m) are both drawn and don't overlap", async ({ page }) => {
     const LHR = { lat: 51.47, lon: -0.454 };
-    const list = [plane("aaaaaa", "STAND1", LHR.lat, LHR.lon), plane("bbbbbb", "STAND2", LHR.lat + 43 / 111_195, LHR.lon)];
+    const list = [plane("aaaaaa", "STAND1", LHR), plane("bbbbbb", "STAND2", { lat: LHR.lat + 43 / 111_195, lon: LHR.lon })];
     await serve(page, list, 16);
     await setMapView(page, LHR.lat, LHR.lon, 16);
     await expect.poll(() => count(page), { timeout: 10_000 }).toBe(2);
@@ -211,7 +218,7 @@ test.describe("big planes", () => {
 
   test("on a phone they are about 20% bigger, for a finger", async ({ page }) => {
     await page.setViewportSize({ width: 400, height: 800 });
-    await serve(page, [plane("aaaaaa", "SOLO", BASE.lat, BASE.lon)], 10);
+    await serve(page, [plane("aaaaaa", "SOLO", BASE)], 10);
     await expect.poll(() => count(page), { timeout: 10_000 }).toBe(1);
     const z10 = (await renderedPlanes(page))[0].size;
     expect(z10).toBeGreaterThanOrEqual(50); // 43 on a laptop
@@ -223,7 +230,7 @@ test.describe("big planes", () => {
 
   test("on a phone, neighbouring gates at stand zoom are both drawn", async ({ page }) => {
     await page.setViewportSize({ width: 400, height: 800 });
-    await serve(page, [plane("aaaaaa", "GATE1", BASE.lat, BASE.lon), plane("bbbbbb", "GATE2", BASE.lat + 0.0006, BASE.lon)], 16); // ~67 m
+    await serve(page, [plane("aaaaaa", "GATE1", BASE), plane("bbbbbb", "GATE2", { lat: BASE.lat + 0.0006, lon: BASE.lon })], 16); // ~67 m
     await expect.poll(() => count(page), { timeout: 10_000 }).toBe(2);
   });
 });
@@ -233,7 +240,7 @@ test.describe("panning at a fixed zoom", () => {
   // Rows of planes ~0.6 icons apart, so every plane overlaps its neighbours and only every other
   // one fits. Re-picking from scratch on each pan let a plane leaving at the edge flip a whole row.
   const rows = Array.from({ length: 3 }, (_, r) =>
-    Array.from({ length: 180 }, (_, i) => plane(`r${r}${i.toString(16).padStart(4, "0")}`, `R${r}N${i}`, BASE.lat - 0.15 + r * 0.15, 13.5 + i * 0.05)),
+    Array.from({ length: 180 }, (_, i) => plane(`r${r}${i.toString(16).padStart(4, "0")}`, `R${r}N${i}`, { lat: BASE.lat - 0.15 + r * 0.15, lon: 13.5 + i * 0.05 })),
   ).flat();
 
   /** The icao24s drawn once two reads in a row agree (the pan's render, then the viewport fetch's). */
@@ -275,7 +282,7 @@ test.describe("panning at a fixed zoom", () => {
         const p = byId.get(id)!;
         const pt = await onScreen(p.latitude, p.longitude);
         // Still well inside the view after the pan, so it should still be drawn.
-        if (pt.x > 40 && pt.x < box.width - 40 && pt.y > 40 && pt.y < box.height - 40) lost.push(p.callsign);
+        if (insetContains(box, pt, 40)) lost.push(p.callsign);
       }
       expect(lost, `step ${step}: planes still on screen that stopped being drawn`).toEqual([]);
       before = after;

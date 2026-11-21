@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { LIVE_FIXTURE, freezeClock, mockFlightApi, seedWatched, waitForMapReady } from "./helpers";
 
 // The browser-only notification slice (#82 design, first slice): the bell's
@@ -99,26 +99,42 @@ async function openPanel(page: Page): Promise<void> {
   await expect(page.locator(".watch-panel-item").first()).toBeVisible();
 }
 
-test("permission default: the prompt fires only on the Notify me click, then the flight is on", async ({ page }) => {
-  await stubNotifications(page, { permission: "default", grant: true });
+type NotifyStub = Parameters<typeof stubNotifications>[1];
+
+/** Boots the app with the watched flight still on the ground and the watch panel open. */
+async function openWatchedOnGround(page: Page, stub: NotifyStub): Promise<void> {
+  await stubNotifications(page, stub);
   await mockFlightApi(page);
   await page.route("**/api/schedule/search*", (route) => route.fulfill({ json: [row(false)] }));
   await seedWatched(page, WATCHED);
   await page.goto("/");
   await waitForMapReady(page, 20_000);
   await openPanel(page);
+}
+
+/** Opens the watched flight's notification block with its bell. */
+async function openNotifyBlock(page: Page): Promise<Locator> {
+  await page.locator(".watch-panel-bell").click();
+  return page.locator(".watch-panel-notify");
+}
+
+async function permissionRequests(page: Page): Promise<number> {
+  return page.evaluate(() => (window as any).__permissionRequests);
+}
+
+test("permission default: the prompt fires only on the Notify me click, then the flight is on", async ({ page }) => {
+  await openWatchedOnGround(page, { permission: "default", grant: true });
 
   // Nothing has asked yet — not on load, not when the bell opens the block.
-  expect(await page.evaluate(() => (window as any).__permissionRequests)).toBe(0);
-  await page.locator(".watch-panel-bell").click();
-  const block = page.locator(".watch-panel-notify");
+  expect(await permissionRequests(page)).toBe(0);
+  const block = await openNotifyBlock(page);
   await expect(block).toContainText("Notifications appear while this site is open");
   await expect(block).toContainText("a closed browser is not");
-  expect(await page.evaluate(() => (window as any).__permissionRequests)).toBe(0);
+  expect(await permissionRequests(page)).toBe(0);
 
   await block.getByRole("button", { name: "Notify me" }).click();
   await expect(block).toContainText("Notifications: on");
-  expect(await page.evaluate(() => (window as any).__permissionRequests)).toBe(1);
+  expect(await permissionRequests(page)).toBe(1);
   const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("flighttracker:watchNotify")!));
   expect(stored[NOTIFY_KEY].enabled).toBe(true);
 
@@ -128,53 +144,32 @@ test("permission default: the prompt fires only on the Notify me click, then the
 });
 
 test("permission granted: the bell opts the flight in without another prompt", async ({ page }) => {
-  await stubNotifications(page, { permission: "granted" });
-  await mockFlightApi(page);
-  await page.route("**/api/schedule/search*", (route) => route.fulfill({ json: [row(false)] }));
-  await seedWatched(page, WATCHED);
-  await page.goto("/");
-  await waitForMapReady(page, 20_000);
-  await openPanel(page);
+  await openWatchedOnGround(page, { permission: "granted" });
 
-  await page.locator(".watch-panel-bell").click();
-  const block = page.locator(".watch-panel-notify");
+  const block = await openNotifyBlock(page);
   await expect(block).toContainText("Notifications: not enabled for this flight");
   await block.getByRole("button", { name: "Notify me" }).click();
   await expect(block).toContainText("Notifications: on");
-  expect(await page.evaluate(() => (window as any).__permissionRequests)).toBe(0);
+  expect(await permissionRequests(page)).toBe(0);
 });
 
 test("permission denied: the block says so and never pretends otherwise", async ({ page }) => {
-  await stubNotifications(page, { permission: "denied" });
-  await mockFlightApi(page);
-  await page.route("**/api/schedule/search*", (route) => route.fulfill({ json: [row(false)] }));
-  await seedWatched(page, WATCHED);
-  await page.goto("/");
-  await waitForMapReady(page, 20_000);
-  await openPanel(page);
+  await openWatchedOnGround(page, { permission: "denied" });
 
-  await page.locator(".watch-panel-bell").click();
-  const block = page.locator(".watch-panel-notify");
+  const block = await openNotifyBlock(page);
   await expect(block).toContainText("Notifications: blocked in your browser");
   await expect(block).toContainText("the in-app banner still works");
   await expect(block.getByRole("button", { name: "Notify me" })).toHaveCount(0);
-  expect(await page.evaluate(() => (window as any).__permissionRequests)).toBe(0);
+  expect(await permissionRequests(page)).toBe(0);
 });
 
 test("permission default stays default: no enable, no false 'on'", async ({ page }) => {
-  await stubNotifications(page, { permission: "default", grant: false });
-  await mockFlightApi(page);
-  await page.route("**/api/schedule/search*", (route) => route.fulfill({ json: [row(false)] }));
-  await seedWatched(page, WATCHED);
-  await page.goto("/");
-  await waitForMapReady(page, 20_000);
-  await openPanel(page);
+  await openWatchedOnGround(page, { permission: "default", grant: false });
 
-  await page.locator(".watch-panel-bell").click();
-  const block = page.locator(".watch-panel-notify");
+  const block = await openNotifyBlock(page);
   await block.getByRole("button", { name: "Notify me" }).click();
   await expect(block).toContainText("Notifications: not enabled for this flight");
-  expect(await page.evaluate(() => (window as any).__permissionRequests)).toBe(1);
+  expect(await permissionRequests(page)).toBe(1);
   const stored = await page.evaluate(() => {
     const raw = localStorage.getItem("flighttracker:watchNotify");
     return raw ? JSON.parse(raw) : {};
