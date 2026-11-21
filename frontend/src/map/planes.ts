@@ -2,6 +2,7 @@ import type { ExpressionSpecification, GeoJSONSource } from "maplibre-gl";
 import type { FlightMap, MapHit, Point, RenderedPlane } from "./map";
 import type { LiveMarker, SelectedPosition } from "../types/flight";
 import { canvas, cssToken, drawLabel, measureLabel, serveImages, withAlpha, type DrawnImage, type LabelStyle } from "./glImages";
+import { COMPACT_QUERY } from "../ui/a11y";
 import { isSmallScreen } from "./screen";
 import { perf } from "./perf";
 import { glidedPoint, glidePending, glideRequested, recordFix, type Track } from "./glide";
@@ -303,7 +304,7 @@ export function createPlaneLayer(map: FlightMap, onSelect: (p: LiveMarker) => vo
   let selectedData: GeoJSON.Feature[] = [];
   let selectedKey = "";
   const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
-  const mobileQuery = window.matchMedia("(max-width: 768px)");
+  const mobileQuery = window.matchMedia(COMPACT_QUERY);
 
   // ---- glide between reports (map/glide.ts) ----
   // Off unless the URL asks for it. Per drawn aircraft: the last two reports,
