@@ -87,12 +87,13 @@ class TrainingDataIntegrationTest {
 
     private TrainingDataService service(boolean enabled) {
         // No capture delay here: most tests are about what is captured, not when.
-        return new TrainingDataService(repository, runways, tx, Clock.fixed(NOW, ZoneOffset.UTC), enabled, 4000, 0, 30);
+        return new TrainingDataService(repository, runways, tx, Clock.fixed(NOW, ZoneOffset.UTC),
+                new TrainingSettings(enabled, 4000, 0, 30));
     }
 
     private TrainingDataService service(Clock clock, long captureDelaySeconds, long maxAirborneLabelGapMinutes) {
-        return new TrainingDataService(repository, runways, tx, clock, true, 4000,
-                captureDelaySeconds, maxAirborneLabelGapMinutes);
+        return new TrainingDataService(repository, runways, tx, clock,
+                new TrainingSettings(true, 4000, captureDelaySeconds, maxAirborneLabelGapMinutes));
     }
 
     private static final class MutableClock extends Clock {
@@ -228,7 +229,7 @@ class TrainingDataIntegrationTest {
         gap(s, a, estimate(TrackState.COVERAGE_LOST, 0.2, "ESSA"), true);
         s.reconcile(Set.of(), id -> Optional.of(aircraft(id, RESUMED, fix(59.6, 17.9, 0.0), true)));
         s.flush();
-        s.recordConfirmedLanding("abc123", LAST, "mock", NOW, "ESSA");
+        s.recordConfirmedLanding(new ConfirmedLanding("abc123", LAST, "mock", NOW, "ESSA"));
 
         assertThat(count("track_end_feature")).isZero();
         assertThat(count("track_end_label")).isZero();
@@ -359,7 +360,7 @@ class TrainingDataIntegrationTest {
             }
         };
         TrainingDataService s = new TrainingDataService(failingOnce, runways, tx, Clock.fixed(NOW, ZoneOffset.UTC),
-                true, 4000, 0, 30);
+                new TrainingSettings(true, 4000, 0, 30));
         LiveAircraft a = aircraft("abc123", LAST, fix(59.7, 17.9, 600.0), false);
 
         gap(s, a, estimate(TrackState.LANDED_INFERRED, 0.9, "ESSA"), true); // insert fails, the batch rolls back
@@ -384,7 +385,7 @@ class TrainingDataIntegrationTest {
             }
         };
         TrainingDataService s = new TrainingDataService(alwaysFailing, runways, tx, Clock.fixed(NOW, ZoneOffset.UTC),
-                true, 4000, 0, 30);
+                new TrainingSettings(true, 4000, 0, 30));
         gap(s, aircraft("abc123", LAST, fix(59.7, 17.9, 600.0), false), estimate(TrackState.COVERAGE_LOST, 0.2, "ESSA"), true);
         for (int i = 0; i < TrainingDataService.MAX_ATTEMPTS + 2; i++) s.flush();
         @SuppressWarnings("unchecked")
@@ -398,7 +399,7 @@ class TrainingDataIntegrationTest {
                     protected void doCommit(org.springframework.transaction.support.DefaultTransactionStatus status) {
                         throw new org.springframework.transaction.TransactionSystemException("commit failed");
                     }
-                }), Clock.fixed(NOW, ZoneOffset.UTC), true, 4000, 0, 30);
+                }), Clock.fixed(NOW, ZoneOffset.UTC), new TrainingSettings(true, 4000, 0, 30));
         for (int i = 0; i < TrainingDataService.MAX_PENDING + 50; i++) {
             LiveAircraft a = aircraft(String.format("x%05d", i), LAST, fix(59.7, 17.9, 600.0), false);
             t.onGapEstimate(a, features(a, estimate(TrackState.COVERAGE_LOST, 0.2, "ESSA")), true);
@@ -536,7 +537,7 @@ class TrainingDataIntegrationTest {
 
     @Test
     void confirmedLanding_insertsALandedLabelWithTheProviderAsSource() {
-        service().recordConfirmedLanding("abc123", LAST, "flightaware", LAST.plusSeconds(300), "ESSA");
+        service().recordConfirmedLanding(new ConfirmedLanding("abc123", LAST, "flightaware", LAST.plusSeconds(300), "ESSA"));
 
         assertRowHas(jdbc.queryForMap("SELECT * FROM track_end_label"), columns(
                 "outcome", "LANDED",
@@ -562,8 +563,8 @@ class TrainingDataIntegrationTest {
                 RESUMED, 59.5, 18.1, null), NOW);
         TrainingDataService s = service();
 
-        s.recordConfirmedLanding("in-gap", LAST, "mock", RESUMED.minusSeconds(120), "ESSA");
-        s.recordConfirmedLanding("later1", LAST, "mock", RESUMED.plusSeconds(3600), "ESSA");
+        s.recordConfirmedLanding(new ConfirmedLanding("in-gap", LAST, "mock", RESUMED.minusSeconds(120), "ESSA"));
+        s.recordConfirmedLanding(new ConfirmedLanding("later1", LAST, "mock", RESUMED.plusSeconds(3600), "ESSA"));
 
         assertThat(jdbc.queryForObject("SELECT outcome || '/' || label_source FROM track_end_label WHERE icao24 = 'in-gap'",
                 String.class)).isEqualTo("LANDED/mock");
@@ -578,7 +579,7 @@ class TrainingDataIntegrationTest {
         repository.insertLabel(new TrainingDataRepository.Label("abc123", LAST, "LANDED", "adsb_ground",
                 RESUMED, 60.5, 18.5, null), NOW);
 
-        service().recordConfirmedLanding("abc123", LAST, "mock", RESUMED.minusSeconds(30), "ESSA");
+        service().recordConfirmedLanding(new ConfirmedLanding("abc123", LAST, "mock", RESUMED.minusSeconds(30), "ESSA"));
 
         Map<String, Object> label = jdbc.queryForMap("SELECT * FROM track_end_label");
         assertThat(label.get("label_source")).isEqualTo("adsb_ground");
