@@ -19,6 +19,7 @@ import com.flighttracker.service.confirmation.ArrivalInfo;
 import com.flighttracker.service.confirmation.Confirmation;
 import com.flighttracker.service.confirmation.ConfirmationStore;
 import com.flighttracker.service.live.LiveAircraft;
+import com.flighttracker.service.live.LiveFlightSearch;
 import com.flighttracker.service.live.LiveStateStore;
 import com.flighttracker.service.live.PlaneAllowance;
 import org.junit.jupiter.api.Test;
@@ -69,7 +70,8 @@ class FlightControllerTest {
     private final ConfirmationStore confirmationStore = new ConfirmationStore(120, 100);
 
     private FlightController controller() {
-        return new FlightController(liveStateStore, positionRepository, viewportService, enrichmentService, airportRepository, confirmationStore);
+        return new FlightController(liveStateStore, positionRepository, viewportService, confirmationStore,
+                new LiveFlightSearch(liveStateStore, enrichmentService, airportRepository));
     }
 
     // LiveAircraft has no public constructor test helper of its own (it's a
@@ -163,10 +165,10 @@ class FlightControllerTest {
         when(liveStateStore.overview(any(), any()))
                 .thenReturn(new LiveOverview(List.of(), List.of()));
 
-        controller().liveOverview(-90, 90, -180, 180, 2.0, 99_999, 99, false);
+        controller().liveOverview(new BboxParams(-90, 90, -180, 180), new OverviewParams(2.0, 99_999, 99, false));
         verify(liveStateStore).overview(any(), eq(new PlaneAllowance(2.0, 2000, 20))); // capped
 
-        controller().liveOverview(-90, 90, -180, 180, 2.0, -5, 0, false);
+        controller().liveOverview(new BboxParams(-90, 90, -180, 180), new OverviewParams(2.0, -5, 0, false));
         verify(liveStateStore).overview(any(), eq(new PlaneAllowance(2.0, 0, 1))); // floored
     }
 
@@ -175,10 +177,10 @@ class FlightControllerTest {
         when(liveStateStore.discovered(any(), anyDouble(), anyInt()))
                 .thenReturn(new LiveOverview(List.of(), List.of()));
 
-        controller().liveOverview(-90, 90, -180, 180, 0.01, 99_999, 6, true);
+        controller().liveOverview(new BboxParams(-90, 90, -180, 180), new OverviewParams(0.01, 99_999, 6, true));
         verify(liveStateStore).discovered(any(), eq(0.5), eq(2000)); // cell floored, planes capped
 
-        controller().liveOverview(-90, 90, -180, 180, 999, -5, 6, true);
+        controller().liveOverview(new BboxParams(-90, 90, -180, 180), new OverviewParams(999, -5, 6, true));
         verify(liveStateStore).discovered(any(), eq(40.0), eq(0));
         verify(liveStateStore, never()).overview(any(), any());
     }
@@ -188,7 +190,7 @@ class FlightControllerTest {
         when(liveStateStore.overview(any(), any()))
                 .thenReturn(new LiveOverview(List.of(), List.of()));
 
-        controller().liveOverview(-90, 90, -180, 180, 2.0, 200, 3, false);
+        controller().liveOverview(new BboxParams(-90, 90, -180, 180), new OverviewParams(2.0, 200, 3, false));
 
         // A world-sized bbox must not become "the current viewport" (hot poll / broadcaster).
         verifyNoInteractions(viewportService);
