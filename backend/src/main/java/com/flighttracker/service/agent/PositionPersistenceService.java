@@ -148,11 +148,7 @@ public class PositionPersistenceService {
                 // Keeps LiveStateStore (the in-memory "latest per aircraft"
                 // map — see its own javadoc) in step with the append-only
                 // history — every accepted report updates both.
-                liveStateStore.upsert(
-                        r.icao24(), r.callsign(), r.observedAt(),
-                        r.latitude(), r.longitude(), r.altitudeM(),
-                        r.velocityMs(), r.headingDeg(), r.verticalRateMs(),
-                        r.onGround(), sourceName);
+                liveStateStore.upsert(r, sourceName);
                 persisted.add(inserted.get());
                 written++;
             }
@@ -299,10 +295,7 @@ public class PositionPersistenceService {
         // plain loop over ~13k reports is microseconds, not worth building
         // a batch API for.
         for (RawPositionReport r : toInsert) {
-            liveStateStore.upsert(r.icao24(), r.callsign(), r.observedAt(),
-                    r.latitude(), r.longitude(), r.altitudeM(),
-                    r.velocityMs(), r.headingDeg(), r.verticalRateMs(),
-                    r.onGround(), sourceName);
+            liveStateStore.upsert(r, sourceName);
         }
 
         log.info("{}: wrote {} of {} position reports (batched, {} skipped as unchanged-ground)",

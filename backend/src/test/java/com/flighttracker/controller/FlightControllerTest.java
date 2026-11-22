@@ -20,6 +20,7 @@ import com.flighttracker.service.confirmation.Confirmation;
 import com.flighttracker.service.confirmation.ConfirmationStore;
 import com.flighttracker.service.live.LiveAircraft;
 import com.flighttracker.service.live.LiveStateStore;
+import com.flighttracker.service.live.PlaneAllowance;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
@@ -159,32 +160,32 @@ class FlightControllerTest {
 
     @Test
     void liveOverview_clampsLimitAndPerCell_andUsesTheActiveTrafficWindow() {
-        when(liveStateStore.overview(any(), any(), any(), any(), eq(2.0), anyInt(), anyInt()))
+        when(liveStateStore.overview(any(), any()))
                 .thenReturn(new LiveOverview(List.of(), List.of()));
 
         controller().liveOverview(-90, 90, -180, 180, 2.0, 99_999, 99, false);
-        verify(liveStateStore).overview(any(), any(), any(), any(), eq(2.0), eq(2000), eq(20)); // capped
+        verify(liveStateStore).overview(any(), eq(new PlaneAllowance(2.0, 2000, 20))); // capped
 
         controller().liveOverview(-90, 90, -180, 180, 2.0, -5, 0, false);
-        verify(liveStateStore).overview(any(), any(), any(), any(), eq(2.0), eq(0), eq(1)); // floored
+        verify(liveStateStore).overview(any(), eq(new PlaneAllowance(2.0, 0, 1))); // floored
     }
 
     @Test
     void liveOverview_declutterAsksForTheClusterFreeVariant_clampedAndFlooredLikeTheOther() {
-        when(liveStateStore.discovered(any(), any(), any(), any(), anyDouble(), anyInt()))
+        when(liveStateStore.discovered(any(), anyDouble(), anyInt()))
                 .thenReturn(new LiveOverview(List.of(), List.of()));
 
         controller().liveOverview(-90, 90, -180, 180, 0.01, 99_999, 6, true);
-        verify(liveStateStore).discovered(any(), any(), any(), any(), eq(0.5), eq(2000)); // cell floored, planes capped
+        verify(liveStateStore).discovered(any(), eq(0.5), eq(2000)); // cell floored, planes capped
 
         controller().liveOverview(-90, 90, -180, 180, 999, -5, 6, true);
-        verify(liveStateStore).discovered(any(), any(), any(), any(), eq(40.0), eq(0));
-        verify(liveStateStore, never()).overview(any(), any(), any(), any(), anyDouble(), anyInt(), anyInt());
+        verify(liveStateStore).discovered(any(), eq(40.0), eq(0));
+        verify(liveStateStore, never()).overview(any(), any());
     }
 
     @Test
     void liveOverview_neverTouchesTheReportedViewport() {
-        when(liveStateStore.overview(any(), any(), any(), any(), anyDouble(), anyInt(), anyInt()))
+        when(liveStateStore.overview(any(), any()))
                 .thenReturn(new LiveOverview(List.of(), List.of()));
 
         controller().liveOverview(-90, 90, -180, 180, 2.0, 200, 3, false);

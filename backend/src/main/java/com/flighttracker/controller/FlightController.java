@@ -13,8 +13,10 @@ import com.flighttracker.service.ViewportService;
 import com.flighttracker.service.enrichment.AircraftEnrichmentService;
 import com.flighttracker.service.confirmation.ConfirmationStore;
 import com.flighttracker.service.enrichment.Route;
+import com.flighttracker.service.live.ActiveTrafficQuery;
 import com.flighttracker.service.live.LiveAircraft;
 import com.flighttracker.service.live.LiveStateStore;
+import com.flighttracker.service.live.PlaneAllowance;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -207,7 +209,7 @@ public class FlightController {
                                             @RequestParam(defaultValue = "2") double gridDeg) {
         Cutoffs c = Cutoffs.at(Instant.now());
         Bounds bounds = new Bounds(latMin, latMax, lonMin, lonMax);
-        return liveStateStore.clustered(c.staleAirborne(), c.landed(), c.active(), bounds, clampGridDeg(gridDeg));
+        return liveStateStore.clustered(c.in(bounds), clampGridDeg(gridDeg));
     }
 
     private static final int DEFAULT_OVERVIEW_PLANES = 120;
@@ -243,10 +245,10 @@ public class FlightController {
         int planes = Math.min(MAX_OVERVIEW_PLANES, Math.max(0, limit));
         if (declutter) {
             // No clusters: one plane per cell, first discovered wins (see LiveStateStore.discovered).
-            return liveStateStore.discovered(c.staleAirborne(), c.landed(), c.active(), bounds, clampedGridDeg, planes);
+            return liveStateStore.discovered(c.in(bounds), clampedGridDeg, planes);
         }
-        return liveStateStore.overview(c.staleAirborne(), c.landed(), c.active(), bounds, clampedGridDeg,
-                planes, Math.min(MAX_OVERVIEW_PER_CELL, Math.max(1, perCell)));
+        return liveStateStore.overview(c.in(bounds), new PlaneAllowance(clampedGridDeg,
+                planes, Math.min(MAX_OVERVIEW_PER_CELL, Math.max(1, perCell))));
     }
 
     /** The visibility cutoffs the zoomed-out endpoints share, all relative to one {@code now}. */
@@ -255,6 +257,10 @@ public class FlightController {
             return new Cutoffs(now.minus(LiveVisibilityWindows.STALE_AIRBORNE_BOUND),
                     now.minus(LiveVisibilityWindows.LANDED_VISIBILITY),
                     now.minus(LiveVisibilityWindows.ACTIVE_TRAFFIC_WINDOW));
+        }
+
+        ActiveTrafficQuery in(Bounds bounds) {
+            return new ActiveTrafficQuery(staleAirborne, landed, active, bounds);
         }
     }
 

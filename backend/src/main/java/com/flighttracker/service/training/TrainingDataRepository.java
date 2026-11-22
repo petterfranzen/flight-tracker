@@ -5,6 +5,9 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
 import java.time.Instant;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.function.Function;
 
 import static com.flighttracker.repository.Timestamps.toEpochMilli;
 
@@ -32,7 +35,6 @@ public class TrainingDataRepository {
 
     /** Idempotent: the first row for (icao24, last_observed_at) stays. */
     public boolean insertFeatures(TrackEndFeatures f, Instant capturedAt) {
-        ApproachGeometry g = f.geometry();
         return jdbcClient.sql("""
                 INSERT INTO track_end_feature (icao24, last_observed_at, captured_at, features_version,
                     callsign, origin_icao, destination_icao,
@@ -68,16 +70,7 @@ public class TrainingDataRepository {
                 .param("window", f.windowSeconds())
                 .param("altChange", f.altitudeChangeM())
                 .param("meanVr", f.meanVerticalRateMs())
-                .param("gHeight", g == null ? null : g.heightAboveThresholdM())
-                .param("gVr", g == null ? null : g.verticalRateMs())
-                .param("gGs", g == null ? null : g.groundSpeedMs())
-                .param("gDist", g == null ? null : g.distanceToThresholdM())
-                .param("gCross", g == null ? null : g.crossTrackM())
-                .param("gHeadingDiff", g == null ? null : g.headingDiffDeg())
-                .param("gGlide", g == null ? null : g.glidePathDeviationM())
-                .param("gGoAround", g == null || g.goAroundSignature() == null ? null : (g.goAroundSignature() ? 1 : 0))
-                .param("gAirport", g == null ? null : g.airportIcao())
-                .param("gRunway", g == null ? null : g.runwayIdent())
+                .params(geometryParams(f.geometry()))
                 .param("state", f.state().name())
                 .param("probability", f.landingProbability())
                 .param("touchdownAt", toEpochMilli(f.touchdownAt()))
@@ -171,8 +164,33 @@ public class TrainingDataRepository {
                 .param("cutoff", toEpochMilli(cutoff)).update();
     }
 
-    private static java.util.Map<String, Object> labelParams(Label l, Instant labelledAt) {
-        java.util.Map<String, Object> m = new java.util.HashMap<>();
+    /** The geo_* columns; every one is null when the track end had no approach geometry. */
+    private static Map<String, Object> geometryParams(ApproachGeometry g) {
+        Map<String, Object> m = new HashMap<>();
+        m.put("gHeight", geometryField(g, ApproachGeometry::heightAboveThresholdM));
+        m.put("gVr", geometryField(g, ApproachGeometry::verticalRateMs));
+        m.put("gGs", geometryField(g, ApproachGeometry::groundSpeedMs));
+        m.put("gDist", geometryField(g, ApproachGeometry::distanceToThresholdM));
+        m.put("gCross", geometryField(g, ApproachGeometry::crossTrackM));
+        m.put("gHeadingDiff", geometryField(g, ApproachGeometry::headingDiffDeg));
+        m.put("gGlide", geometryField(g, ApproachGeometry::glidePathDeviationM));
+        m.put("gGoAround", toFlag(geometryField(g, ApproachGeometry::goAroundSignature)));
+        m.put("gAirport", geometryField(g, ApproachGeometry::airportIcao));
+        m.put("gRunway", geometryField(g, ApproachGeometry::runwayIdent));
+        return m;
+    }
+
+    private static <T> T geometryField(ApproachGeometry g, Function<ApproachGeometry, T> field) {
+        return g == null ? null : field.apply(g);
+    }
+
+    /** SQLite has no boolean: 1/0, or null when unknown. */
+    private static Integer toFlag(Boolean value) {
+        return value == null ? null : (value ? 1 : 0);
+    }
+
+    private static Map<String, Object> labelParams(Label l, Instant labelledAt) {
+        Map<String, Object> m = new HashMap<>();
         m.put("icao24", l.icao24());
         m.put("lastObservedAt", toEpochMilli(l.lastObservedAt()));
         m.put("outcome", l.outcome());
