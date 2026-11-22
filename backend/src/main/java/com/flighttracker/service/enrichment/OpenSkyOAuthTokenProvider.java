@@ -55,37 +55,55 @@ public class OpenSkyOAuthTokenProvider {
 
     /** Empty if no client-id/secret is configured, or the token request fails. */
     public synchronized Optional<String> getAccessToken() {
-        if (clientId == null || clientId.isBlank() || clientSecret == null || clientSecret.isBlank()) {
+        if (!hasCredentials()) {
             return Optional.empty();
         }
-        if (cachedToken != null && Instant.now().isBefore(expiresAt)) {
+        if (hasFreshToken()) {
             return Optional.of(cachedToken);
         }
         try {
-            MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
-            form.add("grant_type", "client_credentials");
-            form.add("client_id", clientId);
-            form.add("client_secret", clientSecret);
-
-            TokenResponse response = client.post()
-                    .uri(tokenUrl)
-                    .contentType(MediaType.APPLICATION_FORM_URLENCODED)
-                    .body(form)
-                    .retrieve()
-                    .body(TokenResponse.class);
-
-            if (response == null || response.access_token() == null) {
-                log.warn("OpenSky token response had no access_token");
-                return Optional.empty();
-            }
-            cachedToken = response.access_token();
-            long ttl = response.expires_in() == null ? 0 : response.expires_in();
-            expiresAt = Instant.now().plusSeconds(Math.max(30, ttl - EARLY_REFRESH.toSeconds()));
-            return Optional.of(cachedToken);
+            return cache(requestToken());
         } catch (Exception e) {
             log.warn("Failed to obtain OpenSky OAuth token: {}", e.toString());
             return Optional.empty();
         }
+    }
+
+    private boolean hasCredentials() {
+        return isPresent(clientId) && isPresent(clientSecret);
+    }
+
+    private static boolean isPresent(String value) {
+        return value != null && !value.isBlank();
+    }
+
+    private boolean hasFreshToken() {
+        return cachedToken != null && Instant.now().isBefore(expiresAt);
+    }
+
+    private TokenResponse requestToken() {
+        MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
+        form.add("grant_type", "client_credentials");
+        form.add("client_id", clientId);
+        form.add("client_secret", clientSecret);
+
+        return client.post()
+                .uri(tokenUrl)
+                .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                .body(form)
+                .retrieve()
+                .body(TokenResponse.class);
+    }
+
+    private Optional<String> cache(TokenResponse response) {
+        if (response == null || response.access_token() == null) {
+            log.warn("OpenSky token response had no access_token");
+            return Optional.empty();
+        }
+        cachedToken = response.access_token();
+        long ttl = response.expires_in() == null ? 0 : response.expires_in();
+        expiresAt = Instant.now().plusSeconds(Math.max(30, ttl - EARLY_REFRESH.toSeconds()));
+        return Optional.of(cachedToken);
     }
 
     // Field names match the token endpoint's JSON keys directly (Jackson

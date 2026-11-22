@@ -9,6 +9,7 @@ import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestClient;
 
 import java.util.Optional;
+import java.util.function.Function;
 
 /**
  * Looks up aircraft type/registration/operator by icao24 via adsbdb.com.
@@ -76,24 +77,10 @@ public class AdsbdbClient {
                     .uri("/callsign/{callsign}", callsign)
                     .retrieve()
                     .body(AdsbdbCallsignResponse.class);
-
-            if (body == null || body.response() == null || body.response().flightroute() == null) {
-                return RouteLookup.of(LookupStatus.NOT_FOUND);
-            }
-            FlightRoute route = body.response().flightroute();
-            if (route.origin() == null && route.destination() == null) {
-                return RouteLookup.of(LookupStatus.NOT_FOUND);
-            }
-            String origin = route.origin() == null ? null : route.origin().icao_code();
-            String originName = route.origin() == null ? null : route.origin().name();
-            Double originLat = route.origin() == null ? null : route.origin().latitude();
-            Double originLon = route.origin() == null ? null : route.origin().longitude();
-            String destination = route.destination() == null ? null : route.destination().icao_code();
-            String destinationName = route.destination() == null ? null : route.destination().name();
-            Double destinationLat = route.destination() == null ? null : route.destination().latitude();
-            Double destinationLon = route.destination() == null ? null : route.destination().longitude();
-            return new RouteLookup(LookupStatus.FOUND, Optional.of(new Route(origin, originName, originLat, originLon,
-                    destination, destinationName, destinationLat, destinationLon)));
+            return flightRouteOf(body)
+                    .filter(FlightRoute::hasAnyAirport)
+                    .map(route -> new RouteLookup(LookupStatus.FOUND, Optional.of(route.toRoute())))
+                    .orElseGet(() -> RouteLookup.of(LookupStatus.NOT_FOUND));
         } catch (HttpClientErrorException.TooManyRequests e) {
             return RouteLookup.of(LookupStatus.THROTTLED);
         } catch (HttpClientErrorException e) {
@@ -111,24 +98,30 @@ public class AdsbdbClient {
                     .uri("/aircraft/{icao24}", icao24)
                     .retrieve()
                     .body(AdsbdbAircraftResponse.class);
-
-            if (body == null || body.response() == null || body.response().aircraft() == null) {
-                return Optional.empty();
-            }
-            Aircraft a = body.response().aircraft();
-            String model = a.manufacturer() != null && a.type() != null
-                    ? a.manufacturer() + " " + a.type()
-                    : a.type();
-            if (model == null && a.registration() == null && a.registered_owner() == null) {
-                return Optional.empty();
-            }
-            return Optional.of(new AircraftInfo(model, a.registration(), a.registered_owner()));
+            return aircraftOf(body).flatMap(Aircraft::toInfo);
         } catch (HttpClientErrorException.NotFound e) {
             return Optional.empty();
         } catch (Exception e) {
             log.debug("adsbdb aircraft lookup failed for {}: {}", icao24, e.toString());
             return Optional.empty();
         }
+    }
+
+    private static Optional<FlightRoute> flightRouteOf(AdsbdbCallsignResponse body) {
+        return Optional.ofNullable(body)
+                .map(AdsbdbCallsignResponse::response)
+                .map(AdsbdbCallsignBody::flightroute);
+    }
+
+    private static Optional<Aircraft> aircraftOf(AdsbdbAircraftResponse body) {
+        return Optional.ofNullable(body)
+                .map(AdsbdbAircraftResponse::response)
+                .map(AdsbdbResponseBody::aircraft);
+    }
+
+    /** Null-safe read of one airport field: a missing airport reads as null. */
+    private static <T> T airportField(Airport airport, Function<Airport, T> field) {
+        return airport == null ? null : field.apply(airport);
     }
 
     private record AdsbdbAircraftResponse(AdsbdbResponseBody response) {
@@ -140,6 +133,17 @@ public class AdsbdbClient {
     // Field names match adsbdb's JSON keys directly (snake_case, no
     // camelCase conversion configured on the shared ObjectMapper).
     private record Aircraft(String type, String manufacturer, String registration, String registered_owner) {
+
+        String model() {
+            boolean hasManufacturer = manufacturer != null && type != null;
+            return hasManufacturer ? manufacturer + " " + type : type;
+        }
+
+        Optional<AircraftInfo> toInfo() {
+            String model = model();
+            boolean empty = model == null && registration == null && registered_owner == null;
+            return empty ? Optional.empty() : Optional.of(new AircraftInfo(model, registration, registered_owner));
+        }
     }
 
     private record AdsbdbCallsignResponse(AdsbdbCallsignBody response) {
@@ -149,6 +153,18 @@ public class AdsbdbClient {
     }
 
     private record FlightRoute(String callsign, Airport origin, Airport destination) {
+
+        boolean hasAnyAirport() {
+            return origin != null || destination != null;
+        }
+
+        Route toRoute() {
+            return new Route(
+                    airportField(origin, Airport::icao_code), airportField(origin, Airport::name),
+                    airportField(origin, Airport::latitude), airportField(origin, Airport::longitude),
+                    airportField(destination, Airport::icao_code), airportField(destination, Airport::name),
+                    airportField(destination, Airport::latitude), airportField(destination, Airport::longitude));
+        }
     }
 
     // latitude/longitude were already present in adsbdb's response — just
