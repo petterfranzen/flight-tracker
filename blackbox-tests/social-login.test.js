@@ -5,9 +5,10 @@
 //
 //  * the happy path -- an anonymous profile read is a 401, the app's own
 //    authorize endpoint 302s to the provider asking for `openid` and nothing
-//    else, the provider sends the browser back to the app's callback, and that
-//    callback turns the code into a session (a new FT_SESSION, HttpOnly and
-//    SameSite=Lax) with which `GET /api/profile` answers;
+//    else and opens no session while the browser is away, the provider sends the
+//    browser back to the app's callback, and that callback turns the code into a
+//    session (an FT_SESSION, HttpOnly and SameSite=Lax) -- the first response
+//    that carries one -- with which `GET /api/profile` answers;
 //  * sign-out -- `POST /api/auth/logout` without the CSRF token the SPA echoes
 //    back is a 403 and leaves the session alone; with it, a 204 that clears the
 //    cookie, after which the profile read is a 401 again;
@@ -145,8 +146,9 @@ test("a real login against the fake provider yields a session and exactly the pr
   assert.equal(anonymous.res.status, 401, "an anonymous profile read is a 401");
 
   // 2. The app's authorize endpoint redirects to the fake provider, asking for
-  //    the one scope that carries no personal data -- and opening a session to
-  //    remember the request while the browser is away.
+  //    the one scope that carries no personal data -- and opening no session
+  //    while the browser is away: the pending request is held in the app's own
+  //    bounded store, so merely offering a sign-in stays stateless.
   const { authorize, providerUrl, callbackUrl, login: done } = await login(jar);
   assert.equal(
     `${providerUrl.origin}${providerUrl.pathname}`,
@@ -154,12 +156,15 @@ test("a real login against the fake provider yields a session and exactly the pr
     "the redirect must go to the fake provider's authorize endpoint"
   );
   assert.deepEqual(providerUrl.searchParams.getAll("scope"), ["openid"], "only scope=openid may be requested");
-  const beforeLogin = cookieValue(authorize.rawCookies, SESSION_COOKIE);
-  assert.ok(beforeLogin, "starting a login must open a session so the request can be remembered");
+  assert.equal(
+    cookieValue(authorize.rawCookies, SESSION_COOKIE),
+    undefined,
+    "starting a login must open no session"
+  );
 
   // 3. The provider redirects back to the app's callback; the callback (carrying
-  //    the session from step 2, so Spring can match the state) redeems the code
-  //    at the fake token endpoint and signs the browser in.
+  //    no session, so the app matches the state against its own store) redeems
+  //    the code at the fake token endpoint and signs the browser in.
   assert.equal(callbackUrl.origin, app.baseUrl, "the callback must land on this jar");
   assert.equal(callbackUrl.pathname, "/login/oauth2/code/google");
   assert.equal(provider.seen.authorize.length, 1, "the provider must have seen exactly one authorize request");
@@ -168,7 +173,6 @@ test("a real login against the fake provider yields a session and exactly the pr
   assertSessionCookieHardened(done.rawCookies);
   const afterLogin = cookieValue(done.rawCookies, SESSION_COOKIE);
   assert.ok(afterLogin, "the completed login must set a session cookie");
-  assert.notEqual(afterLogin, beforeLogin, "the session id must change at login");
 
   // 4. With that session the profile read is the provider id and the two lists of
   //    step 5a-2 (D4) -- empty for a brand-new profile, and with no profile id or
