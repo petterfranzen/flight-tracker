@@ -4,6 +4,7 @@ import com.flighttracker.config.SqliteDataSourceConfig;
 import com.flighttracker.repository.FavoriteRepository;
 import com.flighttracker.repository.ProfileRepository;
 import com.flighttracker.repository.WatchedFlightRepository;
+import com.flighttracker.repository.WatchedFlightRepository.Key;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -77,7 +78,7 @@ class ProfileServiceIntegrationTest {
         profiles.insertIfAbsent(profileId, "google", "hash-" + profileId);
         favorites.upsert(profileId, "route", "ESSA-ESGG", "{}");
         favorites.upsert(profileId, "aircraft", "48415e", "{}");
-        watched.upsert(profileId, "SK123", "2026-10-02", "ESSA", null);
+        watched.upsert(new Key(profileId, "SK123", "2026-10-02", "ESSA"), null);
     }
 
     private long count(String table) {
