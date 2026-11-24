@@ -50,18 +50,21 @@ public class FavoriteRepository {
     private static final String ONE_FAVORITE = " FROM favorite WHERE profile_id = :profileId AND kind = :kind AND item_key = :itemKey";
 
     /** One favourite's full key, as the table keys it. */
-    private record FavoriteKey(String profileId, String kind, String itemKey) {
+    public record Key(String profileId, String kind, String itemKey) {
+        JdbcClient.StatementSpec bind(JdbcClient.StatementSpec statement) {
+            return statement
+                    .param("profileId", profileId)
+                    .param("kind", kind)
+                    .param("itemKey", itemKey);
+        }
     }
 
-    private JdbcClient.StatementSpec forKey(String verb, FavoriteKey key) {
-        return jdbcClient.sql(verb + ONE_FAVORITE)
-                .param("profileId", key.profileId())
-                .param("kind", key.kind())
-                .param("itemKey", key.itemKey());
+    private JdbcClient.StatementSpec forKey(String verb, Key key) {
+        return key.bind(jdbcClient.sql(verb + ONE_FAVORITE));
     }
 
-    public Optional<Favorite> find(String profileId, String kind, String itemKey) {
-        return forKey("SELECT *", new FavoriteKey(profileId, kind, itemKey))
+    public Optional<Favorite> find(Key key) {
+        return forKey("SELECT *", key)
                 .query(FavoriteRepository::mapRow)
                 .optional();
     }
@@ -73,9 +76,9 @@ public class FavoriteRepository {
      * is atomic: a new key past the cap writes nothing, while replacing an
      * existing key at the cap still works.
      */
-    public void upsert(String profileId, String kind, String itemKey, String data) {
-        ProfileLimits.checkFavorite(kind, itemKey, data);
-        int written = jdbcClient.sql("""
+    public void upsert(Key key, String data) {
+        ProfileLimits.checkFavorite(key.kind(), key.itemKey(), data);
+        int written = key.bind(jdbcClient.sql("""
                 INSERT INTO favorite (profile_id, kind, item_key, data, updated_at)
                 SELECT :profileId, :kind, :itemKey, :data, :now
                 WHERE (SELECT COUNT(*) FROM favorite WHERE profile_id = :profileId) < :max
@@ -84,10 +87,7 @@ public class FavoriteRepository {
                 ON CONFLICT (profile_id, kind, item_key) DO UPDATE SET
                     data = excluded.data,
                     updated_at = excluded.updated_at
-                """)
-                .param("profileId", profileId)
-                .param("kind", kind)
-                .param("itemKey", itemKey)
+                """))
                 .param("data", data)
                 .param("now", clock.millis())
                 .param("max", ProfileLimits.MAX_FAVORITES_PER_PROFILE)
@@ -98,8 +98,8 @@ public class FavoriteRepository {
         }
     }
 
-    public int delete(String profileId, String kind, String itemKey) {
-        return forKey("DELETE", new FavoriteKey(profileId, kind, itemKey)).update();
+    public int delete(Key key) {
+        return forKey("DELETE", key).update();
     }
 
     public int deleteAllForProfile(String profileId) {

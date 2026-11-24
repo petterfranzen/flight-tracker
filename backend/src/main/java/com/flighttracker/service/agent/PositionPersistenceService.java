@@ -139,11 +139,11 @@ public class PositionPersistenceService {
                 newAircraft.add(r);
             }
             if (isUnchangedGroundReport(r)) continue; // write reduction — see that method's own javadoc
-            var inserted = positionRepository.insertIgnoringDuplicate(
+            var inserted = positionRepository.insertIgnoringDuplicate(new FlightPosition(
                     r.icao24(), r.callsign(), r.observedAt(),
                     r.latitude(), r.longitude(), r.altitudeM(),
                     r.velocityMs(), r.headingDeg(), r.verticalRateMs(),
-                    r.onGround(), sourceName);
+                    r.onGround(), sourceName));
             if (inserted.isPresent()) {
                 // Keeps LiveStateStore (the in-memory "latest per aircraft"
                 // map — see its own javadoc) in step with the append-only

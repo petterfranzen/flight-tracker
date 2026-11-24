@@ -76,8 +76,8 @@ class ProfileServiceIntegrationTest {
 
     private void seed(String profileId) {
         profiles.insertIfAbsent(profileId, "google", "hash-" + profileId);
-        favorites.upsert(profileId, "route", "ESSA-ESGG", "{}");
-        favorites.upsert(profileId, "aircraft", "48415e", "{}");
+        favorites.upsert(new FavoriteRepository.Key(profileId, "route", "ESSA-ESGG"), "{}");
+        favorites.upsert(new FavoriteRepository.Key(profileId, "aircraft", "48415e"), "{}");
         watched.upsert(new Key(profileId, "SK123", "2026-10-02", "ESSA"), null);
     }
 

@@ -150,10 +150,10 @@ class ProfileReadMockMvcTest {
     void aSignedInReadReturnsTheProfilesOwnFavoritesAndWatchedFlights() throws Exception {
         String id = profileIdAfter((signedInRead()));
 
-        favorites.upsert(id, "route", "ESSA-ESGG",
+        favorites.upsert(new FavoriteRepository.Key(id, "route", "ESSA-ESGG"),
                 "{\"origin\":\"ESSA\",\"originName\":\"Stockholm-Arlanda\",\"originIata\":\"ARN\","
                         + "\"destination\":\"ESGG\",\"destinationName\":\"Goteborg-Landvetter\",\"destinationIata\":\"GOT\"}");
-        favorites.upsert(id, "aircraft", "48415e",
+        favorites.upsert(new FavoriteRepository.Key(id, "aircraft", "48415e"),
                 "{\"icao24\":\"48415e\",\"registration\":\"PH-BXA\",\"callsign\":\"KL1234\"}");
         watched.upsert(new Key(id, "SK123", "2026-10-02", "ESSA"), "to Gothenburg");
 
