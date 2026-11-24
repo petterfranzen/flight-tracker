@@ -228,18 +228,26 @@ public class LiveStateStore {
      * projection computed from data already superseded by a real report
      * could clobber that fresher state.
      *
-     * @param estimatedLatitude  null (together with estimatedLongitude/At)
-     *                           to explicitly clear a stale estimate — same
-     *                           "NULL is a real, deliberate write" case the
-     *                           original SQL handled.
+     * @param estimate the dead-reckoned position and when it was made;
+     *                 {@link EstimatedPosition#CLEAR} (all fields null) to
+     *                 explicitly clear a stale estimate — same "NULL is a
+     *                 real, deliberate write" case the original SQL handled.
      * @return true if the write applied (observed_at still matched); false
      *         if it was skipped, either because the aircraft is no longer
      *         live at all, or because a real report superseded it first.
      */
-    public boolean writeEstimate(String icao24, Instant expectedObservedAt,
-                                  Double estimatedLatitude, Double estimatedLongitude, Instant estimatedAt) {
+    public boolean writeEstimate(String icao24, Instant expectedObservedAt, EstimatedPosition estimate) {
         return writeIfUnchanged(icao24, expectedObservedAt,
-                new Estimate(estimatedLatitude, estimatedLongitude, estimatedAt, null));
+                new Estimate(estimate.latitude(), estimate.longitude(), estimate.at(), null));
+    }
+
+    /**
+     * {@link #writeEstimate}'s input: EstimatorAgent's dead-reckoned display
+     * position and when it was computed. All three null clears the estimate.
+     */
+    public record EstimatedPosition(Double latitude, Double longitude, Instant at) {
+        /** Clears a stale estimate: every field null. */
+        public static final EstimatedPosition CLEAR = new EstimatedPosition(null, null, null);
     }
 
     /**

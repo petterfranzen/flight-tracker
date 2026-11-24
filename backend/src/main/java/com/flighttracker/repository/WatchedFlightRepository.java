@@ -32,8 +32,12 @@ public class WatchedFlightRepository {
         this.clock = clock;
     }
 
-    /** The primary key of one watched flight, bound to a statement's named parameters. */
-    private record Key(String profileId, String flightNumber, String flightDate, String airport) {
+    /**
+     * The primary key of one watched flight (profile_id, flight_number,
+     * flight_date, airport), which {@link #find}, {@link #upsert} and
+     * {@link #delete} take; {@code bind} sets it on a statement's named parameters.
+     */
+    public record Key(String profileId, String flightNumber, String flightDate, String airport) {
         JdbcClient.StatementSpec bind(JdbcClient.StatementSpec statement) {
             return statement
                     .param("profileId", profileId)
@@ -63,8 +67,8 @@ public class WatchedFlightRepository {
                 .list();
     }
 
-    public Optional<WatchedFlight> find(String profileId, String flightNumber, String flightDate, String airport) {
-        return new Key(profileId, flightNumber, flightDate, airport).bind(jdbcClient.sql("""
+    public Optional<WatchedFlight> find(Key key) {
+        return key.bind(jdbcClient.sql("""
                 SELECT * FROM watched_flight
                 WHERE profile_id = :profileId AND flight_number = :flightNumber
                   AND flight_date = :flightDate AND airport = :airport
@@ -81,9 +85,9 @@ public class WatchedFlightRepository {
      * is atomic: a new key past the cap writes nothing, while replacing an
      * existing key at the cap still works.
      */
-    public void upsert(String profileId, String flightNumber, String flightDate, String airport, String label) {
-        ProfileLimits.checkWatchedFlight(flightNumber, flightDate, airport, label);
-        int written = new Key(profileId, flightNumber, flightDate, airport).bind(jdbcClient.sql("""
+    public void upsert(Key key, String label) {
+        ProfileLimits.checkWatchedFlight(key.flightNumber(), key.flightDate(), key.airport(), label);
+        int written = key.bind(jdbcClient.sql("""
                 INSERT INTO watched_flight
                     (profile_id, flight_number, flight_date, airport, label, updated_at)
                 SELECT :profileId, :flightNumber, :flightDate, :airport, :label, :now
@@ -106,8 +110,8 @@ public class WatchedFlightRepository {
         }
     }
 
-    public int delete(String profileId, String flightNumber, String flightDate, String airport) {
-        return new Key(profileId, flightNumber, flightDate, airport).bind(jdbcClient.sql("""
+    public int delete(Key key) {
+        return key.bind(jdbcClient.sql("""
                 DELETE FROM watched_flight
                 WHERE profile_id = :profileId AND flight_number = :flightNumber
                   AND flight_date = :flightDate AND airport = :airport

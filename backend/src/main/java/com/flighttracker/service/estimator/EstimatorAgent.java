@@ -15,6 +15,7 @@ import com.flighttracker.service.enrichment.CallsignRouteService;
 import com.flighttracker.service.enrichment.Route;
 import com.flighttracker.service.live.LiveAircraft;
 import com.flighttracker.service.live.LiveStateStore;
+import com.flighttracker.service.live.LiveStateStore.EstimatedPosition;
 import com.flighttracker.service.training.LandingModel;
 import com.flighttracker.service.training.TrackEndFeatures;
 import com.flighttracker.service.training.TrainingDataService;
@@ -268,7 +269,8 @@ public class EstimatorAgent {
                 route.map(Route::destinationAirportLat).orElse(null),
                 route.map(Route::destinationAirportLon).orElse(null));
         boolean applied = estimated != p
-                ? liveStateStore.writeEstimate(a.icao24(), a.observedAt(), estimated.latitude(), estimated.longitude(), tick.now)
+                ? liveStateStore.writeEstimate(a.icao24(), a.observedAt(),
+                        new EstimatedPosition(estimated.latitude(), estimated.longitude(), tick.now))
                 : clearEstimate(a, tick);
         if (applied) tick.written++;
     }
@@ -276,7 +278,7 @@ public class EstimatorAgent {
     /** Clears a stale estimate; null over already-null is skipped (nothing to do). */
     private boolean clearEstimate(LiveAircraft a, Tick tick) {
         if (!tick.alreadyEstimated.contains(a.icao24())) return false;
-        return liveStateStore.writeEstimate(a.icao24(), a.observedAt(), null, null, null);
+        return liveStateStore.writeEstimate(a.icao24(), a.observedAt(), EstimatedPosition.CLEAR);
     }
 
     /**

@@ -11,6 +11,7 @@ import com.flighttracker.service.confirmation.Confirmation;
 import com.flighttracker.service.confirmation.ConfirmationStore;
 import com.flighttracker.service.coverage.GapEstimate;
 import com.flighttracker.service.coverage.TrackState;
+import com.flighttracker.service.live.LiveStateStore.EstimatedPosition;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
@@ -182,7 +183,7 @@ class LiveStateStoreTest {
     void realReport_alwaysClearsAnyExistingEstimate() {
         LiveStateStore store = store();
         store.upsert(new RawPositionReport("abc123", "SAS100", T0, 59.0, 18.0, null, null, null, null, false), "opensky");
-        store.writeEstimate("abc123", T0, 59.5, 18.5, T0.plusSeconds(5));
+        store.writeEstimate("abc123", T0, new EstimatedPosition(59.5, 18.5, T0.plusSeconds(5)));
         assertThat(store.findLatestPosition("abc123").orElseThrow().latitude()).isEqualTo(59.5); // estimate showing
 
         Instant t1 = T0.plusSeconds(20);
@@ -202,7 +203,7 @@ class LiveStateStoreTest {
         // write — the estimate write must no-op rather than clobber it.
         store.upsert(new RawPositionReport("abc123", "SAS100", T0.plusSeconds(5), 59.2, 18.2, null, null, null, null, false), "opensky");
 
-        boolean applied = store.writeEstimate("abc123", T0, 99.0, 99.0, T0); // stale expectedObservedAt
+        boolean applied = store.writeEstimate("abc123", T0, new EstimatedPosition(99.0, 99.0, T0)); // stale expectedObservedAt
 
         assertThat(applied).isFalse();
         assertThat(store.findLatestPosition("abc123").orElseThrow().latitude()).isEqualTo(59.2);
@@ -212,7 +213,7 @@ class LiveStateStoreTest {
     void writeEstimate_unknownIcao24_noOpNotAnException() {
         LiveStateStore store = store();
 
-        boolean applied = store.writeEstimate("ghost01", T0, 1.0, 1.0, T0);
+        boolean applied = store.writeEstimate("ghost01", T0, new EstimatedPosition(1.0, 1.0, T0));
 
         assertThat(applied).isFalse();
     }
@@ -221,10 +222,10 @@ class LiveStateStoreTest {
     void writeEstimate_null_explicitlyClearsAStoredEstimate() {
         LiveStateStore store = store();
         store.upsert(new RawPositionReport("abc123", "SAS100", T0, 59.0, 18.0, null, null, null, null, false), "opensky");
-        store.writeEstimate("abc123", T0, 59.5, 18.5, T0.plusSeconds(5));
+        store.writeEstimate("abc123", T0, new EstimatedPosition(59.5, 18.5, T0.plusSeconds(5)));
         assertThat(store.icao24sWithEstimate()).contains("abc123");
 
-        boolean applied = store.writeEstimate("abc123", T0, null, null, null);
+        boolean applied = store.writeEstimate("abc123", T0, EstimatedPosition.CLEAR);
 
         assertThat(applied).isTrue();
         assertThat(store.icao24sWithEstimate()).doesNotContain("abc123");
@@ -264,7 +265,7 @@ class LiveStateStoreTest {
 
         assertThat(store.icao24sWithEstimate()).isEmpty();
 
-        store.writeEstimate("abc123", T0, 59.5, 18.5, T0.plusSeconds(5));
+        store.writeEstimate("abc123", T0, new EstimatedPosition(59.5, 18.5, T0.plusSeconds(5)));
 
         assertThat(store.icao24sWithEstimate()).containsExactly("abc123");
     }
@@ -538,7 +539,7 @@ class LiveStateStoreTest {
         store.upsert(new RawPositionReport("abc123", "SAS100", T0, 59.0, 18.0, null, null, null, null, false), "opensky");
         store.writeGapEstimate("abc123", T0, gapAt(59.1, 18.1, T0.plusSeconds(120)));
 
-        store.writeEstimate("abc123", T0, 59.05, 18.05, T0.plusSeconds(130));
+        store.writeEstimate("abc123", T0, new EstimatedPosition(59.05, 18.05, T0.plusSeconds(130)));
 
         assertThat(store.get("abc123").orElseThrow().gap()).isNull();
         assertThat(store.get("abc123").orElseThrow().displayLatitude()).isEqualTo(59.05);
