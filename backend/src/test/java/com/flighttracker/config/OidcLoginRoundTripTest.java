@@ -31,10 +31,11 @@ import static org.mockito.Mockito.when;
 
 /**
  * Design section9-hq #84 step 2(b): drive a real login round-trip against a
- * local fake OIDC provider through the app's own chain, and prove the three
- * things the spike exists to settle — a session cookie appears, {@code GET
- * /api/profile} answers 200 once signed in, and the <b>session id changes</b>
- * at login (session-fixation protection, §5).
+ * local fake OIDC provider through the app's own chain, and prove the things
+ * the spike exists to settle — starting the flow sets no session (section9-hq
+ * #404: the pending request is held outside the session, so an anonymous
+ * visitor has no session to fix), a session cookie appears once the login
+ * succeeds, and {@code GET /api/profile} answers 200 once signed in.
  *
  * <p>The whole flow is real HTTP on loopback: the app redirects to the
  * provider, the provider redirects back with a code, the app exchanges it
@@ -112,11 +113,13 @@ class OidcLoginRoundTripTest {
     void aRealLoginIssuesASessionAnswersTheProfileAndChangesTheSessionId() throws Exception {
         HttpClient client = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER).build();
 
-        // 1. The app starts the flow: a redirect to the provider, and a session is
-        //    created to hold the authorization request (so there is an id to change).
+        // 1. The app starts the flow: a redirect to the provider, and NO session — the
+        //    pending authorization request lives in a bounded store outside the session
+        //    (section9-hq #404), so merely offering a sign-in never creates one.
         HttpResponse<Void> started = get(client, "http://127.0.0.1:" + PORT + "/oauth2/authorization/fake", null);
         assertThat(started.statusCode()).isEqualTo(302);
-        String sessionBefore = sessionCookie(started).orElseThrow(() -> new AssertionError("no FT_SESSION before login"));
+        assertThat(sessionCookie(started))
+                .as("starting a login must create no session").isEmpty();
         String authorizeUrl = started.headers().firstValue("Location").orElseThrow();
 
         // 2. The provider authenticates and redirects back to the app's callback.
@@ -125,15 +128,13 @@ class OidcLoginRoundTripTest {
         String callback = fromProvider.headers().firstValue("Location").orElseThrow();
         assertThat(callback).contains("/login/oauth2/code/fake");
 
-        // 3. The app exchanges the code and signs the visitor in.
-        HttpResponse<Void> loggedIn = get(client, callback, sessionBefore);
+        // 3. The app exchanges the code and signs the visitor in: a session is created
+        //    only now, for the signed-in user.
+        HttpResponse<Void> loggedIn = get(client, callback, null);
         assertThat(loggedIn.statusCode()).isIn(200, 302);
         Optional<String> cookieAfter = sessionCookie(loggedIn);
         assertThat(cookieAfter).as("a session cookie after a successful login").isPresent();
         String sessionAfter = cookieAfter.orElseThrow();
-
-        // The id must CHANGE at login: Spring's session-fixation protection.
-        assertThat(sessionId(sessionAfter)).isNotEqualTo(sessionId(sessionBefore));
         assertThat(sessionAfter).contains("HttpOnly");
 
         // 4. The session reaches the profile, which reports the provider id and the
@@ -166,7 +167,4 @@ class OidcLoginRoundTripTest {
                 .findFirst();
     }
 
-    private static String sessionId(String setCookie) {
-        return setCookie.substring("FT_SESSION=".length(), setCookie.indexOf(';'));
-    }
 }

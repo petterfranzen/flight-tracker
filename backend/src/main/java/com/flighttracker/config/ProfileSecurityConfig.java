@@ -94,6 +94,14 @@ import java.util.Set;
  *       {@link PathPatternRequestMatcher}), so an encoded spelling of a protected
  *       path is token-checked too, where the old raw-URI
  *       {@code AntPathMatcher} let it through.</li>
+ *   <li>No anonymous path creates a session (section9-hq #404). The chain disables the
+ *       request cache, so the 401 the entry point writes is not saved into a fresh
+ *       session, a pending OAuth authorization request is held in the bounded
+ *       {@link BoundedAuthorizationRequestRepository} instead of the session, and
+ *       {@link #loginFailureRedirect()} keeps a failed login from stashing its exception
+ *       in one — so a bare {@code /oauth2/authorization/*}, a refused callback and an
+ *       anonymous profile read all set no session. A session appears only once a login
+ *       succeeds.</li>
  * </ul>
  *
  * <p><b>Still open before the flag is enabled</b> (not part of this slice):
@@ -212,8 +220,12 @@ public class ProfileSecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(AUTHENTICATED_PATHS.toArray(String[]::new)).authenticated()
                         .anyRequest().permitAll())
-                // A session is created only when the login flow (or a profile write) asks
-                // for one, so a map-only visit still sets no cookie at all.
+                // No request cache (section9-hq #404): saving the 401's request would need a
+                // session, and a request that only reads /api/profile must not get one.
+                .requestCache(AbstractHttpConfigurer::disable)
+                // With the request cache off and the OAuth store below outside the session, a
+                // session is created only when a login succeeds, so neither a map-only visit
+                // nor a bare /oauth2/authorization/* start sets a cookie at all.
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.IF_REQUIRED))
                 // No login page and no redirect for the API: an anonymous profile read is a
                 // plain 401 (design §5, account enumeration).
@@ -228,18 +240,25 @@ public class ProfileSecurityConfig {
         if (registrations.getIfAvailable() != null) {
             OAuth2UserService<OAuth2UserRequest, OAuth2User> idOnly = oauth2UserService.getIfAvailable();
             SimpleUrlAuthenticationFailureHandler loginFailure = loginFailureRedirect();
+            // The pending authorization request lives here, not in a session (section9-hq
+            // #404): the redirect and the callback that returns read the same instance.
+            BoundedAuthorizationRequestRepository authorizationRequests = new BoundedAuthorizationRequestRepository();
             if (idOnly != null) {
                 // GitHub is plain OAuth2 and its /user returns a login, a name, an avatar
                 // and an email even at no scope; keep only the account id (design §1.5).
                 // Google is OIDC and reads its id_token, so this never runs for it.
                 http.oauth2Login(oauth2 -> oauth2
                         .loginPage(LOGIN_PAGE)
+                        .authorizationEndpoint(endpoint ->
+                                endpoint.authorizationRequestRepository(authorizationRequests))
                         .failureHandler(loginFailure)
                         .userInfoEndpoint(userInfo -> userInfo.userService(idOnly)));
             } else {
                 // No user service supplied (a test context): still no generated login page.
                 http.oauth2Login(oauth2 -> oauth2
                         .loginPage(LOGIN_PAGE)
+                        .authorizationEndpoint(endpoint ->
+                                endpoint.authorizationRequestRepository(authorizationRequests))
                         .failureHandler(loginFailure));
             }
         }
@@ -261,6 +280,11 @@ public class ProfileSecurityConfig {
             response.setStatus(HttpStatus.FOUND.value());
             response.setHeader(org.springframework.http.HttpHeaders.LOCATION, url);
         });
+        // A failed login must not stash its exception in a fresh session (section9-hq
+        // #404): with the request cache off, that would be the last way an anonymous
+        // request creates one, and nothing reads it back — there is no server-rendered
+        // login page (the SPA shows its own error from the ?error it is sent to).
+        failure.setAllowSessionCreation(false);
         return failure;
     }
 

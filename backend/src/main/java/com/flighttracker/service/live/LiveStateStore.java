@@ -7,6 +7,7 @@ import com.flighttracker.dto.LiveOverview;
 import com.flighttracker.model.FlightPosition;
 import com.flighttracker.repository.Timestamps;
 import com.flighttracker.service.LiveVisibilityWindows;
+import com.flighttracker.service.agent.RawPositionReport;
 import com.flighttracker.service.confirmation.Confirmation;
 import com.flighttracker.service.confirmation.ConfirmationStore;
 import com.flighttracker.service.coverage.GapEstimate;
@@ -22,10 +23,8 @@ import java.sql.SQLException;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -193,30 +192,29 @@ public class LiveStateStore {
      *         icao24, or strictly newer than what was stored); false if it
      *         was a stale/duplicate report and the store was left unchanged.
      */
-    public boolean upsert(String icao24, String callsign, Instant observedAt,
-                           double latitude, double longitude, Double altitudeM,
-                           Double velocityMs, Double headingDeg, Double verticalRateMs,
-                           boolean onGround, String agentSource) {
+    public boolean upsert(RawPositionReport report, String agentSource) {
+        Instant observedAt = report.observedAt();
         AtomicReference<Boolean> accepted = new AtomicReference<>(Boolean.FALSE);
-        byIcao24.compute(icao24, (key, existing) -> {
+        byIcao24.compute(report.icao24(), (key, existing) -> {
             if (existing != null && !observedAt.isAfter(existing.observedAt())) {
                 return existing; // stale or duplicate — never regress "latest"
             }
             accepted.set(Boolean.TRUE);
-            Instant landedSince;
-            if (!onGround) {
-                landedSince = null;
-            } else if (existing != null && existing.onGround()) {
-                landedSince = existing.landedSince(); // carry the streak forward
-            } else {
-                landedSince = observedAt; // just transitioned (or first-ever report) — streak starts now
-            }
             long id = existing != null ? existing.id() : idSequence.incrementAndGet();
-            return new LiveAircraft(id, icao24, callsign, observedAt, latitude, longitude,
-                    altitudeM, velocityMs, headingDeg, verticalRateMs, onGround, agentSource,
-                    landedSince, null, null, null, null);
+            return new LiveAircraft(id, report.icao24(), report.callsign(), observedAt,
+                    report.latitude(), report.longitude(), report.altitudeM(), report.velocityMs(),
+                    report.headingDeg(), report.verticalRateMs(), report.onGround(), agentSource,
+                    landedSince(existing, report.onGround(), observedAt), null, null, null, null);
         });
         return accepted.get();
+    }
+
+    private static Instant landedSince(LiveAircraft existing, boolean onGround, Instant observedAt) {
+        if (!onGround) return null;
+        if (existing != null && existing.onGround()) {
+            return existing.landedSince(); // carry the streak forward
+        }
+        return observedAt; // just transitioned (or first-ever report) — streak starts now
     }
 
     /**
@@ -230,28 +228,26 @@ public class LiveStateStore {
      * projection computed from data already superseded by a real report
      * could clobber that fresher state.
      *
-     * @param estimatedLatitude  null (together with estimatedLongitude/At)
-     *                           to explicitly clear a stale estimate — same
-     *                           "NULL is a real, deliberate write" case the
-     *                           original SQL handled.
+     * @param estimate the dead-reckoned position and when it was made;
+     *                 {@link EstimatedPosition#CLEAR} (all fields null) to
+     *                 explicitly clear a stale estimate — same "NULL is a
+     *                 real, deliberate write" case the original SQL handled.
      * @return true if the write applied (observed_at still matched); false
      *         if it was skipped, either because the aircraft is no longer
      *         live at all, or because a real report superseded it first.
      */
-    public boolean writeEstimate(String icao24, Instant expectedObservedAt,
-                                  Double estimatedLatitude, Double estimatedLongitude, Instant estimatedAt) {
-        AtomicReference<Boolean> applied = new AtomicReference<>(Boolean.FALSE);
-        byIcao24.computeIfPresent(icao24, (key, existing) -> {
-            if (!existing.observedAt().equals(expectedObservedAt)) {
-                return existing; // superseded by a real report since this cycle's read
-            }
-            applied.set(Boolean.TRUE);
-            return new LiveAircraft(existing.id(), existing.icao24(), existing.callsign(), existing.observedAt(),
-                    existing.latitude(), existing.longitude(), existing.altitudeM(), existing.velocityMs(),
-                    existing.headingDeg(), existing.verticalRateMs(), existing.onGround(), existing.agentSource(),
-                    existing.landedSince(), estimatedLatitude, estimatedLongitude, estimatedAt, null);
-        });
-        return applied.get();
+    public boolean writeEstimate(String icao24, Instant expectedObservedAt, EstimatedPosition estimate) {
+        return writeIfUnchanged(icao24, expectedObservedAt,
+                new Estimate(estimate.latitude(), estimate.longitude(), estimate.at(), null));
+    }
+
+    /**
+     * {@link #writeEstimate}'s input: EstimatorAgent's dead-reckoned display
+     * position and when it was computed. All three null clears the estimate.
+     */
+    public record EstimatedPosition(Double latitude, Double longitude, Instant at) {
+        /** Clears a stale estimate: every field null. */
+        public static final EstimatedPosition CLEAR = new EstimatedPosition(null, null, null);
     }
 
     /**
@@ -263,16 +259,28 @@ public class LiveStateStore {
      *         real report superseded the one this estimate was computed from.
      */
     public boolean writeGapEstimate(String icao24, Instant expectedObservedAt, GapEstimate gap) {
+        return writeIfUnchanged(icao24, expectedObservedAt, new Estimate(gap.estLat(), gap.estLon(), gap.at(), gap));
+    }
+
+    /** An estimate to store: the display position it moves to, when it was made, and the gap estimate (or null). */
+    private record Estimate(Double latitude, Double longitude, Instant at, GapEstimate gap) {
+        LiveAircraft applyTo(LiveAircraft existing) {
+            return new LiveAircraft(existing.id(), existing.icao24(), existing.callsign(), existing.observedAt(),
+                    existing.latitude(), existing.longitude(), existing.altitudeM(), existing.velocityMs(),
+                    existing.headingDeg(), existing.verticalRateMs(), existing.onGround(), existing.agentSource(),
+                    existing.landedSince(), latitude, longitude, at, gap);
+        }
+    }
+
+    /** The compare-and-set both estimate writes share: applies only while observed_at still equals {@code expectedObservedAt}. */
+    private boolean writeIfUnchanged(String icao24, Instant expectedObservedAt, Estimate estimate) {
         AtomicReference<Boolean> applied = new AtomicReference<>(Boolean.FALSE);
         byIcao24.computeIfPresent(icao24, (key, existing) -> {
             if (!existing.observedAt().equals(expectedObservedAt)) {
                 return existing; // superseded by a real report since this cycle's read
             }
             applied.set(Boolean.TRUE);
-            return new LiveAircraft(existing.id(), existing.icao24(), existing.callsign(), existing.observedAt(),
-                    existing.latitude(), existing.longitude(), existing.altitudeM(), existing.velocityMs(),
-                    existing.headingDeg(), existing.verticalRateMs(), existing.onGround(), existing.agentSource(),
-                    existing.landedSince(), gap.estLat(), gap.estLon(), gap.at(), gap);
+            return estimate.applyTo(existing);
         });
         return applied.get();
     }
@@ -330,10 +338,14 @@ public class LiveStateStore {
         for (LiveAircraft a : byIcao24.values()) {
             if (!isLive(a, staleAirborneCutoff, landedCutoff)) continue;
             if (bounds != null && !bounds.contains(a.displayLatitude(), a.displayLongitude())) continue;
-            out.add(new LiveMarkerView(a.icao24(), a.callsign(), a.observedAt(),
-                    a.displayLatitude(), a.displayLongitude(), a.headingDeg(), a.onGround(), stateOf(a)));
+            out.add(marker(a));
         }
         return out;
+    }
+
+    private LiveMarker marker(LiveAircraft a) {
+        return new LiveMarkerView(a.icao24(), a.callsign(), a.observedAt(),
+                a.displayLatitude(), a.displayLongitude(), a.headingDeg(), a.onGround(), stateOf(a));
     }
 
     /**
@@ -370,39 +382,13 @@ public class LiveStateStore {
         return count;
     }
 
-    private List<LiveAircraft> activeInBounds(Instant staleAirborneCutoff, Instant landedCutoff, Instant activeSince, Bounds bounds) {
+    private List<LiveAircraft> activeInBounds(ActiveTrafficQuery query) {
         List<LiveAircraft> out = new ArrayList<>();
         for (LiveAircraft a : byIcao24.values()) {
-            if (!isLive(a, staleAirborneCutoff, landedCutoff)) continue;
-            if (a.onGround() || a.observedAt().isBefore(activeSince)) continue;
-            if (!bounds.contains(a.displayLatitude(), a.displayLongitude())) continue;
+            if (!isLive(a, query.staleAirborneCutoff(), query.landedCutoff())) continue;
+            if (a.onGround() || a.observedAt().isBefore(query.activeSince())) continue;
+            if (!query.bounds().contains(a.displayLatitude(), a.displayLongitude())) continue;
             out.add(a);
-        }
-        return out;
-    }
-
-    /** Groups aircraft into {@code gridDeg} cells; each cluster sits at the mean position of its members. */
-    private static List<ClusterPoint> bucket(List<LiveAircraft> aircraft, double gridDeg) {
-        record BucketKey(double lat, double lon) { }
-        final class Sum {
-            long count;
-            double lat;
-            double lon;
-        }
-        Map<BucketKey, Sum> cells = new HashMap<>();
-        for (LiveAircraft a : aircraft) {
-            double lat = a.displayLatitude();
-            double lon = a.displayLongitude();
-            double bucketLat = Math.floor(lat / gridDeg) * gridDeg;
-            double bucketLon = Math.floor(lon / gridDeg) * gridDeg;
-            Sum sum = cells.computeIfAbsent(new BucketKey(bucketLat, bucketLon), k -> new Sum());
-            sum.count++;
-            sum.lat += lat;
-            sum.lon += lon;
-        }
-        List<ClusterPoint> out = new ArrayList<>(cells.size());
-        for (Sum sum : cells.values()) {
-            out.add(new ClusterPointView(sum.lat / sum.count, sum.lon / sum.count, sum.count));
         }
         return out;
     }
@@ -426,8 +412,8 @@ public class LiveStateStore {
      * gridDeg is trusted as already clamped by the caller (see
      * FlightController's MIN/MAX_CLUSTER_GRID_DEG).
      */
-    public List<ClusterPoint> clustered(Instant staleAirborneCutoff, Instant landedCutoff, Instant activeSince, Bounds bounds, double gridDeg) {
-        return bucket(activeInBounds(staleAirborneCutoff, landedCutoff, activeSince, bounds), gridDeg);
+    public List<ClusterPoint> clustered(ActiveTrafficQuery query, double gridDeg) {
+        return LiveOverviews.bucket(activeInBounds(query), gridDeg);
     }
 
     /**
@@ -444,32 +430,8 @@ public class LiveStateStore {
      * viewport shows some real planes alongside its bubble. gridDeg is
      * trusted as already clamped by the caller.
      */
-    public LiveOverview overview(Instant staleAirborneCutoff, Instant landedCutoff, Instant activeSince, Bounds bounds,
-                                 double gridDeg, int maxPlanes, int perCell) {
-        List<LiveAircraft> active = activeInBounds(staleAirborneCutoff, landedCutoff, activeSince, bounds);
-        active.sort((a, b) -> {
-            double va = a.velocityMs() != null ? a.velocityMs() : -1;
-            double vb = b.velocityMs() != null ? b.velocityMs() : -1;
-            if (va != vb) return Double.compare(vb, va);
-            int byRecency = b.observedAt().compareTo(a.observedAt());
-            return byRecency != 0 ? byRecency : a.icao24().compareTo(b.icao24());
-        });
-
-        List<LiveMarker> planes = new ArrayList<>();
-        List<LiveAircraft> rest = new ArrayList<>();
-        Map<String, Integer> perCellTaken = new HashMap<>();
-        for (LiveAircraft a : active) {
-            String cell = Math.floor(a.displayLatitude() / gridDeg) + "," + Math.floor(a.displayLongitude() / gridDeg);
-            int taken = perCellTaken.getOrDefault(cell, 0);
-            if (planes.size() < maxPlanes && taken < perCell) {
-                perCellTaken.put(cell, taken + 1);
-                planes.add(new LiveMarkerView(a.icao24(), a.callsign(), a.observedAt(),
-                        a.displayLatitude(), a.displayLongitude(), a.headingDeg(), a.onGround(), stateOf(a)));
-            } else {
-                rest.add(a);
-            }
-        }
-        return new LiveOverview(planes, bucket(rest, gridDeg));
+    public LiveOverview overview(ActiveTrafficQuery query, PlaneAllowance allowance) {
+        return LiveOverviews.overview(activeInBounds(query), allowance, this::marker);
     }
 
     /**
@@ -483,20 +445,8 @@ public class LiveStateStore {
      * client's exact overlap pass takes it from there. At most
      * {@code maxPlanes} are returned. cellDeg is trusted as already clamped.
      */
-    public LiveOverview discovered(Instant staleAirborneCutoff, Instant landedCutoff, Instant activeSince, Bounds bounds,
-                                   double cellDeg, int maxPlanes) {
-        List<LiveAircraft> active = activeInBounds(staleAirborneCutoff, landedCutoff, activeSince, bounds);
-        active.sort((a, b) -> Long.compare(a.id(), b.id()));
-        List<LiveMarker> planes = new ArrayList<>();
-        Set<String> taken = new HashSet<>();
-        for (LiveAircraft a : active) {
-            if (planes.size() >= maxPlanes) break;
-            String cell = Math.floor(a.displayLatitude() / cellDeg) + "," + Math.floor(a.displayLongitude() / cellDeg);
-            if (!taken.add(cell)) continue;
-            planes.add(new LiveMarkerView(a.icao24(), a.callsign(), a.observedAt(),
-                    a.displayLatitude(), a.displayLongitude(), a.headingDeg(), a.onGround(), stateOf(a)));
-        }
-        return new LiveOverview(planes, List.of());
+    public LiveOverview discovered(ActiveTrafficQuery query, double cellDeg, int maxPlanes) {
+        return LiveOverviews.discovered(activeInBounds(query), cellDeg, maxPlanes, this::marker);
     }
 
     /**

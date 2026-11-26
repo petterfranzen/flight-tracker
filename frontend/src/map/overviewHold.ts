@@ -50,9 +50,7 @@ export function holdOverviewFrame<T extends LiveMarker>(
   inView: (p: T) => boolean,
   now: number,
 ): T[] {
-  for (const p of response) hold.set(p.icao24, { plane: p, lastLiveAt: now });
-  for (const p of drawn) if (!hold.has(p.icao24)) hold.set(p.icao24, { plane: p, lastLiveAt: now });
-
+  refreshHold(hold, response, drawn, now);
   const out = response.slice();
   const kept = new Set(response.map((p) => p.icao24));
   for (const [icao24, entry] of hold) {
@@ -60,11 +58,23 @@ export function holdOverviewFrame<T extends LiveMarker>(
       hold.delete(icao24);
       continue;
     }
-    // Landed planes only: one that went silent in the air, or that lost its
-    // cell to another plane, must not stay behind (see the note above).
-    if (kept.has(icao24) || !inView(entry.plane) || entry.plane.onGround !== true) continue;
+    if (kept.has(icao24) || !isHeldOnScreen(entry.plane, inView)) continue;
     kept.add(icao24);
     out.push(entry.plane);
   }
   return out;
+}
+
+/** The response's planes are live now; a drawn plane the hold doesn't know yet starts its grace now too. */
+function refreshHold<T extends LiveMarker>(hold: OverviewHold<T>, response: T[], drawn: T[], now: number): void {
+  for (const p of response) hold.set(p.icao24, { plane: p, lastLiveAt: now });
+  for (const p of drawn) if (!hold.has(p.icao24)) hold.set(p.icao24, { plane: p, lastLiveAt: now });
+}
+
+/**
+ * Landed planes only: one that went silent in the air, or that lost its
+ * cell to another plane, must not stay behind (see holdOverviewFrame).
+ */
+function isHeldOnScreen<T extends LiveMarker>(plane: T, inView: (p: T) => boolean): boolean {
+  return inView(plane) && plane.onGround === true;
 }

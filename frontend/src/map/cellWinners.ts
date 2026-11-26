@@ -38,16 +38,12 @@ export function cellOf(p: Pick<LiveMarker, "latitude" | "longitude">, cellDeg: n
  * client's "first discovered" ordering still follows the server's list.
  */
 export function keepCellWinners<T extends LiveMarker>(previous: T[], response: T[], cellDeg: number, nowMs: number): T[] {
-  const winners = new Map<string, T>();
-  for (const p of previous) {
-    const cell = cellOf(p, cellDeg);
-    const held = winners.get(cell);
-    if (!held || (!isActiveTraffic(held, nowMs) && isActiveTraffic(p, nowMs))) winners.set(cell, p);
-  }
+  const winners = previousWinners(previous, cellDeg, nowMs);
 
   // Every aircraft the response returns, wherever it returns it: one of these
   // has moved on and must not be kept at the cell it left.
   const returned = new Set(response.map((p) => p.icao24));
+  const keepsCell = (held: T | undefined, p: T): held is T => held != null && held.icao24 !== p.icao24 && isStillHeld(held, returned, nowMs);
 
   const out: T[] = [];
   const seen = new Set<string>();
@@ -56,8 +52,27 @@ export function keepCellWinners<T extends LiveMarker>(previous: T[], response: T
     if (seen.has(cell)) continue; // one per cell, the server's own rule
     seen.add(cell);
     const held = winners.get(cell);
-    const keep = held != null && held.icao24 !== p.icao24 && isActiveTraffic(held, nowMs) && !returned.has(held.icao24);
-    out.push(keep ? held : p);
+    out.push(keepsCell(held, p) ? held : p);
   }
   return out;
+}
+
+/** The plane drawn last frame in each cell: the first there, unless a later one is live and it isn't. */
+function previousWinners<T extends LiveMarker>(previous: T[], cellDeg: number, nowMs: number): Map<string, T> {
+  const winners = new Map<string, T>();
+  for (const p of previous) {
+    const cell = cellOf(p, cellDeg);
+    const held = winners.get(cell);
+    if (!held || replaces(p, held, nowMs)) winners.set(cell, p);
+  }
+  return winners;
+}
+
+function replaces(p: LiveMarker, held: LiveMarker, nowMs: number): boolean {
+  return !isActiveTraffic(held, nowMs) && isActiveTraffic(p, nowMs);
+}
+
+/** A held plane keeps its cell while it is live and the response doesn't return it anywhere. */
+function isStillHeld(held: LiveMarker, returned: Set<string>, nowMs: number): boolean {
+  return isActiveTraffic(held, nowMs) && !returned.has(held.icao24);
 }

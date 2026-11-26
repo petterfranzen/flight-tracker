@@ -169,111 +169,174 @@ interface Placed {
   gone?: boolean;
 }
 
+interface ScreenPoint {
+  x: number;
+  y: number;
+}
+
+/** A candidate in priority order, and whether it was drawn last time. */
+interface Ranked {
+  c: Candidate;
+  held: boolean;
+}
+
+/** Centres closer than `d` on both axes. */
+function near(p: ScreenPoint, q: ScreenPoint, d: number): boolean {
+  return Math.abs(p.x - q.x) < d && Math.abs(p.y - q.y) < d;
+}
+
+/** Pushes onto `out` each live point in `bucket` within `d` of `p`; with no `out`, stops at the first one and says so. */
+function scanBucket(bucket: Placed[], p: ScreenPoint, d: number, out: Placed[] | null): boolean {
+  for (const q of bucket) {
+    if (q.gone || !near(p, q, d)) continue;
+    if (!out) return true;
+    out.push(q);
+  }
+  return false;
+}
+
+/** The cell range a run's points fall in. */
+interface CellBounds {
+  minCx: number;
+  minCy: number;
+  maxCx: number;
+  maxCy: number;
+}
+
+function extendBounds(b: CellBounds, p: ScreenPoint, cell: number): void {
+  const cx = Math.floor(p.x / cell);
+  const cy = Math.floor(p.y / cell);
+  if (cx < b.minCx) b.minCx = cx;
+  if (cx > b.maxCx) b.maxCx = cx;
+  if (cy < b.minCy) b.minCy = cy;
+  if (cy > b.maxCy) b.maxCy = cy;
+}
+
+function cellBounds(order: Ranked[], fixed: ScreenPoint[], cell: number): CellBounds {
+  const b: CellBounds = { minCx: Infinity, minCy: Infinity, maxCx: -Infinity, maxCy: -Infinity };
+  for (const o of order) extendBounds(b, o.c, cell);
+  for (const f of fixed) extendBounds(b, f, cell);
+  return b;
+}
+
+/**
+ * The grid is a flat array indexed by (cell x, cell y), offset by the run's
+ * own minimum cell: the screen coords of one render are a small rectangle, so
+ * this is one allocation and an array index per lookup, where a Map keyed by
+ * integers cost a hash per lookup. At 2,000 candidates over every pass of a
+ * zoom that was the largest single cost inside renderAircraftLayer.
+ */
+class PlacementGrid {
+  private readonly cells: (Placed[] | undefined)[];
+  private readonly stride: number;
+  /** Index offsets of the nine cells around (and including) a cell. */
+  private readonly around: number[] = [];
+  // Reused by collect(): the newcomer pass needs the hits to decide whether
+  // to displace them, but allocating an array per candidate was most of the
+  // declutter pass's cost at 2,000+ planes. The held pass only needs a yes/no.
+  private readonly hits: Placed[] = [];
+
+  constructor(
+    private readonly cell: number,
+    private readonly bounds: CellBounds,
+  ) {
+    // One cell of padding each side, so the nine-cell scan never leaves the array.
+    this.stride = bounds.maxCx - bounds.minCx + 3;
+    this.cells = new Array<Placed[] | undefined>((bounds.maxCy - bounds.minCy + 3) * this.stride);
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) this.around.push(dy * this.stride + dx);
+    }
+  }
+
+  private index(p: ScreenPoint): number {
+    const cx = Math.floor(p.x / this.cell);
+    const cy = Math.floor(p.y / this.cell);
+    return (cy - this.bounds.minCy + 1) * this.stride + (cx - this.bounds.minCx + 1);
+  }
+
+  add(p: Placed): void {
+    const i = this.index(p);
+    const bucket = this.cells[i];
+    if (bucket) bucket.push(p);
+    else this.cells[i] = [p];
+  }
+
+  private scan(p: ScreenPoint, d: number, out: Placed[] | null): boolean {
+    const i = this.index(p);
+    for (const off of this.around) {
+      const bucket = this.cells[i + off];
+      if (bucket && scanBucket(bucket, p, d, out)) return true;
+    }
+    return false;
+  }
+
+  /** Whether any live point is within `d` of `p`. */
+  overlaps(p: ScreenPoint, d: number): boolean {
+    return this.scan(p, d, null);
+  }
+
+  /** Every live point within `d` of `p` (a reused array: read it before the next call). */
+  collect(p: ScreenPoint, d: number): Placed[] {
+    this.hits.length = 0;
+    this.scan(p, d, this.hits);
+    return this.hits;
+  }
+}
+
+/** A held plane a newcomer at priority `at` may take the place of: lower priority, and right on top of it (`close`). */
+function canDisplace(q: Placed, at: number, c: Candidate, close: number): boolean {
+  if (!q.held || q.at <= at) return false;
+  return near(c, q, close);
+}
+
 /**
  * One pass in `order`. `spacing(held)` is how far a candidate must be from
  * everything kept before it; the grid is sized by the widest spacing in play,
  * so a candidate only looks at the nine cells around it.
  */
-function pickOnce(order: { c: Candidate; held: boolean }[], fixed: { x: number; y: number }[], min: number, spacing: (held: boolean) => number = () => min): Set<string> {
+function pickOnce(order: Ranked[], fixed: ScreenPoint[], min: number, spacing: (held: boolean) => number = () => min): Set<string> {
   let cell = min;
   for (const o of order) cell = Math.max(cell, spacing(o.held));
-  // The grid is a flat array indexed by (cell x, cell y), offset by the run's
-  // own minimum cell: the screen coords of one render are a small rectangle, so
-  // this is one allocation and an array index per lookup, where a Map keyed by
-  // integers cost a hash per lookup. At 2,000 candidates over every pass of a
-  // zoom that was the largest single cost inside renderAircraftLayer.
-  let minCx = Infinity;
-  let minCy = Infinity;
-  let maxCx = -Infinity;
-  let maxCy = -Infinity;
-  for (const o of order) {
-    const cx = Math.floor(o.c.x / cell);
-    const cy = Math.floor(o.c.y / cell);
-    if (cx < minCx) minCx = cx;
-    if (cx > maxCx) maxCx = cx;
-    if (cy < minCy) minCy = cy;
-    if (cy > maxCy) maxCy = cy;
-  }
-  for (const f of fixed) {
-    const cx = Math.floor(f.x / cell);
-    const cy = Math.floor(f.y / cell);
-    if (cx < minCx) minCx = cx;
-    if (cx > maxCx) maxCx = cx;
-    if (cy < minCy) minCy = cy;
-    if (cy > maxCy) maxCy = cy;
-  }
-  if (minCx > maxCx) return new Set(); // no candidates and no fixed points
-  // One cell of padding each side, so the nine-cell scan never leaves the array.
-  const stride = maxCx - minCx + 3;
-  const cells: (Placed[] | undefined)[] = new Array<Placed[] | undefined>((maxCy - minCy + 3) * stride);
-  const at = (cx: number, cy: number): number => (cy - minCy + 1) * stride + (cx - minCx + 1);
-  const add = (p: Placed): void => {
-    const i = at(Math.floor(p.x / cell), Math.floor(p.y / cell));
-    const bucket = cells[i];
-    if (bucket) bucket.push(p);
-    else cells[i] = [p];
-  };
-  // Reused by collect(): the newcomer pass needs the hits to decide whether
-  // to displace them, but allocating an array per candidate was most of the
-  // declutter pass's cost at 2,000+ planes. The held pass only needs a yes/no.
-  const hits: Placed[] = [];
-  const overlaps = (p: { x: number; y: number }, d: number): boolean => {
-    const cx = Math.floor(p.x / cell);
-    const cy = Math.floor(p.y / cell);
-    for (let dx = -1; dx <= 1; dx++) {
-      for (let dy = -1; dy <= 1; dy++) {
-        const bucket = cells[at(cx + dx, cy + dy)];
-        if (!bucket) continue;
-        for (const q of bucket) {
-          if (q.gone) continue;
-          if (Math.abs(p.x - q.x) < d && Math.abs(p.y - q.y) < d) return true;
-        }
-      }
-    }
-    return false;
-  };
-  const collect = (p: { x: number; y: number }, d: number): Placed[] => {
-    hits.length = 0;
-    const cx = Math.floor(p.x / cell);
-    const cy = Math.floor(p.y / cell);
-    for (let dx = -1; dx <= 1; dx++) {
-      for (let dy = -1; dy <= 1; dy++) {
-        const bucket = cells[at(cx + dx, cy + dy)];
-        if (!bucket) continue;
-        for (const q of bucket) {
-          if (!q.gone && Math.abs(p.x - q.x) < d && Math.abs(p.y - q.y) < d) hits.push(q);
-        }
-      }
-    }
-    return hits;
-  };
-
-  for (const f of fixed) add({ x: f.x, y: f.y, at: -1, held: true });
+  const bounds = cellBounds(order, fixed, cell);
+  if (bounds.minCx > bounds.maxCx) return new Set(); // no candidates and no fixed points
+  const grid = new PlacementGrid(cell, bounds);
+  for (const f of fixed) grid.add({ x: f.x, y: f.y, at: -1, held: true });
   const shown = new Set<string>();
-  // Held planes (drawn last time) first, among themselves in priority order:
-  // they only give way to the selected plane or to each other.
   const heldD = spacing(true);
+  placeHeld(order, grid, shown, heldD);
+  placeNewcomers(order, grid, shown, { d: spacing(false), close: heldD * DISPLACE_FRACTION });
+  return shown;
+}
+
+/**
+ * Held planes (drawn last time) first, among themselves in priority order:
+ * they only give way to the selected plane or to each other.
+ */
+function placeHeld(order: Ranked[], grid: PlacementGrid, shown: Set<string>, heldD: number): void {
   order.forEach(({ c, held }, at) => {
-    if (!held || overlaps(c, heldD)) return;
-    add({ x: c.x, y: c.y, at, held: true, icao24: c.icao24 });
+    if (!held || grid.overlaps(c, heldD)) return;
+    grid.add({ x: c.x, y: c.y, at, held: true, icao24: c.icao24 });
     shown.add(c.icao24);
   });
-  // Then newcomers. One that ranks above a held plane takes its place only if it's right on top of it.
+}
+
+/**
+ * Then newcomers, `d` apart. One that ranks above a held plane takes its place
+ * only if it's right on top of it: `close`, measured against the held plane's
+ * spacing, not the widened newcomer one.
+ */
+function placeNewcomers(order: Ranked[], grid: PlacementGrid, shown: Set<string>, { d, close }: { d: number; close: number }): void {
   order.forEach(({ c, held }, at) => {
     if (held) return;
-    const d = spacing(false);
-    const close = heldD * DISPLACE_FRACTION; // against the held plane's spacing, not the widened newcomer one
-    const hits = collect(c, d);
-    const displaceable = hits.every((q) => q.held && q.at > at && Math.abs(c.x - q.x) < close && Math.abs(c.y - q.y) < close);
-    if (!displaceable) return;
+    const hits = grid.collect(c, d);
+    if (!hits.every((q) => canDisplace(q, at, c, close))) return;
     for (const q of hits) {
       q.gone = true;
       shown.delete(q.icao24!);
     }
-    add({ x: c.x, y: c.y, at, held: false, icao24: c.icao24 });
+    grid.add({ x: c.x, y: c.y, at, held: false, icao24: c.icao24 });
     shown.add(c.icao24);
   });
-  return shown;
 }
 
 const TILE_PX = 256;

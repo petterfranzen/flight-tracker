@@ -8,6 +8,7 @@ import com.flighttracker.profile.SubjectHash;
 import com.flighttracker.repository.FavoriteRepository;
 import com.flighttracker.repository.ProfileRepository;
 import com.flighttracker.repository.WatchedFlightRepository;
+import com.flighttracker.repository.WatchedFlightRepository.Key;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.SpringBootConfiguration;
@@ -154,7 +155,7 @@ class ProfileReadMockMvcTest {
                         + "\"destination\":\"ESGG\",\"destinationName\":\"Goteborg-Landvetter\",\"destinationIata\":\"GOT\"}");
         favorites.upsert(id, "aircraft", "48415e",
                 "{\"icao24\":\"48415e\",\"registration\":\"PH-BXA\",\"callsign\":\"KL1234\"}");
-        watched.upsert(id, "SK123", "2026-10-02", "ESSA", "to Gothenburg");
+        watched.upsert(new Key(id, "SK123", "2026-10-02", "ESSA"), "to Gothenburg");
 
         mvc.perform(signedInRead())
                 .andExpect(status().isOk())

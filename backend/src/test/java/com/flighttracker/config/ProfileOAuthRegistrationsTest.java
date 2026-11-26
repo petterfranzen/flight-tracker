@@ -160,24 +160,24 @@ class ProfileOAuthRegistrationsTest {
 
     @Test
     void theRedirectUriToleratesATrailingSlashOnTheBaseUrl() {
-        runner.withPropertyValues(
-                        "flighttracker.oauth.google.client-id=google-id",
-                        "flighttracker.oauth.google.client-secret=google-secret",
-                        "flighttracker.profile.public-base-url=https://flight.pastabake.cloud/")
-                .run(context -> assertThat(context.getBean(ClientRegistrationRepository.class)
-                        .findByRegistrationId("google").getRedirectUri())
-                        .isEqualTo("https://flight.pastabake.cloud/login/oauth2/code/google"));
+        assertGoogleRedirectUriWithPublicBaseUrl("https://flight.pastabake.cloud/",
+                "https://flight.pastabake.cloud/login/oauth2/code/google");
     }
 
     @Test
     void theRedirectUriFallsBackToSpringsPlaceholderWithNoPublicBaseUrl() {
+        assertGoogleRedirectUriWithPublicBaseUrl("", "{baseUrl}/login/oauth2/code/{registrationId}");
+    }
+
+    /** With only Google configured and the given public base URL, Google's redirect URI is {@code expected}. */
+    private void assertGoogleRedirectUriWithPublicBaseUrl(String publicBaseUrl, String expected) {
         runner.withPropertyValues(
                         "flighttracker.oauth.google.client-id=google-id",
                         "flighttracker.oauth.google.client-secret=google-secret",
-                        "flighttracker.profile.public-base-url=")
+                        "flighttracker.profile.public-base-url=" + publicBaseUrl)
                 .run(context -> assertThat(context.getBean(ClientRegistrationRepository.class)
                         .findByRegistrationId("google").getRedirectUri())
-                        .isEqualTo("{baseUrl}/login/oauth2/code/{registrationId}"));
+                        .isEqualTo(expected));
     }
 
     @Test

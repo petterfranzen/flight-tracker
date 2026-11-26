@@ -7,7 +7,6 @@ import com.flighttracker.service.live.LiveAircraft;
 import com.flighttracker.service.training.TrainingDataRepository.Label;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -120,18 +119,15 @@ public class TrainingDataService {
                                RunwayIndex runwayIndex,
                                TransactionTemplate transactionTemplate,
                                Clock clock,
-                               @Value("${flighttracker.training.enabled:true}") boolean enabled,
-                               @Value("${flighttracker.training.max-altitude-m:4000}") double maxAltitudeM,
-                               @Value("${flighttracker.training.capture-delay-seconds:600}") long captureDelaySeconds,
-                               @Value("${flighttracker.training.max-airborne-label-gap-minutes:30}") long maxAirborneLabelGapMinutes) {
+                               TrainingSettings settings) {
         this.repository = repository;
         this.runwayIndex = runwayIndex;
         this.transactionTemplate = transactionTemplate;
         this.clock = clock;
-        this.enabled = enabled;
-        this.maxAltitudeM = maxAltitudeM;
-        this.captureDelay = Duration.ofSeconds(Math.max(0, captureDelaySeconds));
-        this.maxAirborneLabelGap = Duration.ofMinutes(Math.max(0, maxAirborneLabelGapMinutes));
+        this.enabled = settings.enabled();
+        this.maxAltitudeM = settings.maxAltitudeM();
+        this.captureDelay = settings.captureDelay();
+        this.maxAirborneLabelGap = settings.maxAirborneLabelGap();
     }
 
     public boolean enabled() {
@@ -273,11 +269,10 @@ public class TrainingDataService {
      * returned. A landing after that moment is a later flight and changes
      * nothing. Safe to call from any thread.
      */
-    public void recordConfirmedLanding(String icao24, Instant lastObservedAt, String providerId,
-                                       Instant onTime, String airportIcao) {
+    public void recordConfirmedLanding(ConfirmedLanding landing) {
         if (!enabled) return;
-        repository.confirmLanded(new Label(icao24, lastObservedAt, Label.LANDED, providerId,
-                onTime, null, null, airportIcao), clock.instant());
+        repository.confirmLanded(new Label(landing.icao24(), landing.lastObservedAt(), Label.LANDED,
+                landing.providerId(), landing.onTime(), null, null, landing.airportIcao()), clock.instant());
     }
 
     private boolean qualifies(TrackEndFeatures f) {

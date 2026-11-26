@@ -89,13 +89,7 @@ public class AircraftEnrichmentService {
         // adsbdb record) doesn't trigger a fresh external lookup every
         // single time its dossier is viewed again. Route columns are no
         // longer written (always null) — see the class javadoc.
-        AircraftInfo i = info.orElse(null);
-        aircraftRepository.updateEnrichment(icao24,
-                i == null ? null : i.model(),
-                i == null ? null : i.registration(),
-                i == null ? null : i.operator(),
-                null, null, null, null, null, null, null, null,
-                clock.instant());
+        aircraftRepository.updateEnrichment(icao24, info.orElse(null), clock.instant());
         if (info.isEmpty()) {
             log.debug("No aircraft metadata found for {}", icao24);
         }

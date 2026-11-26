@@ -1,11 +1,5 @@
 package com.flighttracker.profile;
 
-import tools.jackson.databind.DeserializationFeature;
-import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.ObjectMapper;
-import tools.jackson.databind.json.JsonMapper;
-
-import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
 import java.util.Set;
@@ -49,10 +43,6 @@ public final class ProfileLimits {
 
     public static final Set<String> FAVORITE_KINDS = Set.of("route", "aircraft");
 
-    private static final ObjectMapper JSON = JsonMapper.builder()
-            .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
-            .build();
-
     private ProfileLimits() {
     }
 
@@ -61,23 +51,7 @@ public final class ProfileLimits {
             throw new ProfileLimitException(INVALID, "kind", "kind must be one of " + FAVORITE_KINDS);
         }
         requireText("itemKey", itemKey, MAX_ITEM_KEY_LENGTH);
-        if (data == null) {
-            throw new ProfileLimitException(INVALID, "data", "data is required");
-        }
-        if (data.getBytes(StandardCharsets.UTF_8).length > MAX_FAVORITE_DATA_BYTES) {
-            throw new ProfileLimitException(TOO_LONG, "data",
-                    "data exceeds " + MAX_FAVORITE_DATA_BYTES + " bytes");
-        }
-        try {
-            JsonNode node = JSON.readTree(data);
-            // The frontend only stores a FavoriteRoute/FavoriteAircraft object, so
-            // a bare scalar, an array or JSON null does not count as valid data.
-            if (node == null || node.isMissingNode() || !node.isObject()) {
-                throw new IllegalArgumentException("data must be a JSON object");
-            }
-        } catch (Exception e) {
-            throw new ProfileLimitException(INVALID, "data", "data must be a JSON object");
-        }
+        FavoriteData.check(data);
     }
 
     public static void checkWatchedFlight(String flightNumber, String flightDate, String airport, String label) {

@@ -48,7 +48,7 @@ const mapEval = <T>(page: Page, fn: string): Promise<T> =>
 export async function startHarness(page: Page, testInfo: TestInfo): Promise<Harness> {
   const world = new World();
   const pageErrors: string[] = [];
-  let lastBbox: Bbox | null = null;
+  const feed: LiveFeedState = { lastBbox: null };
   let stepNo = 0;
   const h: Harness = {
     world,
@@ -69,100 +69,133 @@ export async function startHarness(page: Page, testInfo: TestInfo): Promise<Harn
   };
 
   page.on("pageerror", (e) => pageErrors.push(e.message));
+  await routeBasemap(page);
+  await routeApi(page, { world, h, feed });
+  await routeLiveFeed(page, world, feed);
+  return h;
+}
 
-  // ---- basemap ----
+/** The last /live viewport the app reported: the WebSocket pushes what is inside it. */
+interface LiveFeedState {
+  lastBbox: Bbox | null;
+}
+
+async function routeBasemap(page: Page): Promise<void> {
   await page.route("https://tiles.openfreemap.org/planet", (r) =>
     r.fulfill({ json: OPENFREEMAP_TILEJSON }),
   );
   await page.route(/tiles\.openfreemap\.org\/(t|fonts)\//, (r) => r.fulfill({ body: Buffer.alloc(0), contentType: "application/x-protobuf" }));
   await page.route(/tile\.openstreetmap\.org/, (r) => r.abort());
+}
 
-  // ---- REST ----
-  const bboxOf = (u: URL): Bbox | null =>
-    u.searchParams.has("latMin")
-      ? { latMin: +u.searchParams.get("latMin")!, latMax: +u.searchParams.get("latMax")!, lonMin: +u.searchParams.get("lonMin")!, lonMax: +u.searchParams.get("lonMax")! }
-      : null;
+// ---- REST ----
 
+interface ApiState {
+  world: World;
+  h: Harness;
+  feed: LiveFeedState;
+}
+
+/** A response to fulfil, or null to let the request through. */
+type ApiReply = { body: unknown; status?: number } | null;
+type ApiHandler = (u: URL, now: number, s: ApiState) => ApiReply;
+
+const ok = (body: unknown): ApiReply => ({ body });
+const NOT_FOUND: ApiReply = { body: null, status: 404 };
+const AGENTS_ACTIVE = { active: true, secondsRemaining: 300 };
+
+const bboxOf = (u: URL): Bbox | null =>
+  u.searchParams.has("latMin")
+    ? { latMin: +u.searchParams.get("latMin")!, latMax: +u.searchParams.get("latMax")!, lonMin: +u.searchParams.get("lonMin")!, lonMax: +u.searchParams.get("lonMax")! }
+    : null;
+
+/** The marker fields of an aircraft's current position, as /live and the overview serve them. */
+function markerOf(world: World, a: SimAircraft, now: number): LiveMarker {
+  const p = world.flightPosition(a, now);
+  return { icao24: p.icao24, callsign: p.callsign, observedAt: p.observedAt, latitude: p.latitude, longitude: p.longitude, headingDeg: p.headingDeg };
+}
+
+/** /live/clusters and /live/overview: the server's own bucketing (clusters at the mean position of their aircraft). */
+function liveBuckets(u: URL, now: number, { world }: ApiState): ApiReply {
+  const b = bboxOf(u)!;
+  const g = Math.min(40, Math.max(0.5, +(u.searchParams.get("gridDeg") ?? 2)));
+  const inView = world.aircraft.filter((a) => world.inBounds(a, b, now)).map((a) => markerOf(world, a, now));
+  if (u.pathname.endsWith("/overview")) return ok({ planes: onePerCell(inView, g), clusters: [] });
+  return ok(clusterMockFleet(inView, g));
+}
+
+function liveInView(u: URL, now: number, { world, feed }: ApiState): ApiReply {
+  const b = bboxOf(u);
+  if (b) feed.lastBbox = b;
+  return ok(world.aircraft.filter((a) => !b || world.inBounds(a, b, now)).map((a) => markerOf(world, a, now)));
+}
+
+function flightSearch(u: URL, now: number, { world }: ApiState): ApiReply {
+  const airport = u.searchParams.get("airport")?.trim();
+  const q = u.searchParams.get("q")?.trim().toUpperCase();
+  let hits: SimAircraft[] = [];
+  if (airport) hits = world.searchByAirport(airport);
+  else if (q) hits = world.aircraft.filter((a) => a.callsign.startsWith(q));
+  hits = [...hits].sort((x, y) => x.callsign.localeCompare(y.callsign)).slice(0, 8);
+  return ok(hits.map((a) => world.flightPosition(a, now)));
+}
+
+const API_BY_PATH: Record<string, ApiHandler> = {
+  "/api/flights/live/count": (_u, _now, { world }) => ok(world.aircraft.length),
+  "/api/flights/live/clusters": liveBuckets,
+  "/api/flights/live/overview": liveBuckets,
+  "/api/flights/live": liveInView,
+  "/api/flights/search": flightSearch,
+  "/api/airports/info": (u, _now, { world }) => {
+    const info = world.airportInfo(u.searchParams.get("code") ?? "");
+    return info ? ok(info) : NOT_FOUND;
+  },
+  "/api/agents/status": () => ok(AGENTS_ACTIVE),
+  "/api/agents/restart": (_u, _now, { h }) => {
+    h.restarts++;
+    return ok(AGENTS_ACTIVE);
+  },
+};
+
+/** Per-aircraft endpoints, keyed by the icao24 in the path. */
+const API_BY_AIRCRAFT: [RegExp, (a: SimAircraft | undefined, now: number, world: World) => ApiReply][] = [
+  [/^\/api\/flights\/([0-9a-f]+)\/live$/, (a, now, world) => (a ? ok(world.flightPosition(a, now)) : NOT_FOUND)],
+  [/^\/api\/flights\/([0-9a-f]+)\/history$/, (a, now, world) => ok(a ? world.history(a, now) : [])],
+  [/^\/api\/aircraft\/([0-9a-f]+)$/, (a, now, world) => (a ? ok(world.dossier(a, now)) : NOT_FOUND)],
+];
+
+function apiReply(u: URL, now: number, s: ApiState): ApiReply {
+  const byPath = API_BY_PATH[u.pathname];
+  if (byPath) return byPath(u, now, s);
+  for (const [re, reply] of API_BY_AIRCRAFT) {
+    const m = u.pathname.match(re);
+    if (m) return reply(s.world.get(m[1]), now, s.world);
+  }
+  return null;
+}
+
+/** Every REST endpoint the app calls, served from the World at the moment of the request. */
+async function routeApi(page: Page, s: ApiState): Promise<void> {
   await page.route(/\/api\//, async (route) => {
-    const u = new URL(route.request().url());
-    const path = u.pathname;
-    const now = Date.now();
-    const json = (body: unknown, status = 200) => route.fulfill({ status, json: body });
-
-    if (path === "/api/flights/live/count") return json(world.aircraft.length);
-    if (path === "/api/flights/live/clusters" || path === "/api/flights/live/overview") {
-      const b = bboxOf(u)!;
-      const g = Math.min(40, Math.max(0.5, +(u.searchParams.get("gridDeg") ?? 2)));
-      // The server's own bucketing (clusters at the mean position of their aircraft).
-      const inView: LiveMarker[] = [];
-      for (const a of world.aircraft) {
-        if (!world.inBounds(a, b, now)) continue;
-        const p = world.flightPosition(a, now);
-        inView.push({ icao24: p.icao24, callsign: p.callsign, observedAt: p.observedAt, latitude: p.latitude, longitude: p.longitude, headingDeg: p.headingDeg });
-      }
-      if (path.endsWith("/overview")) return json({ planes: onePerCell(inView, g), clusters: [] });
-      return json(clusterMockFleet(inView, g));
-    }
-    if (path === "/api/flights/live") {
-      const b = bboxOf(u);
-      if (b) lastBbox = b;
-      return json(
-        world.aircraft
-          .filter((a) => !b || world.inBounds(a, b, now))
-          .map((a) => {
-            const p = world.flightPosition(a, now);
-            return { icao24: p.icao24, callsign: p.callsign, observedAt: p.observedAt, latitude: p.latitude, longitude: p.longitude, headingDeg: p.headingDeg };
-          }),
-      );
-    }
-    let m = path.match(/^\/api\/flights\/([0-9a-f]+)\/live$/);
-    if (m) {
-      const a = world.get(m[1]);
-      return a ? json(world.flightPosition(a, now)) : json(null, 404);
-    }
-    m = path.match(/^\/api\/flights\/([0-9a-f]+)\/history$/);
-    if (m) {
-      const a = world.get(m[1]);
-      return json(a ? world.history(a, now) : []);
-    }
-    m = path.match(/^\/api\/aircraft\/([0-9a-f]+)$/);
-    if (m) {
-      const a = world.get(m[1]);
-      return a ? json(world.dossier(a, now)) : json(null, 404);
-    }
-    if (path === "/api/flights/search") {
-      const airport = u.searchParams.get("airport")?.trim();
-      const q = u.searchParams.get("q")?.trim().toUpperCase();
-      let hits: SimAircraft[] = [];
-      if (airport) hits = world.searchByAirport(airport);
-      else if (q) hits = world.aircraft.filter((a) => a.callsign.startsWith(q));
-      hits = [...hits].sort((x, y) => x.callsign.localeCompare(y.callsign)).slice(0, 8);
-      return json(hits.map((a) => world.flightPosition(a, now)));
-    }
-    if (path === "/api/airports/info") {
-      const info = world.airportInfo(u.searchParams.get("code") ?? "");
-      return info ? json(info) : json(null, 404);
-    }
-    if (path === "/api/agents/status") return json({ active: true, secondsRemaining: 300 });
-    if (path === "/api/agents/restart") {
-      h.restarts++;
-      return json({ active: true, secondsRemaining: 300 });
-    }
-    return route.continue();
+    const reply = apiReply(new URL(route.request().url()), Date.now(), s);
+    if (!reply) return route.continue();
+    return route.fulfill({ status: reply.status ?? 200, json: reply.body });
   });
+}
 
-  // ---- live feed ----
+// ---- live feed ----
+
+async function routeLiveFeed(page: Page, world: World, feed: LiveFeedState): Promise<void> {
   await page.routeWebSocket(/\/ws\/live/, (ws) => {
     const timer = setInterval(() => {
-      if (!lastBbox) return;
+      const bbox = feed.lastBbox;
+      if (!bbox) return;
       const now = Date.now();
-      for (const a of world.aircraft) if (world.inBounds(a, lastBbox, now)) ws.send(JSON.stringify(world.flightPosition(a, now)));
+      for (const a of world.aircraft) if (world.inBounds(a, bbox, now)) ws.send(JSON.stringify(world.flightPosition(a, now)));
       ws.send(JSON.stringify({ type: "ping" }));
     }, WS_PUSH_INTERVAL_MS);
     ws.onClose(() => clearInterval(timer));
   });
-
-  return h;
 }
 
 // ---- map helpers (all user-like where it's practical) ----
@@ -315,7 +348,7 @@ async function landFraction(page: Page): Promise<number> {
       const d = ctx.getImageData(0, 0, c.width, c.height).data;
       let hit = 0;
       for (let i = 0; i < d.length; i += 4) {
-        if (Math.abs(d[i] - rgb[0]) < 40 && Math.abs(d[i + 1] - rgb[1]) < 40 && Math.abs(d[i + 2] - rgb[2]) < 40) hit++;
+        if ([0, 1, 2].every((k) => Math.abs(d[i + k] - rgb[k]) < 40)) hit++;
       }
       return hit / (d.length / 4);
     },
