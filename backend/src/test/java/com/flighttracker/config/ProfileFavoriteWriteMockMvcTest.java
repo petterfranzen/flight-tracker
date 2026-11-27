@@ -175,7 +175,7 @@ class ProfileFavoriteWriteMockMvcTest {
         mvc.perform(signedInPut("{\"kind\":\"route\",\"itemKey\":\"ESSA-ESGG\",\"data\":" + ROUTE_DATA + "}"))
                 .andExpect(status().isOk());
 
-        assertThat(favorites.find(profileId(), "route", "ESSA-ESGG"))
+        assertThat(favorites.find(new FavoriteRepository.Key(profileId(), "route", "ESSA-ESGG")))
                 .as("the favourite is stored under the resolved profile")
                 .isPresent()
                 .get()
@@ -193,7 +193,7 @@ class ProfileFavoriteWriteMockMvcTest {
         mvc.perform(signedInPut(second)).andExpect(status().isOk());
 
         assertThat(favorites.countForProfile(profileId())).as("the key is replaced, not duplicated").isEqualTo(1);
-        assertThat(favorites.find(profileId(), "route", "ESSA-ESGG"))
+        assertThat(favorites.find(new FavoriteRepository.Key(profileId(), "route", "ESSA-ESGG")))
                 .get().extracting(favorite -> favorite.data()).asString().contains("ESGG");
     }
 
@@ -204,7 +204,7 @@ class ProfileFavoriteWriteMockMvcTest {
 
         mvc.perform(signedInDelete()).andExpect(status().isNoContent());
 
-        assertThat(favorites.find(profileId(), "route", "ESSA-ESGG"))
+        assertThat(favorites.find(new FavoriteRepository.Key(profileId(), "route", "ESSA-ESGG")))
                 .as("the row is gone")
                 .isEmpty();
     }
@@ -254,7 +254,7 @@ class ProfileFavoriteWriteMockMvcTest {
                 .andExpect(status().isOk());
         String id = profileId();
         for (int i = 1; i < 200; i++) {
-            favorites.upsert(id, "route", "K" + i, ROUTE_DATA);
+            favorites.upsert(new FavoriteRepository.Key(id, "route", "K" + i), ROUTE_DATA);
         }
         assertThat(favorites.countForProfile(id)).isEqualTo(200);
 
@@ -263,7 +263,7 @@ class ProfileFavoriteWriteMockMvcTest {
                 .andExpect(jsonPath("$.field").value("favorites"));
 
         assertThat(favorites.countForProfile(id)).as("the cap write stored nothing").isEqualTo(200);
-        assertThat(favorites.find(id, "route", "K-OVER")).isEmpty();
+        assertThat(favorites.find(new FavoriteRepository.Key(id, "route", "K-OVER"))).isEmpty();
     }
 
     @Test
