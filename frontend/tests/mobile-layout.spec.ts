@@ -353,6 +353,11 @@ test.describe("mobile layout", () => {
     await expect(page.locator(".flight-search-fab")).toBeVisible();
     await expect(page.locator(".flight-search-input").first()).toBeHidden();
 
+    // The boot screen (full viewport, z-index 1000) outlives waitForMapReady: it
+    // waits for the basemap too. Hit-testing before it is gone finds the boot
+    // screen, not the chrome (same wait as helpers.clickAt).
+    await page.locator(".boot-screen").waitFor({ state: "detached", timeout: 20_000 });
+
     const buttons = [".flight-search-fab", ".favorites-panel-fab", ".watch-panel-toggle", ".map-legend-fab", ".map-locate-button"];
     for (const sel of buttons) {
       const loc = page.locator(sel);
