@@ -854,13 +854,18 @@ html.standalone .app-shell {
   display: none;
 }
 
-/* Mobile layout (see MOBILE_BREAKPOINT_PX in FlightMap.tsx — kept as the
-   same literal since CSS can't reference a JS constant). Additive only:
+/* Compact (phone) layout, narrow OR short — the same "(max-width: 768px),
+   (max-height: 500px)" condition as COMPACT_QUERY in ui/a11y.ts and every
+   other component's block here. The short-viewport half is what keeps a phone
+   in landscape (844x390, where the width never dips below the phone
+   breakpoint) on this layout instead of the desktop one, whose 423px-tall
+   stack and 200px-padded side card do not fit a 390px-tall viewport.
+   Additive only:
    nothing above this breakpoint changes, everything below it is a
    hide-by-default/reveal-on-demand treatment rather than a separate
    mobile app — see FlightSearch.css for the search panel's own version
    of the same idea. */
-@media (max-width: 768px) {
+@media (max-width: 768px), (max-height: 500px) {
   /* Purely decorative (a title/subtitle, no controls) — costs real space
      on a phone for zero function, so it's dropped entirely rather than
      just shrunk. */
@@ -1009,6 +1014,12 @@ html.standalone .app-shell {
      above) — capped like the sheet, and scrolls its own content when it
      outgrows that, independent of the clip-path applied to its parent. */
   .details-panel-inner {
+    /* border-box: this box carries 28px/22px padding and a safe-area
+       padding-bottom, and .details-panel (which clips it with overflow:hidden)
+       is capped at the same 33.334/78dvh. Content-box made the inner box up to
+       ~56-78px taller than the sheet, so the dossier's last row sat below the
+       clip and no amount of scrolling could reach it. */
+    box-sizing: border-box;
     max-height: 33.334vh;
     max-height: 33.334dvh;
     overflow-y: auto;

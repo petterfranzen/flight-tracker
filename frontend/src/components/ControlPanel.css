@@ -13,7 +13,7 @@
   box-sizing: border-box;
 }
 
-@media (max-width: 768px) {
+@media (max-width: 768px), (max-height: 500px) {
   /* Closed by default; each component adds --open from its own render. */
   .control-panel {
     display: none;
@@ -57,7 +57,7 @@
   display: none;
 }
 
-@media (max-width: 768px) {
+@media (max-width: 768px), (max-height: 500px) {
   /* Doubled class: each component's own base rule sets display:none for its
      desktop toggle, and stylesheet order between the component files is not
      something to rely on. */

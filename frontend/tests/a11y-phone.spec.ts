@@ -46,36 +46,47 @@ const SCHEDULE_ROW = {
  * (the corner of that square falls outside the circle), and border-radius
  * clips hit-testing. Returns one line per failing element.
  */
+interface TargetProbe {
+  label: string;
+  width: number;
+  height: number;
+  /** Whether each axis point half a target out hits the control itself. */
+  hit: boolean;
+}
+
+/** Runs in the page: measures every visible match and hit-tests its four axis points. */
+function probeTargets(els: Element[], need: number): TargetProbe[] {
+  const half = need / 2 - 0.5;
+  const onScreen = (x: number, y: number) => [x >= 0, y >= 0, x <= window.innerWidth, y <= window.innerHeight].every(Boolean);
+  const hits = (h: HTMLElement, [x, y]: [number, number]) => {
+    const t = onScreen(x, y) ? document.elementFromPoint(x, y) : null;
+    return t != null && h.contains(t); // contains() is true for h itself
+  };
+  return els
+    .map((el) => el as HTMLElement)
+    .filter((h) => {
+      const r = h.getBoundingClientRect();
+      return r.width !== 0 && r.height !== 0; // hidden — not on the phone screen at all
+    })
+    .map((h) => {
+      const r = h.getBoundingClientRect();
+      const cx = (r.left + r.right) / 2;
+      const cy = (r.top + r.bottom) / 2;
+      const pts: [number, number][] = [
+        [cx - half, cy],
+        [cx + half, cy],
+        [cx, cy - half],
+        [cx, cy + half],
+      ];
+      return { label: h.className || h.tagName, width: r.width, height: r.height, hit: pts.every((p) => hits(h, p)) };
+    });
+}
+
 async function undersizedTargets(page: Page, selector: string, need = 44): Promise<string[]> {
-  return page.$$eval(
-    selector,
-    (els, need) => {
-      const bad: string[] = [];
-      const half = need / 2 - 0.5;
-      for (const el of els) {
-        const h = el as HTMLElement;
-        const r = h.getBoundingClientRect();
-        if (r.width === 0 || r.height === 0) continue; // hidden — not on the phone screen at all
-        const cx = (r.left + r.right) / 2;
-        const cy = (r.top + r.bottom) / 2;
-        const pts: [number, number][] = [
-          [cx - half, cy],
-          [cx + half, cy],
-          [cx, cy - half],
-          [cx, cy + half],
-        ];
-        const hit = pts.every(([x, y]) => {
-          if (x < 0 || y < 0 || x > window.innerWidth || y > window.innerHeight) return false;
-          const t = document.elementFromPoint(x, y);
-          return t != null && (t === h || h.contains(t));
-        });
-        const size = r.width >= need - 0.5 && r.height >= need - 0.5;
-        if (!(hit && size)) bad.push(`${h.className || h.tagName} is ${Math.round(r.width)}x${Math.round(r.height)} (hit=${hit})`);
-      }
-      return bad;
-    },
-    need,
-  );
+  const probes = await page.$$eval(selector, probeTargets, need);
+  return probes
+    .filter((p) => !(p.hit && p.width >= need - 0.5 && p.height >= need - 0.5))
+    .map((p) => `${p.label} is ${Math.round(p.width)}x${Math.round(p.height)} (hit=${p.hit})`);
 }
 
 /**
@@ -117,6 +128,21 @@ async function expectTargets(page: Page, selectors: string[]): Promise<void> {
     problems.push(...bad.map((b) => `${sel}: ${b}`));
   }
   expect(problems, problems.join("; ")).toEqual([]);
+}
+
+/**
+ * Every visible field must be at least 16px: iOS Safari zooms the page on
+ * focus of a field under 16px and then leaves it panned sideways, so a 12px
+ * watch input costs the user a zoom-in and a sideways scroll on every focus.
+ */
+async function expectFieldsAtLeast16(page: Page, label: string): Promise<void> {
+  const sizes = await page.evaluate(() =>
+    Array.from(document.querySelectorAll<HTMLElement>("input, textarea, select"))
+      .filter((el) => el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden")
+      .map((el) => ({ cls: el.className, size: parseFloat(getComputedStyle(el).fontSize) })),
+  );
+  expect(sizes.length, `${label}: at least one visible field`).toBeGreaterThan(0);
+  for (const { cls, size } of sizes) expect(size, `${label}: font-size of "${cls}"`).toBeGreaterThanOrEqual(16);
 }
 
 test.describe("phone accessibility", () => {
@@ -304,6 +330,37 @@ test.describe("phone accessibility", () => {
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     expect(overflow).toBeLessThanOrEqual(0);
   });
+
+  // section9-hq#420: the watch panel's four fields inherited the panel's own
+  // 12px, so every focus on them zoomed the page on iOS. Search already
+  // carried the 16px guard; watch was missed. Asserted at both phone widths
+  // the audit named, with each panel that holds a field open.
+  for (const vp of [
+    { name: "390x844", width: 390, height: 844 },
+    { name: "375x667", width: 375, height: 667 },
+  ]) {
+    test(`every visible field is >= 16px (no iOS zoom) at ${vp.name}`, async ({ page }) => {
+      await page.setViewportSize({ width: vp.width, height: vp.height });
+      await seedWatched(page, [{ flightNumber: "SK528", date: "2026-11-07", airport: "ARN", label: "ARN → LHR" }]);
+      await mockFlightApi(page);
+      await page.route("**/api/schedule/search*", (route) => route.fulfill({ json: [SCHEDULE_ROW] }));
+      await page.goto("/");
+      await waitForMapReady(page, 60_000);
+      await waitForChrome(page);
+
+      // Search overlay: both text fields.
+      await page.locator(".flight-search-fab").click();
+      await expect(page.locator(".flight-search-airport-input")).toBeVisible();
+      await expectFieldsAtLeast16(page, `search @ ${vp.name}`);
+      await page.keyboard.press("Escape");
+
+      // Watch panel: flight, from, to and the date field.
+      await page.locator(".watch-panel-toggle").click();
+      await expect(page.locator(".watch-panel-date")).toBeVisible();
+      await expectFieldsAtLeast16(page, `watch @ ${vp.name}`);
+      await page.keyboard.press("Escape");
+    });
+  }
 
   test("the resume dialog is modal: focus moves in, Escape closes, focus returns", async ({ page }) => {
     await page.setViewportSize(PHONE);

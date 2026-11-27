@@ -33,27 +33,6 @@ import static org.mockito.Mockito.when;
 /** Board providers in the service: one fetch serves many candidates, matching, caching and the shared rules. */
 class ArrivalConfirmationBoardTest {
 
-    private static final class FakeBoards implements AirportArrivalsProvider {
-        final String id;
-        final List<String> fetches = new ArrayList<>();
-        boolean enabled = true;
-        List<String> airports = null; // null = covers everything
-        final Map<String, List<BoardEntry>> boards = new LinkedHashMap<>(); // by airport
-        BoardResult override;
-
-        FakeBoards(String id) {
-            this.id = id;
-        }
-
-        @Override public String id() { return id; }
-        @Override public boolean enabled() { return enabled; }
-        @Override public boolean covers(String airport) { return airports == null || (airport != null && airports.contains(airport)); }
-        @Override public BoardResult fetchArrivals(String airport, LocalDate dateUtc) {
-            fetches.add(airport + "@" + dateUtc);
-            return override != null ? override : BoardResult.found(boards.getOrDefault(airport, List.of()));
-        }
-    }
-
     private final TestClock clock = new TestClock();
     private final LiveStateStore live = mock(LiveStateStore.class);
     private final CallsignRouteService routes = mock(CallsignRouteService.class);
@@ -62,7 +41,7 @@ class ArrivalConfirmationBoardTest {
     private final RunwayIndex runways = new RunwayIndex();
     private final ConfirmationStore store = new ConfirmationStore(120, 100);
     private final Map<String, LiveAircraft> aircraft = new LinkedHashMap<>();
-    private final FakeBoards boards = new FakeBoards("sw");
+    private final FakeArrivalBoards boards = new FakeArrivalBoards("sw");
     private Instant now;
 
     @BeforeEach
@@ -82,19 +61,27 @@ class ArrivalConfirmationBoardTest {
                 routes, runways, training, clock, 0.5, 120, 300, 45, 15);
     }
 
-    private LiveAircraft addInferred(String icao24, String callsign, String airport, Instant touchdownAt) {
+    /** One aircraft's identity: its icao24 and callsign. */
+    private record Plane(String icao24, String callsign) {}
+
+    /** An inferred landing at ESSA. */
+    private LiveAircraft addInferred(Plane p, Instant touchdownAt) {
+        return addInferred(p, "ESSA", touchdownAt);
+    }
+
+    private LiveAircraft addInferred(Plane p, String airport, Instant touchdownAt) {
         GapEstimate gap = new GapEstimate(TrackState.LANDED_INFERRED, 0.92, 0.08, 59.65, 17.93, 800, now, airport, "19R",
                 touchdownAt, null, "physics-v1");
-        LiveAircraft a = new LiveAircraft(1L, icao24, callsign, now.minusSeconds(900), 59.6, 17.9, 300.0, 70.0, 190.0, -3.0, false,
+        LiveAircraft a = new LiveAircraft(1L, p.icao24(), p.callsign(), now.minusSeconds(900), 59.6, 17.9, 300.0, 70.0, 190.0, -3.0, false,
                 "opensky", null, gap.estLat(), gap.estLon(), gap.at(), gap);
-        aircraft.put(icao24, a);
+        aircraft.put(a.icao24(), a);
         return a;
     }
 
-    private LiveAircraft addGround(String icao24, String callsign, Instant landedSince) {
-        LiveAircraft a = new LiveAircraft(1L, icao24, callsign, landedSince.plusSeconds(60), 59.651, 17.931, 0.0, 5.0, 190.0, 0.0,
+    private LiveAircraft addGround(Plane p, Instant landedSince) {
+        LiveAircraft a = new LiveAircraft(1L, p.icao24(), p.callsign(), landedSince.plusSeconds(60), 59.651, 17.931, 0.0, 5.0, 190.0, 0.0,
                 true, "opensky", landedSince, null, null, null, null);
-        aircraft.put(icao24, a);
+        aircraft.put(a.icao24(), a);
         return a;
     }
 
@@ -106,13 +93,16 @@ class ArrivalConfirmationBoardTest {
         return new BoardEntry(callsign, null, null, new ArrivalInfo(null, null, on, in, gate, "5", "ESSA"));
     }
 
-    private static BoardEntry registered(String callsign, String registration, Instant on, String gate) {
-        return new BoardEntry(callsign, null, registration, new ArrivalInfo(null, null, on, null, gate, "5", "ESSA"));
+    /** The same board entry, matched by this registration. */
+    private static BoardEntry registered(BoardEntry entry, String registration) {
+        return new BoardEntry(entry.callsign(), entry.flightNumber(), registration, entry.info());
     }
 
-    private static Aircraft withRegistration(String icao24, String registration) {
-        return new Aircraft(icao24, registration, null, null, null, null, null, null, null, null, null, null,
+    /** The aircraft table knows this plane's registration. */
+    private void givenRegistration(Plane p, String registration) {
+        Aircraft row = new Aircraft(p.icao24(), registration, null, null, null, null, null, null, null, null, null, null,
                 null, null, null, Instant.EPOCH, Instant.EPOCH);
+        when(aircraftRepository.findById(p.icao24())).thenReturn(Optional.of(row));
     }
 
     // ---- one fetch serves everyone
@@ -120,9 +110,9 @@ class ArrivalConfirmationBoardTest {
     @Test
     void oneFetch_servesEveryCandidateAtTheAirport() {
         Instant td = now.minus(Duration.ofMinutes(10));
-        addInferred("a1", "SAS1", "ESSA", td);
-        addInferred("a2", "NOZ2", "ESSA", td.plusSeconds(60));
-        addGround("g3", "SAS3", td.plusSeconds(120));
+        addInferred(new Plane("a1", "SAS1"), td);
+        addInferred(new Plane("a2", "NOZ2"), td.plusSeconds(60));
+        addGround(new Plane("g3", "SAS3"), td.plusSeconds(120));
         boards.boards.put("ESSA", List.of(
                 entry("SAS1", td),
                 entry("NOZ2", td.plusSeconds(60), td.plus(Duration.ofMinutes(8)), "B14"),
@@ -139,7 +129,7 @@ class ArrivalConfirmationBoardTest {
 
     @Test
     void theBoardIsFetchedForTheTouchdownsUtcDate() {
-        addInferred("a1", "SAS1", "ESSA", Instant.parse("2026-10-11T23:50:00Z"));
+        addInferred(new Plane("a1", "SAS1"), Instant.parse("2026-10-11T23:50:00Z"));
         now = Instant.parse("2026-10-12T00:05:00Z");
         clock.set(now);
 
@@ -153,7 +143,7 @@ class ArrivalConfirmationBoardTest {
     @Test
     void aFreshBoard_isReused_andAStaleOneFetchedAgainAndNowHasTheAircraft() {
         Instant td = now.minus(Duration.ofMinutes(10));
-        addInferred("a1", "SAS1", "ESSA", td);
+        addInferred(new Plane("a1", "SAS1"), td);
         ArrivalConfirmationService svc = service(boards);
 
         svc.tick(); // the board does not have SAS1 yet
@@ -176,7 +166,7 @@ class ArrivalConfirmationBoardTest {
 
     @Test
     void aCandidateThatIsNotOnTheBoard_doesNotRefetchItEveryTtl_butOnlyEveryRecheckInterval() {
-        addInferred("a1", "GA123", "ESSA", now.minus(Duration.ofMinutes(10)));
+        addInferred(new Plane("a1", "GA123"), now.minus(Duration.ofMinutes(10)));
         boards.boards.put("ESSA", List.of(entry("SAS9", now)));
         ArrivalConfirmationService svc = service(boards);
 
@@ -193,7 +183,7 @@ class ArrivalConfirmationBoardTest {
 
     @Test
     void theRecheckMemoCountsFromTheBoardsFetchTime() {
-        addInferred("a1", "GA123", "ESSA", now.minus(Duration.ofMinutes(10)));
+        addInferred(new Plane("a1", "GA123"), now.minus(Duration.ofMinutes(10)));
         boards.boards.put("ESSA", List.of(entry("SAS9", now)));
         ArrivalConfirmationService svc = service(boards);
 
@@ -212,14 +202,14 @@ class ArrivalConfirmationBoardTest {
     @Test
     void aBlankedCandidate_isStillMatchedAgainstAFresherBoardAnotherCandidateFetches() {
         Instant td = now.minus(Duration.ofMinutes(10));
-        addInferred("a1", "SAS1", "ESSA", td);
+        addInferred(new Plane("a1", "SAS1"), td);
         boards.boards.put("ESSA", List.of());
         ArrivalConfirmationService svc = service(boards);
         svc.tick(); // a1 is not on the board
         assertThat(boards.fetches).hasSize(1);
 
         clock.advance(Duration.ofSeconds(301)); // stale; a1 may not trigger a refetch, a newcomer may
-        addInferred("a2", "SAS2", "ESSA", td.plusSeconds(60));
+        addInferred(new Plane("a2", "SAS2"), td.plusSeconds(60));
         boards.boards.put("ESSA", List.of(entry("SAS1", td), entry("SAS2", td.plusSeconds(60))));
         svc.tick();
         assertThat(boards.fetches).hasSize(2);
@@ -234,7 +224,7 @@ class ArrivalConfirmationBoardTest {
     @Test
     void anAircraftWaitingForItsGate_isRechecked_atMostOncePerRecheckInterval() {
         Instant td = now.minus(Duration.ofMinutes(10));
-        addInferred("a1", "SAS1", "ESSA", td);
+        addInferred(new Plane("a1", "SAS1"), td);
         boards.boards.put("ESSA", List.of(entry("SAS1", td)));
         ArrivalConfirmationService svc = service(boards);
         svc.tick(); // landing confirmed from the first board
@@ -260,8 +250,8 @@ class ArrivalConfirmationBoardTest {
     @Test
     void aSkippedFetch_doesNotEndTheTick_laterCandidatesStillMatchFreshCachedBoards() {
         Instant td = now.minus(Duration.ofMinutes(10));
-        addInferred("x1", "SAS1", "ESSA", td);                       // sorts first; its ESSA board is missing
-        addInferred("y1", "SAS2", "ESGG", td.plusSeconds(60));       // ESGG has a fresh cached board
+        addInferred(new Plane("x1", "SAS1"), td);                       // sorts first; its ESSA board is missing
+        addInferred(new Plane("y1", "SAS2"), "ESGG", td.plusSeconds(60));       // ESGG has a fresh cached board
         boards.boards.put("ESGG", List.of(entry("SAS2", td.plusSeconds(60))));
         ConfirmationGateway gateway = new ConfirmationGateway(clock, 0, InMemoryAppState.budgets(clock, 300), 1000, 300, 60, 300, 100);
         LocalDate date = LocalDate.parse("2026-10-12");
@@ -283,11 +273,11 @@ class ArrivalConfirmationBoardTest {
     void aNewCandidate_isMatchedAgainstTheCachedBoardWithoutACall() {
         Instant td = now.minus(Duration.ofMinutes(10));
         boards.boards.put("ESSA", List.of(entry("SAS1", td), entry("SAS2", td)));
-        addInferred("a1", "SAS1", "ESSA", td);
+        addInferred(new Plane("a1", "SAS1"), td);
         ArrivalConfirmationService svc = service(boards);
         svc.tick();
 
-        addInferred("a2", "SAS2", "ESSA", td);
+        addInferred(new Plane("a2", "SAS2"), td);
         clock.advance(Duration.ofSeconds(60));
         svc.tick();
 
@@ -300,7 +290,7 @@ class ArrivalConfirmationBoardTest {
         service(boards).tick(); // no candidates
         assertThat(boards.fetches).isEmpty();
 
-        addInferred("a1", "SAS1", "ESSA", now.minusSeconds(300));
+        addInferred(new Plane("a1", "SAS1"), now.minusSeconds(300));
         boards.airports = List.of("ESGG");
         service(boards).tick();
         assertThat(boards.fetches).isEmpty();
@@ -314,7 +304,7 @@ class ArrivalConfirmationBoardTest {
     @Test
     void aConfirmedAircraftWithAGate_isNotACandidate_soNothingIsFetchedForIt() {
         Instant td = now.minus(Duration.ofMinutes(10));
-        addInferred("a1", "SAS1", "ESSA", td);
+        addInferred(new Plane("a1", "SAS1"), td);
         boards.boards.put("ESSA", List.of(entry("SAS1", td, td.plusSeconds(480), "B14")));
         ArrivalConfirmationService svc = service(boards);
         svc.tick();
@@ -331,7 +321,7 @@ class ArrivalConfirmationBoardTest {
     @Test
     void callsigns_areMatchedTrimmedAndUpperCase() {
         Instant td = now.minus(Duration.ofMinutes(10));
-        addInferred("a1", " sas1 ", "ESSA", td);
+        addInferred(new Plane("a1", " sas1 "), td);
         boards.boards.put("ESSA", List.of(entry("SAS1", td)));
 
         service(boards).tick();
@@ -342,11 +332,12 @@ class ArrivalConfirmationBoardTest {
     @Test
     void whenTheCallsignDoesNotMatch_theRegistrationIsTheFallback() {
         Instant td = now.minus(Duration.ofMinutes(10));
-        addInferred("a1", "SAS1", "ESSA", td);
-        when(aircraftRepository.findById("a1")).thenReturn(Optional.of(withRegistration("a1", "se-rua")));
+        Plane a1 = new Plane("a1", "SAS1");
+        addInferred(a1, td);
+        givenRegistration(a1, "se-rua");
         boards.boards.put("ESSA", List.of(
-                registered("SK9999", "SE-RUB", td, null),
-                registered("SAS1X", "SERUA", td, "C3")));
+                registered(entry("SK9999", td), "SE-RUB"),
+                registered(entry("SAS1X", td, null, "C3"), "SERUA")));
 
         service(boards).tick();
 
@@ -356,10 +347,11 @@ class ArrivalConfirmationBoardTest {
     @Test
     void noRegistrationOnEitherSide_meansNoFallback() {
         Instant td = now.minus(Duration.ofMinutes(10));
-        addInferred("a1", "SAS1", "ESSA", td);
-        addInferred("a2", "SAS2", "ESSA", td);
-        when(aircraftRepository.findById("a2")).thenReturn(Optional.of(withRegistration("a2", null)));
-        boards.boards.put("ESSA", List.of(registered("OTHER", "SE-RUA", td, null)));
+        addInferred(new Plane("a1", "SAS1"), td);
+        Plane a2 = new Plane("a2", "SAS2");
+        addInferred(a2, td);
+        givenRegistration(a2, null);
+        boards.boards.put("ESSA", List.of(registered(entry("OTHER", td), "SE-RUA")));
 
         service(boards).tick();
 
@@ -369,7 +361,7 @@ class ArrivalConfirmationBoardTest {
     @Test
     void theRegistrationIsNotLookedUpWhenTheBoardHasNone() {
         Instant td = now.minus(Duration.ofMinutes(10));
-        addInferred("a1", "SAS1", "ESSA", td);
+        addInferred(new Plane("a1", "SAS1"), td);
         boards.boards.put("ESSA", List.of(entry("OTHER", td)));
 
         service(boards).tick();
@@ -379,7 +371,7 @@ class ArrivalConfirmationBoardTest {
 
     @Test
     void anEntryWithoutActualTimes_confirmsNothing() {
-        addInferred("a1", "SAS1", "ESSA", now.minusSeconds(300));
+        addInferred(new Plane("a1", "SAS1"), now.minusSeconds(300));
         boards.boards.put("ESSA", List.of(entry("SAS1", null, null, "A1")));
 
         service(boards).tick();
@@ -390,7 +382,7 @@ class ArrivalConfirmationBoardTest {
     @Test
     void anEarlierLegOfTheSameCallsign_isIgnored_andTheNearestLegWinsWhenBothAreOnTheBoard() {
         Instant td = now.minus(Duration.ofMinutes(10));
-        addInferred("a1", "SES1", "ESSA", td);
+        addInferred(new Plane("a1", "SES1"), td);
         boards.boards.put("ESSA", List.of(
                 entry("SES1", td.minus(Duration.ofHours(3)), td.minus(Duration.ofHours(3)).plusSeconds(480), "OLD"),
                 entry("SES1", td.plusSeconds(30))));
@@ -403,7 +395,7 @@ class ArrivalConfirmationBoardTest {
     @Test
     void aBoardThatOnlyHasAnEarlierLeg_isRejectedByTheSkewTolerance() {
         Instant td = now.minus(Duration.ofMinutes(10));
-        addInferred("a1", "SES1", "ESSA", td);
+        addInferred(new Plane("a1", "SES1"), td);
         boards.boards.put("ESSA", List.of(
                 entry("SES1", td.minus(Duration.ofHours(3)), td.minus(Duration.ofHours(3)).plusSeconds(480), "OLD")));
 
@@ -417,9 +409,9 @@ class ArrivalConfirmationBoardTest {
     @Test
     void atMostOneRealCallPerTick_candidatesAtAnotherAirportWaitForTheNextTick() {
         Instant td = now.minus(Duration.ofMinutes(10));
-        addInferred("a1", "SAS1", "ESSA", td);
-        addInferred("a2", "SAS2", "ESGG", td.plusSeconds(60));
-        addInferred("a3", "SAS3", "ESSA", td.plusSeconds(120));
+        addInferred(new Plane("a1", "SAS1"), td);
+        addInferred(new Plane("a2", "SAS2"), "ESGG", td.plusSeconds(60));
+        addInferred(new Plane("a3", "SAS3"), td.plusSeconds(120));
         boards.boards.put("ESSA", List.of(entry("SAS1", td), entry("SAS3", td)));
         boards.boards.put("ESGG", List.of(entry("SAS2", td)));
         ArrivalConfirmationService svc = service(boards);
@@ -435,7 +427,7 @@ class ArrivalConfirmationBoardTest {
 
     @Test
     void aThrottledBoard_confirmsNothing_andIsNotCached() {
-        addInferred("a1", "SAS1", "ESSA", now.minusSeconds(300));
+        addInferred(new Plane("a1", "SAS1"), now.minusSeconds(300));
         boards.override = BoardResult.throttled(Duration.ofMinutes(10));
         ArrivalConfirmationService svc = service(boards);
 
@@ -449,7 +441,7 @@ class ArrivalConfirmationBoardTest {
     @Test
     void aGateComesLater_theConfirmedAircraftIsAskedAgainWhenTheBoardIsStale() {
         Instant td = now.minus(Duration.ofMinutes(10));
-        addInferred("a1", "SAS1", "ESSA", td);
+        addInferred(new Plane("a1", "SAS1"), td);
         boards.boards.put("ESSA", List.of(entry("SAS1", td)));
         ArrivalConfirmationService svc = service(boards);
         svc.tick();
@@ -466,8 +458,8 @@ class ArrivalConfirmationBoardTest {
     @Test
     void aPerFlightProviderAndABoardProvider_workSideBySide() {
         Instant td = now.minus(Duration.ofMinutes(10));
-        addInferred("a1", "SAS1", "ESSA", td);
-        addInferred("a2", "FIN2", "EFHK", td);
+        addInferred(new Plane("a1", "SAS1"), td);
+        addInferred(new Plane("a2", "FIN2"), "EFHK", td);
         boards.airports = List.of("ESSA");
         List<ArrivalQuery> perFlightCalls = new ArrayList<>();
         ArrivalConfirmationProvider perFlight = new ArrivalConfirmationProvider() {
@@ -494,7 +486,7 @@ class ArrivalConfirmationBoardTest {
 
     @Test
     void aPerFlightProviderIsNotAskedAboutAnAirportAnEnabledBoardCovers() {
-        addInferred("a1", "SAS1", "ESSA", now.minus(Duration.ofMinutes(10)));
+        addInferred(new Plane("a1", "SAS1"), now.minus(Duration.ofMinutes(10)));
         List<ArrivalQuery> perFlightCalls = new ArrayList<>();
         ArrivalConfirmationProvider perFlight = new ArrivalConfirmationProvider() {
             @Override public String id() { return "flight"; }
@@ -525,7 +517,7 @@ class ArrivalConfirmationBoardTest {
         ConfirmationGateway gateway = new ConfirmationGateway(clock, 0, InMemoryAppState.budgets(clock, 300), 1000, 300, 60, 300, 100);
         ArrivalConfirmationService svc = new ArrivalConfirmationService(List.of(), null, aircraftRepository,
                 gateway, store, live, routes, runways, training, clock, 0.5, 120, 300, 45, 15);
-        addInferred("a1", "SAS1", "ESSA", now.minusSeconds(300));
+        addInferred(new Plane("a1", "SAS1"), now.minusSeconds(300));
 
         svc.tick();
 

@@ -44,16 +44,19 @@ export function cookieNameFor(key: string): string {
  * shape (those fields are nullable anyway).
  */
 function compact<T>(list: T[]): unknown[] {
-  return list.map((entry) => {
-    if (entry && typeof entry === "object" && !Array.isArray(entry)) {
-      const out: Record<string, unknown> = {};
-      for (const [k, v] of Object.entries(entry as Record<string, unknown>)) {
-        if (v !== null && v !== undefined) out[k] = v;
-      }
-      return out;
-    }
-    return entry;
-  });
+  return list.map((entry) => (isPlainObject(entry) ? withoutNullFields(entry) : entry));
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function withoutNullFields(entry: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(entry)) {
+    if (v !== null && v !== undefined) out[k] = v;
+  }
+  return out;
 }
 
 /** Length of a cookie value as the browser stores it (`encodeURIComponent`'d). */

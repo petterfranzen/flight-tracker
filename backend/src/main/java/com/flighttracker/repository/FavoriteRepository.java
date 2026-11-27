@@ -46,13 +46,22 @@ public class FavoriteRepository {
                 .list();
     }
 
+    /** The WHERE clause that picks out one favourite by its full key. */
+    private static final String ONE_FAVORITE = " FROM favorite WHERE profile_id = :profileId AND kind = :kind AND item_key = :itemKey";
+
+    /** One favourite's full key, as the table keys it. */
+    private record FavoriteKey(String profileId, String kind, String itemKey) {
+    }
+
+    private JdbcClient.StatementSpec forKey(String verb, FavoriteKey key) {
+        return jdbcClient.sql(verb + ONE_FAVORITE)
+                .param("profileId", key.profileId())
+                .param("kind", key.kind())
+                .param("itemKey", key.itemKey());
+    }
+
     public Optional<Favorite> find(String profileId, String kind, String itemKey) {
-        return jdbcClient.sql("""
-                SELECT * FROM favorite WHERE profile_id = :profileId AND kind = :kind AND item_key = :itemKey
-                """)
-                .param("profileId", profileId)
-                .param("kind", kind)
-                .param("itemKey", itemKey)
+        return forKey("SELECT *", new FavoriteKey(profileId, kind, itemKey))
                 .query(FavoriteRepository::mapRow)
                 .optional();
     }
@@ -90,13 +99,7 @@ public class FavoriteRepository {
     }
 
     public int delete(String profileId, String kind, String itemKey) {
-        return jdbcClient.sql("""
-                DELETE FROM favorite WHERE profile_id = :profileId AND kind = :kind AND item_key = :itemKey
-                """)
-                .param("profileId", profileId)
-                .param("kind", kind)
-                .param("itemKey", itemKey)
-                .update();
+        return forKey("DELETE", new FavoriteKey(profileId, kind, itemKey)).update();
     }
 
     public int deleteAllForProfile(String profileId) {

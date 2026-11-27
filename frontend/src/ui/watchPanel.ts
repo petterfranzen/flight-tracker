@@ -133,7 +133,7 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
   // not leave the user staring at the list.
   function goto(w: WatchedFlight): void {
     store.get("goToWatched")(w);
-    if (window.matchMedia("(max-width: 768px)").matches) closeControlPanel("watch");
+    if (isPhone()) closeControlPanel("watch");
   }
 
   const form = h(

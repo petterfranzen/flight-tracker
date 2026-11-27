@@ -116,13 +116,22 @@ class ProfileSecurityChainTest {
     }
 
     private static HttpResponse<String> send(String method, String path) throws Exception {
+        return send(method, path, HttpRequest.BodyPublishers.noBody());
+    }
+
+    private static HttpResponse<String> send(String method, String path, HttpRequest.BodyPublisher body)
+            throws Exception {
         HttpRequest.Builder request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + PORT + path));
         if ("POST".equals(method)) {
-            request.POST(HttpRequest.BodyPublishers.noBody());
+            request.POST(body);
+        } else if ("DELETE".equals(method)) {
+            request.DELETE();
         } else {
             request.GET();
         }
-        return HttpClient.newHttpClient().send(request.build(), HttpResponse.BodyHandlers.ofString());
+        // HTTP/1.1 so a body always carries a Content-Length, which is what the cap reads first.
+        HttpClient client = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).build();
+        return client.send(request.build(), HttpResponse.BodyHandlers.ofString());
     }
 
     @Test
@@ -179,6 +188,41 @@ class ProfileSecurityChainTest {
         // IF_REQUIRED: nothing asks for a session on a map-only visit, so no cookie.
         assertThat(send("GET", "/api/flights/live").headers().allValues("Set-Cookie"))
                 .as("an anonymous read must not create a session")
+                .noneMatch(cookie -> cookie.startsWith("FT_SESSION="));
+    }
+
+    @Test
+    void anAnonymousProfileReadSetsNoSessionCookie() throws Exception {
+        // section9-hq #404: the request cache is off, so the 401 the entry point writes is
+        // not answered by saving the request into a fresh session, and each such call would
+        // otherwise leak one session that idles for 24h.
+        HttpResponse<String> response = send("GET", "/api/profile");
+        assertThat(response.statusCode()).isEqualTo(401);
+        assertThat(response.headers().allValues("Set-Cookie"))
+                .as("an anonymous profile read must not create a session")
+                .noneMatch(cookie -> cookie.startsWith("FT_SESSION="));
+    }
+
+    @Test
+    void startingALoginSetsNoSessionCookie() throws Exception {
+        // section9-hq #404: the pending authorization request is held in a bounded store
+        // outside the session, so a bare /oauth2/authorization/* start sets no cookie either.
+        HttpResponse<String> response = send("GET", "/oauth2/authorization/google");
+        assertThat(response.statusCode()).isEqualTo(302);
+        assertThat(response.headers().allValues("Set-Cookie"))
+                .as("starting a login must not create a session")
+                .noneMatch(cookie -> cookie.startsWith("FT_SESSION="));
+    }
+
+    @Test
+    void aRefusedLoginSetsNoSessionCookie() throws Exception {
+        // section9-hq #404: a callback the app refuses (no pending request for its state)
+        // is sent to the SPA's ?error without a session either — the failure handler is
+        // told not to stash its exception in one.
+        HttpResponse<String> response = send("GET", "/login/oauth2/code/google");
+        assertThat(response.statusCode()).isEqualTo(302);
+        assertThat(response.headers().allValues("Set-Cookie"))
+                .as("a refused login must not create a session")
                 .noneMatch(cookie -> cookie.startsWith("FT_SESSION="));
     }
 
@@ -305,5 +349,55 @@ class ProfileSecurityChainTest {
         // Behavioural twin of the matcher check above: before the fix this path matched the
         // string prefix and was a 403; now CSRF does not touch it and it falls through to MVC.
         assertThat(send("POST", "/api/profileX").statusCode()).isNotEqualTo(403);
+    }
+
+    @Test
+    void encodedProfileWritesAreStillCsrfChecked() throws Exception {
+        // The CSRF matcher now reads the decoded path — the same one the authorize rule and
+        // MVC route on — so an encoded spelling of the profile write API needs a token too.
+        assertThat(send("POST", "/api/prof%69le").statusCode()).isEqualTo(403);
+        assertThat(send("POST", "/api/prof%69le/favorites").statusCode()).isEqualTo(403);
+        assertThat(send("POST", "/api/profile/").statusCode()).isEqualTo(403);
+        assertThat(send("POST", "/api/profile/favorites/").statusCode()).isEqualTo(403);
+    }
+
+    @Test
+    void anEncodedSignOutIsStillCsrfChecked() throws Exception {
+        assertThat(send("POST", "/api/auth/logout").statusCode()).isEqualTo(403);
+        assertThat(send("POST", "/api/auth/logou%74").statusCode()).isEqualTo(403);
+    }
+
+    @Test
+    void anEncodedProtectedPathIsStillNoStore() throws Exception {
+        // The no-store filter had the same raw-URI flaw: an encoded spelling of a protected
+        // path reaches the same handler, so it must carry the same Cache-Control.
+        for (String path : new String[] {"/api/prof%69le", "/api/prof%69le/favorites", "/api/auth/logou%74"}) {
+            assertThat(send("POST", path).headers().allValues("Cache-Control"))
+                    .as("Cache-Control on %s", path).containsExactly("no-store");
+        }
+    }
+
+    @Test
+    void anOversizedProfileWriteIsRefused413() throws Exception {
+        // The body cap runs ahead of the chain, so an oversized write is a 413 whether or not
+        // it carries a token: the point is not to read the body at all.
+        HttpResponse<String> response = send("POST", "/api/profile",
+                HttpRequest.BodyPublishers.ofByteArray(new byte[(int) ProfileWriteBodyLimitFilter.MAX_BODY_BYTES + 1]));
+        assertThat(response.statusCode()).isEqualTo(413);
+        assertThat(response.body()).contains("Payload Too Large");
+    }
+
+    @Test
+    void aWriteWithinTheCapStillReachesTheCsrfCheck() throws Exception {
+        HttpResponse<String> response = send("POST", "/api/profile", HttpRequest.BodyPublishers.ofString("{}"));
+        assertThat(response.statusCode()).as("cap lets a small body through to the 403").isEqualTo(403);
+    }
+
+    @Test
+    void anOversizedBodyOutsideTheWriteSurfaceIsNotCapped() throws Exception {
+        // POST /api/health is not a feature write: it keeps its 405 whatever its body.
+        HttpResponse<String> response = send("POST", "/api/health",
+                HttpRequest.BodyPublishers.ofByteArray(new byte[(int) ProfileWriteBodyLimitFilter.MAX_BODY_BYTES + 1]));
+        assertThat(response.statusCode()).isEqualTo(405);
     }
 }

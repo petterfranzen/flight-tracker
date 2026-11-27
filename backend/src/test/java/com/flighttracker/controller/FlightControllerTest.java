@@ -19,16 +19,20 @@ import com.flighttracker.service.confirmation.ArrivalInfo;
 import com.flighttracker.service.confirmation.Confirmation;
 import com.flighttracker.service.confirmation.ConfirmationStore;
 import com.flighttracker.service.live.LiveAircraft;
+import com.flighttracker.service.live.LiveFlightSearch;
 import com.flighttracker.service.live.LiveStateStore;
+import com.flighttracker.service.live.PlaneAllowance;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -66,7 +70,8 @@ class FlightControllerTest {
     private final ConfirmationStore confirmationStore = new ConfirmationStore(120, 100);
 
     private FlightController controller() {
-        return new FlightController(liveStateStore, positionRepository, viewportService, enrichmentService, airportRepository, confirmationStore);
+        return new FlightController(liveStateStore, positionRepository, viewportService, confirmationStore,
+                new LiveFlightSearch(liveStateStore, enrichmentService, airportRepository));
     }
 
     // LiveAircraft has no public constructor test helper of its own (it's a
@@ -157,35 +162,35 @@ class FlightControllerTest {
 
     @Test
     void liveOverview_clampsLimitAndPerCell_andUsesTheActiveTrafficWindow() {
-        when(liveStateStore.overview(any(), any(), any(), any(), eq(2.0), anyInt(), anyInt()))
+        when(liveStateStore.overview(any(), any()))
                 .thenReturn(new LiveOverview(List.of(), List.of()));
 
-        controller().liveOverview(-90, 90, -180, 180, 2.0, 99_999, 99, false);
-        verify(liveStateStore).overview(any(), any(), any(), any(), eq(2.0), eq(2000), eq(20)); // capped
+        controller().liveOverview(new BboxParams(-90, 90, -180, 180), new OverviewParams(2.0, 99_999, 99, false));
+        verify(liveStateStore).overview(any(), eq(new PlaneAllowance(2.0, 2000, 20))); // capped
 
-        controller().liveOverview(-90, 90, -180, 180, 2.0, -5, 0, false);
-        verify(liveStateStore).overview(any(), any(), any(), any(), eq(2.0), eq(0), eq(1)); // floored
+        controller().liveOverview(new BboxParams(-90, 90, -180, 180), new OverviewParams(2.0, -5, 0, false));
+        verify(liveStateStore).overview(any(), eq(new PlaneAllowance(2.0, 0, 1))); // floored
     }
 
     @Test
     void liveOverview_declutterAsksForTheClusterFreeVariant_clampedAndFlooredLikeTheOther() {
-        when(liveStateStore.discovered(any(), any(), any(), any(), anyDouble(), anyInt()))
+        when(liveStateStore.discovered(any(), anyDouble(), anyInt()))
                 .thenReturn(new LiveOverview(List.of(), List.of()));
 
-        controller().liveOverview(-90, 90, -180, 180, 0.01, 99_999, 6, true);
-        verify(liveStateStore).discovered(any(), any(), any(), any(), eq(0.5), eq(2000)); // cell floored, planes capped
+        controller().liveOverview(new BboxParams(-90, 90, -180, 180), new OverviewParams(0.01, 99_999, 6, true));
+        verify(liveStateStore).discovered(any(), eq(0.5), eq(2000)); // cell floored, planes capped
 
-        controller().liveOverview(-90, 90, -180, 180, 999, -5, 6, true);
-        verify(liveStateStore).discovered(any(), any(), any(), any(), eq(40.0), eq(0));
-        verify(liveStateStore, never()).overview(any(), any(), any(), any(), anyDouble(), anyInt(), anyInt());
+        controller().liveOverview(new BboxParams(-90, 90, -180, 180), new OverviewParams(999, -5, 6, true));
+        verify(liveStateStore).discovered(any(), eq(40.0), eq(0));
+        verify(liveStateStore, never()).overview(any(), any());
     }
 
     @Test
     void liveOverview_neverTouchesTheReportedViewport() {
-        when(liveStateStore.overview(any(), any(), any(), any(), anyDouble(), anyInt(), anyInt()))
+        when(liveStateStore.overview(any(), any()))
                 .thenReturn(new LiveOverview(List.of(), List.of()));
 
-        controller().liveOverview(-90, 90, -180, 180, 2.0, 200, 3, false);
+        controller().liveOverview(new BboxParams(-90, 90, -180, 180), new OverviewParams(2.0, 200, 3, false));
 
         // A world-sized bbox must not become "the current viewport" (hot poll / broadcaster).
         verifyNoInteractions(viewportService);
@@ -227,6 +232,11 @@ class FlightControllerTest {
                 gap == null ? null : gap.at(), gap);
     }
 
+    /** The named fields of {@code node}, each read with {@code read}, in order. */
+    private static <T> List<T> values(JsonNode node, Function<JsonNode, T> read, String... fields) {
+        return Arrays.stream(fields).map(node::get).map(read).toList();
+    }
+
     private static GapEstimate gap(TrackState state) {
         Instant at = Instant.parse("2026-10-12T11:02:00Z");
         return new GapEstimate(state, 0.4, 0.85, 59.65, 17.93, 1800, at, "ESSA", "19R",
@@ -244,11 +254,9 @@ class FlightControllerTest {
     void status_live_hasTheContractKeys_andNullsWhereNotApplicable() throws Exception {
         JsonNode json = statusJson(withGap(false, null));
 
-        assertThat(json.get("state").asText()).isEqualTo("LIVE");
+        assertThat(values(json, JsonNode::asText, "state", "source", "sourceKind", "lastSeenAt"))
+                .containsExactly("LIVE", "adsb", "observed", "2026-10-12T11:00:00Z");
         assertThat(json.get("confidence").isNull()).isTrue();
-        assertThat(json.get("source").asText()).isEqualTo("adsb");
-        assertThat(json.get("sourceKind").asText()).isEqualTo("observed");
-        assertThat(json.get("lastSeenAt").asText()).isEqualTo("2026-10-12T11:00:00Z");
         for (String k : List.of("estimate", "landing", "gate", "terminal", "confirmedAt")) {
             assertThat(json.has(k)).as(k).isTrue();
             assertThat(json.get(k).isNull()).as(k).isTrue();
@@ -259,36 +267,29 @@ class FlightControllerTest {
     void status_onGround_isObservedWithFullConfidence() throws Exception {
         JsonNode json = statusJson(withGap(true, null));
 
-        assertThat(json.get("state").asText()).isEqualTo("ON_GROUND");
+        assertThat(values(json, JsonNode::asText, "state", "sourceKind")).containsExactly("ON_GROUND", "observed");
         assertThat(json.get("confidence").asDouble()).isEqualTo(1.0);
-        assertThat(json.get("sourceKind").asText()).isEqualTo("observed");
-        assertThat(json.get("estimate").isNull()).isTrue();
-        assertThat(json.get("landing").isNull()).isTrue();
+        assertThat(values(json, JsonNode::isNull, "estimate", "landing")).containsExactly(true, true);
     }
 
     @Test
     void status_coverageLost_isInferredWithEstimateAndLanding() throws Exception {
         JsonNode json = statusJson(withGap(false, gap(TrackState.COVERAGE_LOST)));
 
-        assertThat(json.get("state").asText()).isEqualTo("COVERAGE_LOST");
-        assertThat(json.get("confidence").asDouble()).isEqualTo(0.85);
-        assertThat(json.get("source").asText()).isEqualTo("physics");
-        assertThat(json.get("sourceKind").asText()).isEqualTo("inferred");
-        assertThat(json.get("lastSeenLat").asDouble()).isEqualTo(59.60);
-        assertThat(json.get("estimate").get("lat").asDouble()).isEqualTo(59.65);
-        assertThat(json.get("estimate").get("radiusM").asDouble()).isEqualTo(1800);
-        assertThat(json.get("estimate").get("landingProbability").asDouble()).isEqualTo(0.4);
-        assertThat(json.get("landing").get("airportIcao").asText()).isEqualTo("ESSA");
-        assertThat(json.get("landing").get("runway").asText()).isEqualTo("19R");
-        assertThat(json.get("landing").get("touchdownAt").asText()).isEqualTo("2026-10-12T11:03:10Z");
+        assertThat(values(json, JsonNode::asText, "state", "source", "sourceKind"))
+                .containsExactly("COVERAGE_LOST", "physics", "inferred");
+        assertThat(values(json, JsonNode::asDouble, "confidence", "lastSeenLat")).containsExactly(0.85, 59.60);
+        assertThat(values(json.get("estimate"), JsonNode::asDouble, "lat", "radiusM", "landingProbability"))
+                .containsExactly(59.65, 1800.0, 0.4);
+        assertThat(values(json.get("landing"), JsonNode::asText, "airportIcao", "runway", "touchdownAt"))
+                .containsExactly("ESSA", "19R", "2026-10-12T11:03:10Z");
     }
 
     @Test
     void status_landedInferred_isInferredAndKeepsTheLanding() throws Exception {
         JsonNode json = statusJson(withGap(false, gap(TrackState.LANDED_INFERRED)));
 
-        assertThat(json.get("state").asText()).isEqualTo("LANDED_INFERRED");
-        assertThat(json.get("sourceKind").asText()).isEqualTo("inferred");
+        assertThat(values(json, JsonNode::asText, "state", "sourceKind")).containsExactly("LANDED_INFERRED", "inferred");
         assertThat(json.get("estimate").isNull()).isFalse();
         assertThat(json.get("landing").get("touchdownAt").asText()).isEqualTo("2026-10-12T11:03:10Z");
     }
@@ -303,16 +304,11 @@ class FlightControllerTest {
 
         JsonNode json = statusJson(a);
 
-        assertThat(json.get("state").asText()).isEqualTo("AT_GATE");
+        assertThat(values(json, JsonNode::asText, "state", "source", "sourceKind", "gate", "terminal", "confirmedAt"))
+                .containsExactly("AT_GATE", "mock", "confirmed", "B14", "2", "2026-10-12T11:11:30Z");
         assertThat(json.get("confidence").asDouble()).isEqualTo(1.0);
-        assertThat(json.get("source").asText()).isEqualTo("mock");
-        assertThat(json.get("sourceKind").asText()).isEqualTo("confirmed");
         assertThat(json.get("estimate").isNull()).isTrue();
-        assertThat(json.get("gate").asText()).isEqualTo("B14");
-        assertThat(json.get("terminal").asText()).isEqualTo("2");
-        assertThat(json.get("confirmedAt").asText()).isEqualTo("2026-10-12T11:11:30Z");
-        assertThat(json.get("landing").get("airportIcao").asText()).isEqualTo("ESSA");
-        assertThat(json.get("landing").get("runway").asText()).isEqualTo("19R");
-        assertThat(json.get("landing").get("touchdownAt").asText()).isEqualTo("2026-10-12T11:03:30Z");
+        assertThat(values(json.get("landing"), JsonNode::asText, "airportIcao", "runway", "touchdownAt"))
+                .containsExactly("ESSA", "19R", "2026-10-12T11:03:30Z");
     }
 }

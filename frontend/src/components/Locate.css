@@ -86,7 +86,7 @@
    the same literal, not a shared constant) — matches FlightSearch/
    FavoritesPanel/Legend's own FAB block. The text label is hidden; the
    button keeps its aria-label, so its accessible name survives. */
-@media (max-width: 768px) {
+@media (max-width: 768px), (max-height: 500px) {
   .map-locate-button {
     width: 48px;
     height: 48px;

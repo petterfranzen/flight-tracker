@@ -1,6 +1,7 @@
 package com.flighttracker.repository;
 
 import com.flighttracker.model.FlightPosition;
+import org.springframework.jdbc.core.RowCallbackHandler;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
@@ -10,6 +11,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.function.Consumer;
 
 import static com.flighttracker.repository.Timestamps.fromEpochMilli;
 import static com.flighttracker.repository.Timestamps.toEpochMilli;
@@ -188,25 +190,32 @@ public class FlightPositionRepository {
 
     // Usage calc: full ordered history for one aircraft in a window.
     public List<FlightPosition> findByIcao24AndObservedAtBetween(String icao24, Instant from, Instant to) {
-        return jdbcClient.sql("""
+        return listInWindow(jdbcClient.sql("""
                 SELECT * FROM flight_position
                 WHERE icao24 = :icao24 AND observed_at BETWEEN :from AND :to
                 ORDER BY observed_at ASC
                 """)
-                .param("icao24", icao24)
-                .param("from", toEpochMilli(from))
-                .param("to", toEpochMilli(to))
-                .query(FlightPositionRepository::mapRow)
-                .list();
+                .param("icao24", icao24), from, to);
     }
 
-    // Usage calc: history for every aircraft in a window, for the fleet report.
-    public List<FlightPosition> findByObservedAtBetween(Instant from, Instant to) {
-        return jdbcClient.sql("""
+    // Usage calc: every row in a window, for the fleet report, handed to
+    // the consumer one at a time in (icao24, observed_at) order. Streamed
+    // rather than collected so a window's memory cost is one row, not the
+    // whole window; the caller accumulates per aircraft as rows arrive.
+    public void forEachInWindowByAircraft(Instant from, Instant to, Consumer<FlightPosition> consumer) {
+        jdbcClient.sql("""
                 SELECT * FROM flight_position
                 WHERE observed_at BETWEEN :from AND :to
                 ORDER BY icao24 ASC, observed_at ASC
                 """)
+                .param("from", toEpochMilli(from))
+                .param("to", toEpochMilli(to))
+                .query((RowCallbackHandler) rs -> consumer.accept(mapRow(rs, 0)));
+    }
+
+    /** Binds the :from/:to window to a SELECT * and reads every row it returns. */
+    private static List<FlightPosition> listInWindow(JdbcClient.StatementSpec select, Instant from, Instant to) {
+        return select
                 .param("from", toEpochMilli(from))
                 .param("to", toEpochMilli(to))
                 .query(FlightPositionRepository::mapRow)

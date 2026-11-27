@@ -20,6 +20,27 @@ function starIconSvg(): SVGElement {
   return svg;
 }
 
+/** One row in the panel: an aircraft or a route favorite, and its live match. */
+interface FavoriteItem {
+  label: string;
+  live: FlightPosition | undefined;
+  idleStatus: string;
+  onRemove: () => void;
+}
+
+function summaryParagraph(items: FavoriteItem[]): HTMLElement {
+  if (items.length === 0) {
+    return h("p", { className: "favorites-panel-empty" }, "No favorites yet — use “Favorite aircraft” or “Favorite route” in a flight’s details panel.");
+  }
+  // Says what is actionable: only live favorites can be selected.
+  const anyLive = items.some((item) => item.live);
+  return h(
+    "p",
+    { className: "favorites-panel-hint", role: "status" },
+    anyLive ? "Tap a live favorite to jump to it." : "None live right now — they light up when a matching flight is in the air.",
+  );
+}
+
 /**
  * Client-side-only favorites list. While open, polls whether each
  * favorited route/aircraft is currently live every REFRESH_INTERVAL_MS;
@@ -84,7 +105,7 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
   // would otherwise leave the user staring at the list with the plane hidden.
   function selectAndClose(select: () => void): void {
     select();
-    if (window.matchMedia("(max-width: 768px)").matches) closeControlPanel("favorites");
+    if (isPhone()) closeControlPanel("favorites");
   }
 
   function setOpen(next: boolean): void {
@@ -127,85 +148,59 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
   const body = h("div", { id: "favorites-panel-body", className: "favorites-panel-body control-panel" }, bodyClose, toggle);
   const container = h("div", { className: "favorites-panel" }, fab, body);
 
-  function itemRow(
-    key: string,
-    label: string,
-    live: FlightPosition | undefined,
-    idleStatus: string,
-    onSelect: () => void,
-    onRemove: () => void,
-  ): HTMLElement {
+  function itemRow(item: FavoriteItem): HTMLElement {
+    const { label, live } = item;
     return h(
       "li",
       { className: live ? "favorites-panel-item favorites-panel-item--live" : "favorites-panel-item" },
       h(
         "button",
-        { type: "button", className: "favorites-panel-item-select", disabled: !live, title: live ? undefined : "Not live right now", onClick: () => live && onSelect() },
+        {
+          type: "button",
+          className: "favorites-panel-item-select",
+          disabled: !live,
+          title: live ? undefined : "Not live right now",
+          onClick: () => live && selectAndClose(() => store.get("selectAircraft")(live)),
+        },
         h("span", { className: "favorites-panel-item-dot", "aria-hidden": "true" }),
         label,
-        h("span", { className: "favorites-panel-item-status" }, live ? "live now" : idleStatus),
+        h("span", { className: "favorites-panel-item-status" }, live ? "live now" : item.idleStatus),
       ),
-      h("button", { type: "button", className: "favorites-panel-item-remove", "aria-label": `Remove ${label} from favorites`, onClick: onRemove }, "✕"),
+      h("button", { type: "button", className: "favorites-panel-item-remove", "aria-label": `Remove ${label} from favorites`, onClick: item.onRemove }, "✕"),
     );
   }
 
-  function renderContent(): void {
-    const aircraft = store.get("favoriteAircraft");
-    const routes = store.get("favoriteRoutes");
-    const totalCount = routes.length + aircraft.length;
-    clear(content);
+  function aircraftItem(a: FavoriteAircraft): FavoriteItem {
+    return {
+      label: a.callsign || a.registration || a.icao24.toUpperCase(),
+      live: liveAircraft[a.icao24],
+      idleStatus: "not live",
+      onRemove: () => store.get("removeFavoriteAircraft")(a),
+    };
+  }
 
-    if (totalCount === 0) {
-      content.append(h("p", { className: "favorites-panel-empty" }, "No favorites yet — use “Favorite aircraft” or “Favorite route” in a flight’s details panel."));
-    }
-    if (totalCount > 0) {
-      // Says what is actionable: only live favorites can be selected.
-      const liveCount = aircraft.filter((a) => liveAircraft[a.icao24]).length + routes.filter((r) => liveRoutes[routeKey(r.origin, r.destination)]).length;
-      content.append(
-        h(
-          "p",
-          { className: "favorites-panel-hint", role: "status" },
-          liveCount > 0 ? "Tap a live favorite to jump to it." : "None live right now — they light up when a matching flight is in the air.",
-        ),
-      );
-    }
-    if (aircraft.length > 0) {
-      const list = h("ul");
-      for (const a of aircraft) {
-        const live = liveAircraft[a.icao24];
-        const label = a.callsign || a.registration || a.icao24.toUpperCase();
-        list.append(
-          itemRow(
-            a.icao24,
-            label,
-            live,
-            "not live",
-            () => live && selectAndClose(() => store.get("selectAircraft")(live)),
-            () => store.get("removeFavoriteAircraft")(a),
-          ),
-        );
-      }
-      content.append(h("div", { className: "favorites-panel-section" }, h("h3", null, "Aircraft"), list));
-    }
-    if (routes.length > 0) {
-      const list = h("ul");
-      for (const r of routes) {
-        const key = routeKey(r.origin, r.destination);
-        const live = liveRoutes[key];
-        const label = `${r.originIata ?? r.origin} ↔ ${r.destinationIata ?? r.destination}`;
-        list.append(
-          itemRow(
-            key,
-            label,
-            live,
-            "no live flight",
-            () => live && selectAndClose(() => store.get("selectAircraft")(live)),
-            () => store.get("removeFavoriteRoute")(r),
-          ),
-        );
-      }
-      content.append(h("div", { className: "favorites-panel-section" }, h("h3", null, "Routes"), list));
-    }
+  function routeItem(r: FavoriteRoute): FavoriteItem {
+    return {
+      label: `${r.originIata ?? r.origin} ↔ ${r.destinationIata ?? r.destination}`,
+      live: liveRoutes[routeKey(r.origin, r.destination)],
+      idleStatus: "no live flight",
+      onRemove: () => store.get("removeFavoriteRoute")(r),
+    };
+  }
+
+  function appendSection(title: string, items: FavoriteItem[]): void {
+    if (items.length === 0) return;
+    const list = h("ul", null, ...items.map(itemRow));
+    content.append(h("div", { className: "favorites-panel-section" }, h("h3", null, title), list));
+  }
+
+  function renderContent(): void {
+    const aircraft = store.get("favoriteAircraft").map(aircraftItem);
+    const routes = store.get("favoriteRoutes").map(routeItem);
+    clear(content);
+    content.append(summaryParagraph([...aircraft, ...routes]));
+    appendSection("Aircraft", aircraft);
+    appendSection("Routes", routes);
   }
 
   function renderAll(): void {

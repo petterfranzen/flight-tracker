@@ -10,6 +10,7 @@ import com.flighttracker.service.coverage.TrackState;
 import com.flighttracker.service.enrichment.CallsignRouteService;
 import com.flighttracker.service.live.LiveAircraft;
 import com.flighttracker.service.live.LiveStateStore;
+import com.flighttracker.service.training.ConfirmedLanding;
 import com.flighttracker.service.training.TrainingDataService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -158,7 +159,7 @@ class AeroDataBoxConfirmationTest {
         service(provider(false)).tick();
 
         assertThat(store.forAircraft(a)).isPresent();
-        verify(training, never()).recordConfirmedLanding(any(), any(), any(), any(), any());
+        verify(training, never()).recordConfirmedLanding(any());
     }
 
     @Test
@@ -169,8 +170,8 @@ class AeroDataBoxConfirmationTest {
 
         service(provider(true)).tick();
 
-        verify(training).recordConfirmedLanding("780a8c", a.observedAt(), "aerodatabox",
-                Instant.parse("2026-10-12T06:02:00Z"), "EHAM");
+        verify(training).recordConfirmedLanding(new ConfirmedLanding("780a8c", a.observedAt(), "aerodatabox",
+                Instant.parse("2026-10-12T06:02:00Z"), "EHAM"));
     }
 
     // ---- budgets

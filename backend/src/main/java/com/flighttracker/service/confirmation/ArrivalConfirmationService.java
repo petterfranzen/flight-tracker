@@ -6,6 +6,7 @@ import com.flighttracker.service.coverage.RunwayIndex;
 import com.flighttracker.service.enrichment.CallsignRouteService;
 import com.flighttracker.service.live.LiveAircraft;
 import com.flighttracker.service.live.LiveStateStore;
+import com.flighttracker.service.training.ConfirmedLanding;
 import com.flighttracker.service.training.TrainingDataService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -290,7 +291,7 @@ public class ArrivalConfirmationService {
         if (info.actualOn() == null || a.gap() == null) return;
         try {
             String airport = info.arrivalAirportIcao() != null ? info.arrivalAirportIcao() : c.airport();
-            training.recordConfirmedLanding(a.icao24(), a.observedAt(), sourceId, info.actualOn(), airport);
+            training.recordConfirmedLanding(new ConfirmedLanding(a.icao24(), a.observedAt(), sourceId, info.actualOn(), airport));
         } catch (RuntimeException e) {
             log.warn("Recording the confirmed landing of {} failed", a.icao24(), e);
         }
