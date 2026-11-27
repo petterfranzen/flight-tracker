@@ -64,7 +64,7 @@
    untouched — there the left column is full-width cards, not icons, so
    this dock is still a real quick-access shortcut rather than a
    duplicate. */
-@media (max-width: 768px) {
+@media (max-width: 768px), (max-height: 500px) {
   .dock-wrap {
     display: none;
   }

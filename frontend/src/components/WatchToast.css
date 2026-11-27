@@ -35,6 +35,6 @@
 .watch-toast-go { border-color: var(--color-marker-watched); color: var(--color-marker-watched); font-weight: 600; white-space: nowrap; }
 .watch-toast-go:hover, .watch-toast-close:hover { background: var(--color-panel-border); }
 
-@media (max-width: 768px) {
+@media (max-width: 768px), (max-height: 500px) {
   .watch-toast { bottom: 16px; }
 }
