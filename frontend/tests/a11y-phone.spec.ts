@@ -46,36 +46,47 @@ const SCHEDULE_ROW = {
  * (the corner of that square falls outside the circle), and border-radius
  * clips hit-testing. Returns one line per failing element.
  */
+interface TargetProbe {
+  label: string;
+  width: number;
+  height: number;
+  /** Whether each axis point half a target out hits the control itself. */
+  hit: boolean;
+}
+
+/** Runs in the page: measures every visible match and hit-tests its four axis points. */
+function probeTargets(els: Element[], need: number): TargetProbe[] {
+  const half = need / 2 - 0.5;
+  const onScreen = (x: number, y: number) => [x >= 0, y >= 0, x <= window.innerWidth, y <= window.innerHeight].every(Boolean);
+  const hits = (h: HTMLElement, [x, y]: [number, number]) => {
+    const t = onScreen(x, y) ? document.elementFromPoint(x, y) : null;
+    return t != null && h.contains(t); // contains() is true for h itself
+  };
+  return els
+    .map((el) => el as HTMLElement)
+    .filter((h) => {
+      const r = h.getBoundingClientRect();
+      return r.width !== 0 && r.height !== 0; // hidden — not on the phone screen at all
+    })
+    .map((h) => {
+      const r = h.getBoundingClientRect();
+      const cx = (r.left + r.right) / 2;
+      const cy = (r.top + r.bottom) / 2;
+      const pts: [number, number][] = [
+        [cx - half, cy],
+        [cx + half, cy],
+        [cx, cy - half],
+        [cx, cy + half],
+      ];
+      return { label: h.className || h.tagName, width: r.width, height: r.height, hit: pts.every((p) => hits(h, p)) };
+    });
+}
+
 async function undersizedTargets(page: Page, selector: string, need = 44): Promise<string[]> {
-  return page.$$eval(
-    selector,
-    (els, need) => {
-      const bad: string[] = [];
-      const half = need / 2 - 0.5;
-      for (const el of els) {
-        const h = el as HTMLElement;
-        const r = h.getBoundingClientRect();
-        if (r.width === 0 || r.height === 0) continue; // hidden — not on the phone screen at all
-        const cx = (r.left + r.right) / 2;
-        const cy = (r.top + r.bottom) / 2;
-        const pts: [number, number][] = [
-          [cx - half, cy],
-          [cx + half, cy],
-          [cx, cy - half],
-          [cx, cy + half],
-        ];
-        const hit = pts.every(([x, y]) => {
-          if (x < 0 || y < 0 || x > window.innerWidth || y > window.innerHeight) return false;
-          const t = document.elementFromPoint(x, y);
-          return t != null && (t === h || h.contains(t));
-        });
-        const size = r.width >= need - 0.5 && r.height >= need - 0.5;
-        if (!(hit && size)) bad.push(`${h.className || h.tagName} is ${Math.round(r.width)}x${Math.round(r.height)} (hit=${hit})`);
-      }
-      return bad;
-    },
-    need,
-  );
+  const probes = await page.$$eval(selector, probeTargets, need);
+  return probes
+    .filter((p) => !(p.hit && p.width >= need - 0.5 && p.height >= need - 0.5))
+    .map((p) => `${p.label} is ${Math.round(p.width)}x${Math.round(p.height)} (hit=${p.hit})`);
 }
 
 /**

@@ -4,6 +4,7 @@ import com.flighttracker.config.SqliteDataSourceConfig;
 import com.flighttracker.profile.ProfileLimitException.Reason;
 import com.flighttracker.repository.FavoriteRepository;
 import com.flighttracker.repository.WatchedFlightRepository;
+import com.flighttracker.repository.WatchedFlightRepository.Key;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -148,26 +149,26 @@ class ProfileLimitsIntegrationTest {
 
     @Test
     void watchedLabel_atCapPasses_oneOverFails_nullAllowed() {
-        watched.upsert("p1", "SK1", "2026-10-02", "ESSA", "x".repeat(MAX_LABEL_LENGTH));
-        watched.upsert("p1", "SK2", "2026-10-02", "ESSA", null);
-        assertRejected(() -> watched.upsert("p1", "SK3", "2026-10-02", "ESSA", "x".repeat(MAX_LABEL_LENGTH + 1)),
+        watched.upsert(new Key("p1", "SK1", "2026-10-02", "ESSA"), "x".repeat(MAX_LABEL_LENGTH));
+        watched.upsert(new Key("p1", "SK2", "2026-10-02", "ESSA"), null);
+        assertRejected(() -> watched.upsert(new Key("p1", "SK3", "2026-10-02", "ESSA"), "x".repeat(MAX_LABEL_LENGTH + 1)),
                 Reason.TOO_LONG, "label");
-        assertThat(watched.find("p1", "SK3", "2026-10-02", "ESSA")).isEmpty();
+        assertThat(watched.find(new Key("p1", "SK3", "2026-10-02", "ESSA"))).isEmpty();
         // an over-long label on an existing row must not truncate or replace it
-        assertRejected(() -> watched.upsert("p1", "SK1", "2026-10-02", "ESSA", "y".repeat(MAX_LABEL_LENGTH + 1)),
+        assertRejected(() -> watched.upsert(new Key("p1", "SK1", "2026-10-02", "ESSA"), "y".repeat(MAX_LABEL_LENGTH + 1)),
                 Reason.TOO_LONG, "label");
-        assertThat(watched.find("p1", "SK1", "2026-10-02", "ESSA").orElseThrow().label())
+        assertThat(watched.find(new Key("p1", "SK1", "2026-10-02", "ESSA")).orElseThrow().label())
                 .isEqualTo("x".repeat(MAX_LABEL_LENGTH));
     }
 
     @Test
     void watchedKeyLengths_atCapPass_oneOverFails() {
-        watched.upsert("p1", "F".repeat(MAX_FLIGHT_NUMBER_LENGTH), "2026-10-02", "A".repeat(MAX_AIRPORT_LENGTH), null);
-        assertRejected(() -> watched.upsert("p1", "F".repeat(MAX_FLIGHT_NUMBER_LENGTH + 1), "2026-10-02", "ESSA", null),
+        watched.upsert(new Key("p1", "F".repeat(MAX_FLIGHT_NUMBER_LENGTH), "2026-10-02", "A".repeat(MAX_AIRPORT_LENGTH)), null);
+        assertRejected(() -> watched.upsert(new Key("p1", "F".repeat(MAX_FLIGHT_NUMBER_LENGTH + 1), "2026-10-02", "ESSA"), null),
                 Reason.TOO_LONG, "flightNumber");
-        assertRejected(() -> watched.upsert("p1", "SK1", "2026-10-02", "A".repeat(MAX_AIRPORT_LENGTH + 1), null),
+        assertRejected(() -> watched.upsert(new Key("p1", "SK1", "2026-10-02", "A".repeat(MAX_AIRPORT_LENGTH + 1)), null),
                 Reason.TOO_LONG, "airport");
-        assertRejected(() -> watched.upsert("p1", "", "2026-10-02", "ESSA", null), Reason.INVALID, "flightNumber");
+        assertRejected(() -> watched.upsert(new Key("p1", "", "2026-10-02", "ESSA"), null), Reason.INVALID, "flightNumber");
         assertThat(watched.findByProfileId("p1")).hasSize(1);
     }
 
@@ -175,27 +176,27 @@ class ProfileLimitsIntegrationTest {
     void flightDate_mustBeARealYyyyMmDd() {
         for (String bad : new String[]{"2026-13-01", "2026-02-30", "2026-1-5", "20261002", "2026/10/02",
                 "2026-10-02T00:00", " 2026-10-02", "", null}) {
-            assertRejected(() -> watched.upsert("p1", "SK1", bad, "ESSA", null), Reason.INVALID, "flightDate");
+            assertRejected(() -> watched.upsert(new Key("p1", "SK1", bad, "ESSA"), null), Reason.INVALID, "flightDate");
         }
-        watched.upsert("p1", "SK1", "2028-02-29", "ESSA", null); // leap day
+        watched.upsert(new Key("p1", "SK1", "2028-02-29", "ESSA"), null); // leap day
         assertThat(watched.findByProfileId("p1")).hasSize(1);
     }
 
     @Test
     void watchedRows_capHoldsOnTheNextInsert_andExistingKeyStillUpserts() {
         for (int i = 0; i < MAX_WATCHED_FLIGHTS_PER_PROFILE; i++) {
-            watched.upsert("p1", "SK" + i, "2026-10-02", "ESSA", "l" + i);
+            watched.upsert(new Key("p1", "SK" + i, "2026-10-02", "ESSA"), "l" + i);
         }
-        assertRejected(() -> watched.upsert("p1", "SKX", "2026-10-02", "ESSA", null),
+        assertRejected(() -> watched.upsert(new Key("p1", "SKX", "2026-10-02", "ESSA"), null),
                 Reason.TOO_MANY_ROWS, "watchedFlights");
         assertThat(watched.findByProfileId("p1")).hasSize(MAX_WATCHED_FLIGHTS_PER_PROFILE);
-        assertThat(watched.find("p1", "SKX", "2026-10-02", "ESSA")).isEmpty();
+        assertThat(watched.find(new Key("p1", "SKX", "2026-10-02", "ESSA"))).isEmpty();
 
-        watched.upsert("p1", "SK3", "2026-10-02", "ESSA", "renamed");
-        assertThat(watched.find("p1", "SK3", "2026-10-02", "ESSA").orElseThrow().label()).isEqualTo("renamed");
+        watched.upsert(new Key("p1", "SK3", "2026-10-02", "ESSA"), "renamed");
+        assertThat(watched.find(new Key("p1", "SK3", "2026-10-02", "ESSA")).orElseThrow().label()).isEqualTo("renamed");
         assertThat(watched.findByProfileId("p1")).hasSize(MAX_WATCHED_FLIGHTS_PER_PROFILE);
 
-        watched.upsert("p2", "SKX", "2026-10-02", "ESSA", null); // other profile unaffected
+        watched.upsert(new Key("p2", "SKX", "2026-10-02", "ESSA"), null); // other profile unaffected
         assertThat(watched.findByProfileId("p2")).hasSize(1);
     }
 

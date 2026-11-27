@@ -2,6 +2,7 @@ package com.flighttracker.repository;
 
 import com.flighttracker.config.SqliteDataSourceConfig;
 import com.flighttracker.model.WatchedFlight;
+import com.flighttracker.repository.WatchedFlightRepository.Key;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -54,10 +55,10 @@ class WatchedFlightRepositoryIntegrationTest {
 
     @Test
     void upsert_thenRead_andListOrderedByBoardDate() {
-        repository.upsert("p1", "SK123", "2026-10-02", "ESSA", "SAS 123");
-        repository.upsert("p1", "SK100", "2026-10-01", "ESSA", null);
+        repository.upsert(new Key("p1", "SK123", "2026-10-02", "ESSA"), "SAS 123");
+        repository.upsert(new Key("p1", "SK100", "2026-10-01", "ESSA"), null);
 
-        WatchedFlight row = repository.find("p1", "SK123", "2026-10-02", "ESSA").orElseThrow();
+        WatchedFlight row = repository.find(new Key("p1", "SK123", "2026-10-02", "ESSA")).orElseThrow();
         assertThat(row.label()).isEqualTo("SAS 123");
         assertThat(row.updatedAt()).isEqualTo(NOW);
 
@@ -66,10 +67,10 @@ class WatchedFlightRepositoryIntegrationTest {
 
     @Test
     void upsert_updatesTheLabel_andKeepsOneRow() {
-        repository.upsert("p1", "SK123", "2026-10-02", "ESSA", "old");
+        repository.upsert(new Key("p1", "SK123", "2026-10-02", "ESSA"), "old");
         Instant later = NOW.plusSeconds(600);
         new WatchedFlightRepository(jdbc, Clock.fixed(later, ZoneOffset.UTC))
-                .upsert("p1", "SK123", "2026-10-02", "ESSA", "new");
+                .upsert(new Key("p1", "SK123", "2026-10-02", "ESSA"), "new");
 
         assertThat(repository.findByProfileId("p1")).singleElement()
                 .satisfies(w -> {
@@ -80,20 +81,20 @@ class WatchedFlightRepositoryIntegrationTest {
 
     @Test
     void sameFlightNumberOnTwoDatesOrAirports_areTwoRows() {
-        repository.upsert("p1", "SK123", "2026-10-02", "ESSA", null);
-        repository.upsert("p1", "SK123", "2026-10-03", "ESSA", null);
-        repository.upsert("p1", "SK123", "2026-10-02", "ESGG", null);
+        repository.upsert(new Key("p1", "SK123", "2026-10-02", "ESSA"), null);
+        repository.upsert(new Key("p1", "SK123", "2026-10-03", "ESSA"), null);
+        repository.upsert(new Key("p1", "SK123", "2026-10-02", "ESGG"), null);
 
         assertThat(repository.findByProfileId("p1")).hasSize(3);
     }
 
     @Test
     void delete_removesOne_andDeleteAllForProfile_removesTheRest() {
-        repository.upsert("p1", "SK123", "2026-10-02", "ESSA", null);
-        repository.upsert("p1", "SK124", "2026-10-02", "ESSA", null);
-        repository.upsert("p2", "SK123", "2026-10-02", "ESSA", null);
+        repository.upsert(new Key("p1", "SK123", "2026-10-02", "ESSA"), null);
+        repository.upsert(new Key("p1", "SK124", "2026-10-02", "ESSA"), null);
+        repository.upsert(new Key("p2", "SK123", "2026-10-02", "ESSA"), null);
 
-        assertThat(repository.delete("p1", "SK123", "2026-10-02", "ESSA")).isEqualTo(1);
+        assertThat(repository.delete(new Key("p1", "SK123", "2026-10-02", "ESSA"))).isEqualTo(1);
         assertThat(repository.deleteAllForProfile("p1")).isEqualTo(1);
 
         assertThat(repository.findByProfileId("p1")).isEmpty();
@@ -102,10 +103,10 @@ class WatchedFlightRepositoryIntegrationTest {
 
     @Test
     void deleteBefore_prunesStrictlyOlderBoardDates_andKeepsTheBoundaryAndNewer() {
-        repository.upsert("p1", "OLD", "2026-09-23", "ESSA", null);   // 9 days before cutoff
-        repository.upsert("p1", "EDGE", "2026-09-24", "ESSA", null);  // the cutoff date itself
-        repository.upsert("p1", "NEWER", "2026-10-01", "ESSA", null); // inside the window
-        repository.upsert("p2", "OTHER", "2026-09-01", "ESGG", null); // another profile, same rule
+        repository.upsert(new Key("p1", "OLD", "2026-09-23", "ESSA"), null);   // 9 days before cutoff
+        repository.upsert(new Key("p1", "EDGE", "2026-09-24", "ESSA"), null);  // the cutoff date itself
+        repository.upsert(new Key("p1", "NEWER", "2026-10-01", "ESSA"), null); // inside the window
+        repository.upsert(new Key("p2", "OTHER", "2026-09-01", "ESGG"), null); // another profile, same rule
 
         int deleted = repository.deleteBefore(LocalDate.parse("2026-09-24"));
 

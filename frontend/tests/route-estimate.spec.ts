@@ -64,17 +64,26 @@ test("estimated positions move the end of the trail instead of piling up in it",
   await expect.poll(() => routeVertices(page).then((v) => v.length > 10 && v[v.length - 1].lat === estimate().latitude), { timeout: 5_000 }).toBe(true);
   const afterFirst = (await routeVertices(page)).length;
 
-  // More polls, each projecting the plane further.
-  for (let i = 0; i < 3; i++) await page.clock.runFor(72_000);
-  await expect.poll(() => polls, { timeout: 5_000 }).toBeGreaterThanOrEqual(3);
-  // Drawn once that poll's response is handled, not when it is served.
-  await expect.poll(() => routeVertices(page).then((v) => v[v.length - 1].lat), { timeout: 5_000 }).toBeCloseTo(estimate().latitude, 4);
+  // More polls, each projecting the plane further. One jump at a time: the
+  // app skips a tick while its previous poll is still in flight, so three
+  // jumps back to back could land one poll. Each poll is drawn once its
+  // response is handled, not when it is served, and a poll counted after the
+  // expected tip was read put the tip one estimate past it: so the tip is
+  // compared with the estimate for the count read on the same try.
+  let v: { lat: number; lon: number }[] = [];
+  for (let i = 0; i < 3; i++) {
+    const before = polls;
+    await page.clock.runFor(72_000);
+    await expect(async () => {
+      expect(polls).toBeGreaterThan(before);
+      v = await routeVertices(page);
+      expect(v[v.length - 1].lat).toBeCloseTo(estimate().latitude, 4);
+    }).toPass({ timeout: 5_000 });
+  }
+  expect(polls).toBeGreaterThanOrEqual(4);
 
-  const v = await routeVertices(page);
   // 24 real reports + one tip: the same number of vertices however many estimates arrived.
   expect(v.length).toBe(afterFirst);
-  const tip = v[v.length - 1];
-  expect(tip.lat).toBeCloseTo(plane.latitude - 0.02 * polls, 4);
   // Earlier estimates are gone: only the latest one is in the trail.
   expect(v.filter((p) => Math.abs(p.lat - (plane.latitude - 0.02)) < 1e-6)).toHaveLength(0);
 });

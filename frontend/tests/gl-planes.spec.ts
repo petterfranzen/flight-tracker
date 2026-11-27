@@ -11,12 +11,16 @@ const BASE = { lat: 59.65, lon: 17.93 };
 const ARN = { lat: 59.65112, lon: 17.93073 };
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
 
-const plane = (icao24: string, callsign: string, lat: number, lon: number, headingDeg: number | null = 90) => ({
+type LatLon = { lat: number; lon: number };
+/** A point `dLat`/`dLon` degrees from BASE. */
+const offset = (dLat: number, dLon: number): LatLon => ({ lat: BASE.lat + dLat, lon: BASE.lon + dLon });
+
+const plane = (icao24: string, callsign: string, at: LatLon, headingDeg: number | null = 90) => ({
   icao24,
   callsign,
   observedAt: minutesAgo(1),
-  latitude: lat,
-  longitude: lon,
+  latitude: at.lat,
+  longitude: at.lon,
   headingDeg,
   onGround: false,
 });
@@ -55,7 +59,7 @@ async function selectBySearch(page: Page, callsign: string) {
  * a small distance of `rgb` in a `box`-sized square around (x, y) of a
  * screenshot. Measures what the GPU drew, not what the app asked for.
  */
-async function glyphExtent(page: Page, x: number, y: number, rgb: [number, number, number], box = 120): Promise<{ width: number; height: number }> {
+async function glyphExtent(page: Page, { x, y }: { x: number; y: number }, rgb: [number, number, number], box = 120): Promise<{ width: number; height: number }> {
   const png = await page.screenshot({ clip: { x: x - box / 2, y: y - box / 2, width: box, height: box } });
   return page.evaluate(
     async ({ b64, rgb }) => {
@@ -111,14 +115,14 @@ const near = (a: [number, number, number], b: [number, number, number]) => Math.
 test.describe("planes drawn by the map", () => {
   test("icon size follows a fractional zoom smoothly, between the whole levels' sizes", async ({ page }) => {
     // Pointing north, so the dart's height on screen is its length.
-    await serve(page, [plane("aaaaaa", "SOLO", BASE.lat, BASE.lon, 0)], 13);
+    await serve(page, [plane("aaaaaa", "SOLO", BASE, 0)], 13);
     await expect.poll(async () => (await renderedPlanes(page)).length, { timeout: 10_000 }).toBe(1);
     await page.locator(".boot-screen").waitFor({ state: "detached", timeout: 15_000 });
     const measure = async (zoom: number) => {
       await setMapView(page, BASE.lat, BASE.lon, zoom);
       await page.waitForTimeout(500);
       const p = (await renderedPlanes(page))[0];
-      return { size: p.size, drawn: (await glyphExtent(page, p.x, p.y, MARKER)).height };
+      return { size: p.size, drawn: (await glyphExtent(page, p, MARKER)).height };
     };
     // z13 42 px, z14 34 px (ICON_SIZE_BY_ZOOM): far enough apart to see on screen.
     const z13 = await measure(13);
@@ -138,7 +142,7 @@ test.describe("planes drawn by the map", () => {
   });
 
   test("clicking a plane selects it; a click beside it does not", async ({ page }) => {
-    await serve(page, [plane("aaaaaa", "LEFT1", BASE.lat, BASE.lon - 0.3), plane("bbbbbb", "RIGHT1", BASE.lat, BASE.lon + 0.3)], 10);
+    await serve(page, [plane("aaaaaa", "LEFT1", offset(0, -0.3)), plane("bbbbbb", "RIGHT1", offset(0, 0.3))], 10);
     await expect.poll(() => callsigns(page), { timeout: 10_000 }).toEqual(["LEFT1", "RIGHT1"]);
     await page.locator(".boot-screen:not(.boot-screen--hidden)").waitFor({ state: "detached", timeout: 15_000 });
     const right = (await renderedPlanes(page)).find((p) => p.icao24 === "bbbbbb")!;
@@ -167,9 +171,9 @@ test.describe("planes drawn by the map", () => {
   });
 
   test("of overlapping planes only the first discovered is drawn, and it stays first", async ({ page }) => {
-    const first = plane("aaaaaa", "FIRST", BASE.lat, BASE.lon);
-    const crowd = [first, plane("bbbbbb", "SECOND", BASE.lat + 0.001, BASE.lon + 0.001), plane("cccccc", "THIRD", BASE.lat - 0.001, BASE.lon + 0.002)];
-    const alone = plane("dddddd", "ALONE", BASE.lat, BASE.lon + 0.6);
+    const first = plane("aaaaaa", "FIRST", BASE);
+    const crowd = [first, plane("bbbbbb", "SECOND", offset(0.001, 0.001)), plane("cccccc", "THIRD", offset(-0.001, 0.002))];
+    const alone = plane("dddddd", "ALONE", offset(0, 0.6));
     let requests = 0;
     // Later responses list the crowd in reverse: discovery order is this map's, not the server's latest.
     await serve(page, () => (requests++ === 0 ? [...crowd, alone] : [alone, ...crowd.slice().reverse()]), 9);
@@ -184,7 +188,7 @@ test.describe("planes drawn by the map", () => {
   });
 
   test("the selected plane is drawn even where it overlaps one discovered before it", async ({ page }) => {
-    await serve(page, [plane("aaaaaa", "FIRST", BASE.lat, BASE.lon), plane("bbbbbb", "SECOND", BASE.lat + 0.001, BASE.lon + 0.001)], 10);
+    await serve(page, [plane("aaaaaa", "FIRST", BASE), plane("bbbbbb", "SECOND", offset(0.001, 0.001))], 10);
     await expect.poll(() => callsigns(page), { timeout: 10_000 }).toEqual(["FIRST"]);
 
     await selectBySearch(page, "SECOND");
@@ -196,7 +200,7 @@ test.describe("planes drawn by the map", () => {
 
   test("the selected plane is drawn above an airport's dot and code", async ({ page }) => {
     // Parked on Arlanda's reference point, pointing east: its nose lies on the ARN code chip.
-    await serve(page, [plane("aaaaaa", "ONARN", ARN.lat, ARN.lon, 90)], 11, ARN);
+    await serve(page, [plane("aaaaaa", "ONARN", ARN, 90)], 11, ARN);
     await expect.poll(() => callsigns(page), { timeout: 10_000 }).toEqual(["ONARN"]);
     await expect.poll(() => withMap(page, (map) => map.renderedAirports().some((a) => a.code === "ARN")), { timeout: 10_000 }).toBe(true);
 

@@ -13,6 +13,7 @@ import com.flighttracker.service.enrichment.CallsignRouteService;
 import com.flighttracker.service.enrichment.Route;
 import com.flighttracker.service.live.LiveAircraft;
 import com.flighttracker.service.live.LiveStateStore;
+import com.flighttracker.service.live.LiveStateStore.EstimatedPosition;
 import com.flighttracker.dto.TrackStatus;
 import com.flighttracker.service.training.LandingModel;
 import com.flighttracker.service.training.TrackEndFeatures;
@@ -39,6 +40,7 @@ import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -116,7 +118,7 @@ class EstimatorAgentTest {
 
         newAgent().refresh();
 
-        verify(liveStateStore, never()).writeEstimate(any(), any(), any(), any(), any());
+        verify(liveStateStore, never()).writeEstimate(any(), any(), any());
         verify(liveStateStore, never()).writeGapEstimate(any(), any(), any());
     }
 
@@ -131,12 +133,12 @@ class EstimatorAgentTest {
 
         newAgent().refresh();
 
-        ArgumentCaptor<Double> lat = ArgumentCaptor.forClass(Double.class);
-        ArgumentCaptor<Double> lon = ArgumentCaptor.forClass(Double.class);
-        verify(liveStateStore).writeEstimate(eq("abc123"), eq(observedAt), lat.capture(), lon.capture(), eq(NOW));
-        assertThat(lat.getValue()).isCloseTo(0.0, org.assertj.core.data.Offset.offset(0.01));
+        ArgumentCaptor<EstimatedPosition> estimate = ArgumentCaptor.forClass(EstimatedPosition.class);
+        verify(liveStateStore).writeEstimate(eq("abc123"), eq(observedAt), estimate.capture());
+        assertThat(estimate.getValue().at()).isEqualTo(NOW);
+        assertThat(estimate.getValue().latitude()).isCloseTo(0.0, org.assertj.core.data.Offset.offset(0.01));
         // 200 m/s for 300 s due east from lon 0 is about 0.54 degrees, not 5.5
-        assertThat(lon.getValue()).isBetween(0.4, 0.7);
+        assertThat(estimate.getValue().longitude()).isBetween(0.4, 0.7);
         verify(liveStateStore, never()).writeGapEstimate(any(), any(), any());
     }
 
@@ -146,7 +148,7 @@ class EstimatorAgentTest {
 
         newAgent().refresh();
 
-        verify(liveStateStore, never()).writeEstimate(any(), any(), any(), any(), any());
+        verify(liveStateStore, never()).writeEstimate(any(), any(), any());
     }
 
     @Test
@@ -157,7 +159,7 @@ class EstimatorAgentTest {
 
         newAgent().refresh();
 
-        verify(liveStateStore).writeEstimate("def456", observedAt, null, null, null);
+        verify(liveStateStore).writeEstimate("def456", observedAt, EstimatedPosition.CLEAR);
     }
 
     @Test
@@ -169,9 +171,10 @@ class EstimatorAgentTest {
 
         newAgent().refresh();
 
-        verify(liveStateStore).writeEstimate(eq("abc123"), eq(observedAt), any(Double.class), any(Double.class), any(Instant.class));
-        verify(liveStateStore).writeEstimate("def456", observedAt, null, null, null);
-        verify(liveStateStore, times(2)).writeEstimate(any(), any(), any(), any(), any());
+        verify(liveStateStore).writeEstimate(eq("abc123"), eq(observedAt),
+                argThat(e -> e.latitude() != null && e.longitude() != null && e.at() != null));
+        verify(liveStateStore).writeEstimate("def456", observedAt, EstimatedPosition.CLEAR);
+        verify(liveStateStore, times(2)).writeEstimate(any(), any(), any());
     }
 
     // ---- coverage gaps
@@ -228,7 +231,7 @@ class EstimatorAgentTest {
         assertThat(gap.getValue().at()).isEqualTo(NOW);
         assertThat(gap.getValue().estLon()).isGreaterThan(18.0); // dead-reckoned east, along its track
         verify(runwayIndex).near(59.0, 18.0, 50_000.0);
-        verify(liveStateStore, never()).writeEstimate(any(), any(), any(), any(), any());
+        verify(liveStateStore, never()).writeEstimate(any(), any(), any());
     }
 
     private LiveAircraft givenGapAircraftWithSnapshot() {

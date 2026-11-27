@@ -33,6 +33,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -86,12 +87,13 @@ class TrainingDataIntegrationTest {
 
     private TrainingDataService service(boolean enabled) {
         // No capture delay here: most tests are about what is captured, not when.
-        return new TrainingDataService(repository, runways, tx, Clock.fixed(NOW, ZoneOffset.UTC), enabled, 4000, 0, 30);
+        return new TrainingDataService(repository, runways, tx, Clock.fixed(NOW, ZoneOffset.UTC),
+                new TrainingSettings(enabled, 4000, 0, 30));
     }
 
     private TrainingDataService service(Clock clock, long captureDelaySeconds, long maxAirborneLabelGapMinutes) {
-        return new TrainingDataService(repository, runways, tx, clock, true, 4000,
-                captureDelaySeconds, maxAirborneLabelGapMinutes);
+        return new TrainingDataService(repository, runways, tx, clock,
+                new TrainingSettings(true, 4000, captureDelaySeconds, maxAirborneLabelGapMinutes));
     }
 
     private static final class MutableClock extends Clock {
@@ -117,10 +119,31 @@ class TrainingDataIntegrationTest {
         }
     }
 
-    private static LiveAircraft aircraft(String icao24, Instant observedAt, double lat, double lon,
-                                         Double altitudeM, boolean onGround) {
-        return new LiveAircraft(1L, icao24, "SAS123", observedAt, lat, lon, altitudeM, 70.0, 190.0, -3.0,
+    /** Where an aircraft was reported: position and (nullable) altitude. */
+    private record Fix(double lat, double lon, Double altitudeM) {
+    }
+
+    private static Fix fix(double lat, double lon, Double altitudeM) {
+        return new Fix(lat, lon, altitudeM);
+    }
+
+    private static LiveAircraft aircraft(String icao24, Instant observedAt, Fix fix, boolean onGround) {
+        return new LiveAircraft(1L, icao24, "SAS123", observedAt, fix.lat(), fix.lon(), fix.altitudeM(), 70.0, 190.0, -3.0,
                 onGround, "opensky", onGround ? observedAt : null, null, null, null, null);
+    }
+
+    /** Every column/value pair, in order; values may be null. */
+    private static Map<String, Object> columns(Object... keyValues) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        for (int i = 0; i < keyValues.length; i += 2) {
+            out.put((String) keyValues[i], keyValues[i + 1]);
+        }
+        return out;
+    }
+
+    /** Each expected column of {@code row} holds its expected value ({@code null} meaning SQL NULL). */
+    private static void assertRowHas(Map<String, Object> row, Map<String, Object> expected) {
+        assertThat(expected).allSatisfy((column, value) -> assertThat(row.get(column)).as(column).isEqualTo(value));
     }
 
     private static GapEstimate estimate(TrackState state, double probability, String airport) {
@@ -150,7 +173,7 @@ class TrainingDataIntegrationTest {
 
     @Test
     void capture_writesOneCompactRow_andIsIdempotentAcrossTicksAndRestarts() {
-        LiveAircraft a = aircraft("abc123", LAST, 59.7, 17.9, 600.0, false);
+        LiveAircraft a = aircraft("abc123", LAST, fix(59.7, 17.9, 600.0), false);
         GapEstimate g = estimate(TrackState.COVERAGE_LOST, 0.2, "ESSA");
 
         TrainingDataService s = service();
@@ -163,37 +186,37 @@ class TrainingDataIntegrationTest {
         gap(service(), a, g, true);
         assertThat(count("track_end_feature")).isEqualTo(1);
 
-        Map<String, Object> row = jdbc.queryForMap("SELECT * FROM track_end_feature");
-        assertThat(row.get("icao24")).isEqualTo("abc123");
-        assertThat(row.get("last_observed_at")).isEqualTo(LAST.toEpochMilli());
-        assertThat(row.get("captured_at")).isEqualTo(NOW.toEpochMilli());
-        assertThat(row.get("features_version")).isEqualTo(TrackEndFeatures.FEATURES_VERSION);
-        assertThat(row.get("callsign")).isEqualTo("SAS123");
-        assertThat(row.get("origin_icao")).isEqualTo("ESSB");
-        assertThat(row.get("destination_icao")).isEqualTo("ESSA");
-        assertThat(row.get("last_altitude_m")).isEqualTo(600.0);
-        assertThat(row.get("point_count")).isEqualTo(2);
-        assertThat(row.get("window_seconds")).isEqualTo(60.0);
-        assertThat(row.get("altitude_change_m")).isEqualTo(-100.0);
-        assertThat(row.get("mean_vertical_rate_ms")).isEqualTo(-3.5);
-        assertThat(row.get("geo_distance_to_threshold_m")).isEqualTo(5000.0);
-        assertThat(row.get("geo_go_around_signature")).isEqualTo(0);
-        assertThat(row.get("geo_airport_icao")).isEqualTo("ESSA");
-        assertThat(row.get("geo_runway_ident")).isEqualTo("19R");
-        assertThat(row.get("state")).isEqualTo("COVERAGE_LOST");
-        assertThat(row.get("landing_probability")).isEqualTo(0.2);
-        assertThat(row.get("touchdown_at")).isEqualTo(LAST.plusSeconds(120).toEpochMilli());
-        assertThat(row.get("estimator_model")).isEqualTo("physics-v1");
-        assertThat(row.get("inferred_state")).isNull();
+        assertRowHas(jdbc.queryForMap("SELECT * FROM track_end_feature"), columns(
+                "icao24", "abc123",
+                "last_observed_at", LAST.toEpochMilli(),
+                "captured_at", NOW.toEpochMilli(),
+                "features_version", TrackEndFeatures.FEATURES_VERSION,
+                "callsign", "SAS123",
+                "origin_icao", "ESSB",
+                "destination_icao", "ESSA",
+                "last_altitude_m", 600.0,
+                "point_count", 2,
+                "window_seconds", 60.0,
+                "altitude_change_m", -100.0,
+                "mean_vertical_rate_ms", -3.5,
+                "geo_distance_to_threshold_m", 5000.0,
+                "geo_go_around_signature", 0,
+                "geo_airport_icao", "ESSA",
+                "geo_runway_ident", "19R",
+                "state", "COVERAGE_LOST",
+                "landing_probability", 0.2,
+                "touchdown_at", LAST.plusSeconds(120).toEpochMilli(),
+                "estimator_model", "physics-v1",
+                "inferred_state", null));
     }
 
     @Test
     void capture_keepsLowGapsAndGapsWithACandidate_butNotHighGapsWithoutOne() {
         TrainingDataService s = service();
-        gap(s, aircraft("low000", LAST, 10, 10, 1500.0, false), estimate(TrackState.COVERAGE_LOST, 0, null), true);
-        gap(s, aircraft("high11", LAST, 10, 10, 11000.0, false), estimate(TrackState.COVERAGE_LOST, 0, null), true);
-        gap(s, aircraft("high22", LAST, 59.7, 17.9, 11000.0, false), estimate(TrackState.COVERAGE_LOST, 0, "ESSA"), true);
-        gap(s, aircraft("noalt3", LAST, 10, 10, null, false), estimate(TrackState.COVERAGE_LOST, 0, null), true);
+        gap(s, aircraft("low000", LAST, fix(10, 10, 1500.0), false), estimate(TrackState.COVERAGE_LOST, 0, null), true);
+        gap(s, aircraft("high11", LAST, fix(10, 10, 11000.0), false), estimate(TrackState.COVERAGE_LOST, 0, null), true);
+        gap(s, aircraft("high22", LAST, fix(59.7, 17.9, 11000.0), false), estimate(TrackState.COVERAGE_LOST, 0, "ESSA"), true);
+        gap(s, aircraft("noalt3", LAST, fix(10, 10, null), false), estimate(TrackState.COVERAGE_LOST, 0, null), true);
 
         List<String> kept = jdbc.queryForList("SELECT icao24 FROM track_end_feature ORDER BY icao24", String.class);
         assertThat(kept).containsExactly("high22", "low000");
@@ -202,11 +225,11 @@ class TrainingDataIntegrationTest {
     @Test
     void disabled_writesNothing_andLabelsNothing() {
         TrainingDataService s = service(false);
-        LiveAircraft a = aircraft("abc123", LAST, 59.7, 17.9, 600.0, false);
+        LiveAircraft a = aircraft("abc123", LAST, fix(59.7, 17.9, 600.0), false);
         gap(s, a, estimate(TrackState.COVERAGE_LOST, 0.2, "ESSA"), true);
-        s.reconcile(Set.of(), id -> Optional.of(aircraft(id, RESUMED, 59.6, 17.9, 0.0, true)));
+        s.reconcile(Set.of(), id -> Optional.of(aircraft(id, RESUMED, fix(59.6, 17.9, 0.0), true)));
         s.flush();
-        s.recordConfirmedLanding("abc123", LAST, "mock", NOW, "ESSA");
+        s.recordConfirmedLanding(new ConfirmedLanding("abc123", LAST, "mock", NOW, "ESSA"));
 
         assertThat(count("track_end_feature")).isZero();
         assertThat(count("track_end_label")).isZero();
@@ -219,7 +242,7 @@ class TrainingDataIntegrationTest {
     void captureDelay_capturesOnTheFirstTickWhereTheGapHasLastedLongEnough() {
         MutableClock clock = new MutableClock(LAST.plusSeconds(100));
         TrainingDataService s = service(clock, 600, 30);
-        LiveAircraft a = aircraft("abc123", LAST, 59.7, 17.9, 600.0, false);
+        LiveAircraft a = aircraft("abc123", LAST, fix(59.7, 17.9, 600.0), false);
         GapEstimate g = estimate(TrackState.COVERAGE_LOST, 0.2, "ESSA");
 
         gap(s, a, g, true);
@@ -243,12 +266,12 @@ class TrainingDataIntegrationTest {
     void captureDelay_aGapThatEndsEarlierLeavesNoRowAndNoLabel() {
         MutableClock clock = new MutableClock(LAST.plusSeconds(100));
         TrainingDataService s = service(clock, 600, 30);
-        gap(s, aircraft("abc123", LAST, 59.7, 17.9, 600.0, false), estimate(TrackState.COVERAGE_LOST, 0.2, "ESSA"), true);
+        gap(s, aircraft("abc123", LAST, fix(59.7, 17.9, 600.0), false), estimate(TrackState.COVERAGE_LOST, 0.2, "ESSA"), true);
 
         clock.now = LAST.plusSeconds(300);
-        s.reconcile(Set.of(), id -> Optional.of(aircraft(id, LAST.plusSeconds(280), 59.5, 18.1, 450.0, false)));
+        s.reconcile(Set.of(), id -> Optional.of(aircraft(id, LAST.plusSeconds(280), fix(59.5, 18.1, 450.0), false)));
         s.flush();
-        s.reconcile(Set.of(), id -> Optional.of(aircraft(id, LAST.plusSeconds(290), 59.5, 18.1, 450.0, true)));
+        s.reconcile(Set.of(), id -> Optional.of(aircraft(id, LAST.plusSeconds(290), fix(59.5, 18.1, 450.0), true)));
         s.flush();
 
         assertThat(count("track_end_feature")).isZero();
@@ -259,7 +282,7 @@ class TrainingDataIntegrationTest {
     void captureDelay_aNonQualifyingGapIsDecidedOnceAtTheDelay() {
         MutableClock clock = new MutableClock(LAST.plusSeconds(600));
         TrainingDataService s = service(clock, 600, 30);
-        LiveAircraft high = aircraft("high11", LAST, 10, 10, 11000.0, false);
+        LiveAircraft high = aircraft("high11", LAST, fix(10, 10, 11000.0), false);
         gap(s, high, estimate(TrackState.COVERAGE_LOST, 0, null), true);
 
         // A later tick that would qualify (a landing candidate appears) does not capture it.
@@ -273,7 +296,7 @@ class TrainingDataIntegrationTest {
     void captureDelay_delayedCaptureStillGetsItsInferredColumnsAndItsLabel() {
         MutableClock clock = new MutableClock(LAST.plusSeconds(300));
         TrainingDataService s = service(clock, 600, 30);
-        LiveAircraft a = aircraft("abc123", LAST, 59.7, 17.9, 600.0, false);
+        LiveAircraft a = aircraft("abc123", LAST, fix(59.7, 17.9, 600.0), false);
 
         // Inferred before the delay: nothing is written yet, then captured and inferred in one write.
         gap(s, a, estimate(TrackState.LANDED_INFERRED, 0.9, "ESSA"), true);
@@ -285,7 +308,7 @@ class TrainingDataIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT inferred_probability FROM track_end_feature", Double.class)).isEqualTo(0.95);
 
         // Inferred after capture.
-        LiveAircraft b = aircraft("def456", LAST, 59.7, 17.9, 600.0, false);
+        LiveAircraft b = aircraft("def456", LAST, fix(59.7, 17.9, 600.0), false);
         gap(s, b, estimate(TrackState.COVERAGE_LOST, 0.3, "ESSA"), true);
         clock.now = LAST.plusSeconds(800);
         gap(s, b, estimate(TrackState.LANDED_INFERRED, 0.92, "ESSA"), false);
@@ -293,7 +316,7 @@ class TrainingDataIntegrationTest {
                 Double.class)).isEqualTo(0.92);
 
         // And the gaps that were captured are labelled when the aircraft report again.
-        s.reconcile(Set.of(), id -> Optional.of(aircraft(id, LAST.plusSeconds(900), 59.652, 17.921, 0.0, true)));
+        s.reconcile(Set.of(), id -> Optional.of(aircraft(id, LAST.plusSeconds(900), fix(59.652, 17.921, 0.0), true)));
         s.flush();
         assertThat(count("track_end_label")).isEqualTo(2);
     }
@@ -305,14 +328,14 @@ class TrainingDataIntegrationTest {
         TrainingDataService s = service(Clock.fixed(NOW, ZoneOffset.UTC), 0, 30);
         Instant longAfter = LAST.plus(Duration.ofMinutes(31));
         Instant atLimit = LAST.plus(Duration.ofMinutes(30));
-        gap(s, aircraft("air000", LAST, 59.7, 17.9, 600.0, false), estimate(TrackState.COVERAGE_LOST, 0.2, "ESSA"), true);
-        gap(s, aircraft("gnd000", LAST, 59.7, 17.9, 600.0, false), estimate(TrackState.COVERAGE_LOST, 0.2, "ESSA"), true);
-        gap(s, aircraft("lim000", LAST, 59.7, 17.9, 600.0, false), estimate(TrackState.COVERAGE_LOST, 0.2, "ESSA"), true);
+        gap(s, aircraft("air000", LAST, fix(59.7, 17.9, 600.0), false), estimate(TrackState.COVERAGE_LOST, 0.2, "ESSA"), true);
+        gap(s, aircraft("gnd000", LAST, fix(59.7, 17.9, 600.0), false), estimate(TrackState.COVERAGE_LOST, 0.2, "ESSA"), true);
+        gap(s, aircraft("lim000", LAST, fix(59.7, 17.9, 600.0), false), estimate(TrackState.COVERAGE_LOST, 0.2, "ESSA"), true);
 
         s.reconcile(Set.of(), id -> Optional.of(switch (id) {
-            case "air000" -> aircraft(id, longAfter, 59.5, 18.1, 450.0, false);
-            case "gnd000" -> aircraft(id, longAfter, 59.652, 17.921, 0.0, true);
-            default -> aircraft(id, atLimit, 59.5, 18.1, 450.0, false);
+            case "air000" -> aircraft(id, longAfter, fix(59.5, 18.1, 450.0), false);
+            case "gnd000" -> aircraft(id, longAfter, fix(59.652, 17.921, 0.0), true);
+            default -> aircraft(id, atLimit, fix(59.5, 18.1, 450.0), false);
         }));
         s.flush();
 
@@ -337,8 +360,8 @@ class TrainingDataIntegrationTest {
             }
         };
         TrainingDataService s = new TrainingDataService(failingOnce, runways, tx, Clock.fixed(NOW, ZoneOffset.UTC),
-                true, 4000, 0, 30);
-        LiveAircraft a = aircraft("abc123", LAST, 59.7, 17.9, 600.0, false);
+                new TrainingSettings(true, 4000, 0, 30));
+        LiveAircraft a = aircraft("abc123", LAST, fix(59.7, 17.9, 600.0), false);
 
         gap(s, a, estimate(TrackState.LANDED_INFERRED, 0.9, "ESSA"), true); // insert fails, the batch rolls back
         assertThat(count("track_end_feature")).isZero();
@@ -348,7 +371,7 @@ class TrainingDataIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT inferred_state FROM track_end_feature", String.class))
                 .isEqualTo("LANDED_INFERRED");
 
-        s.reconcile(Set.of(), id -> Optional.of(aircraft(id, RESUMED, 59.652, 17.921, 0.0, true)));
+        s.reconcile(Set.of(), id -> Optional.of(aircraft(id, RESUMED, fix(59.652, 17.921, 0.0), true)));
         s.flush();
         assertThat(count("track_end_label")).isEqualTo(1);
     }
@@ -362,8 +385,8 @@ class TrainingDataIntegrationTest {
             }
         };
         TrainingDataService s = new TrainingDataService(alwaysFailing, runways, tx, Clock.fixed(NOW, ZoneOffset.UTC),
-                true, 4000, 0, 30);
-        gap(s, aircraft("abc123", LAST, 59.7, 17.9, 600.0, false), estimate(TrackState.COVERAGE_LOST, 0.2, "ESSA"), true);
+                new TrainingSettings(true, 4000, 0, 30));
+        gap(s, aircraft("abc123", LAST, fix(59.7, 17.9, 600.0), false), estimate(TrackState.COVERAGE_LOST, 0.2, "ESSA"), true);
         for (int i = 0; i < TrainingDataService.MAX_ATTEMPTS + 2; i++) s.flush();
         @SuppressWarnings("unchecked")
         List<Object> pending = (List<Object>) ReflectionTestUtils.getField(s, "pending");
@@ -376,9 +399,9 @@ class TrainingDataIntegrationTest {
                     protected void doCommit(org.springframework.transaction.support.DefaultTransactionStatus status) {
                         throw new org.springframework.transaction.TransactionSystemException("commit failed");
                     }
-                }), Clock.fixed(NOW, ZoneOffset.UTC), true, 4000, 0, 30);
+                }), Clock.fixed(NOW, ZoneOffset.UTC), new TrainingSettings(true, 4000, 0, 30));
         for (int i = 0; i < TrainingDataService.MAX_PENDING + 50; i++) {
-            LiveAircraft a = aircraft(String.format("x%05d", i), LAST, 59.7, 17.9, 600.0, false);
+            LiveAircraft a = aircraft(String.format("x%05d", i), LAST, fix(59.7, 17.9, 600.0), false);
             t.onGapEstimate(a, features(a, estimate(TrackState.COVERAGE_LOST, 0.2, "ESSA")), true);
         }
         t.flush();
@@ -392,7 +415,7 @@ class TrainingDataIntegrationTest {
     @Test
     void inferredColumns_areSetOnceWhenTheGapFirstReachesLandedInferred() {
         TrainingDataService s = service();
-        LiveAircraft a = aircraft("abc123", LAST, 59.7, 17.9, 600.0, false);
+        LiveAircraft a = aircraft("abc123", LAST, fix(59.7, 17.9, 600.0), false);
 
         gap(s, a, estimate(TrackState.COVERAGE_LOST, 0.3, "ESSA"), true);
         assertThat(jdbc.queryForObject("SELECT inferred_state FROM track_end_feature", String.class)).isNull();
@@ -416,28 +439,28 @@ class TrainingDataIntegrationTest {
     @Test
     void resumeOnTheGround_labelsLandedWithTheNearestRunwaysAirport() {
         TrainingDataService s = service();
-        gap(s, aircraft("abc123", LAST, 59.7, 17.9, 600.0, false), estimate(TrackState.COVERAGE_LOST, 0.2, "ESSA"), true);
+        gap(s, aircraft("abc123", LAST, fix(59.7, 17.9, 600.0), false), estimate(TrackState.COVERAGE_LOST, 0.2, "ESSA"), true);
 
-        s.reconcile(Set.of(), id -> Optional.of(aircraft(id, RESUMED, 59.652, 17.921, 0.0, true)));
+        s.reconcile(Set.of(), id -> Optional.of(aircraft(id, RESUMED, fix(59.652, 17.921, 0.0), true)));
         s.flush();
 
-        Map<String, Object> label = jdbc.queryForMap("SELECT * FROM track_end_label");
-        assertThat(label.get("outcome")).isEqualTo("LANDED");
-        assertThat(label.get("label_source")).isEqualTo("adsb_ground");
-        assertThat(label.get("last_observed_at")).isEqualTo(LAST.toEpochMilli());
-        assertThat(label.get("resumed_at")).isEqualTo(RESUMED.toEpochMilli());
-        assertThat(label.get("resumed_lat")).isEqualTo(59.652);
-        assertThat(label.get("gap_seconds")).isEqualTo(540);
-        assertThat(label.get("landed_airport_icao")).isEqualTo("ESSA");
-        assertThat(label.get("labelled_at")).isEqualTo(NOW.toEpochMilli());
+        assertRowHas(jdbc.queryForMap("SELECT * FROM track_end_label"), columns(
+                "outcome", "LANDED",
+                "label_source", "adsb_ground",
+                "last_observed_at", LAST.toEpochMilli(),
+                "resumed_at", RESUMED.toEpochMilli(),
+                "resumed_lat", 59.652,
+                "gap_seconds", 540,
+                "landed_airport_icao", "ESSA",
+                "labelled_at", NOW.toEpochMilli()));
     }
 
     @Test
     void resumeOnTheGroundFarFromAnyRunway_labelsLandedWithoutAnAirport() {
         TrainingDataService s = service();
-        gap(s, aircraft("abc123", LAST, 59.7, 17.9, 600.0, false), estimate(TrackState.COVERAGE_LOST, 0.2, "ESSA"), true);
+        gap(s, aircraft("abc123", LAST, fix(59.7, 17.9, 600.0), false), estimate(TrackState.COVERAGE_LOST, 0.2, "ESSA"), true);
 
-        s.reconcile(Set.of(), id -> Optional.of(aircraft(id, RESUMED, 60.5, 18.5, 0.0, true)));
+        s.reconcile(Set.of(), id -> Optional.of(aircraft(id, RESUMED, fix(60.5, 18.5, 0.0), true)));
         s.flush();
 
         assertThat(jdbc.queryForObject("SELECT outcome FROM track_end_label", String.class)).isEqualTo("LANDED");
@@ -447,28 +470,28 @@ class TrainingDataIntegrationTest {
     @Test
     void resumeAirborne_labelsAirborne_onceOnly() {
         TrainingDataService s = service();
-        gap(s, aircraft("abc123", LAST, 59.7, 17.9, 600.0, false), estimate(TrackState.COVERAGE_LOST, 0.2, "ESSA"), true);
+        gap(s, aircraft("abc123", LAST, fix(59.7, 17.9, 600.0), false), estimate(TrackState.COVERAGE_LOST, 0.2, "ESSA"), true);
 
-        s.reconcile(Set.of(), id -> Optional.of(aircraft(id, RESUMED, 59.5, 18.1, 450.0, false)));
+        s.reconcile(Set.of(), id -> Optional.of(aircraft(id, RESUMED, fix(59.5, 18.1, 450.0), false)));
         s.flush();
         // The gap is closed: later ticks (with whatever the aircraft does next) do not label it again.
-        s.reconcile(Set.of(), id -> Optional.of(aircraft(id, NOW, 59.4, 18.2, 0.0, true)));
+        s.reconcile(Set.of(), id -> Optional.of(aircraft(id, NOW, fix(59.4, 18.2, 0.0), true)));
         s.flush();
 
-        Map<String, Object> label = jdbc.queryForMap("SELECT * FROM track_end_label");
-        assertThat(label.get("outcome")).isEqualTo("AIRBORNE");
-        assertThat(label.get("label_source")).isEqualTo("adsb_airborne");
-        assertThat(label.get("landed_airport_icao")).isNull();
+        assertRowHas(jdbc.queryForMap("SELECT * FROM track_end_label"), columns(
+                "outcome", "AIRBORNE",
+                "label_source", "adsb_airborne",
+                "landed_airport_icao", null));
         assertThat(count("track_end_label")).isEqualTo(1);
     }
 
     @Test
     void resumeThatStartsAnotherGap_labelsTheOldOneAndCapturesTheNew() {
         TrainingDataService s = service();
-        gap(s, aircraft("abc123", LAST, 59.7, 17.9, 600.0, false), estimate(TrackState.COVERAGE_LOST, 0.2, "ESSA"), true);
+        gap(s, aircraft("abc123", LAST, fix(59.7, 17.9, 600.0), false), estimate(TrackState.COVERAGE_LOST, 0.2, "ESSA"), true);
 
         // Reported again at RESUMED, then went silent again: a new snapshot with a newer report.
-        gap(s, aircraft("abc123", RESUMED, 59.6, 17.95, 300.0, false), estimate(TrackState.COVERAGE_LOST, 0.5, "ESSA"), true);
+        gap(s, aircraft("abc123", RESUMED, fix(59.6, 17.95, 300.0), false), estimate(TrackState.COVERAGE_LOST, 0.5, "ESSA"), true);
 
         assertThat(count("track_end_feature")).isEqualTo(2);
         assertThat(jdbc.queryForObject("SELECT outcome FROM track_end_label WHERE last_observed_at = ?",
@@ -478,10 +501,10 @@ class TrainingDataIntegrationTest {
     @Test
     void evictedAircraft_getsNoLabel_andIsForgotten() {
         TrainingDataService s = service();
-        gap(s, aircraft("abc123", LAST, 59.7, 17.9, 600.0, false), estimate(TrackState.COVERAGE_LOST, 0.2, "ESSA"), true);
+        gap(s, aircraft("abc123", LAST, fix(59.7, 17.9, 600.0), false), estimate(TrackState.COVERAGE_LOST, 0.2, "ESSA"), true);
 
         s.reconcile(Set.of(), id -> Optional.empty());
-        s.reconcile(Set.of(), id -> Optional.of(aircraft(id, RESUMED, 59.6, 17.9, 0.0, true)));
+        s.reconcile(Set.of(), id -> Optional.of(aircraft(id, RESUMED, fix(59.6, 17.9, 0.0), true)));
         s.flush();
 
         assertThat(count("track_end_feature")).isEqualTo(1);
@@ -491,9 +514,9 @@ class TrainingDataIntegrationTest {
     @Test
     void aircraftStillInItsGap_isNotLabelled() {
         TrainingDataService s = service();
-        gap(s, aircraft("abc123", LAST, 59.7, 17.9, 600.0, false), estimate(TrackState.COVERAGE_LOST, 0.2, "ESSA"), true);
+        gap(s, aircraft("abc123", LAST, fix(59.7, 17.9, 600.0), false), estimate(TrackState.COVERAGE_LOST, 0.2, "ESSA"), true);
 
-        s.reconcile(Set.of("abc123"), id -> Optional.of(aircraft(id, RESUMED, 59.6, 17.9, 0.0, true)));
+        s.reconcile(Set.of("abc123"), id -> Optional.of(aircraft(id, RESUMED, fix(59.6, 17.9, 0.0), true)));
         s.flush();
 
         assertThat(count("track_end_label")).isZero();
@@ -514,20 +537,20 @@ class TrainingDataIntegrationTest {
 
     @Test
     void confirmedLanding_insertsALandedLabelWithTheProviderAsSource() {
-        service().recordConfirmedLanding("abc123", LAST, "flightaware", LAST.plusSeconds(300), "ESSA");
+        service().recordConfirmedLanding(new ConfirmedLanding("abc123", LAST, "flightaware", LAST.plusSeconds(300), "ESSA"));
 
-        Map<String, Object> label = jdbc.queryForMap("SELECT * FROM track_end_label");
-        assertThat(label.get("outcome")).isEqualTo("LANDED");
-        assertThat(label.get("label_source")).isEqualTo("flightaware");
-        assertThat(label.get("resumed_at")).isEqualTo(LAST.plusSeconds(300).toEpochMilli());
-        assertThat(label.get("resumed_lat")).isNull();
-        assertThat(label.get("gap_seconds")).isEqualTo(300);
-        assertThat(label.get("landed_airport_icao")).isEqualTo("ESSA");
+        assertRowHas(jdbc.queryForMap("SELECT * FROM track_end_label"), columns(
+                "outcome", "LANDED",
+                "label_source", "flightaware",
+                "resumed_at", LAST.plusSeconds(300).toEpochMilli(),
+                "resumed_lat", null,
+                "gap_seconds", 300,
+                "landed_airport_icao", "ESSA"));
 
         // and the ADS-B resume that arrives afterwards does not take it over
         TrainingDataService s = service();
-        gap(s, aircraft("abc123", LAST, 59.7, 17.9, 600.0, false), estimate(TrackState.COVERAGE_LOST, 0.2, "ESSA"), true);
-        s.reconcile(Set.of(), id -> Optional.of(aircraft(id, RESUMED, 59.5, 18.1, 450.0, false)));
+        gap(s, aircraft("abc123", LAST, fix(59.7, 17.9, 600.0), false), estimate(TrackState.COVERAGE_LOST, 0.2, "ESSA"), true);
+        s.reconcile(Set.of(), id -> Optional.of(aircraft(id, RESUMED, fix(59.5, 18.1, 450.0), false)));
         s.flush();
         assertThat(jdbc.queryForObject("SELECT label_source FROM track_end_label", String.class)).isEqualTo("flightaware");
     }
@@ -540,8 +563,8 @@ class TrainingDataIntegrationTest {
                 RESUMED, 59.5, 18.1, null), NOW);
         TrainingDataService s = service();
 
-        s.recordConfirmedLanding("in-gap", LAST, "mock", RESUMED.minusSeconds(120), "ESSA");
-        s.recordConfirmedLanding("later1", LAST, "mock", RESUMED.plusSeconds(3600), "ESSA");
+        s.recordConfirmedLanding(new ConfirmedLanding("in-gap", LAST, "mock", RESUMED.minusSeconds(120), "ESSA"));
+        s.recordConfirmedLanding(new ConfirmedLanding("later1", LAST, "mock", RESUMED.plusSeconds(3600), "ESSA"));
 
         assertThat(jdbc.queryForObject("SELECT outcome || '/' || label_source FROM track_end_label WHERE icao24 = 'in-gap'",
                 String.class)).isEqualTo("LANDED/mock");
@@ -556,7 +579,7 @@ class TrainingDataIntegrationTest {
         repository.insertLabel(new TrainingDataRepository.Label("abc123", LAST, "LANDED", "adsb_ground",
                 RESUMED, 60.5, 18.5, null), NOW);
 
-        service().recordConfirmedLanding("abc123", LAST, "mock", RESUMED.minusSeconds(30), "ESSA");
+        service().recordConfirmedLanding(new ConfirmedLanding("abc123", LAST, "mock", RESUMED.minusSeconds(30), "ESSA"));
 
         Map<String, Object> label = jdbc.queryForMap("SELECT * FROM track_end_label");
         assertThat(label.get("label_source")).isEqualTo("adsb_ground");
@@ -571,12 +594,12 @@ class TrainingDataIntegrationTest {
         TrainingDataService s = service();
         Instant old = NOW.minus(Duration.ofDays(400));
         // captured long ago (the capture clock is NOW, so write the old row directly)
-        repository.insertFeatures(features(aircraft("old001", old, 59.7, 17.9, 600.0, false),
+        repository.insertFeatures(features(aircraft("old001", old, fix(59.7, 17.9, 600.0), false),
                 estimate(TrackState.COVERAGE_LOST, 0.2, "ESSA")), old);
         repository.insertLabel(new TrainingDataRepository.Label("old001", old, "AIRBORNE", "adsb_airborne",
                 old.plusSeconds(60), 59.5, 18.1, null), old.plusSeconds(60));
-        gap(s, aircraft("new001", LAST, 59.7, 17.9, 600.0, false), estimate(TrackState.COVERAGE_LOST, 0.2, "ESSA"), true);
-        s.reconcile(Set.of(), id -> Optional.of(aircraft(id, RESUMED, 59.5, 18.1, 450.0, false)));
+        gap(s, aircraft("new001", LAST, fix(59.7, 17.9, 600.0), false), estimate(TrackState.COVERAGE_LOST, 0.2, "ESSA"), true);
+        s.reconcile(Set.of(), id -> Optional.of(aircraft(id, RESUMED, fix(59.5, 18.1, 450.0), false)));
         s.flush();
         assertThat(count("track_end_feature")).isEqualTo(2);
         assertThat(count("track_end_label")).isEqualTo(2);

@@ -1,6 +1,7 @@
 package com.flighttracker.repository;
 
 import com.flighttracker.model.Aircraft;
+import com.flighttracker.service.enrichment.AircraftInfo;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
@@ -24,6 +25,11 @@ import static com.flighttracker.repository.Timestamps.toEpochMilli;
  */
 @Repository
 public class AircraftRepository {
+
+    /** The legacy aircraft route columns' parameters in updateEnrichment: always bound to null. */
+    private static final List<String> LEGACY_ROUTE_PARAMS = List.of(
+            "originAirport", "originAirportName", "originAirportLat", "originAirportLon",
+            "destinationAirport", "destinationAirportName", "destinationAirportLat", "destinationAirportLon");
 
     private final JdbcClient jdbcClient;
     private final Clock clock;
@@ -109,18 +115,16 @@ public class AircraftRepository {
      * {@code info.ifPresent(...)}/{@code route.ifPresent(...)} conditional
      * field sets: a lookup that found nothing leaves those columns
      * untouched rather than clobbering them with null.
+     * {@code info} may be null (the lookup found nothing). The legacy
+     * origin_* and destination_* route columns are always bound to null, so
+     * COALESCE leaves them as they are (see AircraftEnrichmentService).
      * metadataFetchedAt is unconditional: set every call, same as before,
      * to mark the lookup as "tried" regardless of whether it found
      * anything.
      */
-    public void updateEnrichment(String icao24,
-                                  String model, String registration, String operator,
-                                  String originAirport, String originAirportName,
-                                  Double originAirportLat, Double originAirportLon,
-                                  String destinationAirport, String destinationAirportName,
-                                  Double destinationAirportLat, Double destinationAirportLon,
-                                  Instant metadataFetchedAt) {
-        jdbcClient.sql("""
+    public void updateEnrichment(String icao24, AircraftInfo info, Instant metadataFetchedAt) {
+        AircraftInfo found = info == null ? new AircraftInfo(null, null, null) : info;
+        JdbcClient.StatementSpec update = jdbcClient.sql("""
                 UPDATE aircraft SET
                     model = COALESCE(:model, model),
                     registration = COALESCE(:registration, registration),
@@ -136,18 +140,13 @@ public class AircraftRepository {
                     metadata_fetched_at = :metadataFetchedAt
                 WHERE icao24 = :icao24
                 """)
-                .param("model", model)
-                .param("registration", registration)
-                .param("operator", operator)
-                .param("originAirport", originAirport)
-                .param("originAirportName", originAirportName)
-                .param("originAirportLat", originAirportLat)
-                .param("originAirportLon", originAirportLon)
-                .param("destinationAirport", destinationAirport)
-                .param("destinationAirportName", destinationAirportName)
-                .param("destinationAirportLat", destinationAirportLat)
-                .param("destinationAirportLon", destinationAirportLon)
-                .param("metadataFetchedAt", toEpochMilli(metadataFetchedAt))
+                .param("model", found.model())
+                .param("registration", found.registration())
+                .param("operator", found.operator());
+        for (String legacyRouteParam : LEGACY_ROUTE_PARAMS) {
+            update = update.param(legacyRouteParam, null);
+        }
+        update.param("metadataFetchedAt", toEpochMilli(metadataFetchedAt))
                 .param("icao24", icao24)
                 .update();
     }

@@ -349,7 +349,7 @@ export function createPlaneLayer(map: FlightMap, onSelect: (p: LiveMarker) => vo
       (text) => {
         const { width, height } = measureLabel(text, labelStyle);
         const { ctx, done } = canvas(width, height, Math.max(2, window.devicePixelRatio || 1));
-        drawLabel(ctx, text, labelStyle, 0, 0);
+        drawLabel(ctx, text, labelStyle, { x: 0, y: 0 });
         return done();
       },
       labelStyle.font,

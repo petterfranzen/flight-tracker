@@ -97,7 +97,7 @@ function clampToBox(p: Point, points: Point[]): Point {
 }
 
 /** The centripetal Catmull-Rom point at parameter t in [0,1] between p1 and p2, clamped to the four control points' box. */
-function catmullRomPoint(p0: Point, p1: Point, p2: Point, p3: Point, t: number): Point {
+function catmullRomPoint([p0, p1, p2, p3]: [Point, Point, Point, Point], t: number): Point {
   const t0 = 0;
   const t1 = t0 + knotStep(p0, p1);
   const t2 = t1 + knotStep(p1, p2);
@@ -128,7 +128,7 @@ export function smoothRoute(points: Point[]): Point[] {
     const p2 = at(i + 1);
     const p3 = at(i + 2);
     for (let s = 0; s < ROUTE_SPLINE_SEGMENTS; s++) {
-      result.push(catmullRomPoint(p0, p1, p2, p3, s / ROUTE_SPLINE_SEGMENTS));
+      result.push(catmullRomPoint([p0, p1, p2, p3], s / ROUTE_SPLINE_SEGMENTS));
     }
   }
   result.push(points[points.length - 1]);
@@ -203,6 +203,59 @@ function featureCollection(route: RoutePoint[]): GeoJSON.FeatureCollection {
   return { type: "FeatureCollection", features: routeSegments(route).map((s) => line(s.points, s.kind)) };
 }
 
+/** The theme's accent and outline tokens, read once from the CSS (with fallbacks). */
+function routeColors(map: FlightMap): { color: string; casing: string } {
+  const style = getComputedStyle(map.getContainer());
+  return {
+    color: style.getPropertyValue("--color-accent").trim() || ROUTE_FALLBACK_COLOR,
+    casing: style.getPropertyValue("--color-plane-outline").trim() || ROUTE_FALLBACK_CASING,
+  };
+}
+
+/** Adds the route source and its three line layers, under the plane layers. */
+function addRouteLayers(map: FlightMap, route: RoutePoint[]): void {
+  const { color, casing } = routeColors(map);
+  const before = map.gl.getLayer(PLANES_LAYER) ? PLANES_LAYER : undefined;
+  map.gl.addSource(ROUTE_SOURCE_ID, { type: "geojson", data: featureCollection(route) });
+  // Bottom to top: the casing, the gap dashes, the solid accent line.
+  map.gl.addLayer(
+    {
+      id: ROUTE_CASING_LAYER_ID,
+      type: "line",
+      source: ROUTE_SOURCE_ID,
+      filter: ["==", ["get", "kind"], "trail"],
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: { "line-color": casing, "line-width": 5, "line-opacity": 0.6 },
+    },
+    before,
+  );
+  // Only the missing legs are dashed, and faintly: a break that means
+  // something, not a pattern over the whole path.
+  map.gl.addLayer(
+    {
+      id: ROUTE_GAP_LAYER_ID,
+      type: "line",
+      source: ROUTE_SOURCE_ID,
+      filter: ["==", ["get", "kind"], "gap"],
+      layout: { "line-cap": "butt", "line-join": "round" },
+      paint: { "line-color": color, "line-width": 2.5, "line-opacity": 0.5, "line-dasharray": [1.5, 1.5] },
+    },
+    before,
+  );
+  map.gl.addLayer(
+    {
+      id: ROUTE_LAYER_ID,
+      type: "line",
+      source: ROUTE_SOURCE_ID,
+      filter: ["==", ["get", "kind"], "trail"],
+      layout: { "line-cap": "round", "line-join": "round" },
+      // The flown path is a solid line: no line-dasharray.
+      paint: { "line-color": color, "line-width": 3 },
+    },
+    before,
+  );
+}
+
 /**
  * The selected aircraft's trail: a GeoJSON source of solid runs (with a darker
  * casing under them so they stay readable over the land) plus dashed segments
@@ -216,48 +269,7 @@ export function createRouteLayer(map: FlightMap): RouteLayerHandle {
 
   map.whenStyleReady(() => {
     if (added) return;
-    const style = getComputedStyle(map.getContainer());
-    const color = style.getPropertyValue("--color-accent").trim() || ROUTE_FALLBACK_COLOR;
-    const casing = style.getPropertyValue("--color-plane-outline").trim() || ROUTE_FALLBACK_CASING;
-    const before = map.gl.getLayer(PLANES_LAYER) ? PLANES_LAYER : undefined;
-    map.gl.addSource(ROUTE_SOURCE_ID, { type: "geojson", data: featureCollection(latest) });
-    // Bottom to top: the casing, the gap dashes, the solid accent line.
-    map.gl.addLayer(
-      {
-        id: ROUTE_CASING_LAYER_ID,
-        type: "line",
-        source: ROUTE_SOURCE_ID,
-        filter: ["==", ["get", "kind"], "trail"],
-        layout: { "line-cap": "round", "line-join": "round" },
-        paint: { "line-color": casing, "line-width": 5, "line-opacity": 0.6 },
-      },
-      before,
-    );
-    // Only the missing legs are dashed, and faintly: a break that means
-    // something, not a pattern over the whole path.
-    map.gl.addLayer(
-      {
-        id: ROUTE_GAP_LAYER_ID,
-        type: "line",
-        source: ROUTE_SOURCE_ID,
-        filter: ["==", ["get", "kind"], "gap"],
-        layout: { "line-cap": "butt", "line-join": "round" },
-        paint: { "line-color": color, "line-width": 2.5, "line-opacity": 0.5, "line-dasharray": [1.5, 1.5] },
-      },
-      before,
-    );
-    map.gl.addLayer(
-      {
-        id: ROUTE_LAYER_ID,
-        type: "line",
-        source: ROUTE_SOURCE_ID,
-        filter: ["==", ["get", "kind"], "trail"],
-        layout: { "line-cap": "round", "line-join": "round" },
-        // The flown path is a solid line: no line-dasharray.
-        paint: { "line-color": color, "line-width": 3 },
-      },
-      before,
-    );
+    addRouteLayers(map, latest);
     added = true;
   });
 
