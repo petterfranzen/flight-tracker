@@ -165,3 +165,41 @@ export function saveList<T>(key: string, list: T[]): void {
   writeLocal(key, list);
   writeCookie(cookieNameFor(key), serializeForCookie(list));
 }
+
+/**
+ * A single JSON value's store, alongside the list store above: localStorage is
+ * the primary copy and a first-party cookie the second, read and written the
+ * same way (see the module comment). For a one-off setting with no list to trim
+ * to the cookie budget, such as the last map view (map/savedView.ts).
+ */
+export class ValueStore<T> {
+  constructor(private readonly key: string) {}
+
+  /** The stored value, localStorage first and the cookie as the fallback; null when neither holds one. */
+  load(): T | null {
+    const cookieName = cookieNameFor(this.key);
+    let raw: string | null = null;
+    try {
+      raw = localStorage.getItem(this.key) ?? readCookie(cookieName);
+    } catch {
+      raw = readCookie(cookieName);
+    }
+    if (raw === null) return null;
+    try {
+      return JSON.parse(raw) as T;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Writes the value to both stores: localStorage whole, the cookie as a copy. */
+  save(value: T): void {
+    const raw = JSON.stringify(value);
+    try {
+      localStorage.setItem(this.key, raw);
+    } catch {
+      // best-effort — see module comment
+    }
+    writeCookie(cookieNameFor(this.key), raw);
+  }
+}

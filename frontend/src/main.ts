@@ -34,6 +34,7 @@ import { declutterCellDeg, newDeclutterMemory, pickNonOverlapping, spacingKey, s
 import { perf, resetPerf } from "./map/perf";
 import { isSmallScreen } from "./map/screen";
 import { pickInitialView } from "./map/initialView";
+import { clampInitialZoom, loadSavedView, mountSavedView } from "./map/savedView";
 import { getMockPlaneCount } from "./api/mockFleet";
 import { agedIds, findShadowedIds, isActiveTraffic, OVERLAP_MIN_ZOOM } from "./map/staleness";
 import { hiddenLandedIds } from "./map/landed";
@@ -1139,13 +1140,26 @@ function boot(): void {
     window.addEventListener("pagehide", startHourlyPrune(), { once: true });
   }
 
-  // Opening view: move the map to where the traffic is, at a zoom that draws
-  // individual aircraft, before the first viewport report (see
-  // map/initialView.ts). One coarse world summary, at most
-  // INITIAL_VIEW_TIMEOUT_MS; anything going wrong keeps the default view.
-  // The boot screen is still up meanwhile (it waits on the first load).
+  // Opening view, before the first viewport report: where the user last
+  // settled (a saved view, see map/savedView.ts), else the visitor's
+  // approximate location, else the default centre. Only with no saved view
+  // does it also move to where the traffic is, at a zoom that draws individual
+  // aircraft (map/initialView.ts). The boot screen is still up meanwhile (it
+  // waits on the first load).
   function applyInitialView(): Promise<void> {
     if (getMockPlaneCount() != null) return Promise.resolve(); // the ?mockPlanes dev tool frames its own view
+    const saved = loadSavedView();
+    if (!saved) return pickViewFromTraffic();
+    // The user chose this place: open exactly there, lifting only a zoom that
+    // would draw nothing but aggregated bubbles.
+    map.setView([saved.lat, saved.lon], clampInitialZoom(saved.zoom));
+    return Promise.resolve();
+  }
+
+  // No saved view: move the map to where the traffic is, at a zoom that draws
+  // individual aircraft. One coarse world summary, at most
+  // INITIAL_VIEW_TIMEOUT_MS; anything going wrong keeps the default view.
+  function pickViewFromTraffic(): Promise<void> {
     const startCenter = map.getCenter();
     const startZoom = map.getZoom();
     const controller = new AbortController();
@@ -1169,6 +1183,11 @@ function boot(): void {
       .catch(() => {})
       .finally(() => clearTimeout(timer));
   }
+
+  // Remember the view the user settles on, so the next visit opens there
+  // (map/savedView.ts). Only a user move counts, so a flyTo or the dev tool's
+  // framing never overwrites it.
+  mountSavedView(map);
 
   // Initial viewport report — equivalent to the original ViewportReporter's
   // own mount-time call, fired only now that every layer it can cascade

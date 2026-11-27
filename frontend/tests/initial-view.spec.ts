@@ -1,5 +1,6 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { INITIAL_MAX_PLANES, INITIAL_MIN_PLANES, LOCAL_EMPTY_BELOW, pickInitialView, planesInWindow } from "../src/map/initialView";
+import { clampInitialZoom, roundView, SAVED_VIEW_KEY } from "../src/map/savedView";
 import { freezeClock, mockFlightApi, setMapView, waitForMapReady, withMap } from "./helpers";
 
 // The map opens where there is traffic, at a zoom that draws individual
@@ -67,6 +68,18 @@ test.describe("pickInitialView (pure)", () => {
     const phone = pickInitialView([...summary, cell(28.4, -81.3, 900)], DEFAULT, PHONE)!;
     expect(phone.lat).toBe(DEFAULT.lat);
     expect(phone.zoom).toBe(7);
+  });
+
+  test("a saved view is rounded to 0.01 degrees and a whole zoom level", () => {
+    expect(roundView(59.33492, 18.06371, 8.6)).toEqual({ lat: 59.33, lon: 18.06, zoom: 9 });
+    expect(roundView(-33.86514, 151.20929, 11.2)).toEqual({ lat: -33.87, lon: 151.21, zoom: 11 });
+  });
+
+  test("a saved zoom that would draw only bubbles is lifted to INITIAL_ZOOM, a closer one kept", () => {
+    expect(clampInitialZoom(5)).toBe(8);
+    expect(clampInitialZoom(2)).toBe(8);
+    expect(clampInitialZoom(8)).toBe(8);
+    expect(clampInitialZoom(11.4)).toBe(11.4);
   });
 });
 
@@ -146,5 +159,92 @@ test.describe("opening view in the app", () => {
     expect(await withMap(page, (m) => m.getZoom())).toBe(5);
     const c = await withMap(page, (m) => m.getCenter());
     expect(c.lat).toBeCloseTo(10, 1);
+  });
+
+  // The saved view (map/savedView.ts, section9-hq#447): the map opens where the
+  // user last looked. Cloudflare's IP lookup often puts a Swedish ISP address in
+  // the wrong city, which is exactly the case here — Gothenburg, not Stockholm.
+  const GOTHENBURG = { lat: 57.7, lon: 11.97 };
+  const STOCKHOLM = { lat: 59.33, lon: 18.06 };
+  const seedSavedView = (page: Page, view: { lat: number; lon: number; zoom: number; savedAt: number }) =>
+    page.addInitScript(
+      (v: { key: string; view: unknown }) => {
+        try {
+          localStorage.setItem(v.key, JSON.stringify(v.view));
+        } catch {
+          // best-effort, like the app
+        }
+      },
+      { key: SAVED_VIEW_KEY, view },
+    );
+
+  test("opens on a saved view instead of the server's location guess", async ({ page }) => {
+    await seedSavedView(page, { ...STOCKHOLM, zoom: 11, savedAt: Date.now() });
+    await open(page, [cell(GOTHENBURG.lat, GOTHENBURG.lon, 60)], GOTHENBURG);
+    await expect.poll(() => withMap(page, (m) => m.getZoom()), { timeout: 10_000 }).toBe(11);
+    const c = await withMap(page, (m) => m.getCenter());
+    expect(c.lat).toBeCloseTo(STOCKHOLM.lat, 1);
+    expect(c.lon).toBeCloseTo(STOCKHOLM.lon, 1);
+  });
+
+  test("a saved zoom that would draw only bubbles opens at INITIAL_ZOOM, at the saved centre", async ({ page }) => {
+    await seedSavedView(page, { ...STOCKHOLM, zoom: 5, savedAt: Date.now() });
+    await open(page, [cell(GOTHENBURG.lat, GOTHENBURG.lon, 60)], GOTHENBURG);
+    await expect.poll(() => withMap(page, (m) => m.getZoom()), { timeout: 10_000 }).toBe(8);
+    const c = await withMap(page, (m) => m.getCenter());
+    expect(c.lat).toBeCloseTo(STOCKHOLM.lat, 1);
+    expect(c.lon).toBeCloseTo(STOCKHOLM.lon, 1);
+  });
+
+  test("a saved view older than 30 days is ignored, so the location guess decides again", async ({ page }) => {
+    await seedSavedView(page, { ...STOCKHOLM, zoom: 11, savedAt: Date.now() - 31 * 24 * 60 * 60 * 1000 });
+    await open(page, [cell(GOTHENBURG.lat, GOTHENBURG.lon, 60)], GOTHENBURG);
+    await expect.poll(() => withMap(page, (m) => m.getCenter().lat), { timeout: 10_000 }).toBeCloseTo(GOTHENBURG.lat, 1);
+    const c = await withMap(page, (m) => m.getCenter());
+    expect(c.lon).toBeCloseTo(GOTHENBURG.lon, 1);
+  });
+
+  test("with no saved view the current behaviour is unchanged: the server's location decides", async ({ page }) => {
+    await open(page, [cell(53.5, -2.2, 60)], MANCHESTER);
+    await expect.poll(() => withMap(page, (m) => m.getCenter().lat), { timeout: 10_000 }).toBeCloseTo(53.5, 1);
+  });
+
+  test("a view the user settles on is saved, rounded, for the next visit", async ({ page }) => {
+    await mockFlightApi(page);
+    await page.setViewportSize(DESKTOP);
+    await freezeClock(page);
+    await page.goto("/");
+    await waitForMapReady(page);
+    // The boot screen waves itself away on its own timers (bootScreen.ts), which
+    // a frozen clock holds: run them out before the map is reachable.
+    await page.clock.runFor(3_200);
+    await page.waitForSelector("body:not(:has(.boot-screen))", { timeout: 15_000 }); // it covers the map until then
+    const box = (await page.locator(".map-container").boundingBox())!;
+    const cx = box.x + box.width / 2;
+    const cy = box.y + box.height / 2;
+    await page.mouse.move(cx, cy);
+    await page.mouse.down();
+    await page.mouse.move(cx - 160, cy - 80, { steps: 8 });
+    await page.mouse.up();
+    await page.clock.runFor(1_200); // past the save debounce (1 s)
+    await expect.poll(() => page.evaluate((key: string) => localStorage.getItem(key), SAVED_VIEW_KEY), { timeout: 5_000 }).not.toBeNull();
+    const raw = await page.evaluate((key: string) => localStorage.getItem(key), SAVED_VIEW_KEY);
+    const saved = JSON.parse(raw ?? "null");
+    const c = await withMap(page, (m) => m.getCenter());
+    expect(saved.lat).toBeCloseTo(c.lat, 2);
+    expect(saved.lon).toBeCloseTo(c.lon, 2);
+    expect(Number.isInteger(saved.zoom)).toBe(true);
+    expect(Number.isFinite(saved.savedAt)).toBe(true);
+  });
+
+  test("a programmatic view (a jump, not a user move) is not saved", async ({ page }) => {
+    await mockFlightApi(page);
+    await page.setViewportSize(DESKTOP);
+    await freezeClock(page);
+    await page.goto("/");
+    await waitForMapReady(page);
+    await setMapView(page, 10, 10, 8); // the app's own move, not a gesture
+    await page.clock.runFor(1_200);
+    expect(await page.evaluate((key: string) => localStorage.getItem(key), SAVED_VIEW_KEY)).toBeNull();
   });
 });
