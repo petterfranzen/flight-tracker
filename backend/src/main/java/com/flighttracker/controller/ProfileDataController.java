@@ -1,6 +1,7 @@
 package com.flighttracker.controller;
 
 import com.flighttracker.profile.ProfileLimitException;
+import com.flighttracker.profile.ProfileLimits;
 import com.flighttracker.profile.ProfileResolver;
 import com.flighttracker.repository.FavoriteRepository;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -27,7 +28,8 @@ import java.util.Map;
  *
  * <p>The profile is resolved through {@link ProfileResolver} — the same
  * first-sight insert the read uses ({@code ProfileReader}) — so a write to a
- * profile the server has never seen creates it and then applies the write. The
+ * profile the server has never seen creates it and then applies the write; a
+ * request is validated in full before that, so a rejected write creates nothing. The
  * profile id, the subject and its hash are server-side only (design §3) and
  * never appear in a request or a response.
  *
@@ -71,7 +73,11 @@ public class ProfileDataController {
     @PutMapping("/favorite")
     public ResponseEntity<Void> putFavorite(@RequestBody FavoriteWriteRequest body, Authentication authentication) {
         requireKey(body.kind(), body.itemKey());
-        favorites.upsert(new FavoriteRepository.Key(profileId(authentication), body.kind(), body.itemKey()), data(body.data()));
+        String data = data(body.data());
+        // Validate the whole row before resolving: resolving creates a first-sight
+        // profile, and a rejected write must not leave one behind.
+        ProfileLimits.checkFavorite(body.kind(), body.itemKey(), data);
+        favorites.upsert(new FavoriteRepository.Key(profileId(authentication), body.kind(), body.itemKey()), data);
         return ResponseEntity.ok().build();
     }
 

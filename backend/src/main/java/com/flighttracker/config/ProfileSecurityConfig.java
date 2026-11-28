@@ -1,6 +1,7 @@
 package com.flighttracker.config;
 
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
@@ -16,7 +17,9 @@ import org.springframework.security.oauth2.client.registration.ClientRegistratio
 import org.springframework.security.oauth2.client.userinfo.OAuth2UserRequest;
 import org.springframework.security.oauth2.client.userinfo.OAuth2UserService;
 import org.springframework.security.oauth2.core.user.OAuth2User;
+import org.springframework.security.web.RedirectStrategy;
 import org.springframework.security.web.authentication.SimpleUrlAuthenticationFailureHandler;
+import org.springframework.security.web.authentication.SimpleUrlAuthenticationSuccessHandler;
 import org.springframework.security.web.csrf.CookieCsrfTokenRepository;
 import org.springframework.security.web.firewall.DefaultHttpFirewall;
 import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher;
@@ -102,19 +105,17 @@ import java.util.Set;
  *       in one — so a bare {@code /oauth2/authorization/*}, a refused callback and an
  *       anonymous profile read all set no session. A session appears only once a login
  *       succeeds.</li>
+ *   <li>A successful login redirects to a <b>relative</b> {@code /}, like a failed one,
+ *       never to an absolute URL built from the request's scheme and host.</li>
+ *   <li>The provider's access token is not kept: the login hands it to
+ *       {@link DiscardingAuthorizedClientRepository}, because the app never calls a
+ *       provider API after sign-in.</li>
+ *   <li>The readable {@code XSRF-TOKEN} cookie is {@code SameSite=Strict}, and
+ *       {@code Secure} whenever the session cookie is.</li>
  * </ul>
  *
  * <p><b>Still open before the flag is enabled</b> (not part of this slice):
- *
- * <ul>
- *   <li>No test drives a WebSocket handshake or an {@code Origin} rejection
- *       with the flag on.</li>
- *   <li>Cross-PR: the service worker (#182) answers every same-origin
- *       navigation from its cached {@code index.html} except {@code /api} and
- *       {@code /ws}; {@code /oauth2/authorization/*} and
- *       {@code /login/oauth2/code/*} are navigations, so they must be added to
- *       the worker's bypass list before the flag is enabled.</li>
- * </ul>
+ * no test drives a WebSocket handshake or an {@code Origin} rejection with the flag on.
  */
 @Configuration
 public class ProfileSecurityConfig {
@@ -197,7 +198,8 @@ public class ProfileSecurityConfig {
     SecurityFilterChain profileSecurityFilterChain(
             HttpSecurity http,
             ObjectProvider<ClientRegistrationRepository> registrations,
-            ObjectProvider<OAuth2UserService<OAuth2UserRequest, OAuth2User>> oauth2UserService)
+            ObjectProvider<OAuth2UserService<OAuth2UserRequest, OAuth2User>> oauth2UserService,
+            @Value("${server.servlet.session.cookie.secure:true}") boolean secureCookies)
             throws Exception {
         http
                 // One owner for the response headers: the app's own SecurityHeadersFilter.
@@ -213,9 +215,11 @@ public class ProfileSecurityConfig {
                 // changing request under /api/profile, so /api/agents/** and every other
                 // existing route behave exactly as before. `.spa()` is Spring Security 7's
                 // built-in SPA handler (readable XSRF-TOKEN cookie the frontend echoes).
+                // .spa() installs its own plain cookie repository, so the hardened one
+                // must be set after it.
                 .csrf(csrf -> csrf
-                        .csrfTokenRepository(CookieCsrfTokenRepository.withHttpOnlyFalse())
                         .spa()
+                        .csrfTokenRepository(csrfCookie(secureCookies))
                         .requireCsrfProtectionMatcher(CSRF_PROTECTED_WRITE))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(AUTHENTICATED_PATHS.toArray(String[]::new)).authenticated()
@@ -239,30 +243,61 @@ public class ProfileSecurityConfig {
         // the login filter is simply not installed — no sign-in offered, not a broken app.
         if (registrations.getIfAvailable() != null) {
             OAuth2UserService<OAuth2UserRequest, OAuth2User> idOnly = oauth2UserService.getIfAvailable();
-            SimpleUrlAuthenticationFailureHandler loginFailure = loginFailureRedirect();
             // The pending authorization request lives here, not in a session (section9-hq
             // #404): the redirect and the callback that returns read the same instance.
             BoundedAuthorizationRequestRepository authorizationRequests = new BoundedAuthorizationRequestRepository();
-            if (idOnly != null) {
+            http.oauth2Login(oauth2 -> {
+                oauth2.loginPage(LOGIN_PAGE)
+                        .authorizationEndpoint(endpoint ->
+                                endpoint.authorizationRequestRepository(authorizationRequests))
+                        .authorizedClientRepository(new DiscardingAuthorizedClientRepository())
+                        .successHandler(loginSuccessRedirect())
+                        .failureHandler(loginFailureRedirect());
                 // GitHub is plain OAuth2 and its /user returns a login, a name, an avatar
                 // and an email even at no scope; keep only the account id (design §1.5).
-                // Google is OIDC and reads its id_token, so this never runs for it.
-                http.oauth2Login(oauth2 -> oauth2
-                        .loginPage(LOGIN_PAGE)
-                        .authorizationEndpoint(endpoint ->
-                                endpoint.authorizationRequestRepository(authorizationRequests))
-                        .failureHandler(loginFailure)
-                        .userInfoEndpoint(userInfo -> userInfo.userService(idOnly)));
-            } else {
-                // No user service supplied (a test context): still no generated login page.
-                http.oauth2Login(oauth2 -> oauth2
-                        .loginPage(LOGIN_PAGE)
-                        .authorizationEndpoint(endpoint ->
-                                endpoint.authorizationRequestRepository(authorizationRequests))
-                        .failureHandler(loginFailure));
-            }
+                // Google is OIDC and reads its id_token, so this never runs for it. A test
+                // context may supply no user service.
+                if (idOnly != null) {
+                    oauth2.userInfoEndpoint(userInfo -> userInfo.userService(idOnly));
+                }
+            });
         }
         return http.build();
+    }
+
+    /**
+     * The readable CSRF cookie the SPA echoes, {@code SameSite=Strict} (only the app's own
+     * pages ever need to send it) and {@code Secure} whenever the session cookie is, so local
+     * http dev and the http test harness keep working exactly as the session cookie does.
+     */
+    static CookieCsrfTokenRepository csrfCookie(boolean secure) {
+        CookieCsrfTokenRepository tokens = CookieCsrfTokenRepository.withHttpOnlyFalse();
+        tokens.setCookieCustomizer(cookie -> cookie.secure(secure).sameSite("Strict"));
+        return tokens;
+    }
+
+    /**
+     * A {@code 302} with the URL as given: a root-relative {@code Location} stays relative,
+     * where the container would otherwise make it absolute from the request's own scheme and
+     * host ({@code http} behind the tunnel).
+     */
+    private static RedirectStrategy relativeRedirect() {
+        return (request, response, url) -> {
+            response.setStatus(HttpStatus.FOUND.value());
+            response.setHeader(org.springframework.http.HttpHeaders.LOCATION, url);
+        };
+    }
+
+    /**
+     * A completed login always lands on the SPA at a relative {@code /}: there is no saved
+     * request to return to (the request cache is off) and no {@code continue} parameter is
+     * honoured, so the only redirect target is the map itself.
+     */
+    private static SimpleUrlAuthenticationSuccessHandler loginSuccessRedirect() {
+        SimpleUrlAuthenticationSuccessHandler success = new SimpleUrlAuthenticationSuccessHandler(LOGIN_PAGE);
+        success.setAlwaysUseDefaultTargetUrl(true);
+        success.setRedirectStrategy(relativeRedirect());
+        return success;
     }
 
     /**
@@ -276,10 +311,7 @@ public class ProfileSecurityConfig {
     private static SimpleUrlAuthenticationFailureHandler loginFailureRedirect() {
         SimpleUrlAuthenticationFailureHandler failure =
                 new SimpleUrlAuthenticationFailureHandler(LOGIN_PAGE + "?error");
-        failure.setRedirectStrategy((request, response, url) -> {
-            response.setStatus(HttpStatus.FOUND.value());
-            response.setHeader(org.springframework.http.HttpHeaders.LOCATION, url);
-        });
+        failure.setRedirectStrategy(relativeRedirect());
         // A failed login must not stash its exception in a fresh session (section9-hq
         // #404): with the request cache off, that would be the last way an anonymous
         // request creates one, and nothing reads it back — there is no server-rendered

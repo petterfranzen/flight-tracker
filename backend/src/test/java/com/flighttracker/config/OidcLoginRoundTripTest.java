@@ -6,6 +6,7 @@ import com.flighttracker.profile.ProfileReader;
 import com.flighttracker.profile.ProfileSnapshot;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.SpringBootConfiguration;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -13,6 +14,8 @@ import org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
+import org.springframework.security.oauth2.client.OAuth2AuthorizedClient;
+import org.springframework.security.oauth2.client.OAuth2AuthorizedClientService;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
@@ -109,6 +112,9 @@ class OidcLoginRoundTripTest {
         registry.add("spring.security.oauth2.client.registration.fake.redirect-uri", PROVIDER::redirectUriTemplate);
     }
 
+    @Autowired
+    private OAuth2AuthorizedClientService authorizedClients;
+
     @Test
     void aRealLoginIssuesASessionAnswersTheProfileAndChangesTheSessionId() throws Exception {
         HttpClient client = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER).build();
@@ -136,6 +142,16 @@ class OidcLoginRoundTripTest {
         assertThat(cookieAfter).as("a session cookie after a successful login").isPresent();
         String sessionAfter = cookieAfter.orElseThrow();
         assertThat(sessionAfter).contains("HttpOnly");
+        assertThat(loggedIn.headers().firstValue("Location"))
+                .as("a completed login lands on the SPA by a relative redirect, never an absolute http URL")
+                .contains("/");
+        OAuth2AuthorizedClient kept = authorizedClients.loadAuthorizedClient("fake", FakeOidcProvider.SUBJECT);
+        assertThat(kept)
+                .as("the provider's access token is not kept after the login")
+                .isNull();
+        assertThat(csrfCookie(loggedIn))
+                .as("the CSRF token rotated at login is still SameSite=Strict")
+                .hasValueSatisfying(cookie -> assertThat(cookie).contains("SameSite=Strict"));
 
         // 4. The session reaches the profile, which reports the provider id and the
         //    two lists of step 5a-2 (D4) -- empty here, no profile id, no subject.
@@ -158,6 +174,13 @@ class OidcLoginRoundTripTest {
             request.header("Cookie", cookie.split(";", 2)[0]);
         }
         return client.send(request.build(), HttpResponse.BodyHandlers.discarding());
+    }
+
+    /** The XSRF-TOKEN Set-Cookie that carries a token (not the clearing one), if one was set. */
+    private static Optional<String> csrfCookie(HttpResponse<?> response) {
+        return response.headers().allValues("Set-Cookie").stream()
+                .filter(header -> header.startsWith("XSRF-TOKEN=") && !header.startsWith("XSRF-TOKEN=;"))
+                .findFirst();
     }
 
     /** The FT_SESSION Set-Cookie (name, value and attributes), if one was set. */

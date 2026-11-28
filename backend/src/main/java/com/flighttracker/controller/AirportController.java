@@ -3,11 +3,13 @@ package com.flighttracker.controller;
 import com.flighttracker.dto.AirportInfo;
 import com.flighttracker.model.Airport;
 import com.flighttracker.repository.AirportRepository;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.server.ResponseStatusException;
 
 /**
  * Was AirportGatesController. It also served /api/airports/gates, which
@@ -25,6 +27,9 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/airports")
 public class AirportController {
 
+    /** The longest {@code code} /info looks up; an IATA code is 3 letters. */
+    static final int MAX_CODE_LENGTH = 8;
+
     private final AirportRepository airportRepository;
 
     public AirportController(AirportRepository airportRepository) {
@@ -37,10 +42,14 @@ public class AirportController {
      * airport data (AIRPORTS, from Natural Earth) keys everything by, not
      * the icao_code the `airport` table otherwise uses as its id. 404 for a
      * code with no reference-table match, same convention as
-     * AircraftController's own by-icao24 lookups.
+     * AircraftController's own by-icao24 lookups. A code longer than
+     * {@link #MAX_CODE_LENGTH} is a 400, never looked up.
      */
     @GetMapping("/info")
     public ResponseEntity<AirportInfo> info(@RequestParam String code) {
+        if (code.length() > MAX_CODE_LENGTH) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "code is too long");
+        }
         return airportRepository.findByIataCode(code)
                 .map(AirportController::toInfo)
                 .map(ResponseEntity::ok)

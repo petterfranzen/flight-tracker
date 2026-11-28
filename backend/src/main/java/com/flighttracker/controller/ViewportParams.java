@@ -14,6 +14,6 @@ public record ViewportParams(@RequestParam(required = false) Double latMin,
 
     Optional<Bounds> bounds() {
         if (Stream.of(latMin, latMax, lonMin, lonMax).anyMatch(v -> v == null)) return Optional.empty();
-        return Optional.of(new Bounds(latMin, latMax, lonMin, lonMax));
+        return Optional.of(BboxParams.requireFinite(new Bounds(latMin, latMax, lonMin, lonMax)));
     }
 }
