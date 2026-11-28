@@ -42,6 +42,8 @@ independent of the always-on global sweep
 (`flighttracker.agents.global-sweep-interval-seconds`), which keeps the
 database current everywhere regardless of what anyone's looking at.
 
+Building, testing and sending a PR: see [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Where the map opens
 
 The map opens near the visitor rather than on a fixed view. `GET /api/geo`
