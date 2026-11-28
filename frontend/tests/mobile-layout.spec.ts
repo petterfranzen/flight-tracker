@@ -8,6 +8,10 @@ import { findMarkerNear, LIVE_FIXTURE, mockFlightApi, setMapView, settledBox, wa
 
 const MOBILE_VIEWPORT = { width: 390, height: 844 };
 const DESKTOP_VIEWPORT = { width: 1440, height: 900 };
+// section9-hq#420: a phone in landscape is wider than the 768px breakpoint but
+// has no room for the desktop chrome; the compact layout must key off height too.
+const LANDSCAPE_PHONE = { width: 844, height: 390 };
+const SHORT_PHONE = { width: 375, height: 667 };
 
 test.describe("mobile layout", () => {
   test("header hides, search collapses to a FAB, and the FAB opens the anchored panel", async ({ page }) => {
@@ -334,5 +338,129 @@ test.describe("mobile layout", () => {
     expect(box.height).toBeLessThan(DESKTOP_VIEWPORT.height - 150);
 
     await page.screenshot({ path: "/tmp/desktop-layout-dossier-panel.png" });
+  });
+
+  test("a short viewport (phone landscape, 844x390) gets the compact layout: every stack button is on-screen and hittable, and the dossier's close button is visible", async ({ page }) => {
+    await page.setViewportSize(LANDSCAPE_PHONE);
+    await mockFlightApi(page);
+    await page.goto("/");
+    await waitForMapReady(page);
+
+    // The desktop chrome does not fit a 390px-tall viewport (a 423px stack, the
+    // bottom dock, a 200px-padded side card); the compact layout must take over
+    // even though the width never dips below the 768px breakpoint.
+    await expect(page.locator(".dock-wrap")).toBeHidden();
+    await expect(page.locator(".flight-search-fab")).toBeVisible();
+    await expect(page.locator(".flight-search-input").first()).toBeHidden();
+
+    // The boot screen (full viewport, z-index 1000) outlives waitForMapReady: it
+    // waits for the basemap too. Hit-testing before it is gone finds the boot
+    // screen, not the chrome (same wait as helpers.clickAt).
+    await page.locator(".boot-screen").waitFor({ state: "detached", timeout: 20_000 });
+
+    const buttons = [".flight-search-fab", ".favorites-panel-fab", ".watch-panel-toggle", ".map-legend-fab", ".map-locate-button"];
+    for (const sel of buttons) {
+      const loc = page.locator(sel);
+      await expect(loc, `${sel} visible`).toBeVisible();
+      const box = await loc.boundingBox();
+      expect(box, `${sel} has a box`).not.toBeNull();
+      expect(box!.y, `${sel} top edge on-screen`).toBeGreaterThanOrEqual(0);
+      expect(box!.y + box!.height, `${sel} bottom edge on-screen`).toBeLessThanOrEqual(LANDSCAPE_PHONE.height);
+      // Hit test at the button's centre: the scale bar, a dock tile or another
+      // stack button must not be sitting on top of it (the old layout's scripted
+      // Legend/Locate clicks timed out exactly this way).
+      const covered = await loc.evaluate((el) => {
+        const r = el.getBoundingClientRect();
+        const top = document.elementFromPoint((r.left + r.right) / 2, (r.top + r.bottom) / 2);
+        return top == null || !(top === el || el.contains(top));
+      });
+      expect(covered, `${sel} hittable`).toBe(false);
+      await loc.click({ trial: true, timeout: 5_000 });
+    }
+
+    // Selecting a plane opens the bottom sheet, not the desktop side card, and
+    // its ✕ is a real on-screen target (the desktop Close button sat at y=729).
+    const target = LIVE_FIXTURE.find((p) => p.icao24 === "4aad15")!;
+    await setMapView(page, target.latitude, target.longitude, 11);
+    await waitForPlanes(page);
+    await page.waitForTimeout(500);
+    await (await findMarkerNear(page, target.latitude, target.longitude)).click();
+
+    const panel = page.locator(".details-panel");
+    await expect(panel).toBeVisible();
+    const box = await settledBox(panel);
+    expect(box.width, "bottom sheet spans the viewport width").toBeGreaterThan(LANDSCAPE_PHONE.width * 0.9);
+    expect(Math.abs(box.y + box.height - LANDSCAPE_PHONE.height), "anchored to the bottom").toBeLessThan(15);
+
+    const closeX = page.locator(".details-panel-close-x");
+    await expect(closeX).toBeVisible();
+    const cbox = await settledBox(closeX);
+    expect(cbox.y, "✕ top edge on-screen").toBeGreaterThanOrEqual(0);
+    expect(cbox.y + cbox.height, "✕ bottom edge on-screen").toBeLessThanOrEqual(LANDSCAPE_PHONE.height);
+    await closeX.click({ trial: true, timeout: 5_000 });
+
+    await page.screenshot({ path: "/tmp/mobile-layout-landscape-dossier.png" });
+  });
+
+  test("at 375x667 the expanded dossier's last row is reachable: scrolled to the end its bottom sits at or above the sheet's bottom", async ({ page }) => {
+    await page.setViewportSize(SHORT_PHONE);
+    await mockFlightApi(page);
+    // A known route with wrapping airport names: the dossier is taller than the
+    // 78dvh sheet, which is exactly when the last row was clipped and unreachable.
+    await page.route("**/api/aircraft/4aad15*", (route) =>
+      route.fulfill({
+        json: {
+          icao24: "4aad15",
+          registration: "TC-RSC",
+          model: "Bombardier Learjet 45 XR",
+          operator: "Redstar Aviation",
+          originAirport: "LEAL",
+          originAirportName: "Alicante-Elche Miguel Hernández Airport",
+          originAirportIata: "ALC",
+          destinationAirport: "ESSA",
+          destinationAirportName: "Stockholm Arlanda Airport",
+          destinationAirportIata: "ARN",
+          flightMinutes: 135,
+          etaMinutes: 20,
+          cruisingAltitudeM: 13106,
+          flightPhase: "DESCENDING",
+          staleExplanation: null,
+          legStartAt: null,
+        },
+      }),
+    );
+    await page.goto("/");
+    await waitForMapReady(page);
+
+    const target = LIVE_FIXTURE.find((p) => p.icao24 === "4aad15")!;
+    await setMapView(page, target.latitude, target.longitude, 11);
+    await waitForPlanes(page);
+    await page.waitForTimeout(500);
+    await (await findMarkerNear(page, target.latitude, target.longitude)).click();
+    await page.getByText("ICAO24 4AAD15").waitFor({ state: "attached", timeout: 5_000 });
+    await expect(page.locator(".details-panel-field", { hasText: "Registration" })).toContainText("TC-RSC", { timeout: 5_000 });
+
+    await page.locator(".details-panel-expand-toggle").click();
+    await expect(page.locator(".details-panel-fields")).toBeVisible();
+    await page.waitForTimeout(500);
+
+    const m = await page.evaluate(() => {
+      const inner = document.querySelector(".details-panel-inner") as HTMLElement;
+      // Scroll the sheet's own scrolling box all the way to the end.
+      inner.scrollTop = inner.scrollHeight;
+      const sheet = document.querySelector(".details-panel")!.getBoundingClientRect();
+      const dds = document.querySelectorAll(".details-panel-fields dd");
+      const last = dds[dds.length - 1]!.getBoundingClientRect();
+      return {
+        overflow: inner.scrollHeight - inner.clientHeight,
+        lastLabel: dds[dds.length - 1]!.previousElementSibling?.textContent ?? "",
+        lastBottom: last.bottom,
+        sheetBottom: sheet.bottom,
+      };
+    });
+    // A real scroll case: the dossier genuinely outgrows the sheet, so "the last
+    // row is reachable" is not a vacuous pass.
+    expect(m.overflow, "expanded dossier outgrows the 78dvh sheet").toBeGreaterThan(0);
+    expect(m.lastBottom, `last row (${m.lastLabel}) bottom vs sheet bottom`).toBeLessThanOrEqual(m.sheetBottom + 0.5);
   });
 });

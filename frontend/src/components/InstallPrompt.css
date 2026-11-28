@@ -116,7 +116,7 @@
 
 /* Phone: full-width-ish so the longer copy still fits in two lines at
    14px on a 390 px screen. */
-@media (max-width: 768px) {
+@media (max-width: 768px), (max-height: 500px) {
   .install-banner {
     width: calc(100vw - 32px);
     max-width: calc(100vw - 32px);

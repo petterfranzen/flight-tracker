@@ -59,7 +59,7 @@
    .map-legend-body carries no styling outside this media query, so on
    desktop it's an unstyled wrapper and every child renders exactly as it
    did before this was introduced. */
-@media (max-width: 768px) {
+@media (max-width: 768px), (max-height: 500px) {
   .map-legend-fab {
     display: flex;
     align-items: center;

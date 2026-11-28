@@ -67,11 +67,10 @@ public class FlightPositionRepository {
     // not an error. RETURNING * (supported natively since SQLite 3.35) is
     // what lets the caller tell "inserted" apart from "duplicate, skipped"
     // without a second round trip.
-    public Optional<FlightPosition> insertIgnoringDuplicate(
-            String icao24, String callsign, Instant observedAt,
-            double latitude, double longitude, Double altitudeM,
-            Double velocityMs, Double headingDeg, Double verticalRateMs,
-            boolean onGround, String agentSource) {
+    //
+    // `position` is a report not yet stored: its id is ignored (the row gets
+    // its own), and inserted_at is stamped from the clock.
+    public Optional<FlightPosition> insertIgnoringDuplicate(FlightPosition position) {
         return jdbcClient.sql("""
                 INSERT INTO flight_position
                     (icao24, callsign, observed_at, latitude, longitude, altitude_m,
@@ -82,17 +81,17 @@ public class FlightPositionRepository {
                 ON CONFLICT (icao24, observed_at, agent_source) DO NOTHING
                 RETURNING *
                 """)
-                .param("icao24", icao24)
-                .param("callsign", callsign)
-                .param("observedAt", toEpochMilli(observedAt))
-                .param("latitude", latitude)
-                .param("longitude", longitude)
-                .param("altitudeM", altitudeM)
-                .param("velocityMs", velocityMs)
-                .param("headingDeg", headingDeg)
-                .param("verticalRateMs", verticalRateMs)
-                .param("onGround", onGround ? 1 : 0)
-                .param("agentSource", agentSource)
+                .param("icao24", position.icao24())
+                .param("callsign", position.callsign())
+                .param("observedAt", toEpochMilli(position.observedAt()))
+                .param("latitude", position.latitude())
+                .param("longitude", position.longitude())
+                .param("altitudeM", position.altitudeM())
+                .param("velocityMs", position.velocityMs())
+                .param("headingDeg", position.headingDeg())
+                .param("verticalRateMs", position.verticalRateMs())
+                .param("onGround", position.onGround() ? 1 : 0)
+                .param("agentSource", position.agentSource())
                 .param("insertedAt", clock.millis())
                 .query(FlightPositionRepository::mapRow)
                 .optional();

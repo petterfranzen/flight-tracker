@@ -170,6 +170,19 @@ class ProfileSecurityFlagOffTest {
     }
 
     @Test
+    void anOversizedWriteBodyIsNotCappedWithTheFlagOff() throws Exception {
+        // The body cap belongs to the flag-on write surface (finding M4). With the flag off
+        // there is no such route and the request is answered exactly as before: POST to the
+        // GET-only profile path is still a 405, not a new 413.
+        HttpRequest request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + PORT + "/api/profile"))
+                .POST(HttpRequest.BodyPublishers.ofByteArray(new byte[17 * 1024]))
+                .build();
+        HttpResponse<String> response = HttpClient.newHttpClient().send(request, HttpResponse.BodyHandlers.ofString());
+        assertThat(response.statusCode()).isEqualTo(405);
+        assertAppHeaders(response);
+    }
+
+    @Test
     void noSessionCookieIsEverSetOnTheOffPath() throws Exception {
         for (String path : new String[] {"/api/health", "/api/profile", "/api/does-not-exist"}) {
             assertThat(send("GET", path).headers().allValues("Set-Cookie"))

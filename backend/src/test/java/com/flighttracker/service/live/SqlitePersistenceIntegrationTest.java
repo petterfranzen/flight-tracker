@@ -89,16 +89,16 @@ class SqlitePersistenceIntegrationTest {
         assertThat(aircraftRepository.existsById("abc123")).isTrue();
 
         Instant t1 = t0.minusSeconds(3600); // 1h before "now" for this test's clock
-        var inserted = positionRepository.insertIgnoringDuplicate(
+        var inserted = positionRepository.insertIgnoringDuplicate(new FlightPosition(
                 "abc123", "SAS100", t1, 59.0, 18.0,
-                10_000.0, 200.0, 90.0, 0.0, false, "opensky");
+                10_000.0, 200.0, 90.0, 0.0, false, "opensky"));
         assertThat(inserted).isPresent();
         assertThat(inserted.get().icao24()).isEqualTo("abc123");
 
         // A duplicate (icao24, observed_at, agent_source) must be a no-op, not an error.
-        var duplicate = positionRepository.insertIgnoringDuplicate(
+        var duplicate = positionRepository.insertIgnoringDuplicate(new FlightPosition(
                 "abc123", "SAS100", t1, 59.0, 18.0,
-                10_000.0, 200.0, 90.0, 0.0, false, "opensky");
+                10_000.0, 200.0, 90.0, 0.0, false, "opensky"));
         assertThat(duplicate).isEmpty();
 
         Long count = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM flight_position", Long.class);
@@ -170,8 +170,8 @@ class SqlitePersistenceIntegrationTest {
         };
         for (Object[] r : reports) {
             aircraftRepository.insertIfAbsent((String) r[0]);
-            positions.insertIgnoringDuplicate((String) r[0], "CS" + r[0], t0.minusSeconds(60L * (int) r[1]), 59.0, 18.0,
-                    (boolean) r[2] ? 0.0 : 10_000.0, (boolean) r[2] ? 0.0 : 200.0, 90.0, 0.0, (boolean) r[2], "opensky");
+            positions.insertIgnoringDuplicate(new FlightPosition((String) r[0], "CS" + r[0], t0.minusSeconds(60L * (int) r[1]), 59.0, 18.0,
+                    (boolean) r[2] ? 0.0 : 10_000.0, (boolean) r[2] ? 0.0 : 200.0, 90.0, 0.0, (boolean) r[2], "opensky"));
         }
 
         store.warmUp();
