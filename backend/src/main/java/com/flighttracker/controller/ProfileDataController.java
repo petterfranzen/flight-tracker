@@ -71,7 +71,7 @@ public class ProfileDataController {
     @PutMapping("/favorite")
     public ResponseEntity<Void> putFavorite(@RequestBody FavoriteWriteRequest body, Authentication authentication) {
         requireKey(body.kind(), body.itemKey());
-        favorites.upsert(profileId(authentication), body.kind(), body.itemKey(), data(body.data()));
+        favorites.upsert(new FavoriteRepository.Key(profileId(authentication), body.kind(), body.itemKey()), data(body.data()));
         return ResponseEntity.ok().build();
     }
 
@@ -86,7 +86,7 @@ public class ProfileDataController {
                                                @RequestParam(required = false) String itemKey,
                                                Authentication authentication) {
         requireKey(kind, itemKey);
-        favorites.delete(profileId(authentication), kind, itemKey);
+        favorites.delete(new FavoriteRepository.Key(profileId(authentication), kind, itemKey));
         return ResponseEntity.noContent().build();
     }
 

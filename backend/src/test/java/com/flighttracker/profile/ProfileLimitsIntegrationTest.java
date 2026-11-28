@@ -52,6 +52,10 @@ class ProfileLimitsIntegrationTest {
         if (dataSource instanceof Closeable c) c.close();
     }
 
+    private static FavoriteRepository.Key favKey(String profileId, String kind, String itemKey) {
+        return new FavoriteRepository.Key(profileId, kind, itemKey);
+    }
+
     private static String jsonOfBytes(int bytes) {
         // {"a":"xxx"} is 8 bytes of framing around the filler
         return "{\"a\":\"" + "x".repeat(bytes - 8) + "\"}";
@@ -68,27 +72,27 @@ class ProfileLimitsIntegrationTest {
 
     @Test
     void favoriteData_atCapPasses_oneOverFails() {
-        favorites.upsert("p1", "route", "a", jsonOfBytes(MAX_FAVORITE_DATA_BYTES));
-        assertThat(favorites.find("p1", "route", "a")).isPresent();
+        favorites.upsert(favKey("p1", "route", "a"), jsonOfBytes(MAX_FAVORITE_DATA_BYTES));
+        assertThat(favorites.find(favKey("p1", "route", "a"))).isPresent();
 
-        assertRejected(() -> favorites.upsert("p1", "route", "b", jsonOfBytes(MAX_FAVORITE_DATA_BYTES + 1)),
+        assertRejected(() -> favorites.upsert(favKey("p1", "route", "b"), jsonOfBytes(MAX_FAVORITE_DATA_BYTES + 1)),
                 Reason.TOO_LONG, "data");
-        assertThat(favorites.find("p1", "route", "b")).isEmpty();
+        assertThat(favorites.find(favKey("p1", "route", "b"))).isEmpty();
     }
 
     @Test
     void favoriteData_capCountsUtf8Bytes_notChars() {
         // 'å' is 2 bytes: fits by char count, exceeds by bytes
         String data = "{\"a\":\"" + "å".repeat(MAX_FAVORITE_DATA_BYTES / 2) + "\"}";
-        assertRejected(() -> favorites.upsert("p1", "route", "a", data), Reason.TOO_LONG, "data");
+        assertRejected(() -> favorites.upsert(favKey("p1", "route", "a"), data), Reason.TOO_LONG, "data");
     }
 
     @Test
     void favoriteData_mustBeValidJson() {
         for (String bad : new String[]{"not json", "{\"a\":", "{} trailing", ""}) {
-            assertRejected(() -> favorites.upsert("p1", "route", "a", bad), Reason.INVALID, "data");
+            assertRejected(() -> favorites.upsert(favKey("p1", "route", "a"), bad), Reason.INVALID, "data");
         }
-        assertRejected(() -> favorites.upsert("p1", "route", "a", null), Reason.INVALID, "data");
+        assertRejected(() -> favorites.upsert(favKey("p1", "route", "a"), null), Reason.INVALID, "data");
         assertThat(favorites.countForProfile("p1")).isZero();
     }
 
@@ -97,21 +101,21 @@ class ProfileLimitsIntegrationTest {
         // The frontend only stores a FavoriteRoute/FavoriteAircraft object, so a
         // bare scalar, an array or JSON null is not valid data.
         for (String notAnObject : new String[]{"null", "3", "\"x\"", "true", "[]", "[1,2]", "\"\""}) {
-            assertRejected(() -> favorites.upsert("p1", "route", "a", notAnObject), Reason.INVALID, "data");
+            assertRejected(() -> favorites.upsert(favKey("p1", "route", "a"), notAnObject), Reason.INVALID, "data");
         }
         assertThat(favorites.countForProfile("p1")).isZero();
 
         // an object is accepted, an empty one too
-        favorites.upsert("p1", "route", "a", "{}");
-        assertThat(favorites.find("p1", "route", "a")).isPresent();
+        favorites.upsert(favKey("p1", "route", "a"), "{}");
+        assertThat(favorites.find(favKey("p1", "route", "a"))).isPresent();
     }
 
     @Test
     void favoriteKindAndItemKey_areChecked() {
-        assertRejected(() -> favorites.upsert("p1", "hotel", "a", "{}"), Reason.INVALID, "kind");
-        assertRejected(() -> favorites.upsert("p1", "route", " ", "{}"), Reason.INVALID, "itemKey");
-        favorites.upsert("p1", "route", "k".repeat(MAX_ITEM_KEY_LENGTH), "{}");
-        assertRejected(() -> favorites.upsert("p1", "route", "k".repeat(MAX_ITEM_KEY_LENGTH + 1), "{}"),
+        assertRejected(() -> favorites.upsert(favKey("p1", "hotel", "a"), "{}"), Reason.INVALID, "kind");
+        assertRejected(() -> favorites.upsert(favKey("p1", "route", " "), "{}"), Reason.INVALID, "itemKey");
+        favorites.upsert(favKey("p1", "route", "k".repeat(MAX_ITEM_KEY_LENGTH)), "{}");
+        assertRejected(() -> favorites.upsert(favKey("p1", "route", "k".repeat(MAX_ITEM_KEY_LENGTH + 1)), "{}"),
                 Reason.TOO_LONG, "itemKey");
     }
 
@@ -120,29 +124,29 @@ class ProfileLimitsIntegrationTest {
     @Test
     void favoriteRows_capHoldsOnTheNextInsert_andWritesNothing() {
         for (int i = 0; i < MAX_FAVORITES_PER_PROFILE; i++) {
-            favorites.upsert("p1", "aircraft", "k" + i, "{\"n\":" + i + "}");
+            favorites.upsert(favKey("p1", "aircraft", "k" + i), "{\"n\":" + i + "}");
         }
-        assertRejected(() -> favorites.upsert("p1", "aircraft", "extra", "{}"), Reason.TOO_MANY_ROWS, "favorites");
-        assertRejected(() -> favorites.upsert("p1", "route", "k0", "{}"), Reason.TOO_MANY_ROWS, "favorites"); // new kind+key
+        assertRejected(() -> favorites.upsert(favKey("p1", "aircraft", "extra"), "{}"), Reason.TOO_MANY_ROWS, "favorites");
+        assertRejected(() -> favorites.upsert(favKey("p1", "route", "k0"), "{}"), Reason.TOO_MANY_ROWS, "favorites"); // new kind+key
         assertThat(favorites.countForProfile("p1")).isEqualTo(MAX_FAVORITES_PER_PROFILE);
-        assertThat(favorites.find("p1", "aircraft", "extra")).isEmpty();
-        assertThat(favorites.find("p1", "aircraft", "k0").orElseThrow().data()).isEqualTo("{\"n\":0}");
+        assertThat(favorites.find(favKey("p1", "aircraft", "extra"))).isEmpty();
+        assertThat(favorites.find(favKey("p1", "aircraft", "k0")).orElseThrow().data()).isEqualTo("{\"n\":0}");
     }
 
     @Test
     void favoriteRows_upsertOfExistingKeyAtTheCapStillWorks_andOtherProfilesAreUnaffected() {
         for (int i = 0; i < MAX_FAVORITES_PER_PROFILE; i++) {
-            favorites.upsert("p1", "aircraft", "k" + i, "{}");
+            favorites.upsert(favKey("p1", "aircraft", "k" + i), "{}");
         }
-        favorites.upsert("p1", "aircraft", "k7", "{\"changed\":true}");
-        assertThat(favorites.find("p1", "aircraft", "k7").orElseThrow().data()).isEqualTo("{\"changed\":true}");
+        favorites.upsert(favKey("p1", "aircraft", "k7"), "{\"changed\":true}");
+        assertThat(favorites.find(favKey("p1", "aircraft", "k7")).orElseThrow().data()).isEqualTo("{\"changed\":true}");
         assertThat(favorites.countForProfile("p1")).isEqualTo(MAX_FAVORITES_PER_PROFILE);
 
-        favorites.upsert("p2", "aircraft", "k0", "{}");
+        favorites.upsert(favKey("p2", "aircraft", "k0"), "{}");
         assertThat(favorites.countForProfile("p2")).isEqualTo(1);
 
-        favorites.delete("p1", "aircraft", "k0");
-        assertThatCode(() -> favorites.upsert("p1", "aircraft", "fresh", "{}")).doesNotThrowAnyException();
+        favorites.delete(favKey("p1", "aircraft", "k0"));
+        assertThatCode(() -> favorites.upsert(favKey("p1", "aircraft", "fresh"), "{}")).doesNotThrowAnyException();
     }
 
     // ---- watched_flight
