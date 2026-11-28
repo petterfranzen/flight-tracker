@@ -3,6 +3,7 @@ package com.flighttracker.config;
 import com.flighttracker.controller.ProfileController;
 import com.flighttracker.profile.ProfileProperties;
 import org.junit.jupiter.api.Test;
+import jakarta.servlet.http.Cookie;
 import org.springframework.boot.SpringBootConfiguration;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -11,11 +12,13 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.security.oauth2.client.registration.ClientRegistration;
 import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
 import org.springframework.security.oauth2.client.registration.InMemoryClientRegistrationRepository;
 import org.springframework.security.oauth2.core.AuthorizationGrantType;
 import org.springframework.security.oauth2.core.ClientAuthenticationMethod;
+import org.springframework.security.web.csrf.CookieCsrfTokenRepository;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -399,5 +402,27 @@ class ProfileSecurityChainTest {
         HttpResponse<String> response = send("POST", "/api/health",
                 HttpRequest.BodyPublishers.ofByteArray(new byte[(int) ProfileWriteBodyLimitFilter.MAX_BODY_BYTES + 1]));
         assertThat(response.statusCode()).isEqualTo(405);
+    }
+
+    @Test
+    void theCsrfCookieIsSameSiteStrictAndFollowsTheSessionCookiesSecureFlag() throws Exception {
+        // This context runs the session cookie with secure=false (plain http on loopback).
+        String cookie = send("GET", "/api/flights/live").headers().allValues("Set-Cookie").stream()
+                .filter(header -> header.startsWith("XSRF-TOKEN="))
+                .findFirst().orElseThrow();
+        assertThat(cookie).contains("SameSite=Strict").doesNotContain("Secure");
+
+        // With the session cookie Secure (production), the CSRF cookie is too.
+        Cookie secure = csrfCookie(true);
+        assertThat(secure.getSecure()).isTrue();
+        assertThat(secure.getAttribute("SameSite")).isEqualTo("Strict");
+    }
+
+    private static Cookie csrfCookie(boolean secure) {
+        CookieCsrfTokenRepository tokens = ProfileSecurityConfig.csrfCookie(secure);
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        tokens.saveToken(tokens.generateToken(request), request, response);
+        return response.getCookie("XSRF-TOKEN");
     }
 }

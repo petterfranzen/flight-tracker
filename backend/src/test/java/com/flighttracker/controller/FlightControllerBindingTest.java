@@ -124,4 +124,29 @@ class FlightControllerBindingTest {
         verifyNoInteractions(viewportService);
         verify(liveStateStore).liveMarkers(any(), any(), isNull());
     }
+
+    @Test
+    void aNonFiniteBboxEdgeIsABadRequest() throws Exception {
+        mvc.perform(get("/api/flights/live/clusters").param("latMin", "NaN").param("latMax", "90")
+                        .param("lonMin", "-180").param("lonMax", "180"))
+                .andExpect(status().isBadRequest());
+        mvc.perform(get("/api/flights/live/overview").param("latMin", "-90").param("latMax", "90")
+                        .param("lonMin", "-Infinity").param("lonMax", "180"))
+                .andExpect(status().isBadRequest());
+        mvc.perform(get("/api/flights/live").param("latMin", "-90").param("latMax", "Infinity")
+                        .param("lonMin", "-180").param("lonMax", "180"))
+                .andExpect(status().isBadRequest());
+
+        verifyNoInteractions(liveStateStore, viewportService);
+    }
+
+    @Test
+    void searchTextOverTheCapIsABadRequest_andAtTheCapIsAnswered() throws Exception {
+        String atCap = "A".repeat(FlightController.MAX_SEARCH_LENGTH);
+        mvc.perform(get("/api/flights/search").param("q", atCap + "A")).andExpect(status().isBadRequest());
+        mvc.perform(get("/api/flights/search").param("airport", atCap + "A")).andExpect(status().isBadRequest());
+
+        mvc.perform(get("/api/flights/search").param("q", "  " + atCap + "  ")).andExpect(status().isOk());
+        mvc.perform(get("/api/flights/search").param("airport", atCap)).andExpect(status().isOk());
+    }
 }

@@ -14,8 +14,10 @@ import com.flighttracker.service.live.ActiveTrafficQuery;
 import com.flighttracker.service.live.LiveFlightSearch;
 import com.flighttracker.service.live.LiveStateStore;
 import com.flighttracker.service.live.PlaneAllowance;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Instant;
 import java.util.List;
@@ -24,6 +26,9 @@ import java.util.Locale;
 @RestController
 @RequestMapping("/api/flights")
 public class FlightController {
+
+    /** The longest {@code q} or {@code airport} /search accepts, in characters. */
+    static final int MAX_SEARCH_LENGTH = 64;
 
     private final LiveStateStore liveStateStore;
     private final FlightPositionRepository positionRepository;
@@ -229,12 +234,12 @@ public class FlightController {
     public List<FlightPosition> search(@RequestParam(required = false) String q,
                                         @RequestParam(required = false) String airport) {
         Cutoffs c = Cutoffs.at(Instant.now());
-        String trimmedAirport = trimToEmpty(airport);
+        String trimmedAirport = searchText(airport);
         if (!trimmedAirport.isEmpty()) {
             return flightSearch.byAirport(trimmedAirport, c.staleAirborne(), c.landed());
         }
 
-        String trimmed = trimToEmpty(q);
+        String trimmed = searchText(q);
         if (trimmed.isEmpty()) return List.of();
         // Picking a search result flies the map to p.latitude/p.longitude
         // directly (see FlightSearch.tsx) — LiveStateStore already reads
@@ -244,8 +249,17 @@ public class FlightController {
         return flightSearch.byCallsign(trimmed, c.staleAirborne(), c.landed());
     }
 
-    private static String trimToEmpty(String value) {
-        return value == null ? "" : value.trim();
+    /**
+     * A search box's text, trimmed. Longer than {@link #MAX_SEARCH_LENGTH} is a
+     * {@code 400}: a callsign is at most 8 characters and an airport name, code or
+     * city fits well inside the cap, so nothing a person types is refused.
+     */
+    private static String searchText(String value) {
+        String trimmed = value == null ? "" : value.trim();
+        if (trimmed.length() > MAX_SEARCH_LENGTH) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "search text is too long");
+        }
+        return trimmed;
     }
 
     /** Full historic track for one aircraft, for the "trace the route across the map" view. */

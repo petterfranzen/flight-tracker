@@ -62,12 +62,7 @@ class SchemaMigrationGuardTest {
 
         List<String> violations = new ArrayList<>();
         for (Resource script : scripts) {
-            for (Statement statement : statements(read(script))) {
-                String finding = violationIn(statement.code());
-                if (finding != null && !statement.raw().contains(ALLOW_MARKER)) {
-                    violations.add(script.getFilename() + ": " + finding);
-                }
-            }
+            violationsIn(read(script)).forEach(v -> violations.add(script.getFilename() + ": " + v));
         }
 
         assertThat(violations)
@@ -78,6 +73,40 @@ class SchemaMigrationGuardTest {
                     jar still works. If the statement is a deliberate, reviewed \
                     exception, add `%s <reason>` above it.""", ALLOW_MARKER)
                 .isEmpty();
+    }
+
+    @Test
+    void aStatementAfterABlockCommentOnTheSameLineIsStillChecked() {
+        assertThat(violationsIn("/* note */ DROP TABLE a;")).hasSize(1);
+        assertThat(violationsIn("/* a comment\n   that spans lines */ DROP TABLE a;")).hasSize(1);
+        assertThat(violationsIn("DROP/* hidden */TABLE a;")).hasSize(1);
+    }
+
+    @Test
+    void commentsAloneAreNotStatements() {
+        assertThat(violationsIn("""
+                /* drop the old table
+                   DROP TABLE a; was here */
+                -- DROP TABLE b;
+                CREATE TABLE c (id TEXT); /* rename later */
+                """)).isEmpty();
+    }
+
+    @Test
+    void theAllowMarkerStillExemptsAStatement() {
+        assertThat(violationsIn(ALLOW_MARKER + " reviewed\n/* note */ DROP TABLE a;")).isEmpty();
+    }
+
+    /** The rule each non-exempt statement in {@code script} breaks. */
+    private static List<String> violationsIn(String script) {
+        List<String> violations = new ArrayList<>();
+        for (Statement statement : statements(script)) {
+            String finding = violationIn(statement.code());
+            if (finding != null && !statement.raw().contains(ALLOW_MARKER)) {
+                violations.add(finding);
+            }
+        }
+        return violations;
     }
 
     private static List<Resource> schemaScripts() throws IOException {
@@ -108,8 +137,11 @@ class SchemaMigrationGuardTest {
      */
     private static List<Statement> statements(String text) {
         StatementSplitter splitter = new StatementSplitter();
+        boolean inBlockComment = false;
         for (String line : text.split("\n", -1)) {
-            splitter.accept(new SqlLine(line));
+            SqlLine sql = SqlLine.read(line, inBlockComment);
+            splitter.accept(sql);
+            inBlockComment = sql.endsInBlockComment();
         }
         return splitter.finish();
     }
@@ -144,10 +176,9 @@ class SchemaMigrationGuardTest {
 
         private void acceptCode(SqlLine line) {
             if (!started) startStatement();
-            String withoutComment = line.withoutComment();
             raw.append(line.text()).append('\n');
-            code.append(withoutComment).append('\n');
-            if (withoutComment.contains(";")) endStatement();
+            code.append(line.code()).append('\n');
+            if (line.code().contains(";")) endStatement();
         }
 
         private void startStatement() {
@@ -171,43 +202,63 @@ class SchemaMigrationGuardTest {
         }
     }
 
-    /** One script line, and how to read it as SQL. */
-    private record SqlLine(String text) {
+    /**
+     * One script line read as SQL: its text, its code with every comment removed (a
+     * block comment, even one opened on an earlier line, counts as a space), and whether
+     * a block comment is still open at its end.
+     */
+    private record SqlLine(String text, String code, boolean endsInBlockComment) {
 
-        /** True for a line that is entirely a SQL comment ({@code -- …} or a block-comment line). */
+        static SqlLine read(String text, boolean inBlockComment) {
+            CodeScanner scanner = new CodeScanner(text, inBlockComment);
+            scanner.run();
+            return new SqlLine(text, scanner.code.toString(), scanner.inBlockComment);
+        }
+
+        /** True for a line with no code at all: only comments, or the inside of a block comment. */
         boolean isComment() {
-            String trimmed = text.trim();
-            return trimmed.startsWith("--") || trimmed.startsWith("/*") || trimmed.startsWith("*");
+            return code.isBlank();
+        }
+    }
+
+    /** Copies one line's code, outside quotes, skipping {@code --} and block comments. */
+    private static final class CodeScanner {
+        private final String text;
+        private final StringBuilder code = new StringBuilder();
+        private boolean inBlockComment;
+        private boolean inSingleQuote = false;
+        private int i = 0;
+
+        CodeScanner(String text, boolean inBlockComment) {
+            this.text = text;
+            this.inBlockComment = inBlockComment;
         }
 
-        /** Drops a trailing line comment (and any block-comment span) from code, outside quotes. */
-        String withoutComment() {
-            StringBuilder sb = new StringBuilder();
-            boolean inSingleQuote = false;
-            int i = 0;
-            while (i >= 0 && i < text.length()) {
-                int next = inSingleQuote ? i : afterComment(i);
-                if (next == i) {
-                    char c = text.charAt(i);
-                    if (c == '\'') inSingleQuote = !inSingleQuote;
-                    sb.append(c);
-                    next = i + 1;
-                }
-                i = next;
+        void run() {
+            while (i < text.length()) {
+                if (inBlockComment) skipBlockComment();
+                else if (!inSingleQuote && text.startsWith("--", i)) return;
+                else if (!inSingleQuote && text.startsWith("/*", i)) openBlockComment();
+                else copyChar();
             }
-            return sb.toString();
         }
 
-        /**
-         * Where code resumes if a comment starts at {@code i}: {@code i} itself when none
-         * starts there, past the closing {@code *}{@code /} of a block comment, or -1 when
-         * the comment runs to the end of the line.
-         */
-        private int afterComment(int i) {
-            if (text.startsWith("--", i)) return -1;
-            if (!text.startsWith("/*", i)) return i;
-            int end = text.indexOf("*/", i + 2);
-            return end < 0 ? -1 : end + 2;
+        private void skipBlockComment() {
+            int end = text.indexOf("*/", i);
+            inBlockComment = end < 0;
+            i = end < 0 ? text.length() : end + 2;
+        }
+
+        private void openBlockComment() {
+            inBlockComment = true;
+            code.append(' ');
+            i += 2;
+        }
+
+        private void copyChar() {
+            char c = text.charAt(i++);
+            if (c == '\'') inSingleQuote = !inSingleQuote;
+            code.append(c);
         }
     }
 

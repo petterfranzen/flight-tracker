@@ -1,6 +1,7 @@
 package com.flighttracker.config;
 
 import com.flighttracker.controller.ProfileDataController;
+import com.flighttracker.model.Profile;
 import com.flighttracker.profile.ProfileProperties;
 import com.flighttracker.profile.ProfileResolver;
 import com.flighttracker.profile.SubjectHash;
@@ -34,6 +35,7 @@ import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.oidcLogin;
@@ -165,9 +167,14 @@ class ProfileFavoriteWriteMockMvcTest {
 
     /** The profile the write resolved for {@link #subject}; its id is never exposed by the API. */
     private String profileId() {
-        return profiles.findByProviderAndSubjectHash("google", SubjectHash.of("google", subject))
+        return storedProfile()
                 .orElseThrow(() -> new AssertionError("the write must have created a profile row"))
                 .id();
+    }
+
+    /** The profile row for {@link #subject}, if anything created one. */
+    private Optional<Profile> storedProfile() {
+        return profiles.findByProviderAndSubjectHash("google", SubjectHash.of("google", subject));
     }
 
     @Test
@@ -249,6 +256,21 @@ class ProfileFavoriteWriteMockMvcTest {
     }
 
     @Test
+    void aRejectedWriteOrDeleteCreatesNoProfile() throws Exception {
+        mvc.perform(signedInPut("{\"kind\":\"bogus\",\"itemKey\":\"ESSA-ESGG\",\"data\":" + ROUTE_DATA + "}"))
+                .andExpect(status().isBadRequest());
+        mvc.perform(signedInPut("{\"kind\":\"route\",\"itemKey\":\"ESSA-ESGG\",\"data\":[1]}"))
+                .andExpect(status().isBadRequest());
+        mvc.perform(delete("/api/profile/favorite").param("kind", "route").with(signedIn())
+                        .cookie(csrfToken).header("X-XSRF-TOKEN", csrfToken.getValue()))
+                .andExpect(status().isBadRequest());
+
+        assertThat(storedProfile())
+                .as("validation runs before the first-sight resolve")
+                .isEmpty();
+    }
+
+    @Test
     void aWriteOverTheFavoriteCapIsA409AndWritesNothing() throws Exception {
         mvc.perform(signedInPut("{\"kind\":\"route\",\"itemKey\":\"K0\",\"data\":" + ROUTE_DATA + "}"))
                 .andExpect(status().isOk());
@@ -289,8 +311,9 @@ class ProfileFavoriteWriteMockMvcTest {
 
     @Test
     void anErrorBodyNeverCarriesTheProfileIdOrSubject() throws Exception {
-        mvc.perform(signedInPut("{\"kind\":\"bogus\",\"itemKey\":\"ESSA-ESGG\",\"data\":{\"origin\":\"ESSA\"}}"))
-                .andExpect(status().isBadRequest());
+        // A valid write first, so the profile (and its id) exists for the bad one to leak.
+        mvc.perform(signedInPut("{\"kind\":\"route\",\"itemKey\":\"ESSA-ESGG\",\"data\":" + ROUTE_DATA + "}"))
+                .andExpect(status().isOk());
 
         String body = mvc.perform(signedInPut("{\"kind\":\"bogus\",\"itemKey\":\"ESSA-ESGG\",\"data\":{\"origin\":\"ESSA\"}}"))
                 .andReturn().getResponse().getContentAsString();
