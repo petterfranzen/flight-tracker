@@ -22,7 +22,8 @@
 }
 
 .scale-bar-label {
-  font-size: 10px;
+  /* One step under --font-size-min: the bar's width is the measurement and its label must stay narrow. */
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
   color: var(--color-text-muted);
   white-space: nowrap;

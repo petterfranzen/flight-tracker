@@ -110,6 +110,7 @@
 .watch-panel-date::-webkit-date-and-time-value { text-align: left; }
 .watch-panel-or, .watch-panel-message, .watch-panel-detail { color: var(--color-text-muted); }
 .watch-panel-message { margin: 6px 0 0; }
+.watch-panel-message:empty { margin: 0; } /* the stable live region, between messages */
 .watch-panel-heading { margin: 10px 0 4px; font-weight: 600; }
 
 .watch-panel-results, .watch-panel-watched { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }

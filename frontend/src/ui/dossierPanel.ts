@@ -29,18 +29,62 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
   // expand/collapse, …) rebuilds the panel outright.
   let updatedLineEl: HTMLElement | null = null;
 
+  // A polite live region that exists from mount and only ever changes its
+  // text (#421): one inserted together with its message is not reliably
+  // announced. The panel itself is rebuilt in `host`, next to it.
+  const announcer = h("p", { className: "visually-hidden", role: "status" });
+  const host = h("div");
+  root.append(announcer, host);
+
+  // What the panel shows ("aircraft:<icao24>" / "airport:<code>"), so a new
+  // selection can be told apart from a live update of the same one.
+  let shownKey: string | null = null;
+  // The control that had focus when the panel opened; focus goes back to it on close.
+  let opener: HTMLElement | null = null;
+
   function renderAll(): void {
-    clear(root);
+    const focus = focusInside(host);
+    clear(host);
     updatedLineEl = null;
     const selectedPos = store.get("selectedPos");
     const airportDossier = store.get("airportDossier");
     if (selectedPos) {
       const built = renderAircraftPanel(store);
       updatedLineEl = built.updatedLine;
-      root.appendChild(built.panel);
+      host.appendChild(built.panel);
     } else if (airportDossier) {
-      root.appendChild(renderAirportPanel(store));
+      host.appendChild(renderAirportPanel(store));
     }
+    const key = selectionKey(store);
+    if (key === shownKey) {
+      if (focus) restoreFocus(host, focus);
+      return;
+    }
+    const opened = shownKey === null;
+    shownKey = key;
+    if (key) onSelected(opened, focus != null);
+    else onClosed(focus != null);
+  }
+
+  /** A new selection (every one starts with the user: a click, a search, a favourite, a watch). */
+  function onSelected(opened: boolean, focusWasInPanel: boolean): void {
+    if (opened && !focusWasInPanel) {
+      const active = activeElement();
+      opener = active === document.body ? null : active;
+    }
+    announcer.textContent = `Selected ${host.querySelector(".details-panel-title")?.textContent ?? ""}`;
+    host.querySelector<HTMLElement>(".details-panel-title")?.focus({ preventScroll: true });
+  }
+
+  /** The panel closed: hand focus back unless the user has already moved it elsewhere. */
+  function onClosed(focusWasInPanel: boolean): void {
+    announcer.textContent = "";
+    const back = opener;
+    opener = null;
+    const current = activeElement();
+    if (!focusWasInPanel && current && current !== document.body) return;
+    const target = back && isShown(back) ? back : document.querySelector<HTMLElement>(".maplibregl-canvas");
+    target?.focus({ preventScroll: true });
   }
 
   function updateNowMs(): void {
@@ -78,6 +122,45 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     detachEscape();
     clear(root);
   };
+}
+
+function selectionKey(store: AppStore): string | null {
+  const selectedPos = store.get("selectedPos");
+  if (selectedPos) return `aircraft:${selectedPos.icao24}`;
+  const airportDossier = store.get("airportDossier");
+  return airportDossier ? `airport:${airportDossier.code}` : null;
+}
+
+function activeElement(): HTMLElement | null {
+  return document.activeElement instanceof HTMLElement ? document.activeElement : null;
+}
+
+function isShown(el: HTMLElement): boolean {
+  return el.isConnected && el.getClientRects().length > 0;
+}
+
+/** Which control had focus in the panel: its first class and its index among those (the two favourite toggles share one). */
+interface PanelFocus {
+  className: string;
+  index: number;
+}
+
+function focusInside(container: HTMLElement): PanelFocus | null {
+  const active = activeElement();
+  if (!active || !container.contains(active)) return null;
+  const className = active.classList[0];
+  if (!className) return { className: "details-panel-title", index: 0 };
+  return { className, index: Array.from(container.getElementsByClassName(className)).indexOf(active) };
+}
+
+/**
+ * Every change rebuilds the panel, which destroys the focused control (#421);
+ * focus the same control in the new panel, or the heading if it is gone.
+ */
+function restoreFocus(container: HTMLElement, focus: PanelFocus): void {
+  const matches = container.getElementsByClassName(focus.className);
+  const target = (matches[focus.index] ?? matches[0] ?? container.querySelector(".details-panel-title")) as HTMLElement | null;
+  target?.focus({ preventScroll: true });
 }
 
 function updatedLineInput(store: AppStore, selectedPos: SelectedPosition): UpdatedLineInput {
@@ -125,6 +208,11 @@ function panelShell({ store, kind, headingId, eyebrow, body }: ShellOptions): HT
       h("button", { className: "details-panel-close", onClick: close, "aria-label": closeLabel }, "Close"),
     ),
   );
+}
+
+/** The dossier's title: where focus lands on a new selection (tabindex -1: focusable, not a Tab stop). */
+function heading(text: string): HTMLElement {
+  return h("h2", { className: "details-panel-title", tabindex: "-1" }, text);
 }
 
 interface RouteInfo {
@@ -204,7 +292,7 @@ function renderAircraftPanel(store: AppStore): { panel: HTMLElement; updatedLine
     headingId: "details-panel-heading",
     eyebrow: "Aircraft Details",
     body: [
-      h("h2", null, selectedPos.callsign?.trim() || selectedPos.icao24.toUpperCase()),
+      heading(selectedPos.callsign?.trim() || selectedPos.icao24.toUpperCase()),
       focusButton,
       favoriteToggles(store, selectedPos, route),
       h("p", { className: "details-panel-favorite-hint" }, favoriteHint(route)),
@@ -236,7 +324,7 @@ function renderAirportPanel(store: AppStore): HTMLElement {
     headingId: "airport-details-panel-heading",
     eyebrow: "Airport Details",
     body: [
-      h("h2", null, airportDossier.name || airportDossier.code),
+      heading(airportDossier.name || airportDossier.code),
       h("p", { className: "details-panel-meta" }, `${airportInfo?.iataCode || airportDossier.code}${airportInfo?.icaoCode ? ` / ${airportInfo.icaoCode}` : ""}`),
       fields,
     ],

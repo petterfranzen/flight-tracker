@@ -115,7 +115,7 @@
 .favorites-panel-section h3 {
   margin: 0 0 4px;
   padding: 0 4px;
-  font-size: 11px;
+  font-size: var(--font-size-min);
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -173,7 +173,7 @@
 
 .favorites-panel-item-status {
   margin-left: auto;
-  font-size: 11px;
+  font-size: var(--font-size-min);
   color: var(--color-text-muted);
   white-space: nowrap;
 }

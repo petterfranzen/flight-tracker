@@ -66,13 +66,15 @@ const PANEL_MODAL_ATTRS: Record<string, string> = { role: "dialog", "aria-modal"
  */
 export function mount(root: HTMLElement, store: AppStore): () => void {
   function choose(p: FlightPosition): void {
-    store.get("selectAircraft")(p);
     flightBox.reset();
     airportBox.reset();
+    // Close first: closing the phone overlay hands focus back to its FAB, and
+    // the selection then moves it on to the dossier's heading (#421).
     closeControlPanel("search");
     input.value = "";
     airportInput.value = "";
     renderAll();
+    store.get("selectAircraft")(p);
   }
 
   function onEscape(): void {
@@ -160,7 +162,7 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     "Close search ✕",
   );
   const eyebrow = h("span", { className: "flight-search-eyebrow" }, "Query // Flight No.");
-  const panel = h("div", { id: "flight-search-panel", className: "flight-search-panel control-panel" }, panelClose, eyebrow, input, chips, watchedList, airportPanel);
+  const panel = h("div", { id: "flight-search-panel", className: "flight-search-panel control-panel" }, panelClose, eyebrow, input, chips, watchedList, airportPanel, flightBox.status, airportBox.status);
   const container = h("div", { className: "flight-search" }, fab, panel);
 
   /** Watched flights matching the typed query, by IATA number (SK528) or ICAO callsign (SAS528). */

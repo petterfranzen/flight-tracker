@@ -38,8 +38,11 @@ function setActiveRow(listEl: HTMLElement, activeIdx: number): void {
   });
 }
 
+// The visible row in the dropdown. Screen readers hear the same text from
+// SearchBox.status instead: a live region inserted together with its text
+// (this row is rebuilt on every render) is not reliably announced (#421).
 function statusRow(text: string): HTMLElement {
-  return h("li", { className: "flight-search-status", role: "status" }, text);
+  return h("li", { className: "flight-search-status", "aria-hidden": "true" }, text);
 }
 
 /**
@@ -50,6 +53,8 @@ function statusRow(text: string): HTMLElement {
 export class SearchBox {
   readonly input: HTMLInputElement;
   readonly list: HTMLElement;
+  /** A stable, visually hidden live region for "Searching…" / "No matching flights"; the owner puts it in the document once. */
+  readonly status: HTMLElement = h("p", { className: "visually-hidden", role: "status" });
   query = "";
   open = false;
   private results: FlightPosition[] = [];
@@ -97,6 +102,8 @@ export class SearchBox {
     clear(this.list);
     if (showDropdown) this.fillList();
     else this.list.remove();
+    const statusText = (showDropdown && this.statusText()) || "";
+    if (this.status.textContent !== statusText) this.status.textContent = statusText;
     this.input.setAttribute("aria-expanded", String(showDropdown));
     if (this.activeIndex >= 0 && showDropdown) this.input.setAttribute("aria-activedescendant", this.optionId(this.activeIndex));
     else this.input.removeAttribute("aria-activedescendant");

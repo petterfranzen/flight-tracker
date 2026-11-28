@@ -28,17 +28,21 @@ interface FavoriteItem {
   onRemove: () => void;
 }
 
-function summaryParagraph(items: FavoriteItem[]): HTMLElement {
-  if (items.length === 0) {
-    return h("p", { className: "favorites-panel-empty" }, "No favorites yet — use “Favorite aircraft” or “Favorite route” in a flight’s details panel.");
-  }
+/**
+ * Writes the line above the lists into the panel's one status element. It
+ * exists from mount and only its text changes (#421): a live region inserted
+ * together with its text, as the 20 s refresh used to do, is often missed.
+ */
+function writeSummary(el: HTMLElement, items: FavoriteItem[]): void {
+  const empty = items.length === 0;
   // Says what is actionable: only live favorites can be selected.
-  const anyLive = items.some((item) => item.live);
-  return h(
-    "p",
-    { className: "favorites-panel-hint", role: "status" },
-    anyLive ? "Tap a live favorite to jump to it." : "None live right now — they light up when a matching flight is in the air.",
-  );
+  const text = empty
+    ? "No favorites yet — use “Favorite aircraft” or “Favorite route” in a flight’s details panel."
+    : items.some((item) => item.live)
+      ? "Tap a live favorite to jump to it."
+      : "None live right now — they light up when a matching flight is in the air.";
+  el.className = empty ? "favorites-panel-empty" : "favorites-panel-hint";
+  if (el.textContent !== text) el.textContent = text;
 }
 
 /**
@@ -103,9 +107,11 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
 
   // On mobile the open drawer covers the whole map, so selecting a favorite
   // would otherwise leave the user staring at the list with the plane hidden.
+  // Closes first: closing the drawer hands focus back to its FAB, and the
+  // selection then moves it on to the dossier's heading (#421).
   function selectAndClose(select: () => void): void {
-    select();
     if (isPhone()) closeControlPanel("favorites");
+    select();
   }
 
   function setOpen(next: boolean): void {
@@ -144,7 +150,9 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     { type: "button", className: "favorites-panel-toggle", "aria-controls": "favorites-panel-content", onClick: () => toggleControlPanel("favorites") },
     "★ Favorites ▼",
   );
-  const content = h("div", { id: "favorites-panel-content", className: "favorites-panel-content" });
+  const summary = h("p", { role: "status" });
+  const sections = h("div");
+  const content = h("div", { id: "favorites-panel-content", className: "favorites-panel-content" }, summary, sections);
   const body = h("div", { id: "favorites-panel-body", className: "favorites-panel-body control-panel" }, bodyClose, toggle);
   const container = h("div", { className: "favorites-panel" }, fab, body);
 
@@ -191,14 +199,14 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
   function appendSection(title: string, items: FavoriteItem[]): void {
     if (items.length === 0) return;
     const list = h("ul", null, ...items.map(itemRow));
-    content.append(h("div", { className: "favorites-panel-section" }, h("h3", null, title), list));
+    sections.append(h("div", { className: "favorites-panel-section" }, h("h3", null, title), list));
   }
 
   function renderContent(): void {
     const aircraft = store.get("favoriteAircraft").map(aircraftItem);
     const routes = store.get("favoriteRoutes").map(routeItem);
-    clear(content);
-    content.append(summaryParagraph([...aircraft, ...routes]));
+    clear(sections);
+    writeSummary(summary, [...aircraft, ...routes]);
     appendSection("Aircraft", aircraft);
     appendSection("Routes", routes);
   }

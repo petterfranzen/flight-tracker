@@ -45,8 +45,7 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     syncModal();
     if (!open) return;
     clear(dyn);
-    // role=status => polite announcement of "Searching…", "No matching flights…", a search error.
-    if (message) dyn.appendChild(h("p", { className: "watch-panel-message", role: "status" }, message));
+    if (messageEl.textContent !== message) messageEl.textContent = message;
     if (results.length) dyn.appendChild(resultsList({ results, watched, date: dateInput.value, onWatch: watch }));
     if (watched.length) renderWatched();
   }
@@ -131,9 +130,10 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
 
   // On mobile the open panel covers the map: moving the map to the plane should
   // not leave the user staring at the list.
+  // Closes first so the selection's focus move to the dossier (#421) is not undone by the drawer handing focus back.
   function goto(w: WatchedFlight): void {
-    store.get("goToWatched")(w);
     if (isPhone()) closeControlPanel("watch");
+    store.get("goToWatched")(w);
   }
 
   const form = h(
@@ -142,10 +142,13 @@ export function mount(root: HTMLElement, store: AppStore): () => void {
     flightInput, h("div", { className: "watch-panel-or" }, "or route"), fromInput, toInput, dateInput,
     h("button", { type: "submit", className: "watch-panel-search" }, "Search"),
   );
+  // role=status: a polite announcement of "Searching…", "No matching flights…", a search error.
+  // One element from mount whose text changes (#421): a live region inserted with its text is often missed.
+  const messageEl = h("p", { className: "watch-panel-message", role: "status" });
   const dyn = h("div"); // everything below the form, rebuilt on each render (the form keeps focus)
   const toggle = h("button", { type: "button", className: "watch-panel-toggle control-stack-button", onClick: () => toggleControlPanel("watch") });
   const closeButton = h("button", { type: "button", className: "watch-panel-close control-panel-close", onClick: () => closeControlPanel("watch") }, "Close watch ✕");
-  const content = h("div", { className: "watch-panel-content control-panel" }, closeButton, form, dyn);
+  const content = h("div", { className: "watch-panel-content control-panel" }, closeButton, form, messageEl, dyn);
   const container = h("div", { className: "watch-panel" }, toggle, content);
   root.appendChild(container);
 
