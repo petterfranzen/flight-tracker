@@ -105,7 +105,9 @@
     height: 22px;
   }
 
+  /* Above the scale bar and attribution strip and clear of the home
+     indicator (#421); 16px sat inside a 34px inset. */
   .locate-toast {
-    bottom: 16px;
+    bottom: calc(72px + env(safe-area-inset-bottom, 0px));
   }
 }

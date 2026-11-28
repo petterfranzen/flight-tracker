@@ -147,6 +147,23 @@ html, body {
   --font-ui: "JetBrains Mono", "Courier New", monospace;
   --font-display: "JetBrains Mono", "Courier New", monospace;
   --font-data: "JetBrains Mono", "Courier New", monospace;
+  /* The smallest text the app sets (#421): labels, eyebrows and chips.
+     10-11px monospace is hard to read on a phone in daylight. */
+  --font-size-min: 12px;
+}
+
+/* Read by screen readers, not drawn: the live regions that announce a
+   selection or a search status (#421). */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }
 
 /* MapLibre anchors the scale bar and attribution to the map's bottom edge.
@@ -160,6 +177,18 @@ html, body {
 .app-shell .maplibregl-ctrl-bottom-right {
   margin-right: env(safe-area-inset-right, 0px);
   margin-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* MapLibre draws the attribution dark-on-white at half opacity, where the
+   theme's light text ("©", "|") fell to about 3:1 (#421). A dark panel
+   token with the muted text token instead, links included. Two classes to
+   beat MapLibre's own .maplibregl-ctrl.maplibregl-ctrl-attrib. */
+.app-shell .maplibregl-ctrl.maplibregl-ctrl-attrib {
+  background: color-mix(in srgb, var(--color-panel) 80%, transparent);
+  color: var(--color-text-muted);
+}
+.app-shell .maplibregl-ctrl-attrib a {
+  color: var(--color-text-muted);
 }
 
 .app-shell {
@@ -244,7 +273,7 @@ html.standalone .app-shell {
   flex: none;
 }
 .tracked-chip-label {
-  font-size: 10px;
+  font-size: var(--font-size-min);
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--color-text-muted);
@@ -367,11 +396,16 @@ html.standalone .app-shell {
   border: 1px solid var(--color-warn);
   background: rgba(255, 77, 94, 0.08);
   color: var(--color-warn);
-  font-size: 10px;
+  font-size: var(--font-size-min);
   font-weight: 700;
   letter-spacing: 0.14em;
   text-transform: uppercase;
   margin-bottom: 6px;
+}
+/* The dossier's eyebrow stays at 10px: the expanded phone sheet is laid out
+   to fit without scrolling, and 12px pushes its last row out of view. */
+[data-theme="cyberpunk"] .details-panel-eyebrow {
+  font-size: 10px;
 }
 
 /* Favorite-aircraft/favorite-route toggle buttons — reskinned to the
@@ -436,7 +470,8 @@ html.standalone .app-shell {
 .app-shell select:focus-visible,
 .app-shell textarea:focus-visible,
 .app-shell [role="option"]:focus-visible,
-.app-shell [tabindex]:not([tabindex="-1"]):focus-visible {
+.app-shell [tabindex]:not([tabindex="-1"]):focus-visible,
+.app-shell .details-panel-title:focus-visible {
   outline: 3px solid var(--color-focus);
   outline-offset: 2px;
 }
@@ -1146,10 +1181,9 @@ html.standalone .app-shell {
      tighter padding, and capped width so it wraps to a slim strip. */
   .maplibregl-ctrl-attrib {
     box-sizing: border-box;
-    font-size: 9px;
+    font-size: 11px;
     line-height: 1.3;
     padding: 0 4px;
     max-width: 60vw;
-    background: rgba(255, 255, 255, 0.55);
   }
 }

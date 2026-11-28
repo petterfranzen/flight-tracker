@@ -181,7 +181,8 @@ function boot(): void {
   const watchToastRoot = h("div");
   const mapRoot = h("div");
   const dossierRoot = h("div");
-  appShell.append(bootScreenRoot, dockRoot, leftOverlayStack, trackedChipRoot, resumeDialogRoot, watchToastRoot, mapRoot, dossierRoot);
+  // The dock follows the stack so Tab starts at the search field, not the bottom dock (#421).
+  appShell.append(bootScreenRoot, leftOverlayStack, dockRoot, trackedChipRoot, resumeDialogRoot, watchToastRoot, mapRoot, dossierRoot);
   rootEl.appendChild(appShell);
 
   // PWA install control (#85): shown only when the browser offers an

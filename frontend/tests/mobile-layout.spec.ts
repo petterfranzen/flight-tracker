@@ -226,7 +226,7 @@ test.describe("mobile layout", () => {
     await expect(attribution).not.toContainText("MapLibre"); // the library credit is dropped on phones; the data credits stay
     await expect(attribution).toContainText("OpenStreetMap");
     const fontSize = await attribution.evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
-    expect(fontSize).toBeLessThanOrEqual(10);
+    expect(fontSize).toBeLessThanOrEqual(11); // 11px since #421: 9px was too small to read
     expect((await attribution.boundingBox())!.width).toBeLessThanOrEqual(MOBILE_VIEWPORT.width * 0.6 + 1);
   });
 
