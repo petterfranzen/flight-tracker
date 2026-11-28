@@ -8,24 +8,39 @@ import org.springframework.stereotype.Service;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Optional;
 
 /**
  * Shared bounded-polling state — see AgentOrchestrator (which decides
  * whether to actually poll) and AgentController (which exposes GET/POST
- * /api/agents/{status,restart} to the UI).
+ * /api/agents/{status,restart,stop} to the UI).
  *
- * Cloud migration A1 (PLAN.md §6 item 6): this used to be backed by the
+ * <p>The window is held open by <b>grants</b>: each reopen records a grant
+ * for the caller (its {@link ClientIpResolver#rateLimitKey}), and the window
+ * is open while any grant is still in its future. This is what lets a stop
+ * release only the caller's own grant while other clients' grants keep the
+ * window open (security audit finding M1, section9-hq #405) — the old single
+ * {@code activeUntil} made one unauthenticated stop close it for everyone.
+ *
+ * <p>The restart quota is charged per key, not globally: the old shared
+ * counter let a single IP spend the whole {@code restart-quota-max} allowance
+ * and lock every other visitor out of the window for the rest of the window
+ * (finding M1). Per key, one caller's bursts only affect that caller.
+ *
+ * <p>Cloud migration A1 (PLAN.md §6 item 6): this used to be backed by the
  * poll_window table because the "agent" and "api" containers were separate
- * processes with no way to share an in-memory AtomicReference. Now that
- * everything is one process, activeUntil/quotaWindowStart/quotaRestartCount
- * are plain synchronized fields again — the same shape this had before the
- * multi-container split, and a restart resetting them is fine (it was fine
- * then too). The one exception is the global hot-poll-daily-call-budget
- * counter (hotPollCountWindowStart/hotPollCallCount): "the original design
- * requirement" is that this specific budget survive a restart, so it's
- * still write-through persisted — to the small app_state table
- * (AppStateRepository) instead of poll_window now.
+ * processes with no way to share an in-memory map. Now that everything is one
+ * process, the grants and per-key quotas are plain synchronized maps again —
+ * the same shape this had before the multi-container split, and a restart
+ * resetting them is fine (it was fine then too). The one exception is the
+ * global hot-poll-daily-call-budget counter
+ * (hotPollCountWindowStart/hotPollCallCount): "the original design
+ * requirement" is that this specific budget survive a restart, so it's still
+ * write-through persisted — to the small app_state table (AppStateRepository)
+ * instead of poll_window now.
  */
 @Service
 public class PollWindowService {
@@ -41,21 +56,30 @@ public class PollWindowService {
     private static final String HOT_POLL_WINDOW_START_KEY = "hotpoll.window_start";
     private static final String HOT_POLL_CALL_COUNT_KEY = "hotpoll.call_count";
 
+    // The grant the boot-time, caller-less seed (AgentOrchestrator.
+    // seedOnStartup) records under — no request, so no client key.
+    private static final String BOOT_GRANT_KEY = "boot";
+
     private final AppStateRepository appState;
     private final Duration pollWindow;
     private final int quotaMax;
     private final Duration quotaWindow;
     private final int hotPollDailyCallBudget;
 
-    // Plain fields guarded by `this` monitor (see the synchronized methods
-    // below) — a single shared "one map, one poll window" model, same as
-    // before this app ever had multiple containers.
-    private Instant activeUntil = Instant.EPOCH;
-    private Instant quotaWindowStart;
-    private int quotaRestartCount = 0;
+    // Plain maps guarded by `this` monitor (see the synchronized methods
+    // below) — a single shared "one poll window" model, same as before this
+    // app ever had multiple containers. grants: key -> when its grant ends,
+    // pruned as it lapses. restarts: key -> its count in the current quota
+    // window, pruned once that window is over.
+    private final Map<String, Instant> grants = new HashMap<>();
+    private final Map<String, Quota> restarts = new HashMap<>();
 
     private Instant hotPollCountWindowStart;
     private int hotPollCallCount = 0;
+
+    /** One key's reopen count within a single quota window. */
+    private record Quota(Instant windowStart, int count) {
+    }
 
     public PollWindowService(AppStateRepository appState,
                               @Value("${flighttracker.agents.poll-window-seconds}") long pollWindowSeconds,
@@ -82,11 +106,21 @@ public class PollWindowService {
     }
 
     /**
-     * Reopens the window for another {@code pollWindow} from now — unless
-     * the global restart quota (quotaMax resumes per quotaWindow, shared
-     * across every caller) is already used up, in which case the window
-     * is left exactly as it was and this returns when the quota resets.
+     * Reopens the window for another {@code pollWindow} from now, for a
+     * caller with no key (the boot-time seed). See {@link #restart(String, boolean)}.
+     */
+    public synchronized Optional<Instant> restart(boolean bypassQuota) {
+        return restart(BOOT_GRANT_KEY, bypassQuota);
+    }
+
+    /**
+     * Records a grant for {@code key} (reopening the window for another
+     * {@code pollWindow} from now) — unless this key has already used up its
+     * restart quota (quotaMax reopens per quotaWindow, charged per key), in
+     * which case nothing changes and this returns when that key's quota
+     * resets.
      *
+     * @param key         the caller's rate-limit key ({@link ClientIpResolver#rateLimitKey}).
      * @param bypassQuota skip the quota check (and don't count this call
      *                    against it) entirely. Two legitimate reasons to:
      *                    AgentOrchestrator.seedOnStartup()'s boot-time
@@ -102,45 +136,62 @@ public class PollWindowService {
      *                    means local callers can't be locked out by the
      *                    quota — OpenSky's own throttling (PollBackoff)
      *                    still applies regardless of who triggered a poll.
-     * @return empty if the window was reopened; otherwise the instant the
-     *         quota resets (quotaWindow after the *first* resume counted
+     * @return empty if the window was reopened; otherwise the instant this
+     *         key's quota resets (quotaWindow after the *first* reopen counted
      *         in the current quota window — not a rolling cooldown from
      *         this rejected attempt). Always empty when bypassQuota is true.
      */
-    public synchronized Optional<Instant> restart(boolean bypassQuota) {
+    public synchronized Optional<Instant> restart(String key, boolean bypassQuota) {
         Instant now = Instant.now();
+        prune(now);
 
         if (bypassQuota) {
-            activeUntil = now.plus(pollWindow);
+            grants.put(key, now.plus(pollWindow));
             return Optional.empty();
         }
 
-        boolean expired = quotaWindowStart == null || Duration.between(quotaWindowStart, now).compareTo(quotaWindow) >= 0;
-        if (expired) {
-            quotaWindowStart = now;
-            quotaRestartCount = 0;
-        }
-
-        if (quotaRestartCount >= quotaMax) {
+        Quota quota = activeQuota(key, now);
+        if (quota.count() >= quotaMax) {
             // Deliberately not counted: this attempt didn't count against
             // (or reset) the quota, so a caller retrying immediately
             // isn't punished further, and the quota resets at exactly
-            // quotaWindow after the first resume that used it up.
-            return Optional.of(quotaWindowStart.plus(quotaWindow));
+            // quotaWindow after the first reopen that used it up.
+            restarts.put(key, quota);
+            return Optional.of(quota.windowStart().plus(quotaWindow));
         }
 
-        quotaRestartCount++;
-        activeUntil = now.plus(pollWindow);
+        restarts.put(key, new Quota(quota.windowStart(), quota.count() + 1));
+        grants.put(key, now.plus(pollWindow));
         return Optional.empty();
     }
 
-    /** Closes the window immediately — wired to the frontend's "Stop Watch" button. */
-    public synchronized void stop() {
-        activeUntil = Instant.now();
+    /** {@code key}'s quota in the current window, or one starting now when its window has elapsed. */
+    private Quota activeQuota(String key, Instant now) {
+        Quota quota = restarts.get(key);
+        if (quota == null || Duration.between(quota.windowStart(), now).compareTo(quotaWindow) >= 0) {
+            return new Quota(now, 0);
+        }
+        return quota;
+    }
+
+    /**
+     * Releases only {@code key}'s own grant — the window stays open while any
+     * other key's grant is still active (finding M1; see the class javadoc).
+     */
+    public synchronized void stop(String key) {
+        grants.remove(key);
     }
 
     public synchronized boolean isActive() {
-        return Instant.now().isBefore(activeUntil);
+        Instant now = Instant.now();
+        prune(now);
+        return !grants.isEmpty();
+    }
+
+    /** Drops lapsed grants and elapsed quota windows, so neither map grows without bound. */
+    private void prune(Instant now) {
+        grants.values().removeIf(until -> !until.isAfter(now));
+        restarts.entrySet().removeIf(e -> Duration.between(e.getValue().windowStart(), now).compareTo(quotaWindow) >= 0);
     }
 
     /**
@@ -184,10 +235,13 @@ public class PollWindowService {
         appState.put(HOT_POLL_CALL_COUNT_KEY, String.valueOf(hotPollCallCount));
     }
 
+    /** The window is open while any grant is live; the countdown is to the latest of them. */
     public synchronized PollingStatus status() {
         Instant now = Instant.now();
-        boolean active = now.isBefore(activeUntil);
-        long secondsRemaining = active ? Duration.between(now, activeUntil).toSeconds() : 0;
+        prune(now);
+        Instant until = grants.values().stream().max(Comparator.naturalOrder()).orElse(null);
+        boolean active = until != null;
+        long secondsRemaining = active ? Duration.between(now, until).toSeconds() : 0;
         return new PollingStatus(active, secondsRemaining);
     }
 }

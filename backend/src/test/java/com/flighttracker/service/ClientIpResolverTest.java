@@ -189,4 +189,34 @@ class ClientIpResolverTest {
     void isLocal_falseForMalformedInput() {
         assertThat(ClientIpResolver.isLocal("not-an-ip")).isFalse();
     }
+
+    // rateLimitKey: the /64 for IPv6, the address for IPv4 (finding M3).
+
+    @Test
+    void rateLimitKey_isTheAddressItselfForIpv4() {
+        assertThat(ClientIpResolver.rateLimitKey("203.0.113.9")).isEqualTo("203.0.113.9");
+        assertThat(ClientIpResolver.rateLimitKey("198.51.100.7")).isEqualTo("198.51.100.7");
+    }
+
+    @Test
+    void rateLimitKey_isTheSlash64_forIpv6_soTheInterfaceIdDoesNotMatter() {
+        assertThat(ClientIpResolver.rateLimitKey("2001:db8:1:2:3:4:5:6"))
+                .isEqualTo(ClientIpResolver.rateLimitKey("2001:db8:1:2::1"));
+    }
+
+    @Test
+    void rateLimitKey_differsAcrossSlash64s() {
+        assertThat(ClientIpResolver.rateLimitKey("2001:db8:1:2::1"))
+                .isNotEqualTo(ClientIpResolver.rateLimitKey("2001:db8:1:3::1"));
+    }
+
+    @Test
+    void rateLimitKey_treatsAV4MappedV6AddressAsItsIpv4Address() {
+        assertThat(ClientIpResolver.rateLimitKey("::ffff:203.0.113.9")).isEqualTo("203.0.113.9");
+    }
+
+    @Test
+    void rateLimitKey_keysANonIpLiteralByItsOwnText() {
+        assertThat(ClientIpResolver.rateLimitKey("unknown")).isEqualTo("unknown");
+    }
 }

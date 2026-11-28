@@ -32,6 +32,13 @@ export const LOGIN_CLIENT_ID = "bb-login-client";
 /** Any non-empty value is enough: the fake records client auth, it never verifies it. */
 const LOGIN_CLIENT_SECRET = "bb-login-secret";
 
+/**
+ * The pepper the app hashes provider subjects with, which it refuses to start
+ * without once the profile flag is on. Test-only, exactly like the secret above:
+ * production sets its own from its environment and it never lives in the repo.
+ */
+const LOGIN_SUBJECT_PEPPER = "bb-login-subject-pepper";
+
 /** Where the jar usually is: CI downloads the artifact to dist/, a local Maven build lands in target/. */
 const JAR_CANDIDATES = ["dist/flight-tracker.jar", "backend/target/flight-tracker.jar"];
 
@@ -86,6 +93,7 @@ function appEnv({ port, workDir, fake }) {
   delete env.GITHUB_CLIENT_SECRET;
   Object.assign(env, {
     FLIGHTTRACKER_PROFILE_ENABLED: "true",
+    FLIGHTTRACKER_SUBJECT_PEPPER: LOGIN_SUBJECT_PEPPER,
     GOOGLE_CLIENT_ID: LOGIN_CLIENT_ID,
     GOOGLE_CLIENT_SECRET: LOGIN_CLIENT_SECRET,
     GOOGLE_AUTHORIZATION_URI: `${fake.issuer}/authorize`,

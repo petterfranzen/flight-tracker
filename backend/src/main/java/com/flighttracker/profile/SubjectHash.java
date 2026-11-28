@@ -1,43 +1,76 @@
 package com.flighttracker.profile;
 
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.stereotype.Component;
+
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
+import java.security.GeneralSecurityException;
 import java.util.HexFormat;
 import java.util.Objects;
 
 /**
- * The one place the OAuth/OIDC subject id is turned into what the database
- * stores. Design §2: only the provider and a *hashed* subject are kept — no
- * email, no name, no avatar — so the raw `sub` never reaches a column.
+ * The one place a provider's subject id is turned into what the database
+ * stores. Design §2: only the provider and a <i>keyed</i> hash of the subject
+ * are kept — no email, no name, no avatar — so the raw {@code sub} never
+ * reaches a column.
  *
- * The hash is {@code SHA-256(provider || ':' || subject)}, lowercase hex. The
- * provider is folded in so the same subject string from two different
- * providers cannot collide, and the hex output is a plain 64-char string the
- * {@code profile.subject_hash} column (and its unique index with provider)
- * compares exactly.
+ * <p>The hash is {@code HMAC-SHA256(pepper, provider || ':' || subject)},
+ * lowercase hex, with the pepper read from
+ * {@code flighttracker.profile.subject-pepper}
+ * ({@code FLIGHTTRACKER_SUBJECT_PEPPER} in the VM's
+ * {@code /etc/flight-tracker/env}, never in this repository). The provider is
+ * folded in so the same subject string from two providers cannot collide, and
+ * the hex output is a plain 64-char string the {@code profile.subject_hash}
+ * column (and its unique index with provider) compares exactly.
  *
- * A plain SHA-256, not a password hash with a salt: the input is a
- * provider-issued id (high entropy, not guessable), and the value must stay
- * deterministic for the {@code (provider, subject_hash)} lookup on every
- * login — a per-row salt would make that lookup impossible.
+ * <p>A <b>keyed</b> hash, not a plain SHA-256 (security audit finding M2,
+ * section9-hq #405): GitHub ids are small sequential integers, so
+ * {@code sha256("github:" + id)} is a dictionary lookup over roughly 2.5e8
+ * values — a leaked database would map every profile to a GitHub account on a
+ * CPU. The pepper makes the stored value useless to anyone who does not hold
+ * it, while staying deterministic for the {@code (provider, subject_hash)}
+ * lookup on every login — a per-row salt would make that lookup impossible.
+ *
+ * <p>Flag-conditional, like {@code ProfileResolver}: with
+ * {@code flighttracker.profile.enabled=false} (the default) the bean does not
+ * exist at all, so the flag-off app needs no pepper and is unchanged.
  */
-public final class SubjectHash {
+@Component
+@ConditionalOnProperty(prefix = "flighttracker.profile", name = "enabled", havingValue = "true")
+public class SubjectHash {
 
-    private SubjectHash() {
+    private final byte[] pepper;
+
+    /**
+     * @throws IllegalStateException when the pepper is blank. Refusing to start
+     *         beats silently hashing subjects with no key at all — the
+     *         plain-SHA-256 weakness this class exists to close — and there
+     *         are no rows to migrate yet (the flag is off in production).
+     */
+    public SubjectHash(@Value("${flighttracker.profile.subject-pepper:}") String pepper) {
+        if (pepper == null || pepper.isBlank()) {
+            throw new IllegalStateException("flighttracker.profile.subject-pepper "
+                    + "(FLIGHTTRACKER_SUBJECT_PEPPER) must be set when flighttracker.profile.enabled=true");
+        }
+        this.pepper = pepper.getBytes(StandardCharsets.UTF_8);
     }
 
-    public static String of(String provider, String subject) {
+    /** The stored subject hash: HMAC-SHA256(pepper, provider || ':' || subject), lowercase hex. */
+    public String of(String provider, String subject) {
         Objects.requireNonNull(provider, "provider");
         Objects.requireNonNull(subject, "subject");
         try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] hash = digest.digest((provider + ":" + subject).getBytes(StandardCharsets.UTF_8));
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(new SecretKeySpec(pepper, "HmacSHA256"));
+            byte[] hash = mac.doFinal((provider + ":" + subject).getBytes(StandardCharsets.UTF_8));
             return HexFormat.of().formatHex(hash);
-        } catch (NoSuchAlgorithmException e) {
-            // SHA-256 is required of every JRE; if it is missing something is
-            // badly wrong and failing loudly is correct.
-            throw new IllegalStateException("SHA-256 is not available", e);
+        } catch (GeneralSecurityException e) {
+            // HmacSHA256 is required of every JRE; if it is missing something
+            // is badly wrong and failing loudly is correct.
+            throw new IllegalStateException("HmacSHA256 is not available", e);
         }
     }
 }

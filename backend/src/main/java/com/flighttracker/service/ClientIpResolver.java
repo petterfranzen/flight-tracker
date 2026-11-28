@@ -121,6 +121,33 @@ public class ClientIpResolver {
     }
 
     /**
+     * The key the per-client rate limiters bucket an address under (security
+     * audit finding M3, section9-hq #405): the <b>/64 prefix</b> for an IPv6
+     * address, the address itself for IPv4. A single IPv6 client is handed
+     * 2^64 addresses inside its /64, so keying a limiter on the full address
+     * let one client present 2^64 identities against it; the /64 is the
+     * smallest block a residential connection normally receives, so it is the
+     * tightest key that still treats one subscriber as one client. REST and
+     * WebSocket callers share this, like resolve(). A value that is not an IP
+     * literal (the "unknown" fallback) is keyed by its own text, so it lands
+     * in one bucket rather than none.
+     */
+    public static String rateLimitKey(String ip) {
+        InetAddress addr = IpLiterals.parse(ip);
+        if (addr == null) return ip;
+        byte[] bytes = addr.getAddress();
+        if (bytes.length != 16) return addr.getHostAddress(); // IPv4, or a v4-mapped v6 address
+        for (int i = 8; i < bytes.length; i++) bytes[i] = 0; // keep the /64, drop the interface id
+        try {
+            return InetAddress.getByAddress(bytes).getHostAddress() + "/64";
+        } catch (UnknownHostException e) {
+            // A 16-byte array always rebuilds; unreachable, but the checked
+            // exception must still be handled.
+            throw new IllegalStateException("could not rebuild a 16-byte address", e);
+        }
+    }
+
+    /**
      * True for loopback and RFC1918/link-local addresses — covers literal
      * localhost and, deliberately, anyone on the same LAN as a home/NAS
      * deployment, per the original request to consider a local-network
