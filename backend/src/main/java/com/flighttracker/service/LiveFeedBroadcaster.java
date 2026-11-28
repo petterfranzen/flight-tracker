@@ -14,7 +14,7 @@ import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.web.server.context.WebServerGracefulShutdownLifecycle;
+import org.springframework.boot.web.server.context.WebServerApplicationContext;
 import org.springframework.context.SmartLifecycle;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.PingMessage;
@@ -83,12 +83,12 @@ public class LiveFeedBroadcaster extends TextWebSocketHandler implements SmartLi
     static final int SEND_TIME_LIMIT_MS = 10_000;
     // ~4k position frames. Beyond that the oldest are dropped, not the session.
     static final int BUFFER_SIZE_LIMIT_BYTES = 1024 * 1024;
-    // Lifecycle stop runs from the highest phase down. This sits between the
-    // graceful-shutdown phase (server socket closed, in-flight requests
-    // drained) and the phase that stops Tomcat, so a client told to go away
-    // can't reconnect to this instance, and Tomcat is still up to send the
-    // close frame.
-    static final int SHUTDOWN_PHASE = WebServerGracefulShutdownLifecycle.SMART_LIFECYCLE_PHASE - 512;
+    // Lifecycle stop runs from the highest phase down. This sits between
+    // GRACEFUL_SHUTDOWN_PHASE (server socket closed, in-flight requests
+    // drained) and START_STOP_LIFECYCLE_PHASE (stops Tomcat, 1024 lower), so
+    // a client told to go away can't reconnect to this instance, and Tomcat
+    // is still up to send the close frame.
+    static final int SHUTDOWN_PHASE = WebServerApplicationContext.GRACEFUL_SHUTDOWN_PHASE - 512;
     // Upper bound on waiting for close frames on shutdown. A close queues
     // behind a stalled client's blocked write, so it can't be open-ended.
     static final long CLOSE_TIMEOUT_MS = 2_000;
