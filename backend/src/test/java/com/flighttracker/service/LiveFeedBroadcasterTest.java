@@ -6,6 +6,7 @@ import com.flighttracker.model.FlightPosition;
 import com.flighttracker.service.live.PositionsPersistedEvent;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.web.server.context.WebServerApplicationContext;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.http.HttpHeaders;
 import org.springframework.web.socket.CloseStatus;
@@ -49,6 +50,15 @@ class LiveFeedBroadcasterTest {
     void tearDown() {
         release.countDown();
         broadcaster.shutdown();
+    }
+
+    // stop() must run after graceful shutdown has closed the server socket
+    // and before Tomcat itself stops (stop runs from the highest phase down).
+    @Test
+    void stopsBetweenGracefulShutdownAndWebServerStop() {
+        assertThat(broadcaster.getPhase())
+                .isLessThan(WebServerApplicationContext.GRACEFUL_SHUTDOWN_PHASE)
+                .isGreaterThan(WebServerApplicationContext.START_STOP_LIFECYCLE_PHASE);
     }
 
     @Test
